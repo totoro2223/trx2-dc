@@ -20,8 +20,8 @@
 // Double-buffered by KOS, so each holds two frames.
 // Sized by what TR2 levels use: room faces with see-through texels go to the
 // punch-through list, which takes about as much as the opaque one.
-#define M_VERTBUF_OP (2 * 160 * 1024)
-#define M_VERTBUF_TR (2 * 64 * 1024)
+#define M_VERTBUF_OP (2 * 192 * 1024)
+#define M_VERTBUF_TR (2 * 32 * 1024)
 #define M_VERTBUF_PT (2 * 160 * 1024)
 // Shadow volumes: a few hundred triangles of 64 bytes.
 #define M_VERTBUF_MOD (2 * 48 * 1024)
@@ -36,6 +36,12 @@
 // scales them by the largest one in the frame.
 #define M_LAYER_INV_W_MIN 0.01f
 #define M_LAYER_GAP 0.01f
+// The background and the sky draw at 1/w times this, behind the world (whose
+// 1/w stays above it out to a million times the near distance), and the
+// PowerVR's background plane, which polygons must be in front of, further
+// back still.
+#define M_BEHIND_ALL_SCALE 1.0e-6f
+#define M_BACKGROUND_PLANE_DEPTH 1.0e-12f
 
 typedef struct {
     pvr_list_t list;
@@ -72,7 +78,10 @@ static struct {
     float top;
     // Whether the current layer holds anything, so that a new one is needed.
     bool used;
+    // What draws behind the whole world: the background pass, and the sky,
+    // which the desktop clears depth after.
     bool background;
+    bool sky;
 } m_Depth = {};
 static int32_t m_Submitted = 0;
 static int32_t m_Dropped = 0;
@@ -143,6 +152,7 @@ void DC_PVR_Init(void)
         pvr_set_vertbuf(m_Lists[i].list, m_Lists[i].buffer, sizes[i]);
     }
     pvr_set_bg_color(0.0f, 0.0f, 0.0f);
+    pvr_set_zclip(M_BACKGROUND_PLANE_DEPTH);
     // Polygons inside a shadow volume keep this much of their colour.
     pvr_set_shadow_scale(true, M_SHADOW_SCALE);
     m_Initialised = true;
@@ -272,6 +282,7 @@ void DC_PVR_BeginFrame(void)
     m_Depth.top = 0.0f;
     m_Depth.used = false;
     m_Depth.background = false;
+    m_Depth.sky = false;
     m_Submitted = 0;
     m_Dropped = 0;
     m_InFrame = true;
@@ -318,13 +329,21 @@ void DC_PVR_SetBackgroundMode(const bool enabled)
     m_Depth.background = enabled;
 }
 
+void DC_PVR_SetSkyMode(const bool enabled)
+{
+    m_Depth.sky = enabled;
+}
+
+static bool M_IsBehindAll(void)
+{
+    return m_Depth.background || m_Depth.sky;
+}
+
 static float M_UseDepth(const float z)
 {
-    if (!m_Depth.background) {
-        m_Depth.used = true;
-        if (z > m_Depth.top) {
-            m_Depth.top = z;
-        }
+    m_Depth.used = true;
+    if (z > m_Depth.top) {
+        m_Depth.top = z;
     }
     return z;
 }
@@ -333,6 +352,11 @@ float DC_PVR_Depth3D(float inv_w)
 {
     if (inv_w > 1.0f) {
         inv_w = 1.0f;
+    }
+    if (M_IsBehindAll()) {
+        // Still proportional to 1/w, and far below anything the world uses;
+        // it starts no layer of its own.
+        return (inv_w > 0.0f ? inv_w : 0.0f) * M_BEHIND_ALL_SCALE;
     }
     if (m_Depth.floor == 0.0f) {
         return M_UseDepth(inv_w > 0.0f ? inv_w : 0.0f);
@@ -349,6 +373,9 @@ float DC_PVR_Depth2D(float v)
         v = 0.0f;
     } else if (v > 1.0f) {
         v = 1.0f;
+    }
+    if (M_IsBehindAll()) {
+        return (0.5f + 0.5f * v) * M_BEHIND_ALL_SCALE;
     }
     // In the first layer, in front of the world's 1/w.
     const float base = m_Depth.floor == 0.0f ? 1.0f + M_LAYER_GAP : m_Depth.floor;
@@ -367,7 +394,7 @@ void DC_PVR_SetState(
     m_Page = page >= 0 && page < m_Pages.count && m_Pages.ptr[page] != nullptr
         ? page
         : DC_PVR_NO_TEXTURE;
-    m_DepthTest = depth_test && !m_Depth.background;
+    m_DepthTest = depth_test;
     m_Current = M_GetList(blend);
 }
 

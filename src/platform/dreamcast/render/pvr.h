@@ -58,9 +58,11 @@ void DC_PVR_SetBackgroundColor(float r, float g, float b);
 // Everything submitted after this draws in front of everything before, as a
 // depth buffer clear would make it.
 void DC_PVR_NextDepthLayer(void);
-// While on, polygons neither test nor write depth, as a background drawn
-// before everything else needs; they do not start a new layer either.
+// While either is on, polygons draw behind everything the world draws, and
+// start no layer of their own: the background pass, and the sky (which the
+// desktop clears depth after).
 void DC_PVR_SetBackgroundMode(bool enabled);
+void DC_PVR_SetSkyMode(bool enabled);
 // Depth of a perspective vertex in the current layer from its 1/w (in
 // (0, 1], 1 at the near plane). The PowerVR corrects textures for
 // perspective with this same value, so it stays proportional to 1/w.

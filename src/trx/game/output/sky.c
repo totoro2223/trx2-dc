@@ -15,6 +15,10 @@
 #include <trx/game/sound.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+#include <platform/dreamcast/render/pvr.h>
+#endif
+
 static OUTPUT_SKY_LAYER m_Layers[OUTPUT_SKY_LAYER_COUNT] = {};
 static int32_t m_LayerPos[OUTPUT_SKY_LAYER_COUNT] = {};
 static int32_t m_LayerPosPrev[OUTPUT_SKY_LAYER_COUNT] = {};
@@ -362,7 +366,15 @@ bool Output_Sky_Draw(void)
             g_WMatrixPtr, mesh, Output_GetFogColor());
     }
     OutputSource_Objects_StageObjectMesh(mesh);
+#if defined(__DREAMCAST__)
+    // The flush stands for a depth clear, which the PowerVR cannot do
+    // between polygons; the sky goes behind everything instead.
+    DC_PVR_SetSkyMode(true);
     SceneCompositor_Flush();
+    DC_PVR_SetSkyMode(false);
+#else
+    SceneCompositor_Flush();
+#endif
     Matrix_Pop();
     return true;
 }

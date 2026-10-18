@@ -550,19 +550,80 @@ static void M_EmitTriangle(
     }
 }
 
+// Two triangles that share an edge (as a quad's halves do) go out as one
+// strip of four vertices instead of six: TR's geometry is mostly quads, and
+// the vertex buffers and the PowerVR both take a third less. Only when no
+// corner needs clipping.
+static bool M_TryEmitQuad(
+    const MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const uint32_t *const t0, const uint32_t *const t1)
+{
+    int32_t shared[2];
+    int32_t num_shared = 0;
+    bool t0_shared[3] = {};
+    bool t1_shared[3] = {};
+    for (int32_t i = 0; i < 3; i++) {
+        for (int32_t j = 0; j < 3; j++) {
+            if (t0[i] == t1[j] && !t1_shared[j]) {
+                if (num_shared < 2) {
+                    shared[num_shared] = (int32_t)t0[i];
+                }
+                num_shared++;
+                t0_shared[i] = true;
+                t1_shared[j] = true;
+                break;
+            }
+        }
+    }
+    if (num_shared != 2) {
+        return false;
+    }
+    uint32_t p = 0;
+    uint32_t q = 0;
+    for (int32_t i = 0; i < 3; i++) {
+        if (!t0_shared[i]) {
+            p = t0[i];
+        }
+        if (!t1_shared[i]) {
+            q = t1[i];
+        }
+    }
+    const uint32_t strip[4] = { p, (uint32_t)shared[0], (uint32_t)shared[1], q };
+    for (int32_t k = 0; k < 4; k++) {
+        if (batcher->xverts[strip[k]].z < m_Frame.near_z) {
+            return false;
+        }
+    }
+    DC_PVR_VERTEX out[4];
+    for (int32_t k = 0; k < 4; k++) {
+        M_Project(
+            &batcher->xverts[strip[k]], bind->uv[strip[k] * 2],
+            bind->uv[strip[k] * 2 + 1], &out[k]);
+    }
+    DC_PVR_Quad(&out[0], &out[1], &out[2], &out[3]);
+    return true;
+}
+
 static void M_EmitIndices(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const uint32_t *const indices, const int32_t count, const DC_BLEND blend)
 {
     int32_t page = INT32_MIN;
-    for (int32_t i = 0; i + 2 < count; i += 3) {
+    int32_t i = 0;
+    while (i + 2 < count) {
         const int32_t tri_page = bind->page[indices[i]];
         if (tri_page != page) {
             page = tri_page;
             DC_PVR_SetState(
                 blend, page == M_NO_PAGE ? DC_PVR_NO_TEXTURE : page, true);
         }
+        if (i + 5 < count && bind->page[indices[i + 3]] == page
+            && M_TryEmitQuad(batcher, bind, &indices[i], &indices[i + 3])) {
+            i += 6;
+            continue;
+        }
         M_EmitTriangle(batcher, bind, indices[i], indices[i + 1], indices[i + 2]);
+        i += 3;
     }
 }
 
