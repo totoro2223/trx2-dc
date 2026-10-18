@@ -507,10 +507,14 @@ static void M_ReadFile(
         goto cleanup;
     }
 
+#if !defined(__DREAMCAST__)
+    // The Dreamcast cannot spare the memory to keep payloads between loads.
     M_StorePayload(
         file_name, payload, uncompressed_size, injection->version,
         injection->type, injection->trxi);
-    injection->fp = File_OpenBuffer(payload, uncompressed_size);
+#endif
+    injection->fp = File_OpenOwnedBuffer(payload, uncompressed_size);
+    payload = nullptr;
     File_SetSoftFailure(injection->fp, true);
     if (m_Context.mode != INJECTION_MODE_STATS) {
         LOG_INFO("%s queued for injection", inj_name);

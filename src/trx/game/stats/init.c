@@ -328,6 +328,13 @@ void Stats_CalculateMaxStats(void)
     if (M_TryLoadCache(expected_checksum, level_table)) {
         goto finish;
     }
+#if defined(__DREAMCAST__)
+    // Counting means loading every level with its injections, which takes the
+    // Dreamcast minutes and memory it does not have spare, and the cache does
+    // not outlive the RAM disk. The maximums stay at zero unless a cache comes
+    // with the disc.
+    goto finish;
+#endif
 
     // Every level's script runs here to count what the level holds.
     for (int32_t i = 0; i < level_table->count; i++) {
@@ -337,7 +344,7 @@ void Stats_CalculateMaxStats(void)
         }
 
         TRX_FILE *file = nullptr;
-        if (!SHOULD(File_OpenPathInMemory(level->path, &file))) {
+        if (!SHOULD(File_OpenPathForLoad(level->path, &file))) {
             continue;
         }
         File_SetSoftFailure(file, true);

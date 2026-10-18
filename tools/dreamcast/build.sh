@@ -2,14 +2,14 @@
 # Configures and builds TRX for the Dreamcast. Run from the DreamSDK shell
 # (or through tools/dreamcast/dcsh.ps1) at the repository root.
 #
-#   tools/dreamcast/build.sh [debug|release] [deps-dir]
+#   tools/dreamcast/build.sh [debug|debugoptimized|release] [deps-dir]
 #
 # deps-dir holds the libraries built by tools/dreamcast/build_deps.sh
 # (default: ../deps).
 source /opt/toolchains/dc/kos/environ.sh
 set -eo pipefail
 
-BUILD_TYPE="${1:-debug}"
+BUILD_TYPE="${1:-debugoptimized}"
 DEPS="$(cd "${2:-../deps}" && pwd)/dc"
 ROOT="$(pwd)"
 BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE"

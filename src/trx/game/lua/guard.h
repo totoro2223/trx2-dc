@@ -8,8 +8,14 @@
 // per frame from the shell, marks that the engine has control. Depends on
 // nothing but Lua and the clock, so a unit test can drive it directly.
 
-// Wall-clock seconds a script may run without handing control back.
-#define LUA_GUARD_BUDGET_SEC 5.0
+// Wall-clock seconds a script may run without handing control back. The
+// Dreamcast runs scripts some fifty times slower than a desktop, and its
+// start-up scripts alone take longer than the desktop budget.
+#if defined(__DREAMCAST__)
+    #define LUA_GUARD_BUDGET_SEC 120.0
+#else
+    #define LUA_GUARD_BUDGET_SEC 5.0
+#endif
 
 void LUA_Guard_Install(lua_State *L, double budget_sec);
 void LUA_Guard_Heartbeat(void);

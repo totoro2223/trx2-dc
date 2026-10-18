@@ -93,7 +93,7 @@ RESULT Level_Format_LoadFromFile(
 
     BENCHMARK benchmark = Benchmark_Start();
     TRX_FILE *file = nullptr;
-    MUST(File_OpenPathInMemory(level->path, &file));
+    MUST(File_OpenPathForLoad(level->path, &file));
     File_SetSoftFailure(file, true);
 
     const LEVEL_FORMAT_LOADER *const loader = Level_Format_GuessLoader(file);

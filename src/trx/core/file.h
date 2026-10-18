@@ -31,12 +31,22 @@ RESULT File_OpenPath(
 // will not read. Only such a handle supports views and peeking.
 RESULT File_OpenPathInMemory(const char *path, TRX_FILE **out_file);
 
+// Opens a large file to be read through once, such as a level: all of it in
+// memory where that is cheap, or read from disk as it goes where memory is
+// scarce. Views work either way; peeking needs an in-memory handle.
+RESULT File_OpenPathForLoad(const char *path, TRX_FILE **out_file);
+
 // Open a buffer that is already in memory. The handle keeps its own copy of
 // the data.
 TRX_FILE *File_OpenBuffer(const char *data, size_t size);
 
-// Open a view onto part of another handle. The bytes are not copied, so the
-// parent handle must outlive the view.
+// As File_OpenBuffer, but the handle takes the data over instead of copying
+// it, and frees it on close. The data must come from Memory_Alloc.
+TRX_FILE *File_OpenOwnedBuffer(char *data, size_t size);
+
+// Open a view onto part of another handle. The bytes of an in-memory handle
+// are not copied, so the parent handle must outlive the view; a handle read
+// from disk gives the view a copy of the range.
 TRX_FILE *File_OpenView(TRX_FILE *file, size_t offset, size_t size);
 
 void File_Close(TRX_FILE *file);

@@ -15,6 +15,9 @@
 
 #if defined(_WIN32)
     #include <io.h>
+#elif defined(__DREAMCAST__)
+    #include <malloc.h>
+    #include <unistd.h>
 #else
     #include <unistd.h>
 #endif
@@ -122,6 +125,36 @@ static void M_BufferClose(void *const state)
     Memory_Free(buffer);
 }
 
+#if defined(__DREAMCAST__)
+// The GD-ROM is read by DMA, many sectors at once, only into 32-byte aligned
+// memory starting on a sector boundary; anything else goes a sector at a
+// time and runs two hundred times slower. So the window starts on a sector,
+// sits at an aligned address, and the stream has no stdio buffer of its own.
+    #define M_DISK_SECTOR 2048
+
+static size_t M_DiskFill(
+    void *const state, const size_t offset, const char **const out_data)
+{
+    M_DISK_STATE *const disk = state;
+    const size_t start = offset - offset % M_DISK_SECTOR;
+    if (disk->os_pos != start) {
+        if (fseek(disk->fp, (long)start, SEEK_SET) != 0) {
+            *out_data = nullptr;
+            return 0;
+        }
+        disk->os_pos = start;
+    }
+    const size_t read = fread(disk->window, 1, M_DISK_WINDOW, disk->fp);
+    disk->os_pos += read;
+    const size_t skip = offset - start;
+    if (read <= skip) {
+        *out_data = nullptr;
+        return 0;
+    }
+    *out_data = disk->window + skip;
+    return read - skip;
+}
+#else
 static size_t M_DiskFill(
     void *const state, const size_t offset, const char **const out_data)
 {
@@ -138,6 +171,7 @@ static size_t M_DiskFill(
     *out_data = disk->window;
     return read;
 }
+#endif
 
 static bool M_DiskWrite(
     void *const state, const size_t offset, const void *const src,
@@ -259,7 +293,14 @@ RESULT File_OpenPath(
     M_DISK_STATE *const disk = Memory_Alloc(sizeof(M_DISK_STATE));
     disk->fp = fp;
     disk->os_pos = 0;
+#if defined(__DREAMCAST__)
+    // See M_DiskFill.
+    setvbuf(fp, nullptr, _IONBF, 0);
+    disk->window = memalign(32, M_DISK_WINDOW);
+    ASSERT(disk->window != nullptr);
+#else
     disk->window = Memory_Alloc(M_DISK_WINDOW);
+#endif
 
     TRX_FILE *const file = Memory_Alloc(sizeof(TRX_FILE));
     file->strategy = &m_DiskStrategy;
@@ -276,17 +317,34 @@ RESULT File_OpenPathInMemory(const char *const path, TRX_FILE **const out_file)
     char *data = nullptr;
     size_t size = 0;
     MUST(FS_Load(path, &data, &size));
-    TRX_FILE *const file = File_OpenBuffer(data, size);
+    // The loaded data is handed over rather than copied, so a large file
+    // does not briefly take twice its size.
+    TRX_FILE *const file = File_OpenOwnedBuffer(data, size);
     file->path = Memory_DupStr(path);
-    Memory_FreePointer(&data);
     *out_file = file;
     return OK;
 }
 
+RESULT File_OpenPathForLoad(const char *const path, TRX_FILE **const out_file)
+{
+#if defined(__DREAMCAST__)
+    // 16 MiB of RAM: a level held whole takes memory the level itself needs.
+    return File_OpenPath(path, FILE_OPEN_READ, out_file);
+#else
+    return File_OpenPathInMemory(path, out_file);
+#endif
+}
+
 TRX_FILE *File_OpenBuffer(const char *const data, const size_t size)
 {
+    return File_OpenOwnedBuffer(
+        size > 0 ? Memory_Dup(data, size) : nullptr, size);
+}
+
+TRX_FILE *File_OpenOwnedBuffer(char *const data, const size_t size)
+{
     M_BUFFER_STATE *const buffer = Memory_Alloc(sizeof(M_BUFFER_STATE));
-    buffer->data = size > 0 ? Memory_Dup(data, size) : nullptr;
+    buffer->data = data;
     buffer->size = size;
     buffer->owns_data = true;
 
@@ -301,8 +359,20 @@ TRX_FILE *File_OpenBuffer(const char *const data, const size_t size)
 TRX_FILE *File_OpenView(
     TRX_FILE *const file, const size_t offset, const size_t size)
 {
-    ASSERT(file->contiguous);
     ASSERT(offset + size <= file->size);
+    if (!file->contiguous) {
+        // A file read from disk has no bytes to share, so the view gets a
+        // copy of its range instead.
+        char *const data = Memory_Alloc(size > 0 ? size : 1);
+        const size_t pos = File_Pos(file);
+        File_Seek(file, offset, FILE_SEEK_SET);
+        File_ReadData(file, data, size);
+        File_Seek(file, pos, FILE_SEEK_SET);
+        TRX_FILE *const view = File_OpenOwnedBuffer(data, size);
+        view->path = file->path != nullptr ? Memory_DupStr(file->path) : nullptr;
+        view->soft_failure = file->soft_failure;
+        return view;
+    }
 
     M_BUFFER_STATE *const parent = file->state;
     M_BUFFER_STATE *const buffer = Memory_Alloc(sizeof(M_BUFFER_STATE));

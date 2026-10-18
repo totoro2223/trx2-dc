@@ -1020,6 +1020,7 @@ endif
 
 link_args = []
 trx_include_directories = []
+trx_link_whole = []
 trx_name_suffix = []
 if host_machine.system() == 'windows'
   link_args += ['-static']
@@ -1041,6 +1042,7 @@ if is_dreamcast
   common_sources = dc_filtered_sources + dc_sources
   link_args += dc_link_args
   trx_include_directories = dc_include_directories
+  trx_link_whole = dc_link_whole
   trx_name_suffix = 'elf'
 endif
 
@@ -1104,6 +1106,7 @@ executable(
   install_tag: 'common',
   c_args: ['-I.'],
   include_directories: trx_include_directories,
+  link_whole: trx_link_whole,
   name_suffix: trx_name_suffix,
 )
 

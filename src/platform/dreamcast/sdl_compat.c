@@ -26,6 +26,7 @@
 #define DC_SCREEN_WIDTH 640
 #define DC_SCREEN_HEIGHT 480
 #define DC_EVENT_QUEUE_SIZE 64
+#define DC_THREAD_STACK_SIZE (256 * 1024)
 // Analog trigger travel (0-255) past which the trigger also counts as the
 // shoulder button of the same side.
 #define DC_TRIGGER_BUTTON_THRESHOLD 128
@@ -372,14 +373,17 @@ SDL_Thread *SDL_CreateThread(
     result->func = fn;
     result->data = data;
     result->status = 0;
-    result->thread = thd_create(false, M_ThreadEntry, result);
+    // KOS threads default to a 32 KiB stack, short of what engine code run
+    // on a worker expects.
+    const kthread_attr_t attr = {
+        .stack_size = DC_THREAD_STACK_SIZE,
+        .label = name,
+    };
+    result->thread = thd_create_ex(&attr, M_ThreadEntry, result);
     if (result->thread == nullptr) {
         M_SetError("thread %s could not be created", name);
         free(result);
         return nullptr;
-    }
-    if (name != nullptr) {
-        thd_set_label(result->thread, name);
     }
     return result;
 }
