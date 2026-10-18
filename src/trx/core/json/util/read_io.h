@@ -1,6 +1,7 @@
 #pragma once
 
 #include <trx/core/colors.h>
+#include <trx/core/generic.h>
 #include <trx/core/json.h>
 #include <trx/core/log.h>
 #include <trx/core/math/types.h>
@@ -88,6 +89,8 @@ JSON_READ_IO_TYPE_LIST(L_DECLARE_JSON_READ_IO_TYPE)
     _Generic(                                                                  \
         *(target_ptr),                                                         \
         JSON_READ_IO_TYPE_LIST(JSON_READ_IO_TYPE_TO_CURRENT_FN)                \
+            M_GENERIC_INT_ALIASES(                                             \
+                JSON_ReadIO_ReadS32Current, JSON_ReadIO_ReadU32Current)        \
             JSON_READ_IO_DUMMY: JSON_ReadIO_ReadS32Current)(                   \
         (io), (target_ptr))
 
@@ -111,6 +114,8 @@ RESULT JSON_ReadIO_ReadIndex(
     _Generic(                                                                  \
         *(target_ptr),                                                         \
         JSON_READ_IO_TYPE_LIST(JSON_READ_IO_TYPE_TO_CURRENT_FN)                \
+            M_GENERIC_INT_ALIASES(                                             \
+                JSON_ReadIO_ReadS32Current, JSON_ReadIO_ReadU32Current)        \
             JSON_READ_IO_DUMMY: JSON_ReadIO_ReadS32Current)
 
 // The key has to be there and hold what was asked for.

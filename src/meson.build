@@ -235,6 +235,15 @@ build_opts = (
 add_project_arguments(build_opts, language: 'c')
 
 null_dep = dependency('', required: false)
+is_dreamcast = host_machine.system() == 'dreamcast'
+
+if is_dreamcast
+  # Dreamcast (KallistiOS): no FFmpeg, GLEW or SDL2. The platform layer in
+  # platform/dreamcast replaces them and lists what it needs.
+  subdir('platform/dreamcast')
+  dependencies = dc_dependencies
+  dep_backtrace = null_dep
+else
 dep_avcodec = dependency('libavcodec', static: staticdeps)
 dep_avfilter = dependency('libavfilter', static: staticdeps)
 dep_avformat = dependency('libavformat', static: staticdeps)
@@ -276,6 +285,7 @@ dependencies = [
   dep_swscale,
   dep_zlib,
 ]
+endif
 
 common_sources = [
   'trx/av/audio.c',
@@ -1009,8 +1019,29 @@ else
 endif
 
 link_args = []
+trx_include_directories = []
+trx_name_suffix = []
 if host_machine.system() == 'windows'
   link_args += ['-static']
+endif
+
+if is_dreamcast
+  dc_filtered_sources = []
+  foreach source : common_sources
+    excluded = false
+    foreach prefix : dc_excluded_sources
+      if source.startswith(prefix)
+        excluded = true
+      endif
+    endforeach
+    if not excluded
+      dc_filtered_sources += [source]
+    endif
+  endforeach
+  common_sources = dc_filtered_sources + dc_sources
+  link_args += dc_link_args
+  trx_include_directories = dc_include_directories
+  trx_name_suffix = 'elf'
 endif
 
 
@@ -1072,6 +1103,8 @@ executable(
   install: true,
   install_tag: 'common',
   c_args: ['-I.'],
+  include_directories: trx_include_directories,
+  name_suffix: trx_name_suffix,
 )
 
 if host_machine.system() == 'darwin'

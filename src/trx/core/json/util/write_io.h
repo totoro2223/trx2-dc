@@ -1,6 +1,7 @@
 #pragma once
 
 #include <trx/core/colors.h>
+#include <trx/core/generic.h>
 #include <trx/core/json.h>
 #include <trx/core/math/types.h>
 
@@ -56,6 +57,7 @@ void JSON_WriteIO_PushString(JSON_WRITE_IO *io, const char *value);
         uint16_t: JSON_WriteIO_PushInt,                                        \
         int32_t: JSON_WriteIO_PushInt,                                         \
         uint32_t: JSON_WriteIO_PushInt,                                        \
+        M_GENERIC_INT_ALIASES(JSON_WriteIO_PushInt, JSON_WriteIO_PushInt)      \
         int64_t: JSON_WriteIO_PushInt64,                                       \
         uint64_t: JSON_WriteIO_PushInt64,                                      \
         float: JSON_WriteIO_PushDouble,                                        \

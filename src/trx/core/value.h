@@ -1,6 +1,7 @@
 #pragma once
 
 #include <trx/core/colors.h>
+#include <trx/core/generic.h>
 #include <trx/core/math.h>
 
 #include <stddef.h>
@@ -80,6 +81,7 @@ typedef struct {
     _Generic(                                                                  \
         (member_),                                                             \
         VALUE_PLAIN_TYPES(M_VALUE_TYPE_OF) XYZ_16: TVT_XYZ_16,                 \
+        M_GENERIC_INT_ALIASES(TVT_S32, TVT_U32)                                \
         char *: TVT_STRING,                                                    \
         const char *: TVT_STRING)
 
