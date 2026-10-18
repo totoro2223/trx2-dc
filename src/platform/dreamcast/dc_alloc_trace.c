@@ -1,4 +1,4 @@
-// Dreamcast platform layer: reports large heap allocations (debug builds).
+﻿// Dreamcast platform layer: reports large heap allocations (debug builds).
 //
 // With 16 MiB of RAM the question is always where it went. The link wraps
 // malloc, calloc and realloc (-Wl,--wrap=...) so that every allocation of
@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define DC_ALLOC_TRACE_MIN (128 * 1024)
+#define DC_ALLOC_TRACE_MIN (24 * 1024)
 
 void *__real_malloc(size_t size);
 void *__real_calloc(size_t count, size_t size);

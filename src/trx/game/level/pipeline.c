@@ -156,6 +156,9 @@ static void M_CompleteSetup(
     Atlantean_ToggleExplosions(Object_Get(O_EXPLOSION_1)->loaded);
 
     Inject_AllInjections();
+    // Every injection has been applied; their data need not wait for the
+    // rest of the level to be set up to be let go.
+    Inject_ReleasePayloads();
 
     Level_Finalize_LoadAnimFrames(ctx);
     Level_Finalize_LoadAnimCommands(ctx);

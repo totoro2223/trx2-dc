@@ -181,47 +181,6 @@ void OutputSource_Sky_StageLayer(const MATRIX *wmatrix, RGB_888 color, bool addi
     DC_STUB();
 }
 
-bool OutputSource_UI_HasStaged(void)
-{
-    DC_STUB();
-    return (bool) {};
-}
-
-void OutputSource_UI_Init(void)
-{
-    DC_STUB();
-}
-
-void OutputSource_UI_Shutdown(void)
-{
-    DC_STUB();
-}
-
-void OutputSource_UI_StageBinocularMask(void)
-{
-    DC_STUB();
-}
-
-void OutputSource_UI_StageCircle(OUTPUT_UI_CIRCLE circle)
-{
-    DC_STUB();
-}
-
-void OutputSource_UI_StageMesh(OUTPUT_UI_MESH mesh)
-{
-    DC_STUB();
-}
-
-void OutputSource_UI_StageQuad(OUTPUT_UI_QUAD quad)
-{
-    DC_STUB();
-}
-
-void OutputSource_UI_StageSprite(OUTPUT_UI_SPRITE sprite)
-{
-    DC_STUB();
-}
-
 void Output_Overlay_CaptureGameSnapshot(void)
 {
     DC_STUB();

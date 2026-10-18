@@ -79,6 +79,16 @@ int __wrap_main(int argc, char *argv[])
 
     // The KOS main thread has a 64 KiB stack; the engine was written for
     // desktop stacks of a megabyte or more, so it runs on a thread of its own.
+#if defined(TRX_DC_START_LEVEL)
+    // Development builds can skip the title and start in a level of TR2.
+    #define M_STR2(x) #x
+    #define M_STR(x) M_STR2(x)
+    static char *start_argv[] = {
+        "trx", "-e", "2", "-l", M_STR(TRX_DC_START_LEVEL), nullptr,
+    };
+    argc = 5;
+    argv = start_argv;
+#endif
     M_MAIN_ARGS args = { .argc = argc, .argv = argv, .result = 0 };
     // The stack is filled with a marker so that the watchdog can tell how
     // deep it has been used.

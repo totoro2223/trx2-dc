@@ -27,6 +27,7 @@ static kthread_t *m_Watched = nullptr;
 
 extern int32_t g_DC_BatcherMeshCount;
 extern int32_t g_DC_BatcherVertexCount;
+int32_t LUA_DC_GetMemoryKB(void);
 
 static bool M_IsCode(const uint32_t addr)
 {
@@ -53,10 +54,11 @@ static void *M_Run(void *const param)
             untouched++;
         }
         printf(
-            "[watchdog] heap=%uK used=%uK brk=%08lx meshes=%d/%d stack=%uK %s pc=%08lx pr=%08lx "
+            "[watchdog] heap=%uK used=%uK lua=%dK brk=%08lx meshes=%d/%d stack=%uK %s pc=%08lx pr=%08lx "
             "sp=%08lx trace:",
             (unsigned)(mem.arena / 1024), (unsigned)(mem.uordblks / 1024),
-            (unsigned long)sbrk(0), (int)g_DC_BatcherMeshCount,
+            (int)LUA_DC_GetMemoryKB(), (unsigned long)sbrk(0),
+            (int)g_DC_BatcherMeshCount,
             (int)g_DC_BatcherVertexCount,
             (unsigned)((thread->stack_size - untouched) / 1024), thread->label,
             (unsigned long)ctx->pc, (unsigned long)ctx->pr,

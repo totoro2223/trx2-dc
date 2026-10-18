@@ -1026,10 +1026,10 @@ static void M_FreeLevelData(void)
     }
 
 #if defined(__DREAMCAST__)
-    // The pages themselves are in video memory, which the renderer gives
-    // back when the level is unloaded.
-    m_TexturePages16 = nullptr;
-    Memory_FreePointer(&m_TexturePageFormats);
+    // Nothing here: this runs as a level is observed, after its pages have
+    // arrived. The pages are in video memory, which the renderer gives back
+    // when the level is unloaded, and their formats are let go once the pages
+    // are committed or the next pages arrive.
 #else
     if (m_Priv.tex_atlas != 0) {
         glDeleteTextures(1, &m_Priv.tex_atlas);
@@ -1092,6 +1092,9 @@ void Output_Textures_Shutdown(void)
 
 void Output_Textures_ObserveLevelLoad(void)
 {
+#if defined(__DREAMCAST__)
+    printf("[textures] observe level load, %d pages\n", (int)m_TexturePageCount);
+#endif
     M_FreeLevelData();
     M_PrepareUVWs();
     if (!M_TryLoadTransparencyCache()) {

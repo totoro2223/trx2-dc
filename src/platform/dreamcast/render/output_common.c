@@ -7,6 +7,7 @@
 
 #include <platform/dreamcast/renderer.h>
 #include <trx/config.h>
+#include <trx/core/log.h>
 #include <trx/core/subsystem.h>
 #include <trx/game/clock/timer.h>
 #include <trx/game/level.h>
@@ -127,9 +128,25 @@ void Output_BeginScene(void)
     Output_Lights_BeginScene();
 }
 
+#if defined(TRX_DC_WATCHDOG)
+// The frame rate and polygon count go to the log every few seconds.
+static void M_LogFrameStats(void)
+{
+    static int32_t frame = 0;
+    if (++frame % 120 == 0) {
+        LOG_DEBUG(
+            "frame %d: %d polygons, %d fps", frame,
+            DC_PVR_GetSubmittedCount(), m_FPS);
+    }
+}
+#endif
+
 void Output_EndScene(void)
 {
     SceneCompositor_EndScene();
+#if defined(TRX_DC_WATCHDOG)
+    M_LogFrameStats();
+#endif
     DC_PVR_EndFrame();
     m_DrawnFrames++;
     if (ClockTimer_CheckElapsedAndTake(&m_FPSTimer, 1.0)) {

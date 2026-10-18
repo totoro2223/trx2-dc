@@ -59,11 +59,18 @@ dc_sources = files(
   'render/output_common.c',
   'render/pvr.c',
   'render/stubs.c',
+  'render/ui.c',
   'sdl_compat.c',
 )
 
 if get_option('buildtype') != 'release'
   add_project_arguments('-DTRX_DC_WATCHDOG', language: 'c')
+endif
+if get_option('dc_start_level') >= 0
+  add_project_arguments(
+    '-DTRX_DC_START_LEVEL=@0@'.format(get_option('dc_start_level')),
+    language: 'c',
+  )
 endif
 
 # Define TRX_DC_FB_CONSOLE to show the KOS debug console on screen instead of

@@ -191,6 +191,12 @@ static bool M_IsBraidEnabled(const LARA_SKIN_OUTFIT *const outfit)
         || g_Config.visuals.braid_status == BRAID_STATUS_OFF) {
         return false;
     }
+    // The braid's meshes come with the outfit's extra object; an injection
+    // left out can leave it unloaded.
+    if (outfit->extra_obj_id == NO_OBJECT
+        || !Object_Get(outfit->extra_obj_id)->loaded) {
+        return false;
+    }
 
     return g_Config.visuals.braid_status == BRAID_STATUS_ON
         || outfit->braid.auto_enabled;

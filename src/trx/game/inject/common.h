@@ -23,6 +23,9 @@ const char *Inject_GetDeclaredPath(int32_t idx);
 
 void Inject_AppendInjection(TRX_FILE *file);
 void Inject_AllInjections(void);
+// Lets go of the injections' data once they have all been applied; the rest
+// of their bookkeeping lasts until Inject_Cleanup.
+void Inject_ReleasePayloads(void);
 void Inject_Cleanup(void);
 
 INJECTION_ROOM_META Inject_GetRoomMeta(int32_t room_index);

@@ -43,6 +43,9 @@ DC_EXCLUDED_INJECTIONS="lara_outfits.bin"
 for inj in $DC_EXCLUDED_INJECTIONS; do
   rm -f "$STAGE/games/tr2/injections/$inj"
 done
+# Optional extras that cost memory in every level.
+#   scripts/bignasty  the BFG9000 easter egg (its script and models)
+rm -rf "$STAGE/scripts/bignasty"
 
 echo "== TR2 data"
 mkdir -p "$STAGE/games/tr2/levels"

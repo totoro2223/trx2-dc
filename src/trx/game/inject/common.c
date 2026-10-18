@@ -857,6 +857,20 @@ void Inject_AllInjections(void)
     }
 }
 
+void Inject_ReleasePayloads(void)
+{
+    if (m_Injections == nullptr) {
+        return;
+    }
+    for (int32_t i = 0; i < m_NumInjections; i++) {
+        INJECTION *const injection = &m_Injections[i];
+        if (injection->fp != nullptr) {
+            File_Close(injection->fp);
+            injection->fp = nullptr;
+        }
+    }
+}
+
 void Inject_Cleanup(void)
 {
     if (m_Injections == nullptr) {

@@ -197,6 +197,14 @@ static RESULT M_RunTRXRuntimeScripts(lua_State *const L)
 {
     for (const LUA_EMBEDDED_SCRIPT *script = g_LUA_EmbeddedRuntimeScripts;
          script->path != nullptr; script++) {
+#if defined(__DREAMCAST__)
+        // The developer console's commands want a keyboard, which the
+        // Dreamcast does not read, and their memory is better spent on the
+        // level.
+        if (strncmp(script->path, "commands/", 9) == 0) {
+            continue;
+        }
+#endif
         LOG_DEBUG("Running TRX script %s", script->path);
         const char *const chunk_name =
             String_FormatStatic("@trx/%s", script->path);
@@ -462,6 +470,15 @@ static int M_L_Require(lua_State *const L)
     lua_setfield(L, 3, name);
     return 1;
 }
+
+#if defined(__DREAMCAST__)
+// How much memory the Lua state holds, in KiB, for the Dreamcast's
+// watchdog.
+int32_t LUA_DC_GetMemoryKB(void)
+{
+    return m_Priv.state != nullptr ? lua_gc(m_Priv.state, LUA_GCCOUNT) : 0;
+}
+#endif
 
 RESULT LUA_Init(void)
 {

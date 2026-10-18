@@ -18,12 +18,19 @@
 #include <string.h>
 
 // Double-buffered by KOS, so each holds two frames.
-#define M_VERTBUF_OP (2 * 256 * 1024)
-#define M_VERTBUF_TR (2 * 160 * 1024)
-#define M_VERTBUF_PT (2 * 64 * 1024)
+// Sized by what TR2 levels use: room faces with see-through texels go to the
+// punch-through list, which takes about as much as the opaque one.
+#define M_VERTBUF_OP (2 * 160 * 1024)
+#define M_VERTBUF_TR (2 * 64 * 1024)
+#define M_VERTBUF_PT (2 * 160 * 1024)
 #define M_MAX_TEXTURE_PAGES 64
-// Keeps one depth layer clear of the next.
-#define M_DEPTH_LAYER_MAX 0.999f
+#define M_DEPTH_LAYER_MAX 1.0f
+#define M_DEPTH_MIN 1.0e-4f
+#define M_DEPTH_RATIO 2.0e4f
+#define M_DEPTH_LAYERS 8
+// Keeps the first layer clear of the background plane, which the PowerVR
+// keeps at a depth of 0.0001.
+#define M_DEPTH_FIRST_SCALE 10.0f
 
 typedef struct {
     pvr_list_t list;
@@ -50,6 +57,7 @@ static bool m_DepthTest = true;
 static bool m_Bilinear = false;
 static bool m_InFrame = false;
 static int32_t m_DepthLayer = 0;
+static float m_DepthScale = M_DEPTH_FIRST_SCALE;
 static int32_t m_Submitted = 0;
 static int32_t m_Dropped = 0;
 
@@ -110,7 +118,10 @@ void DC_PVR_Init(void)
     const size_t sizes[3] = { M_VERTBUF_OP, M_VERTBUF_TR, M_VERTBUF_PT };
     for (int32_t i = 0; i < 3; i++) {
         m_Lists[i].buffer = M_AllocVertbuf(sizes[i]);
-        m_Lists[i].frame_capacity = sizes[i] / 2;
+        // KOS splits the buffer in two, wants every write to stay strictly
+        // below the half's end and closes each list with up to 64 bytes of
+        // its own (a blank header and a zero marker).
+        m_Lists[i].frame_capacity = sizes[i] / 2 - 128;
         pvr_set_vertbuf(m_Lists[i].list, m_Lists[i].buffer, sizes[i]);
     }
     pvr_set_bg_color(0.0f, 0.0f, 0.0f);
@@ -183,6 +194,7 @@ void DC_PVR_WriteTexels(
 
 void DC_PVR_CommitTexturePages(const int32_t count, const uint8_t *const formats)
 {
+    printf("[pvr] commit %d pages, block %p, committed %d\n", (int)count, m_Pages.block, (int)m_Pages.committed);
     if (m_Pages.block == nullptr || m_Pages.committed) {
         return;
     }
@@ -205,9 +217,14 @@ void DC_PVR_CommitTexturePages(const int32_t count, const uint8_t *const formats
     }
     m_Pages.committed = linear != nullptr;
     free(linear);
+    char formats_text[M_MAX_TEXTURE_PAGES + 1] = {};
+    for (int32_t i = 0; i < m_Pages.count; i++) {
+        formats_text[i] =
+            m_Pages.format[i] == TEXTURE_PAGE_ARGB4444 ? '4' : '1';
+    }
     LOG_INFO(
-        "%d texture pages ready, %u KiB of video memory free", m_Pages.count,
-        (unsigned)(pvr_mem_available() / 1024));
+        "%d texture pages ready (%s), %u KiB of video memory free",
+        m_Pages.count, formats_text, (unsigned)(pvr_mem_available() / 1024));
 }
 
 int32_t DC_PVR_GetTexturePageCount(void)
@@ -232,6 +249,7 @@ void DC_PVR_BeginFrame(void)
         m_Lists[i].has_state = false;
     }
     m_DepthLayer = 0;
+    m_DepthScale = M_DEPTH_FIRST_SCALE;
     m_Submitted = 0;
     m_Dropped = 0;
     m_InFrame = true;
@@ -244,27 +262,47 @@ void DC_PVR_EndFrame(void)
     }
     pvr_scene_finish();
     m_InFrame = false;
+#if defined(TRX_DC_WATCHDOG)
+    static int32_t frames = 0;
+    if (++frames % 120 == 0) {
+        LOG_DEBUG(
+            "%d polygons (OP %uK TR %uK PT %uK)", m_Submitted,
+            (unsigned)(m_Lists[0].frame_written / 1024),
+            (unsigned)(m_Lists[1].frame_written / 1024),
+            (unsigned)(m_Lists[2].frame_written / 1024));
+    }
+#endif
     if (m_Dropped > 0) {
         LOG_WARNING(
-            "%d polygons did not fit the vertex buffers this frame",
-            m_Dropped);
+            "%d polygons did not fit the vertex buffers this frame "
+            "(OP %uK TR %uK PT %uK used)",
+            m_Dropped, (unsigned)(m_Lists[0].frame_written / 1024),
+            (unsigned)(m_Lists[1].frame_written / 1024),
+            (unsigned)(m_Lists[2].frame_written / 1024));
     }
 }
 
 void DC_PVR_NextDepthLayer(void)
 {
-    m_DepthLayer++;
+    if (m_DepthLayer < M_DEPTH_LAYERS - 1) {
+        m_DepthLayer++;
+        m_DepthScale *= M_DEPTH_RATIO;
+    }
 }
 
 float DC_PVR_Depth(float inv_w)
 {
-    if (inv_w < 0.0f) {
-        inv_w = 0.0f;
+    // The PowerVR corrects textures for perspective with the same value it
+    // depth-tests, so that value must stay proportional to 1/w: each layer
+    // scales it into a band of its own instead of adding an offset. A layer
+    // spans 1/w from M_DEPTH_MIN (geometry 1/M_DEPTH_MIN times the near
+    // distance away) to 1, so M_DEPTH_RATIO times each band clears the last.
+    if (inv_w < M_DEPTH_MIN) {
+        inv_w = M_DEPTH_MIN;
     } else if (inv_w > M_DEPTH_LAYER_MAX) {
         inv_w = M_DEPTH_LAYER_MAX;
     }
-    // Clear of the background plane, which the PowerVR keeps at 0.0001.
-    return 0.001f + m_DepthLayer + inv_w;
+    return inv_w * m_DepthScale;
 }
 
 void DC_PVR_SetFilter(const bool bilinear)
@@ -300,6 +338,10 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
             m_Bilinear ? PVR_FILTER_BILINEAR : PVR_FILTER_NEAREST);
         cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
         cxt.txr.uv_clamp = PVR_UVCLAMP_NONE;
+        // The texture's own alpha is what cuts the colour key out and fades
+        // soft edges; the opaque list has no use for it. (The field is true
+        // to disable.)
+        cxt.txr.alpha = m_Blend == DC_BLEND_OPAQUE;
     } else {
         pvr_poly_cxt_col(&cxt, list);
     }
@@ -308,7 +350,10 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
     cxt.gen.alpha = m_Blend >= DC_BLEND_ALPHA;
     cxt.depth.comparison =
         m_DepthTest ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
-    cxt.depth.write = m_Blend <= DC_BLEND_PUNCH;
+    // The field goes straight into the hardware's "depth write disable" bit,
+    // whatever its documentation says (PVR_DEPTHWRITE_ENABLE is 0).
+    cxt.depth.write = m_Blend <= DC_BLEND_PUNCH ? PVR_DEPTHWRITE_ENABLE
+                                                : PVR_DEPTHWRITE_DISABLE;
 
     switch (m_Blend) {
     case DC_BLEND_OPAQUE:
