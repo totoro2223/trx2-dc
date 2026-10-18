@@ -96,6 +96,13 @@ typedef struct {
     float center_x;
     float center_y;
     float near_z;
+    // An orthographic projection (models drawn on the UI canvas): screen
+    // position and depth straight from the eye position.
+    bool ortho;
+    float ortho_scale[3];
+    float ortho_offset[3];
+    float half_w;
+    float half_h;
     float fog_start;
     float fog_scale;
     float fog_color[3];
@@ -452,6 +459,19 @@ static inline void M_Project(
     const M_XVERT *const in, const float u, const float v,
     DC_PVR_VERTEX *const out)
 {
+    if (m_Frame.ortho) {
+        const float(*const s) = m_Frame.ortho_scale;
+        const float(*const o) = m_Frame.ortho_offset;
+        out->x = m_Frame.center_x + (s[0] * in->x + o[0]) * m_Frame.half_w;
+        out->y = m_Frame.center_y - (s[1] * in->y + o[1]) * m_Frame.half_h;
+        // -1 at the near end; the PowerVR wants the nearer bigger.
+        out->z = DC_PVR_Depth2D(0.5f - 0.5f * (s[2] * in->z + o[2]));
+        out->u = u;
+        out->v = v;
+        out->argb = in->argb;
+        out->oargb = in->oargb;
+        return;
+    }
     const float inv_z = 1.0f / in->z;
     out->x = m_Frame.center_x + m_Frame.proj_x * in->x * inv_z;
     out->y = m_Frame.center_y + m_Frame.proj_y * in->y * inv_z;
@@ -690,6 +710,17 @@ static void M_PrepareFrame(void)
     if (m_Frame.near_z < 1.0f) {
         m_Frame.near_z = 1.0f;
     }
+    m_Frame.half_w = half_w;
+    m_Frame.half_h = half_h;
+    m_Frame.ortho = matrices->mat_proj[3][3] == 1.0f;
+    if (m_Frame.ortho) {
+        for (int32_t i = 0; i < 3; i++) {
+            m_Frame.ortho_scale[i] = matrices->mat_proj[i][i];
+            m_Frame.ortho_offset[i] = matrices->mat_proj[3][i];
+        }
+        // Nothing to clip: every vertex is in front.
+        m_Frame.near_z = -1.0e30f;
+    }
 
     m_Frame.lighting = general->lighting_enabled != 0;
     m_Frame.min_shade = general->min_shade;
@@ -723,6 +754,8 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
         return;
     }
     M_PrepareFrame();
+    DC_PVR_SetFilter(
+        g_Config.rendering.texture_filter == TEXTURE_FILTER_BILINEAR);
     VECTOR *const staged = batcher->staged[pass];
     const bool *const casters = Vector_GetData(batcher->casters[pass]);
     for (int32_t i = 0; i < staged->count; i++) {

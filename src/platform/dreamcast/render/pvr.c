@@ -29,6 +29,13 @@
 // How much of the colour a shadowed pixel keeps.
 #define M_SHADOW_SCALE 0.5f
 #define M_MAX_TEXTURE_PAGES 64
+// The screen capture: the 640x480 frame, as a strided texture (power of two
+// sizes around it, rows 640 pixels apart).
+#define M_CAPTURE_WIDTH 640
+#define M_CAPTURE_HEIGHT 480
+#define M_CAPTURE_TEXTURE_WIDTH 1024
+#define M_CAPTURE_TEXTURE_HEIGHT 512
+#define M_CAPTURE_BYTES (M_CAPTURE_WIDTH * M_CAPTURE_HEIGHT * 2)
 // Depth layers. The first holds the world at plain 1/w, in (0, 1]. A later
 // layer starting at depth F holds perspective vertices at F * (1/w) / 0.01,
 // so that it stays proportional to 1/w (things nearer than 100 times the near
@@ -85,6 +92,12 @@ static struct {
 } m_Depth = {};
 static int32_t m_Submitted = 0;
 static int32_t m_Dropped = 0;
+static struct {
+    pvr_ptr_t texture;
+    bool valid;
+} m_Capture = {};
+
+static void M_ResetFrame(void);
 
 // The level's texture pages, in one block of video memory. They are written
 // there linear as the level loads, and twiddled in place once it is complete
@@ -172,6 +185,63 @@ void DC_PVR_FreeTexturePages(void)
         pvr_mem_free(m_Pages.block);
     }
     m_Pages = (typeof(m_Pages)) {};
+    // Freed with the level's pages, so that the next level's find video
+    // memory in one piece.
+    if (m_Capture.texture != nullptr) {
+        pvr_mem_free(m_Capture.texture);
+        m_Capture.texture = nullptr;
+        m_Capture.valid = false;
+    }
+}
+
+bool DC_PVR_BeginCaptureFrame(void)
+{
+    if (m_InFrame) {
+        return false;
+    }
+    if (m_Capture.texture == nullptr) {
+        m_Capture.texture = pvr_mem_malloc(M_CAPTURE_BYTES);
+        if (m_Capture.texture == nullptr) {
+            LOG_WARNING("No video memory for a screen capture");
+            return false;
+        }
+    }
+    pvr_wait_ready();
+    if (pvr_scene_begin_rtt(
+            m_Capture.texture, M_CAPTURE_WIDTH, M_CAPTURE_HEIGHT,
+            M_CAPTURE_WIDTH)
+        != 0) {
+        return false;
+    }
+    M_ResetFrame();
+    pvr_txr_set_stride(M_CAPTURE_WIDTH);
+    m_Capture.valid = true;
+    return true;
+}
+
+void DC_PVR_DrawScreenCapture(const float brightness)
+{
+    if (!m_Capture.valid) {
+        return;
+    }
+    const float b = brightness < 0.0f ? 0.0f : (brightness > 1.0f ? 1.0f : brightness);
+    const uint32_t c = (uint32_t)(b * 255.0f);
+    const uint32_t argb = 0xFF000000 | (c << 16) | (c << 8) | c;
+    const float u1 = (float)M_CAPTURE_WIDTH / M_CAPTURE_TEXTURE_WIDTH;
+    const float v1 = (float)M_CAPTURE_HEIGHT / M_CAPTURE_TEXTURE_HEIGHT;
+
+    const bool was_background = m_Depth.background;
+    DC_PVR_SetBackgroundMode(true);
+    DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_SCREEN_CAPTURE, true);
+    const float z = DC_PVR_Depth2D(0.0f);
+    const DC_PVR_VERTEX v[4] = {
+        { .x = 0, .y = 0, .z = z, .u = 0, .v = 0, .argb = argb },
+        { .x = 640, .y = 0, .z = z, .u = u1, .v = 0, .argb = argb },
+        { .x = 0, .y = 480, .z = z, .u = 0, .v = v1, .argb = argb },
+        { .x = 640, .y = 480, .z = z, .u = u1, .v = v1, .argb = argb },
+    };
+    DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
+    DC_PVR_SetBackgroundMode(was_background);
 }
 
 uint16_t *DC_PVR_ReserveTexturePages(const int32_t count)
@@ -267,13 +337,8 @@ void DC_PVR_SetBackgroundColor(const float r, const float g, const float b)
     pvr_set_bg_color(r, g, b);
 }
 
-void DC_PVR_BeginFrame(void)
+static void M_ResetFrame(void)
 {
-    if (m_InFrame) {
-        return;
-    }
-    pvr_wait_ready();
-    pvr_scene_begin();
     for (int32_t i = 0; i < M_LIST_COUNT; i++) {
         m_Lists[i].frame_written = 0;
         m_Lists[i].has_state = false;
@@ -286,6 +351,16 @@ void DC_PVR_BeginFrame(void)
     m_Submitted = 0;
     m_Dropped = 0;
     m_InFrame = true;
+}
+
+void DC_PVR_BeginFrame(void)
+{
+    if (m_InFrame) {
+        return;
+    }
+    pvr_wait_ready();
+    pvr_scene_begin();
+    M_ResetFrame();
 }
 
 void DC_PVR_EndFrame(void)
@@ -391,9 +466,14 @@ void DC_PVR_SetState(
     const DC_BLEND blend, const int32_t page, const bool depth_test)
 {
     m_Blend = blend;
-    m_Page = page >= 0 && page < m_Pages.count && m_Pages.ptr[page] != nullptr
-        ? page
-        : DC_PVR_NO_TEXTURE;
+    if (page == DC_PVR_SCREEN_CAPTURE) {
+        m_Page = m_Capture.valid ? page : DC_PVR_NO_TEXTURE;
+    } else {
+        m_Page = page >= 0 && page < m_Pages.count
+                && m_Pages.ptr[page] != nullptr
+            ? page
+            : DC_PVR_NO_TEXTURE;
+    }
     m_DepthTest = depth_test;
     m_Current = M_GetList(blend);
 }
@@ -412,7 +492,14 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
 {
     const pvr_list_t list = m_Current->list;
     pvr_poly_cxt_t cxt;
-    if (m_Page != DC_PVR_NO_TEXTURE) {
+    if (m_Page == DC_PVR_SCREEN_CAPTURE) {
+        pvr_poly_cxt_txr(
+            &cxt, list,
+            PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED | PVR_TXRFMT_X32_STRIDE,
+            M_CAPTURE_TEXTURE_WIDTH, M_CAPTURE_TEXTURE_HEIGHT,
+            m_Capture.texture, PVR_FILTER_BILINEAR);
+        cxt.txr.env = PVR_TXRENV_MODULATE;
+    } else if (m_Page != DC_PVR_NO_TEXTURE) {
         const int32_t format =
             (m_Pages.format[m_Page] == TEXTURE_PAGE_ARGB4444
                  ? PVR_TXRFMT_ARGB4444

@@ -181,7 +181,12 @@ X_CFG_ENUM(rendering.dither_mode,                        DITHER_MODE_DISABLED, D
 X_CFG_ENUM(rendering.fmv_filter,                         TEXTURE_FILTER_BILINEAR, TEXTURE_FILTER)
 X_CFG_ENUM(rendering.screenshot_format,                  SCREENSHOT_FORMAT_JPEG, SCREENSHOT_FORMAT)
 X_CFG_ENUM(rendering.sprite_lock_mode,                   BILLBOARD_LOCK_PERSPECTIVE, BILLBOARD_LOCK_MODE)
+#if defined(__DREAMCAST__)
+// The PowerVR filters for free.
+X_CFG_ENUM(rendering.texture_filter,                     TEXTURE_FILTER_BILINEAR, TEXTURE_FILTER)
+#else
 X_CFG_ENUM(rendering.texture_filter,                     TEXTURE_FILTER_POINT, TEXTURE_FILTER)
+#endif
 X_CFG_ENUM(rendering.ui_filter,                          TEXTURE_FILTER_POINT, TEXTURE_FILTER)
 X_CFG_ENUM(rendering.upscaling_filter,                   TEXTURE_FILTER_POINT, TEXTURE_FILTER)
 X_CFG_ENUM(rendering.vertex_snap_mode,                   VERTEX_SNAP_MODE_DISABLED, VERTEX_SNAP_MODE)

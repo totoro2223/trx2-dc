@@ -68,6 +68,13 @@ static bool m_EventsPumped = false;
 static bool m_ButtonDown[SDL_CONTROLLER_BUTTON_MAX] = {};
 static Sint16 m_AxisValue[SDL_CONTROLLER_AXIS_MAX] = {};
 
+// The game reads the controller once a frame; a press let go of before the
+// next read would be lost. A thread watching the controller between frames
+// keeps every button it saw down until the game has read it once.
+#define DC_LATCH_INTERVAL_MS 8
+static uint32_t m_LatchedButtons = 0;
+static bool m_LatchStarted = false;
+
 static const char *const m_ButtonNames[SDL_CONTROLLER_BUTTON_MAX] = {
     [SDL_CONTROLLER_BUTTON_A] = "a",
     [SDL_CONTROLLER_BUTTON_B] = "b",
@@ -125,6 +132,10 @@ static void M_SetButton(const SDL_GameControllerButton button, const bool down)
         return;
     }
     m_ButtonDown[button] = down;
+#if defined(TRX_DC_INPUT_LOG)
+    printf("[input] %u %s %s\n", (unsigned)timer_ms_gettime64(),
+        m_ButtonNames[button], down ? "down" : "up");
+#endif
     const SDL_Event event = {
         .cbutton = {
             .type = down ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP,
@@ -143,6 +154,10 @@ static void M_SetAxis(const SDL_GameControllerAxis axis, const Sint16 value)
         return;
     }
     m_AxisValue[axis] = value;
+#if defined(TRX_DC_INPUT_LOG)
+    printf("[input] %u %s %d\n", (unsigned)timer_ms_gettime64(),
+        m_AxisNames[axis], (int)value);
+#endif
     const SDL_Event event = {
         .caxis = {
             .type = SDL_CONTROLLERAXISMOTION,
@@ -168,8 +183,40 @@ static Sint16 M_TriggerToAxis(const int value)
     return (Sint16)(value * SDL_JOYSTICK_AXIS_MAX / 255);
 }
 
+static void *M_LatchButtons(void *const param)
+{
+    while (true) {
+        maple_device_t *const device =
+            maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
+        const cont_state_t *const state = device != nullptr
+            ? (const cont_state_t *)maple_dev_status(device)
+            : nullptr;
+        if (state != nullptr) {
+            __atomic_fetch_or(
+                &m_LatchedButtons, (uint32_t)state->buttons, __ATOMIC_RELAXED);
+        }
+        thd_sleep(DC_LATCH_INTERVAL_MS);
+    }
+    return nullptr;
+}
+
+static void M_StartLatch(void)
+{
+    if (m_LatchStarted) {
+        return;
+    }
+    m_LatchStarted = true;
+    const kthread_attr_t attr = {
+        .create_detached = true,
+        .stack_size = 8 * 1024,
+        .label = "trx-input",
+    };
+    thd_create_ex(&attr, M_LatchButtons, nullptr);
+}
+
 static void M_PollController(void)
 {
+    M_StartLatch();
     maple_device_t *const device = maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
     cont_state_t *const state =
         device != nullptr ? (cont_state_t *)maple_dev_status(device) : nullptr;
@@ -183,8 +230,11 @@ static void M_PollController(void)
         return;
     }
 
-    const uint32_t b = state->buttons;
-    if ((b & CONT_RESET_BUTTONS) == CONT_RESET_BUTTONS) {
+    // What is held now, and what was pressed since the last read.
+    const uint32_t latched =
+        __atomic_exchange_n(&m_LatchedButtons, 0, __ATOMIC_RELAXED);
+    const uint32_t b = state->buttons | latched;
+    if ((state->buttons & CONT_RESET_BUTTONS) == CONT_RESET_BUTTONS) {
         const SDL_Event quit = { .quit = { .type = SDL_QUIT } };
         M_PushEvent(&quit);
     }

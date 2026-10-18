@@ -555,6 +555,36 @@ static void M_HandleBuiltInDefaults(void)
         M_GetBuiltInLayout(INPUT_ROLE_STEP_RIGHT)->bind =
             (CONTROLLER_BINDING) { .key_count = 0 };
     }
+
+#if defined(__DREAMCAST__)
+    // The Dreamcast pad has no Select, and its two analog triggers are both
+    // the shoulder buttons and the trigger axes. Start opens the inventory,
+    // which pauses the game already; the triggers look (L) and walk (R),
+    // and stepping aside is walking sideways, as in the original.
+    const CONTROLLER_MAP start = {
+        .type = BT_BUTTON,
+        .bind.button = SDL_CONTROLLER_BUTTON_START,
+    };
+    M_GetBuiltInLayout(INPUT_ROLE_INVENTORY)->bind =
+        (CONTROLLER_BINDING) { .key_count = 1, .keys = { start } };
+    M_GetBuiltInLayout(INPUT_ROLE_PAUSE)->bind =
+        (CONTROLLER_BINDING) { .key_count = 0 };
+    if (g_TRVersion < 3) {
+        M_GetBuiltInLayout(INPUT_ROLE_STEP_LEFT)->bind =
+            (CONTROLLER_BINDING) { .key_count = 0 };
+        M_GetBuiltInLayout(INPUT_ROLE_STEP_RIGHT)->bind =
+            (CONTROLLER_BINDING) { .key_count = 0 };
+    }
+    if (g_TRVersion >= 2) {
+        // Flares: walk and draw weapon together.
+        const CONTROLLER_MAP y = {
+            .type = BT_BUTTON,
+            .bind.button = SDL_CONTROLLER_BUTTON_Y,
+        };
+        M_GetBuiltInLayout(INPUT_ROLE_USE_FLARE)->bind =
+            (CONTROLLER_BINDING) { .key_count = 2, .keys = { r1, y } };
+    }
+#endif
 }
 
 static void M_Init(void)

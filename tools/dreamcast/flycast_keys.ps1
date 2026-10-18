@@ -8,7 +8,11 @@
 # console selection, which freezes Flycast's serial output.
 param(
     [string[]]$Keys = @('Up'),
-    [double]$Seconds = 1.0
+    [double]$Seconds = 1.0,
+    # Down presses the keys and leaves them held, Up lets them go (to hold
+    # one key while others come and go); Hold does both.
+    [ValidateSet('Hold', 'Down', 'Up')]
+    [string]$Action = 'Hold'
 )
 
 Add-Type @'
@@ -55,10 +59,16 @@ $codes = foreach ($key in $Keys) {
     $flags = if ($extended -contains $key) { 1 } else { 0 }
     [pscustomobject]@{ Vk = $vk; Scan = $scan; Flags = $flags }
 }
-foreach ($c in $codes) {
-    [FlycastKeys]::keybd_event($c.Vk, $c.Scan, $c.Flags, [UIntPtr]::Zero)
+if ($Action -ne 'Up') {
+    foreach ($c in $codes) {
+        [FlycastKeys]::keybd_event($c.Vk, $c.Scan, $c.Flags, [UIntPtr]::Zero)
+    }
 }
-Start-Sleep -Milliseconds ([int]($Seconds * 1000))
-foreach ($c in $codes) {
-    [FlycastKeys]::keybd_event($c.Vk, $c.Scan, $c.Flags -bor 2, [UIntPtr]::Zero)
+if ($Action -eq 'Hold') {
+    Start-Sleep -Milliseconds ([int]($Seconds * 1000))
+}
+if ($Action -ne 'Down') {
+    foreach ($c in $codes) {
+        [FlycastKeys]::keybd_event($c.Vk, $c.Scan, $c.Flags -bor 2, [UIntPtr]::Zero)
+    }
 }

@@ -38,6 +38,8 @@ typedef struct {
 } DC_PVR_VERTEX;
 
 #define DC_PVR_NO_TEXTURE (-1)
+// The screen capture (DC_PVR_CaptureScreen), as a texture page.
+#define DC_PVR_SCREEN_CAPTURE (-2)
 
 void DC_PVR_Init(void);
 void DC_PVR_Shutdown(void);
@@ -82,6 +84,14 @@ typedef struct {
 
 // One closed shadow volume; the shadow receivers inside it are darkened.
 void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *tris, int32_t count);
+
+// A frame drawn into the screen capture instead of onto the screen, to keep
+// a picture of the game behind menus that stop it (the inventory); closed by
+// DC_PVR_EndFrame. False when no frame can start. The capture is then drawn
+// over the whole screen, its colour scaled by brightness, behind everything
+// else.
+bool DC_PVR_BeginCaptureFrame(void);
+void DC_PVR_DrawScreenCapture(float brightness);
 
 void DC_PVR_SetFilter(bool bilinear);
 // Selects how the next polygons are drawn. page is a texture page index, or
