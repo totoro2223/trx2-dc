@@ -67,6 +67,8 @@ typedef struct {
 // How far a light may tilt a shadow off the vertical: a light level with or
 // below the caster would throw it sideways or up.
 #define M_SHADOW_MIN_DROP 0.6f
+// How far a light may be from the casters and still turn their shadow.
+#define M_SHADOW_LIGHT_RANGE (3.0f * WALL_L)
 
 // A vertex once transformed and lit: eye space, and its colours.
 typedef struct {
@@ -937,43 +939,68 @@ static void M_Transform34(
     }
 }
 
-// Picks the direction the casters' shadows fall in: away from the room light
-// nearest their middle, or straight down without one.
+// Takes a light for the shadow if it reaches the casters' middle, lies within
+// M_SHADOW_LIGHT_RANGE of it and is nearer than the best so far.
+static void M_ConsiderLight(
+    const float center[3], const float x, const float y, const float z,
+    float reach, float *const best_dist_sq, float out[3])
+{
+    if (reach > M_SHADOW_LIGHT_RANGE) {
+        reach = M_SHADOW_LIGHT_RANGE;
+    }
+    const float d[3] = { center[0] - x, center[1] - y, center[2] - z };
+    const float dist_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if (dist_sq < 1.0f || dist_sq > reach * reach || dist_sq >= *best_dist_sq) {
+        return;
+    }
+    *best_dist_sq = dist_sq;
+    const float inv = 1.0f / sqrtf(dist_sq);
+    out[0] = d[0] * inv;
+    out[1] = d[1] * inv;
+    out[2] = d[2] * inv;
+}
+
+// Picks the direction the casters' shadows fall in: away from the light
+// nearest their middle within reach, the room's own or a passing one (a
+// muzzle flash, a flare), or straight down without one.
 static void M_ShadowDirection(const float center[3], float out[3])
 {
     out[0] = 0.0f;
     out[1] = 1.0f;
     out[2] = 0.0f;
-    if (m_Casters[0].room == nullptr) {
-        return;
+    float best = M_SHADOW_LIGHT_RANGE * M_SHADOW_LIGHT_RANGE + 1.0f;
+
+    const ROOM *const room = m_Casters[0].room;
+    if (room != nullptr) {
+        for (int32_t i = 0; i < room->num_lights; i++) {
+            const LIGHT *const light = &room->lights[i];
+            if (light->type == LIGHT_TYPE_SUN
+                || light->type == LIGHT_TYPE_FOG_BULB) {
+                continue;
+            }
+            const float reach = light->layout == LIGHT_LAYOUT_TR4
+                ? (float)light->u.tr4.outer_radius
+                : (float)light->u.legacy.falloff.value_1;
+            M_ConsiderLight(
+                center, light->pos.x, light->pos.y, light->pos.z, reach, &best,
+                out);
+        }
     }
-    Output_Uniforms_UploadRoomLights(Output_GetUniforms(), m_Casters[0].room);
+
+    // The passing lights, as the shading has them this frame.
+    Output_Uniforms_UploadRoomLights(Output_GetUniforms(), room);
     const DC_UNIFORM_LIGHTS *const lights =
         DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
     m_Frame.lights = lights;
-    if (lights == nullptr) {
-        return;
-    }
-    float best = -1.0f;
-    for (int32_t i = 0; i < lights->num_lights; i++) {
+    for (int32_t i = 0; lights != nullptr && i < lights->num_lights; i++) {
         const DC_UNIFORM_LIGHT *const light = &lights->lights[i];
-        if (light->kind != 0.0f) {
-            continue;
-        }
-        const float d[3] = {
-            center[0] - light->pos[0],
-            center[1] - light->pos[1],
-            center[2] - light->pos[2],
-        };
-        const float dist_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        if (dist_sq < 1.0f || (best >= 0.0f && dist_sq >= best)) {
-            continue;
-        }
-        best = dist_sq;
-        const float inv = 1.0f / sqrtf(dist_sq);
-        out[0] = d[0] * inv;
-        out[1] = d[1] * inv;
-        out[2] = d[2] * inv;
+        const float reach = light->kind == 0.0f
+            ? exp2f(light->falloff)
+            : light->falloff / (float)(1 << (OUTPUT_DYNAMIC_FALLOFF_SHIFT
+                                             - OUTPUT_DYNAMIC_RADIUS_SHIFT));
+        M_ConsiderLight(
+            center, light->pos[0], light->pos[1], light->pos[2], reach, &best,
+            out);
     }
     // TR's y axis points down.
     if (out[1] < M_SHADOW_MIN_DROP) {
@@ -1163,10 +1190,18 @@ void DC_Shadow_DrawVolumes(void)
     }
 #if defined(TRX_DC_WATCHDOG)
     static int32_t frame = 0;
+    static int32_t lit_frames = 0;
+    lit_frames += dir[1] < 0.999f;
+    const DC_UNIFORM_LIGHTS *const passing = m_Frame.lights;
     if (++frame % 120 == 0) {
         LOG_DEBUG(
-            "shadow: %d casters, %d volumes, dir %.2f %.2f %.2f",
-            m_CasterCount, volumes, dir[0], dir[1], dir[2]);
+            "shadow: %d casters, %d volumes, lit %d/120, room lights %d, "
+            "passing %d, dir %.2f %.2f %.2f",
+            m_CasterCount, volumes, lit_frames,
+            m_Casters[0].room != nullptr ? m_Casters[0].room->num_lights : -1,
+            passing != nullptr ? (int)passing->num_lights : -1, dir[0], dir[1],
+            dir[2]);
+        lit_frames = 0;
     }
 #endif
     m_CasterCount = 0;
