@@ -24,13 +24,13 @@
 #define M_VERTBUF_TR (2 * 64 * 1024)
 #define M_VERTBUF_PT (2 * 160 * 1024)
 #define M_MAX_TEXTURE_PAGES 64
-#define M_DEPTH_LAYER_MAX 1.0f
-#define M_DEPTH_MIN 1.0e-4f
-#define M_DEPTH_RATIO 2.0e4f
-#define M_DEPTH_LAYERS 8
-// Keeps the first layer clear of the background plane, which the PowerVR
-// keeps at a depth of 0.0001.
-#define M_DEPTH_FIRST_SCALE 10.0f
+// Depth layers. The first holds the world at plain 1/w, in (0, 1]. A later
+// layer starting at depth F holds perspective vertices at F * (1/w) / 0.01,
+// so that it stays proportional to 1/w (things nearer than 100 times the near
+// distance), and flat ones from F to F + 1. Depths are kept small: Flycast
+// scales them by the largest one in the frame.
+#define M_LAYER_INV_W_MIN 0.01f
+#define M_LAYER_GAP 0.01f
 
 typedef struct {
     pvr_list_t list;
@@ -56,8 +56,15 @@ static int32_t m_Page = DC_PVR_NO_TEXTURE;
 static bool m_DepthTest = true;
 static bool m_Bilinear = false;
 static bool m_InFrame = false;
-static int32_t m_DepthLayer = 0;
-static float m_DepthScale = M_DEPTH_FIRST_SCALE;
+static struct {
+    // Where the current layer starts; 0 for the first.
+    float floor;
+    // The largest depth handed out so far this frame.
+    float top;
+    // Whether the current layer holds anything, so that a new one is needed.
+    bool used;
+    bool background;
+} m_Depth = {};
 static int32_t m_Submitted = 0;
 static int32_t m_Dropped = 0;
 
@@ -248,8 +255,10 @@ void DC_PVR_BeginFrame(void)
         m_Lists[i].frame_written = 0;
         m_Lists[i].has_state = false;
     }
-    m_DepthLayer = 0;
-    m_DepthScale = M_DEPTH_FIRST_SCALE;
+    m_Depth.floor = 0.0f;
+    m_Depth.top = 0.0f;
+    m_Depth.used = false;
+    m_Depth.background = false;
     m_Submitted = 0;
     m_Dropped = 0;
     m_InFrame = true;
@@ -284,25 +293,53 @@ void DC_PVR_EndFrame(void)
 
 void DC_PVR_NextDepthLayer(void)
 {
-    if (m_DepthLayer < M_DEPTH_LAYERS - 1) {
-        m_DepthLayer++;
-        m_DepthScale *= M_DEPTH_RATIO;
+    if (!m_Depth.used) {
+        return;
     }
+    m_Depth.floor = (m_Depth.top > 1.0f ? m_Depth.top : 1.0f) + M_LAYER_GAP;
+    m_Depth.used = false;
 }
 
-float DC_PVR_Depth(float inv_w)
+void DC_PVR_SetBackgroundMode(const bool enabled)
 {
-    // The PowerVR corrects textures for perspective with the same value it
-    // depth-tests, so that value must stay proportional to 1/w: each layer
-    // scales it into a band of its own instead of adding an offset. A layer
-    // spans 1/w from M_DEPTH_MIN (geometry 1/M_DEPTH_MIN times the near
-    // distance away) to 1, so M_DEPTH_RATIO times each band clears the last.
-    if (inv_w < M_DEPTH_MIN) {
-        inv_w = M_DEPTH_MIN;
-    } else if (inv_w > M_DEPTH_LAYER_MAX) {
-        inv_w = M_DEPTH_LAYER_MAX;
+    m_Depth.background = enabled;
+}
+
+static float M_UseDepth(const float z)
+{
+    if (!m_Depth.background) {
+        m_Depth.used = true;
+        if (z > m_Depth.top) {
+            m_Depth.top = z;
+        }
     }
-    return inv_w * m_DepthScale;
+    return z;
+}
+
+float DC_PVR_Depth3D(float inv_w)
+{
+    if (inv_w > 1.0f) {
+        inv_w = 1.0f;
+    }
+    if (m_Depth.floor == 0.0f) {
+        return M_UseDepth(inv_w > 0.0f ? inv_w : 0.0f);
+    }
+    if (inv_w < M_LAYER_INV_W_MIN) {
+        inv_w = M_LAYER_INV_W_MIN;
+    }
+    return M_UseDepth(m_Depth.floor * inv_w / M_LAYER_INV_W_MIN);
+}
+
+float DC_PVR_Depth2D(float v)
+{
+    if (v < 0.0f) {
+        v = 0.0f;
+    } else if (v > 1.0f) {
+        v = 1.0f;
+    }
+    // In the first layer, in front of the world's 1/w.
+    const float base = m_Depth.floor == 0.0f ? 1.0f + M_LAYER_GAP : m_Depth.floor;
+    return M_UseDepth(base + v);
 }
 
 void DC_PVR_SetFilter(const bool bilinear)
@@ -317,7 +354,7 @@ void DC_PVR_SetState(
     m_Page = page >= 0 && page < m_Pages.count && m_Pages.ptr[page] != nullptr
         ? page
         : DC_PVR_NO_TEXTURE;
-    m_DepthTest = depth_test;
+    m_DepthTest = depth_test && !m_Depth.background;
     m_Current = M_GetList(blend);
 }
 
@@ -352,8 +389,9 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
         m_DepthTest ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
     // The field goes straight into the hardware's "depth write disable" bit,
     // whatever its documentation says (PVR_DEPTHWRITE_ENABLE is 0).
-    cxt.depth.write = m_Blend <= DC_BLEND_PUNCH ? PVR_DEPTHWRITE_ENABLE
-                                                : PVR_DEPTHWRITE_DISABLE;
+    cxt.depth.write = m_Blend <= DC_BLEND_PUNCH && m_DepthTest
+        ? PVR_DEPTHWRITE_ENABLE
+        : PVR_DEPTHWRITE_DISABLE;
 
     switch (m_Blend) {
     case DC_BLEND_OPAQUE:

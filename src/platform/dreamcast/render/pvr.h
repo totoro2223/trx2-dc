@@ -58,8 +58,16 @@ void DC_PVR_SetBackgroundColor(float r, float g, float b);
 // Everything submitted after this draws in front of everything before, as a
 // depth buffer clear would make it.
 void DC_PVR_NextDepthLayer(void);
-// Maps 1/w (or any value in [0, 1)) into the current depth layer.
-float DC_PVR_Depth(float inv_w);
+// While on, polygons neither test nor write depth, as a background drawn
+// before everything else needs; they do not start a new layer either.
+void DC_PVR_SetBackgroundMode(bool enabled);
+// Depth of a perspective vertex in the current layer from its 1/w (in
+// (0, 1], 1 at the near plane). The PowerVR corrects textures for
+// perspective with this same value, so it stays proportional to 1/w.
+float DC_PVR_Depth3D(float inv_w);
+// Depth of a flat vertex in the current layer, in front of every
+// perspective one there: v in [0, 1], bigger is nearer.
+float DC_PVR_Depth2D(float v);
 
 void DC_PVR_SetFilter(bool bilinear);
 // Selects how the next polygons are drawn. page is a texture page index, or

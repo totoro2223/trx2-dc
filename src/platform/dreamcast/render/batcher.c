@@ -29,6 +29,7 @@
 #include <trx/game/viewport.h>
 
 #include <dc/matrix.h>
+#include <malloc.h>
 #include <math.h>
 #include <string.h>
 #include <uthash.h>
@@ -380,7 +381,7 @@ static inline void M_Project(
     const float inv_z = 1.0f / in->z;
     out->x = m_Frame.center_x + m_Frame.proj_x * in->x * inv_z;
     out->y = m_Frame.center_y + m_Frame.proj_y * in->y * inv_z;
-    out->z = DC_PVR_Depth(m_Frame.near_z * inv_z);
+    out->z = DC_PVR_Depth3D(m_Frame.near_z * inv_z);
     out->u = u;
     out->v = v;
     out->argb = in->argb;

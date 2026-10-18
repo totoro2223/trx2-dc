@@ -61,10 +61,12 @@ static void M_RenderScenePasses(const M_PRIV *const p)
     Output_Uniforms_UploadViewMatrix(Output_GetUniforms(), &g_ViewMatrix);
     Output_Lights_PrepareScene();
 
-    // The background lies behind everything the world draws.
+    // The background lies behind everything the world draws: it leaves the
+    // depth buffer alone.
     if (M_IsSourceDirty(p, SCENE_PASS_BACKGROUND)) {
+        DC_PVR_SetBackgroundMode(true);
         M_RenderSourcePass(p, SCENE_PASS_BACKGROUND);
-        DC_PVR_NextDepthLayer();
+        DC_PVR_SetBackgroundMode(false);
     }
     for (SCENE_PASS pass = SCENE_PASS_OPAQUE; pass <= SCENE_PASS_BLEND_ADD;
          pass++) {

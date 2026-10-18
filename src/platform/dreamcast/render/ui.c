@@ -80,7 +80,7 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     for (int32_t i = 0; i < p->prims->count; i++) {
         M_PRIM *const prim = Vector_Get(p->prims, i);
         for (int32_t j = 0; j < 4; j++) {
-            prim->v[j].z = DC_PVR_Depth(prim->v[j].z);
+            prim->v[j].z = DC_PVR_Depth2D(prim->v[j].z);
         }
         DC_PVR_SetState(DC_BLEND_ALPHA, prim->page, true);
         if (prim->is_triangle) {
