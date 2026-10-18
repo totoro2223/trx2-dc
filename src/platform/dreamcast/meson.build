@@ -63,8 +63,15 @@ dc_sources = files(
   'sdl_compat.c',
 )
 
+# The SH-4 has fsqrt, which GCC only uses when sqrtf need not set errno;
+# multiply-adds can fuse into fmac.
+add_project_arguments('-fno-math-errno', '-ffp-contract=fast', language: 'c')
+
 if get_option('buildtype') != 'release'
   add_project_arguments('-DTRX_DC_WATCHDOG', language: 'c')
+endif
+if get_option('dc_profile')
+  add_project_arguments('-DTRX_DC_PROFILE', language: 'c')
 endif
 if get_option('dc_start_level') >= 0
   add_project_arguments(

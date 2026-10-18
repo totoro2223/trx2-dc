@@ -187,48 +187,102 @@ static int32_t M_FlickerIndex(const int32_t mode, const float time)
     }
 }
 
-static float M_DynamicLum(float shade, const float world[3])
-{
-    const DC_UNIFORM_LIGHTS *const lights = m_Frame.lights;
-    if (lights == nullptr) {
-        return shade;
-    }
-    for (int32_t i = 0; i < lights->num_lights; i++) {
-        const DC_UNIFORM_LIGHT *const light = &lights->lights[i];
-        if (light->kind != 0.0f) {
-            continue;
-        }
-        const float dx = light->pos[0] - world[0];
-        const float dy = light->pos[1] - world[1];
-        const float dz = light->pos[2] - world[2];
-        const float radius = exp2f(light->falloff);
-        const float dist_sq = dx * dx + dy * dy + dz * dz;
-        if (dist_sq > radius * radius) {
-            continue;
-        }
-        const float max_shade = exp2f(light->shade);
-        const float dist_term =
-            dist_sq / exp2f(2.0f * light->falloff - light->shade);
-        shade -= max_shade - dist_term;
-    }
-    return shade < 0.0f ? 0.0f : shade;
-}
+// A room's point light, with what the shading asks of it worked out once.
+typedef struct {
+    float pos[3];
+    float radius_sq;
+    float max_shade;
+    float inv_div;
+} M_POINT_LIGHT;
+
+#define M_MAX_POINT_LIGHTS 32
 
 typedef struct {
     float l[3]; // object space light direction, for object lighting
     float adder;
     bool has_direction;
+    // For vertices lit by the room's lights: the instance's world matrix in
+    // world units, the lights, and the flicker the room's light mode adds
+    // (times each vertex's light table offset).
+    bool has_room_lights;
+    float world[3][4];
+    int32_t num_lights;
+    M_POINT_LIGHT lights[M_MAX_POINT_LIGHTS];
+    float flicker;
 } M_INSTANCE_LIGHT;
+
+static float M_DynamicLum(
+    float shade, const float world[3], const M_INSTANCE_LIGHT *const il)
+{
+    for (int32_t i = 0; i < il->num_lights; i++) {
+        const M_POINT_LIGHT *const light = &il->lights[i];
+        const float dx = light->pos[0] - world[0];
+        const float dy = light->pos[1] - world[1];
+        const float dz = light->pos[2] - world[2];
+        const float dist_sq = dx * dx + dy * dy + dz * dz;
+        if (dist_sq > light->radius_sq) {
+            continue;
+        }
+        shade -= light->max_shade - dist_sq * light->inv_div;
+    }
+    return shade < 0.0f ? 0.0f : shade;
+}
+
+static void M_PrepareRoomLights(
+    const MESH_INSTANCE *const inst, M_INSTANCE_LIGHT *const out)
+{
+    out->has_room_lights = true;
+    const float scale = 1.0f / (float)(1 << W2V_SHIFT);
+    const MATRIX *const m = &inst->wmatrix;
+    const int64_t rows[3][4] = {
+        { m->_00, m->_01, m->_02, m->_03 },
+        { m->_10, m->_11, m->_12, m->_13 },
+        { m->_20, m->_21, m->_22, m->_23 },
+    };
+    for (int32_t r = 0; r < 3; r++) {
+        for (int32_t c = 0; c < 4; c++) {
+            out->world[r][c] = (float)rows[r][c] * scale;
+        }
+    }
+
+    const DC_UNIFORM_LIGHTS *const lights = m_Frame.lights;
+    out->num_lights = 0;
+    out->flicker = 0.0f;
+    if (lights == nullptr) {
+        return;
+    }
+    for (int32_t i = 0;
+         i < lights->num_lights && out->num_lights < M_MAX_POINT_LIGHTS; i++) {
+        const DC_UNIFORM_LIGHT *const light = &lights->lights[i];
+        if (light->kind != 0.0f) {
+            continue;
+        }
+        const float radius = exp2f(light->falloff);
+        M_POINT_LIGHT *const pl = &out->lights[out->num_lights++];
+        pl->pos[0] = light->pos[0];
+        pl->pos[1] = light->pos[1];
+        pl->pos[2] = light->pos[2];
+        pl->radius_sq = radius * radius;
+        pl->max_shade = exp2f(light->shade);
+        pl->inv_div = 1.0f / exp2f(2.0f * light->falloff - light->shade);
+    }
+    const int32_t index =
+        M_FlickerIndex(lights->room_light_mode, m_Frame.time_in_game);
+    out->flicker = index * 512.0f / 31.0f;
+}
 
 static void M_PrepareInstanceLight(
     const MESH_INSTANCE *const inst, const M_BINDING *const bind,
     const float mv[4][4], M_INSTANCE_LIGHT *const out)
 {
-    *out = (M_INSTANCE_LIGHT) {};
+    out->has_direction = false;
+    out->has_room_lights = false;
+    out->adder = 0.0f;
     if (bind->needs_room_lights) {
         Output_Uniforms_UploadRoomLights(Output_GetUniforms(), inst->room);
         m_Frame.lights =
             DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
+        M_PrepareRoomLights(inst, out);
     }
     if (bind->needs_object_light) {
         Output_Lights_UploadCPULight(&inst->light_info);
@@ -277,27 +331,19 @@ static void M_LightVertex(
             }
         } else {
             shade = vertex->shade;
-            if ((flags & VERT_USE_DYNAMIC_LIGHT) != 0) {
-                const float scale = 1.0f / (float)(1 << W2V_SHIFT);
+            if ((flags & VERT_USE_DYNAMIC_LIGHT) != 0 && il->has_room_lights) {
+                const float x = vertex->pos.x;
+                const float y = vertex->pos.y;
+                const float z = vertex->pos.z;
+                const float(*const w)[4] = il->world;
                 const float world[3] = {
-                    (wmatrix->_00 * vertex->pos.x + wmatrix->_01 * vertex->pos.y
-                     + wmatrix->_02 * vertex->pos.z + wmatrix->_03)
-                        * scale,
-                    (wmatrix->_10 * vertex->pos.x + wmatrix->_11 * vertex->pos.y
-                     + wmatrix->_12 * vertex->pos.z + wmatrix->_13)
-                        * scale,
-                    (wmatrix->_20 * vertex->pos.x + wmatrix->_21 * vertex->pos.y
-                     + wmatrix->_22 * vertex->pos.z + wmatrix->_23)
-                        * scale,
+                    w[0][0] * x + w[0][1] * y + w[0][2] * z + w[0][3],
+                    w[1][0] * x + w[1][1] * y + w[1][2] * z + w[1][3],
+                    w[2][0] * x + w[2][1] * y + w[2][2] * z + w[2][3],
                 };
-                shade = M_DynamicLum(shade, world);
-                if (m_Frame.lights != nullptr) {
-                    const int32_t i = M_FlickerIndex(
-                        m_Frame.lights->room_light_mode,
-                        m_Frame.time_in_game);
-                    const float j = (float)(vertex->light_table_idx & 31);
-                    shade += (j - 16.0f) * i * 512.0f / 31.0f;
-                }
+                shade = M_DynamicLum(shade, world, il);
+                const float j = (float)(vertex->light_table_idx & 31);
+                shade += (j - 16.0f) * il->flicker;
             }
             shade = M_Clamp(shade, 0.0f, M_SHADE_MAX);
         }

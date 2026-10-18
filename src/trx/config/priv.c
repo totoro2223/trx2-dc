@@ -16,9 +16,17 @@ static void M_SanitizeSpecial(void)
         && g_Config.rendering.aspect_mode != ASPECT_MODE_16_10) {
         CONFIG_SET(g_Config.rendering.aspect_mode, ASPECT_MODE_4_3);
     }
+#if defined(__DREAMCAST__)
+    // The Dreamcast cannot draw 60 frames a second; asked to, the clock
+    // hands out one or two game frames per drawn one and the world judders.
+    if (g_Config.rendering.fps != 30) {
+        CONFIG_SET(g_Config.rendering.fps, 30);
+    }
+#else
     if (g_Config.rendering.fps != 30 && g_Config.rendering.fps != 60) {
         CONFIG_SET(g_Config.rendering.fps, 30);
     }
+#endif
 }
 
 void Config_LoadFromJSON(JSON_OBJECT *root_obj)

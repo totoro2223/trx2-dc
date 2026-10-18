@@ -7,6 +7,7 @@
 #include "dc_watchdog.h"
 
 #include <arch/irq.h>
+#include <arch/timer.h>
 #include <kos/thread.h>
 
 #include <malloc.h>
@@ -14,7 +15,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define M_INTERVAL_MS 1000
+// Writing to the serial port keeps the CPU busy until the bytes are out, so
+// the report stays short and rare: a stall the player could see otherwise.
+#define M_INTERVAL_MS 10000
 #define M_STACK_WORDS 512
 #define M_MAX_FRAMES 24
 
@@ -80,6 +83,66 @@ static void *M_Run(void *const param)
     return nullptr;
 }
 
+// A sampling profiler: every millisecond or so the watched thread's saved PC
+// is counted, and every few seconds the counts go to the console as
+// "[prof] pc count" lines (tools/dreamcast/prof_report.py reads them back).
+// A thread that is waiting shows up in the scheduler's code.
+#if defined(TRX_DC_PROFILE)
+#define M_PROF_SLOTS 4096
+#define M_PROF_DUMP_MS 10000
+
+static struct {
+    uint32_t pc;
+    uint32_t count;
+} m_Prof[M_PROF_SLOTS];
+
+static void M_ProfCount(const uint32_t pc)
+{
+    uint32_t slot = (pc >> 1) * 2654435761u % M_PROF_SLOTS;
+    for (int32_t i = 0; i < M_PROF_SLOTS; i++) {
+        if (m_Prof[slot].pc == pc || m_Prof[slot].pc == 0) {
+            m_Prof[slot].pc = pc;
+            m_Prof[slot].count++;
+            return;
+        }
+        slot = (slot + 1) % M_PROF_SLOTS;
+    }
+}
+
+static void *M_Profile(void *const param)
+{
+    uint64_t last_dump = timer_ms_gettime64();
+    uint32_t samples = 0;
+    while (true) {
+        thd_sleep(1);
+        kthread_t *const thread = m_Watched;
+        if (thread == nullptr) {
+            continue;
+        }
+        M_ProfCount(thread->context.pc);
+        samples++;
+        const uint64_t now = timer_ms_gettime64();
+        if (now - last_dump < M_PROF_DUMP_MS) {
+            continue;
+        }
+        printf("[prof] begin %lu samples\n", (unsigned long)samples);
+        for (int32_t i = 0; i < M_PROF_SLOTS; i++) {
+            if (m_Prof[i].count >= 2) {
+                printf(
+                    "[prof] %08lx %lu\n", (unsigned long)m_Prof[i].pc,
+                    (unsigned long)m_Prof[i].count);
+            }
+            m_Prof[i].pc = 0;
+            m_Prof[i].count = 0;
+        }
+        printf("[prof] end\n");
+        samples = 0;
+        last_dump = timer_ms_gettime64();
+    }
+    return nullptr;
+}
+#endif
+
 void DC_Watchdog_Start(kthread_t *const thread)
 {
     m_Watched = thread;
@@ -89,4 +152,14 @@ void DC_Watchdog_Start(kthread_t *const thread)
         .label = "trx-watchdog",
     };
     thd_create_ex(&attr, M_Run, nullptr);
+#if defined(TRX_DC_PROFILE)
+    const kthread_attr_t prof_attr = {
+        .create_detached = true,
+        .stack_size = 8 * 1024,
+        // Above the game, so that it wakes when due.
+        .prio = PRIO_DEFAULT - 1,
+        .label = "trx-profiler",
+    };
+    thd_create_ex(&prof_attr, M_Profile, nullptr);
+#endif
 }
