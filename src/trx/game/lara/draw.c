@@ -20,6 +20,10 @@
 #include <trx/game/rooms.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+#include <platform/dreamcast/render/shadow.h>
+#endif
+
 typedef enum {
     M_ARMS_EMPTY,
     M_ARMS_PISTOLS,
@@ -458,7 +462,22 @@ static bool M_Draw_I(
     return true;
 }
 
+static bool M_Draw(const ITEM *const item);
+
 bool Lara_Draw(const ITEM *const item)
+{
+#if defined(__DREAMCAST__)
+    // Lara's body casts a shadow volume in place of the round shadow.
+    DC_Shadow_SetCasting(item == Lara_GetItem());
+    const bool drawn = M_Draw(item);
+    DC_Shadow_SetCasting(false);
+    return drawn;
+#else
+    return M_Draw(item);
+#endif
+}
+
+static bool M_Draw(const ITEM *const item)
 {
     const ITEM *const lara_item = Lara_GetItem();
     m_IsLara = item == lara_item;

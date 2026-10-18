@@ -1,4 +1,4 @@
-// The PowerVR side of the Dreamcast renderer (see pvr.h).
+﻿// The PowerVR side of the Dreamcast renderer (see pvr.h).
 //
 // Polygons go through vertex DMA: each list has a buffer in main memory that
 // the frame's polygons are written into in whatever order the engine's passes
@@ -23,6 +23,11 @@
 #define M_VERTBUF_OP (2 * 160 * 1024)
 #define M_VERTBUF_TR (2 * 64 * 1024)
 #define M_VERTBUF_PT (2 * 160 * 1024)
+// Shadow volumes: a few hundred triangles of 64 bytes.
+#define M_VERTBUF_MOD (2 * 48 * 1024)
+#define M_LIST_COUNT 4
+// How much of the colour a shadowed pixel keeps.
+#define M_SHADOW_SCALE 0.5f
 #define M_MAX_TEXTURE_PAGES 64
 // Depth layers. The first holds the world at plain 1/w, in (0, 1]. A later
 // layer starting at depth F holds perspective vertices at F * (1/w) / 0.01,
@@ -42,14 +47,18 @@ typedef struct {
     int32_t page;
     bool depth_test;
     bool filter;
+    bool shadow;
 } M_LIST;
 
 static bool m_Initialised = false;
-static M_LIST m_Lists[3] = {
+static M_LIST m_Lists[M_LIST_COUNT] = {
     { .list = PVR_LIST_OP_POLY },
     { .list = PVR_LIST_TR_POLY },
     { .list = PVR_LIST_PT_POLY },
+    { .list = PVR_LIST_OP_MOD },
 };
+static M_LIST *const m_ModList = &m_Lists[3];
+static bool m_ShadowReceiver = false;
 static M_LIST *m_Current = nullptr;
 static DC_BLEND m_Blend = DC_BLEND_OPAQUE;
 static int32_t m_Page = DC_PVR_NO_TEXTURE;
@@ -108,7 +117,7 @@ void DC_PVR_Init(void)
     pvr_init_params_t params = {
         .opb_sizes = {
             PVR_BINSIZE_16, // opaque polygons
-            PVR_BINSIZE_0, // opaque modifiers
+            PVR_BINSIZE_16, // opaque modifiers (shadow volumes)
             PVR_BINSIZE_16, // translucent polygons
             PVR_BINSIZE_0, // translucent modifiers
             PVR_BINSIZE_16, // punch-through polygons
@@ -122,8 +131,10 @@ void DC_PVR_Init(void)
     };
     pvr_init(&params);
 
-    const size_t sizes[3] = { M_VERTBUF_OP, M_VERTBUF_TR, M_VERTBUF_PT };
-    for (int32_t i = 0; i < 3; i++) {
+    const size_t sizes[M_LIST_COUNT] = {
+        M_VERTBUF_OP, M_VERTBUF_TR, M_VERTBUF_PT, M_VERTBUF_MOD,
+    };
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
         m_Lists[i].buffer = M_AllocVertbuf(sizes[i]);
         // KOS splits the buffer in two, wants every write to stay strictly
         // below the half's end and closes each list with up to 64 bytes of
@@ -132,6 +143,8 @@ void DC_PVR_Init(void)
         pvr_set_vertbuf(m_Lists[i].list, m_Lists[i].buffer, sizes[i]);
     }
     pvr_set_bg_color(0.0f, 0.0f, 0.0f);
+    // Polygons inside a shadow volume keep this much of their colour.
+    pvr_set_shadow_scale(true, M_SHADOW_SCALE);
     m_Initialised = true;
     LOG_INFO(
         "PowerVR ready, %u KiB of video memory free",
@@ -251,7 +264,7 @@ void DC_PVR_BeginFrame(void)
     }
     pvr_wait_ready();
     pvr_scene_begin();
-    for (int32_t i = 0; i < 3; i++) {
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
         m_Lists[i].frame_written = 0;
         m_Lists[i].has_state = false;
     }
@@ -358,6 +371,16 @@ void DC_PVR_SetState(
     m_Current = M_GetList(blend);
 }
 
+static bool M_IsShadowed(void)
+{
+    return m_ShadowReceiver && m_Blend <= DC_BLEND_PUNCH && m_DepthTest;
+}
+
+void DC_PVR_SetShadowReceiver(const bool receive)
+{
+    m_ShadowReceiver = receive;
+}
+
 static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
 {
     const pvr_list_t list = m_Current->list;
@@ -392,6 +415,13 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
     cxt.depth.write = m_Blend <= DC_BLEND_PUNCH && m_DepthTest
         ? PVR_DEPTHWRITE_ENABLE
         : PVR_DEPTHWRITE_DISABLE;
+    // The shadow volumes go to the opaque modifier list, which darkens the
+    // opaque and punch-through polygons that take modifiers ("cheap shadow":
+    // one colour, scaled inside a volume).
+    if (M_IsShadowed()) {
+        cxt.fmt.modifier = true;
+        cxt.gen.modifier_mode = false;
+    }
 
     switch (m_Blend) {
     case DC_BLEND_OPAQUE:
@@ -429,7 +459,7 @@ static void *M_Reserve(const size_t size)
     M_LIST *const list = m_Current;
     const bool same_state = list->has_state && list->blend == m_Blend
         && list->page == m_Page && list->depth_test == m_DepthTest
-        && list->filter == m_Bilinear;
+        && list->filter == m_Bilinear && list->shadow == M_IsShadowed();
     const size_t needed = size + (same_state ? 0 : sizeof(pvr_poly_hdr_t));
     if (list->frame_written + needed > list->frame_capacity) {
         m_Dropped++;
@@ -445,8 +475,52 @@ static void *M_Reserve(const size_t size)
         list->page = m_Page;
         list->depth_test = m_DepthTest;
         list->filter = m_Bilinear;
+        list->shadow = M_IsShadowed();
     }
     return pvr_vertbuf_tail(list->list);
+}
+
+void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *const tris, const int32_t count)
+{
+    if (!m_InFrame || count <= 0) {
+        return;
+    }
+    M_LIST *const list = m_ModList;
+    const size_t needed =
+        2 * sizeof(pvr_mod_hdr_t) + count * sizeof(pvr_modifier_vol_t);
+    if (list->frame_written + needed > list->frame_capacity) {
+        m_Dropped += count;
+        return;
+    }
+    // Every triangle but the last goes under one header; the last one, under
+    // a header of its own, closes the volume. What lies inside is shadowed.
+    for (int32_t i = 0; i < count; i++) {
+        if (i == 0 || i == count - 1) {
+            pvr_mod_hdr_t *const hdr = pvr_vertbuf_tail(list->list);
+            pvr_mod_compile(
+                hdr, list->list,
+                i == count - 1 ? PVR_MODIFIER_INCLUDE_LAST_POLY
+                               : PVR_MODIFIER_OTHER_POLY,
+                PVR_CULLING_NONE);
+            pvr_vertbuf_written(list->list, sizeof(pvr_mod_hdr_t));
+            list->frame_written += sizeof(pvr_mod_hdr_t);
+        }
+        pvr_modifier_vol_t *const vol = pvr_vertbuf_tail(list->list);
+        const DC_PVR_TRIANGLE *const t = &tris[i];
+        vol->flags = PVR_CMD_VERTEX_EOL;
+        vol->ax = t->v[0][0];
+        vol->ay = t->v[0][1];
+        vol->az = t->v[0][2];
+        vol->bx = t->v[1][0];
+        vol->by = t->v[1][1];
+        vol->bz = t->v[1][2];
+        vol->cx = t->v[2][0];
+        vol->cy = t->v[2][1];
+        vol->cz = t->v[2][2];
+        vol->d1 = vol->d2 = vol->d3 = vol->d4 = vol->d5 = vol->d6 = 0;
+        pvr_vertbuf_written(list->list, sizeof(pvr_modifier_vol_t));
+        list->frame_written += sizeof(pvr_modifier_vol_t);
+    }
 }
 
 static void M_Commit(const size_t size)

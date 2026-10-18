@@ -5,6 +5,7 @@
 // becomes a new depth layer.
 
 #include "pvr.h"
+#include "shadow.h"
 
 #include <trx/core/vector.h>
 #include <trx/debug.h>
@@ -74,6 +75,7 @@ static void M_RenderScenePasses(const M_PRIV *const p)
             M_RenderSourcePass(p, pass);
         }
     }
+    DC_Shadow_DrawVolumes();
     if (M_IsSourceDirty(p, SCENE_PASS_OVERLAY)) {
         DC_PVR_NextDepthLayer();
         M_RenderSourcePass(p, SCENE_PASS_OVERLAY);

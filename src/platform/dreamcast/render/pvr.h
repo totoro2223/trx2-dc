@@ -69,6 +69,18 @@ float DC_PVR_Depth3D(float inv_w);
 // perspective one there: v in [0, 1], bigger is nearer.
 float DC_PVR_Depth2D(float v);
 
+// Whether the next opaque and punch-through polygons darken inside shadow
+// volumes.
+void DC_PVR_SetShadowReceiver(bool receive);
+
+// A triangle of a shadow volume, in screen space: x, y and depth.
+typedef struct {
+    float v[3][3];
+} DC_PVR_TRIANGLE;
+
+// One closed shadow volume; the shadow receivers inside it are darkened.
+void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *tris, int32_t count);
+
 void DC_PVR_SetFilter(bool bilinear);
 // Selects how the next polygons are drawn. page is a texture page index, or
 // DC_PVR_NO_TEXTURE for flat colour.

@@ -11,6 +11,7 @@
 // sorting of their own.
 
 #include "pvr.h"
+#include "shadow.h"
 #include "uniform_layouts.h"
 
 #include <platform/dreamcast/gl_facade.h>
@@ -48,8 +49,24 @@ typedef struct M_BINDING {
     bool needs_room_lights;
     bool needs_object_light;
     bool needs_own_light;
+    // Object space bounding box: minimum then maximum corner.
+    float bounds[2][3];
     UT_hash_handle hh;
 } M_BINDING;
+
+// A mesh instance that casts a shadow this frame.
+typedef struct {
+    float bounds[2][3];
+    float world[3][4];
+    const ROOM *room;
+} M_CASTER;
+
+#define M_MAX_CASTERS 32
+// How far a shadow volume reaches past its caster, in world units.
+#define M_SHADOW_LENGTH 1024.0f
+// How far a light may tilt a shadow off the vertical: a light level with or
+// below the caster would throw it sideways or up.
+#define M_SHADOW_MIN_DROP 0.6f
 
 // A vertex once transformed and lit: eye space, and its colours.
 typedef struct {
@@ -65,6 +82,8 @@ typedef struct MESH_BATCHER {
     VECTOR *bindings; // M_BINDING *
     M_BINDING *map;
     VECTOR *staged[SCENE_PASS_COUNT];
+    // Per staged instance: whether it casts a shadow (and so takes none).
+    VECTOR *casters[SCENE_PASS_COUNT];
     M_XVERT *xverts;
     int32_t xverts_capacity;
 } MESH_BATCHER;
@@ -89,6 +108,10 @@ typedef struct {
 } M_FRAME;
 
 static M_FRAME m_Frame = {};
+
+static bool m_Casting = false;
+static int32_t m_CasterCount = 0;
+static M_CASTER m_Casters[M_MAX_CASTERS];
 
 // Running totals, for the watchdog.
 int32_t g_DC_BatcherMeshCount = 0;
@@ -228,12 +251,10 @@ static float M_DynamicLum(
     return shade < 0.0f ? 0.0f : shade;
 }
 
-static void M_PrepareRoomLights(
-    const MESH_INSTANCE *const inst, M_INSTANCE_LIGHT *const out)
+// An instance's world matrix (fixed point in TR) in world units, by rows.
+static void M_WorldMatrix(const MATRIX *const m, float out[3][4])
 {
-    out->has_room_lights = true;
     const float scale = 1.0f / (float)(1 << W2V_SHIFT);
-    const MATRIX *const m = &inst->wmatrix;
     const int64_t rows[3][4] = {
         { m->_00, m->_01, m->_02, m->_03 },
         { m->_10, m->_11, m->_12, m->_13 },
@@ -241,9 +262,16 @@ static void M_PrepareRoomLights(
     };
     for (int32_t r = 0; r < 3; r++) {
         for (int32_t c = 0; c < 4; c++) {
-            out->world[r][c] = (float)rows[r][c] * scale;
+            out[r][c] = (float)rows[r][c] * scale;
         }
     }
+}
+
+static void M_PrepareRoomLights(
+    const MESH_INSTANCE *const inst, M_INSTANCE_LIGHT *const out)
+{
+    out->has_room_lights = true;
+    M_WorldMatrix(&inst->wmatrix, out->world);
 
     const DC_UNIFORM_LIGHTS *const lights = m_Frame.lights;
     out->num_lights = 0;
@@ -540,13 +568,16 @@ static void M_EmitIndices(
 
 static void M_DrawInstance(
     MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
-    const SCENE_PASS pass)
+    const SCENE_PASS pass, const bool is_caster)
 {
     const M_BINDING *const bind = M_GetBinding(batcher, inst->mesh);
     if (bind == nullptr || bind->vertex_count == 0) {
         return;
     }
     M_TransformInstance(batcher, inst, bind);
+    // Boxes make a rough shadow; on the caster itself it would only look
+    // wrong.
+    DC_PVR_SetShadowReceiver(!is_caster);
 
     const OUTPUT_MESH *const mesh = inst->mesh;
     if (pass == SCENE_PASS_BLEND_ADD || pass == SCENE_PASS_BLEND_SUB) {
@@ -619,6 +650,7 @@ static void M_RenderBegin(const SCENE_SOURCE *const source)
     MESH_BATCHER *const batcher = source->priv;
     for (int32_t pass = 0; pass < SCENE_PASS_COUNT; pass++) {
         Vector_Clear(batcher->staged[pass]);
+        Vector_Clear(batcher->casters[pass]);
     }
 }
 
@@ -631,9 +663,11 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     }
     M_PrepareFrame();
     VECTOR *const staged = batcher->staged[pass];
+    const bool *const casters = Vector_GetData(batcher->casters[pass]);
     for (int32_t i = 0; i < staged->count; i++) {
-        M_DrawInstance(batcher, Vector_Get(staged, i), pass);
+        M_DrawInstance(batcher, Vector_Get(staged, i), pass, casters[i]);
     }
+    DC_PVR_SetShadowReceiver(false);
 }
 
 static bool M_IsDirty(const SCENE_SOURCE *const source, const SCENE_PASS pass)
@@ -664,6 +698,7 @@ MESH_BATCHER *MeshBatcher_Create(void)
     batcher->bindings = Vector_Create(sizeof(M_BINDING *));
     for (int32_t pass = 0; pass < SCENE_PASS_COUNT; pass++) {
         batcher->staged[pass] = Vector_Create(sizeof(MESH_INSTANCE));
+        batcher->casters[pass] = Vector_Create(sizeof(bool));
     }
     batcher->source = (SCENE_SOURCE) {
         .render_begin = M_RenderBegin,
@@ -687,6 +722,7 @@ void MeshBatcher_Destroy(MESH_BATCHER *const batcher)
     Vector_Free(batcher->bindings);
     for (int32_t pass = 0; pass < SCENE_PASS_COUNT; pass++) {
         Vector_Free(batcher->staged[pass]);
+        Vector_Free(batcher->casters[pass]);
     }
     Memory_Free(batcher->xverts);
     Memory_Free(batcher);
@@ -710,6 +746,17 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
     const OUTPUT_MESH_VERTEX *const vertices = Vector_GetData(mesh->vertices);
     for (int32_t i = 0; i < bind->vertex_count; i++) {
         M_FillTexture(bind, i);
+        const float pos[3] = {
+            vertices[i].pos.x, vertices[i].pos.y, vertices[i].pos.z,
+        };
+        for (int32_t k = 0; k < 3; k++) {
+            if (i == 0 || pos[k] < bind->bounds[0][k]) {
+                bind->bounds[0][k] = pos[k];
+            }
+            if (i == 0 || pos[k] > bind->bounds[1][k]) {
+                bind->bounds[1][k] = pos[k];
+            }
+        }
         const uint16_t flags = vertices[i].flags;
         bind->needs_room_lights |= (flags & VERT_USE_DYNAMIC_LIGHT) != 0;
         bind->needs_object_light |= (flags & VERT_USE_OBJECT_LIGHT) != 0;
@@ -762,7 +809,273 @@ void MeshBatcher_Stage(
     if (inst->mesh == nullptr) {
         return;
     }
+    bool is_caster = false;
+    if (m_Casting && pass == SCENE_PASS_OPAQUE
+        && m_CasterCount < M_MAX_CASTERS) {
+        const M_BINDING *const bind = M_GetBinding(batcher, inst->mesh);
+        if (bind != nullptr && bind->vertex_count > 0) {
+            M_CASTER *const caster = &m_Casters[m_CasterCount++];
+            memcpy(caster->bounds, bind->bounds, sizeof(caster->bounds));
+            M_WorldMatrix(&inst->wmatrix, caster->world);
+            caster->room = inst->room;
+            is_caster = true;
+        }
+    }
     Vector_Add(batcher->staged[pass], inst);
+    Vector_Add(batcher->casters[pass], &is_caster);
+}
+
+void DC_Shadow_SetCasting(const bool casting)
+{
+    m_Casting = casting;
+}
+
+bool DC_Shadow_IsCasting(void)
+{
+    return m_Casting;
+}
+
+static void M_Transform34(
+    const float m[3][4], const float in[3], float out[3])
+{
+    for (int32_t r = 0; r < 3; r++) {
+        out[r] = m[r][0] * in[0] + m[r][1] * in[1] + m[r][2] * in[2] + m[r][3];
+    }
+}
+
+// Picks the direction the casters' shadows fall in: away from the room light
+// nearest their middle, or straight down without one.
+static void M_ShadowDirection(const float center[3], float out[3])
+{
+    out[0] = 0.0f;
+    out[1] = 1.0f;
+    out[2] = 0.0f;
+    if (m_Casters[0].room == nullptr) {
+        return;
+    }
+    Output_Uniforms_UploadRoomLights(Output_GetUniforms(), m_Casters[0].room);
+    const DC_UNIFORM_LIGHTS *const lights =
+        DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
+    m_Frame.lights = lights;
+    if (lights == nullptr) {
+        return;
+    }
+    float best = -1.0f;
+    for (int32_t i = 0; i < lights->num_lights; i++) {
+        const DC_UNIFORM_LIGHT *const light = &lights->lights[i];
+        if (light->kind != 0.0f) {
+            continue;
+        }
+        const float d[3] = {
+            center[0] - light->pos[0],
+            center[1] - light->pos[1],
+            center[2] - light->pos[2],
+        };
+        const float dist_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if (dist_sq < 1.0f || (best >= 0.0f && dist_sq >= best)) {
+            continue;
+        }
+        best = dist_sq;
+        const float inv = 1.0f / sqrtf(dist_sq);
+        out[0] = d[0] * inv;
+        out[1] = d[1] * inv;
+        out[2] = d[2] * inv;
+    }
+    // TR's y axis points down.
+    if (out[1] < M_SHADOW_MIN_DROP) {
+        out[1] = M_SHADOW_MIN_DROP;
+        const float inv = 1.0f
+            / sqrtf(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+        out[0] *= inv;
+        out[1] *= inv;
+        out[2] *= inv;
+    }
+}
+
+// Projects a world point; false when it lies before the near plane.
+static bool M_ProjectWorld(const float p[3], float out[3])
+{
+    const float(*const v)[4] = m_Frame.view;
+    const float x = v[0][0] * p[0] + v[1][0] * p[1] + v[2][0] * p[2] + v[3][0];
+    const float y = v[0][1] * p[0] + v[1][1] * p[1] + v[2][1] * p[2] + v[3][1];
+    const float z = v[0][2] * p[0] + v[1][2] * p[1] + v[2][2] * p[2] + v[3][2];
+    if (z < m_Frame.near_z) {
+        return false;
+    }
+    const float inv_z = 1.0f / z;
+    out[0] = m_Frame.center_x + m_Frame.proj_x * x * inv_z;
+    out[1] = m_Frame.center_y + m_Frame.proj_y * y * inv_z;
+    out[2] = DC_PVR_Depth3D(m_Frame.near_z * inv_z);
+    return true;
+}
+
+// A box's faces by corner (bit 0: x, bit 1: y, bit 2: z; set for the maximum).
+static const int8_t m_BoxFaces[6][4] = {
+    { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 },
+    { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 },
+};
+
+// The volume a box throws: the faces towards the light where they are, the
+// ones away from it pushed along the shadow, and the box's outline joining
+// the two, which closes it.
+static int32_t M_BuildVolume(
+    const M_CASTER *const caster, const float dir[3],
+    DC_PVR_TRIANGLE *const out)
+{
+    float near[8][3];
+    float far[8][3];
+    float corners[8][3];
+    float center[3] = {};
+    for (int32_t i = 0; i < 8; i++) {
+        const float local[3] = {
+            caster->bounds[(i >> 0) & 1][0],
+            caster->bounds[(i >> 1) & 1][1],
+            caster->bounds[(i >> 2) & 1][2],
+        };
+        M_Transform34(caster->world, local, corners[i]);
+        for (int32_t k = 0; k < 3; k++) {
+            center[k] += corners[i][k] / 8.0f;
+        }
+    }
+
+    // A shadow falling towards the camera is cut short of the near plane: a
+    // volume crossing it would not be closed.
+    const float(*const v)[4] = m_Frame.view;
+    const float dir_z = v[0][2] * dir[0] + v[1][2] * dir[1] + v[2][2] * dir[2];
+    float length = M_SHADOW_LENGTH;
+    for (int32_t i = 0; i < 8; i++) {
+        const float *const p = corners[i];
+        const float z =
+            v[0][2] * p[0] + v[1][2] * p[1] + v[2][2] * p[2] + v[3][2];
+        const float margin = m_Frame.near_z * 1.5f;
+        if (z < margin) {
+            return 0;
+        }
+        if (dir_z < 0.0f && z + dir_z * length < margin) {
+            length = (margin - z) / dir_z;
+        }
+    }
+    if (length < 32.0f) {
+        return 0;
+    }
+    for (int32_t i = 0; i < 8; i++) {
+        float pushed[3];
+        for (int32_t k = 0; k < 3; k++) {
+            pushed[k] = corners[i][k] + dir[k] * length;
+        }
+        if (!M_ProjectWorld(corners[i], near[i])
+            || !M_ProjectWorld(pushed, far[i])) {
+            return 0;
+        }
+    }
+
+    bool lit[6];
+    for (int32_t f = 0; f < 6; f++) {
+        // The face's outward direction, from the box's middle to the face's.
+        const int8_t *const q = m_BoxFaces[f];
+        float world[4][3];
+        float face_center[3] = {};
+        for (int32_t j = 0; j < 4; j++) {
+            const float local[3] = {
+                caster->bounds[(q[j] >> 0) & 1][0],
+                caster->bounds[(q[j] >> 1) & 1][1],
+                caster->bounds[(q[j] >> 2) & 1][2],
+            };
+            M_Transform34(caster->world, local, world[j]);
+            for (int32_t k = 0; k < 3; k++) {
+                face_center[k] += world[j][k] / 4.0f;
+            }
+        }
+        const float n_dot_d = (face_center[0] - center[0]) * dir[0]
+            + (face_center[1] - center[1]) * dir[1]
+            + (face_center[2] - center[2]) * dir[2];
+        lit[f] = n_dot_d < 0.0f;
+    }
+
+    int32_t count = 0;
+    for (int32_t f = 0; f < 6; f++) {
+        const int8_t *const q = m_BoxFaces[f];
+        float(*const cap)[3] = lit[f] ? near : far;
+        const int8_t tris[2][3] = { { q[0], q[1], q[2] }, { q[0], q[2], q[3] } };
+        for (int32_t t = 0; t < 2; t++) {
+            for (int32_t j = 0; j < 3; j++) {
+                memcpy(out[count].v[j], cap[tris[t][j]], sizeof(float) * 3);
+            }
+            count++;
+        }
+    }
+    // The outline: edges between a face towards the light and one away.
+    for (int32_t f = 0; f < 6; f++) {
+        for (int32_t g = f + 1; g < 6; g++) {
+            if (lit[f] == lit[g]) {
+                continue;
+            }
+            int8_t shared[2];
+            int32_t num_shared = 0;
+            for (int32_t i = 0; i < 4; i++) {
+                for (int32_t j = 0; j < 4; j++) {
+                    if (m_BoxFaces[f][i] == m_BoxFaces[g][j]
+                        && num_shared < 2) {
+                        shared[num_shared++] = m_BoxFaces[f][i];
+                    }
+                }
+            }
+            if (num_shared != 2) {
+                continue;
+            }
+            const int8_t a = shared[0];
+            const int8_t b = shared[1];
+            memcpy(out[count].v[0], near[a], sizeof(float) * 3);
+            memcpy(out[count].v[1], near[b], sizeof(float) * 3);
+            memcpy(out[count].v[2], far[b], sizeof(float) * 3);
+            count++;
+            memcpy(out[count].v[0], near[a], sizeof(float) * 3);
+            memcpy(out[count].v[1], far[b], sizeof(float) * 3);
+            memcpy(out[count].v[2], far[a], sizeof(float) * 3);
+            count++;
+        }
+    }
+    return count;
+}
+
+void DC_Shadow_DrawVolumes(void)
+{
+    if (m_CasterCount == 0) {
+        return;
+    }
+    float center[3] = {};
+    for (int32_t i = 0; i < m_CasterCount; i++) {
+        float local[3];
+        for (int32_t k = 0; k < 3; k++) {
+            local[k] =
+                (m_Casters[i].bounds[0][k] + m_Casters[i].bounds[1][k]) * 0.5f;
+        }
+        float world[3];
+        M_Transform34(m_Casters[i].world, local, world);
+        for (int32_t k = 0; k < 3; k++) {
+            center[k] += world[k] / m_CasterCount;
+        }
+    }
+    float dir[3];
+    M_ShadowDirection(center, dir);
+
+    // 12 cap triangles and at most 12 outline ones.
+    DC_PVR_TRIANGLE tris[24];
+    int32_t volumes = 0;
+    for (int32_t i = 0; i < m_CasterCount; i++) {
+        const int32_t count = M_BuildVolume(&m_Casters[i], dir, tris);
+        DC_PVR_ShadowVolume(tris, count);
+        volumes += count > 0;
+    }
+#if defined(TRX_DC_WATCHDOG)
+    static int32_t frame = 0;
+    if (++frame % 120 == 0) {
+        LOG_DEBUG(
+            "shadow: %d casters, %d volumes, dir %.2f %.2f %.2f",
+            m_CasterCount, volumes, dir[0], dir[1], dir[2]);
+    }
+#endif
+    m_CasterCount = 0;
 }
 
 const SCENE_SOURCE *MeshBatcher_AsSource(const MESH_BATCHER *const batcher)

@@ -40,6 +40,10 @@
 #include <math.h>
 #include <string.h>
 
+#if defined(__DREAMCAST__)
+#include <platform/dreamcast/render/shadow.h>
+#endif
+
 #define M_SHADOW_FLOOR_GAP 4
 #define M_SHADOW_MAX_SECTOR_SPAN 3
 #define M_SHADOW_MAX_POLY_POINTS 8
@@ -1191,6 +1195,12 @@ void OutputSource_Shadows_Draw(
     if (!item->enable_shadow) {
         return;
     }
+#if defined(__DREAMCAST__)
+    // A shadow volume stands in for it.
+    if (DC_Shadow_IsCasting()) {
+        return;
+    }
+#endif
 
     OUTPUT_ITEM_BIND *const bind = Output_Bind_GetItem(item);
     if (bind->shadow_drawn) {
