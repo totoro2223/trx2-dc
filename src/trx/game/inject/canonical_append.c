@@ -39,11 +39,10 @@ void InjectCanonical_AppendObjectTextures(
     char *data = nullptr;
     const int32_t size = InjectCanonical_TranscodeObjectTextures(
         injection->fp, data_count, M_GameVersion(), &data);
-    TRX_FILE *const native = File_OpenBuffer(data, size);
+    TRX_FILE *const native = File_OpenOwnedBuffer(data, size);
     Level_Section_AppendObjectTextures(
         base_idx, base_page_idx, data_count, native);
     File_Close(native);
-    Memory_FreePointer(&data);
 }
 
 void InjectCanonical_AppendObjectMeshes(
@@ -53,10 +52,9 @@ void InjectCanonical_AppendObjectMeshes(
     char *data = nullptr;
     const int32_t size = InjectCanonical_TranscodeObjectMeshes(
         injection->fp, data_size, M_GameVersion(), offsets, num_offsets, &data);
-    TRX_FILE *const native = File_OpenBuffer(data, size);
+    TRX_FILE *const native = File_OpenOwnedBuffer(data, size);
     SHOULD(Level_Section_AppendObjectMeshes(num_offsets, offsets, native));
     File_Close(native);
-    Memory_FreePointer(&data);
 }
 
 int32_t InjectCanonical_FrameOffset(const int32_t ordinal)
@@ -88,11 +86,10 @@ int32_t InjectCanonical_AppendAnimFrames(
     const int32_t size = InjectCanonical_TranscodeAnimFrames(
         injection->fp, data_count, M_GameVersion(), &data, m_FrameOffsets,
         m_FrameRotCounts);
-    TRX_FILE *const native = File_OpenBuffer(data, size);
+    TRX_FILE *const native = File_OpenOwnedBuffer(data, size);
     const int32_t word_count = size / (int32_t)sizeof(int16_t);
     Level_Section_AppendAnimFrames(base_idx, word_count, native);
     File_Close(native);
-    Memory_FreePointer(&data);
     return word_count;
 }
 
@@ -110,10 +107,9 @@ void InjectCanonical_AppendAnims(
     char *data = nullptr;
     const int32_t size = InjectCanonical_TranscodeAnims(
         injection->fp, data_count, M_GameVersion(), offsets, rots, &data);
-    TRX_FILE *const native = File_OpenBuffer(data, size);
+    TRX_FILE *const native = File_OpenOwnedBuffer(data, size);
     Level_Section_AppendAnims(base_idx, data_count, native);
     File_Close(native);
-    Memory_FreePointer(&data);
 
     if (offsets != m_FrameOffsets) {
         Vector_Free(offsets);

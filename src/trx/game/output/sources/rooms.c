@@ -152,7 +152,7 @@ static void M_AddRoomFace(
         const XYZ_16 *const pos = &room_vert->pos;
         vertices[i] = (OUTPUT_MESH_VERTEX) {
             .pos = { .x = pos->x, .y = pos->y, .z = pos->z },
-            .normal = normal,
+            .normal = { .x = normal.x, .y = normal.y, .z = normal.z },
             .flags = flags,
             .uvw_idx = Output_Textures_GetObjectUVWIndex(face->texture_idx, i),
             .reflectivity = 1.0f,

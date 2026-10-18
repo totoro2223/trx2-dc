@@ -22,6 +22,10 @@
 
 typedef struct {
     OUTPUT_MESH *mesh_batch;
+#if defined(__DREAMCAST__)
+    // The Dreamcast builds a mesh the first time it is drawn (see M_Stage).
+    bool is_built;
+#endif
 } M_MESH;
 
 // A range of meshes to build in one job.
@@ -304,6 +308,10 @@ static void M_PrepareMeshes(M_PRIV *const p)
     if (mesh_count == 0) {
         return;
     }
+#if defined(__DREAMCAST__)
+    // Built as they are first drawn; see M_Stage.
+    return;
+#endif
 
     // Add meshes in index order so parallel build completion cannot change the
     // drawing order.
@@ -408,7 +416,10 @@ static void M_ResyncVertexGeometry(
     vertex->pos.y = pos->y;
     vertex->pos.z = pos->z;
     if (update->normals != nullptr) {
-        vertex->normal = update->normals[idx];
+        // Copied a component at a time: the Dreamcast keeps normals as int16.
+        vertex->normal.x = update->normals[idx].x;
+        vertex->normal.y = update->normals[idx].y;
+        vertex->normal.z = update->normals[idx].z;
     }
     if (update->tint_factors != nullptr) {
         vertex->tint_factor = update->tint_factors[idx];
@@ -437,6 +448,22 @@ static void M_Stage(const OBJECT_MESH *const mesh)
 {
     M_PRIV *const p = &m_Priv;
     M_MESH *const batch = &p->meshes[Object_GetMeshIndex(mesh)];
+#if defined(__DREAMCAST__)
+    // A level holds a few thousand meshes - every pickup, every inventory
+    // model - of which a scene draws a handful. Built all at once they would
+    // not fit the Dreamcast's memory, so each is built when it is first drawn.
+    if (!batch->is_built) {
+        batch->is_built = true;
+        MESH_BUILDER *const builder = MeshBuilder_Create();
+        OUTPUT_MESH *result = nullptr;
+        M_BuildMesh(builder, Object_GetMeshIndex(mesh), &result);
+        MeshBuilder_Destroy(builder);
+        if (result != nullptr) {
+            MeshBatcher_AddMesh(p->batcher, result);
+            batch->mesh_batch = result;
+        }
+    }
+#endif
     if (batch->mesh_batch == nullptr) {
         return;
     }

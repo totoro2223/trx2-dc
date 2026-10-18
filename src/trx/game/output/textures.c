@@ -22,6 +22,11 @@
 #include <trx/gl/utils.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/renderer.h>
+    #include <trx/game/level/texture_pages_16.h>
+#endif
+
 #include <SDL2/SDL_mutex.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,6 +97,12 @@ static int32_t m_TexturePageCount = 0;
 static uint8_t *m_TexturePages8 = nullptr;
 static RGBA_8888 *m_TexturePages32 = nullptr;
 static SDL_mutex **m_TexturePageLocks = nullptr;
+#if defined(__DREAMCAST__)
+// The level's 16-bit pages, in video memory, from Output_LoadTexturePages16
+// until they have been looked at for transparency and made ready to draw.
+static uint16_t *m_TexturePages16 = nullptr;
+static uint8_t *m_TexturePageFormats = nullptr;
+#endif
 
 static int32_t m_PaletteSize = 0;
 static RGB_888 *m_Palette8 = nullptr;
@@ -535,10 +546,17 @@ static void M_PrepareUVWs(void)
 
 static bool M_ObjectTextureHasTransparency(const int32_t texture_idx)
 {
+#if defined(__DREAMCAST__)
+    if (texture_idx < 0 || texture_idx >= Output_GetObjectTextureCount()
+        || m_TexturePages16 == nullptr) {
+        return true;
+    }
+#else
     if (texture_idx < 0 || texture_idx >= Output_GetObjectTextureCount()
         || m_TexturePages32 == nullptr) {
         return true;
     }
+#endif
 
     const OBJECT_TEXTURE *const texture = Output_GetObjectTexture(texture_idx);
     if (texture == nullptr || texture->uv_count <= 0) {
@@ -575,6 +593,22 @@ static bool M_ObjectTextureHasTransparency(const int32_t texture_idx)
     CLAMP(px1, 0, TEXTURE_PAGE_WIDTH - 1);
     CLAMP(py1, 0, TEXTURE_PAGE_HEIGHT - 1);
 
+#if defined(__DREAMCAST__)
+    const uint16_t *const page_16 =
+        &m_TexturePages16[texture->tex_page * TEXTURE_PAGE_SIZE];
+    const bool is_4444 =
+        m_TexturePageFormats[texture->tex_page] == TEXTURE_PAGE_ARGB4444;
+    for (int32_t y = py0; y <= py1; y++) {
+        const int32_t row = y * TEXTURE_PAGE_WIDTH;
+        for (int32_t x = px0; x <= px1; x++) {
+            const uint16_t texel = page_16[row + x];
+            if (is_4444 ? (texel >> 12) != 0xF : (texel & 0x8000) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+#endif
     const RGBA_8888 *const page = Output_GetTexturePage32(texture->tex_page);
     if (page == nullptr) {
         return true;
@@ -601,6 +635,9 @@ static void M_PrepareObjectTransparencyFlags(void)
 
 static void M_PrepareEnvMap(void)
 {
+#if defined(__DREAMCAST__)
+    // No environment map: reflections are not drawn on the Dreamcast.
+#else
     glGenTextures(1, &m_Priv.tex_env_map);
     glBindTexture(GL_TEXTURE_2D, m_Priv.tex_env_map);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -630,6 +667,7 @@ static void M_PrepareEnvMap(void)
         TRX_GL_CheckError();
         Memory_FreePointer(&test_pattern);
     }
+#endif
 }
 
 static void M_PrepareAtlasSizes(void)
@@ -651,6 +689,13 @@ static void M_PrepareAtlasSizes(void)
 
 static void M_UploadAtlas(void)
 {
+#if defined(__DREAMCAST__)
+    // The pages are already in video memory; they are made ready to draw.
+    DC_Renderer_CommitTexturePages(m_TexturePageCount, m_TexturePageFormats);
+    m_TexturePages16 = nullptr;
+    Memory_FreePointer(&m_TexturePageFormats);
+    M_PrepareAtlasSizes();
+#else
     glGenTextures(1, &m_Priv.tex_atlas);
     glBindTexture(GL_TEXTURE_2D_ARRAY, m_Priv.tex_atlas);
     glTexStorage3D(
@@ -684,6 +729,7 @@ static void M_UploadAtlas(void)
     M_PrepareAtlasSizes();
 
     TRX_GL_CheckError();
+#endif
 }
 
 // Builds a cube that maps each rendered color to the nearest palette color.
@@ -934,6 +980,9 @@ static int32_t M_DerivePalette(RGB_888 *const palette, const int32_t max_size)
 // when palette mapping is off or no palette can be found.
 static void M_RefreshPaletteLut(void)
 {
+#if defined(__DREAMCAST__)
+    // Palette quantisation is a shader effect.
+#else
     if (!g_Config.rendering.enable_palette_quantize) {
         TRX_GL_Renderer_SetPaletteLut(nullptr, 0);
         return;
@@ -963,6 +1012,7 @@ static void M_RefreshPaletteLut(void)
         m_PaletteLut.src_size = pal_size;
     }
     TRX_GL_Renderer_SetPaletteLut(m_PaletteLut.cube, M_PALETTE_LUT_SIZE);
+#endif
 }
 
 static void M_FreeLevelData(void)
@@ -975,10 +1025,17 @@ static void M_FreeLevelData(void)
         m_TexturePageLocks = nullptr;
     }
 
+#if defined(__DREAMCAST__)
+    // The pages themselves are in video memory, which the renderer gives
+    // back when the level is unloaded.
+    m_TexturePages16 = nullptr;
+    Memory_FreePointer(&m_TexturePageFormats);
+#else
     if (m_Priv.tex_atlas != 0) {
         glDeleteTextures(1, &m_Priv.tex_atlas);
         m_Priv.tex_atlas = 0;
     }
+#endif
     Memory_FreePointer(&m_Priv.uvws.data);
     Memory_FreePointer(&m_Priv.uvws.animated);
     Memory_FreePointer(&m_Priv.uvws.uv_scroll);
@@ -1011,10 +1068,12 @@ void Output_Textures_Shutdown(void)
     Memory_FreePointer(&m_PaletteLut.cube);
     m_PaletteLut.src_size = 0;
 
+#if !defined(__DREAMCAST__)
     if (m_Priv.tex_env_map != 0) {
         glDeleteTextures(1, &m_Priv.tex_env_map);
         m_Priv.tex_env_map = 0;
     }
+#endif
 
     // These are GameBuf-backed and become invalid once its arenas are freed.
     m_TexturePageCount = 0;
@@ -1046,6 +1105,7 @@ void Output_Textures_ObserveLevelLoad(void)
 
 void Output_Textures_UpdateEnvironmentMap(void)
 {
+#if !defined(__DREAMCAST__)
     if (Output_IsHeadless()) {
         return;
     }
@@ -1068,6 +1128,7 @@ void Output_Textures_UpdateEnvironmentMap(void)
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev_read_fbo);
     TRX_GL_CheckError();
+#endif
 }
 
 void Output_Textures_CycleAnimations(void)
@@ -1285,6 +1346,17 @@ void Output_SetUVRotateRangeCount(const int32_t num_ranges)
 {
     m_UVRotateRangeCount = num_ranges;
 }
+
+#if defined(__DREAMCAST__)
+void Output_LoadTexturePages16(
+    const int32_t num_pages, uint16_t *const pages, uint8_t *const formats)
+{
+    Memory_FreePointer(&m_TexturePageFormats);
+    m_TexturePageCount = num_pages;
+    m_TexturePages16 = pages;
+    m_TexturePageFormats = formats;
+}
+#endif
 
 int32_t Output_GetTexturePageCount(void)
 {

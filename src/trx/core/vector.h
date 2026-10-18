@@ -16,6 +16,8 @@ typedef struct {
 VECTOR *Vector_Create(size_t item_size);
 VECTOR *Vector_CreateAtCapacity(size_t item_size, int32_t capacity);
 void Vector_EnsureCapacity(VECTOR *vector, int32_t capacity);
+// Gives back the room the vector grew into but does not use.
+void Vector_ShrinkToFit(VECTOR *vector);
 void Vector_Free(VECTOR *vector);
 
 int32_t Vector_IndexOf(const VECTOR *vector, const void *item);

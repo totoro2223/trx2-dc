@@ -12,7 +12,6 @@ dc_kos_ports_dir = meson.get_external_property('dc_kos_ports_dir')
 dc_lib_dirs = [dc_deps_dir / 'lib', dc_kos_ports_dir / 'lib']
 
 dc_dependencies = [
-  c_compiler.find_library('GL', dirs: dc_lib_dirs),
   c_compiler.find_library('lua', dirs: dc_lib_dirs),
   c_compiler.find_library('pcre2-8', dirs: dc_lib_dirs),
   c_compiler.find_library('z', dirs: dc_lib_dirs),
@@ -24,19 +23,42 @@ dc_include_directories = include_directories(
   is_system: true,
 )
 
-# Path prefixes (relative to src/) of sources not built on the Dreamcast.
+# Path prefixes (relative to src/) of sources not built on the Dreamcast:
+# FFmpeg, the OpenGL 3 wrapper, and the parts of the output module that talk
+# to OpenGL. The rest of the output module (the sources that build meshes,
+# lights, water, sky and so on) is shared with the desktop.
 dc_excluded_sources = [
   'trx/av/',
   'trx/gl/',
-  'trx/game/output/',
+  'trx/game/output/common.c',
+  # TR4 lighting: TR4 does not run on the Dreamcast, and its per-item light
+  # cache alone would take 50 MiB.
+  'trx/game/output/lights/tr4.c',
+  'trx/game/output/mesh_batcher/batcher.c',
+  'trx/game/output/quad.c',
+  'trx/game/output/scene_compositor.c',
+  'trx/game/output/shaders/',
+  'trx/game/output/sources/lightnings.c',
+  'trx/game/output/sources/misc.c',
+  'trx/game/output/sources/overlay.c',
+  'trx/game/output/sources/poly_fx.c',
+  'trx/game/output/sources/rooms_debug.c',
+  'trx/game/output/sources/sky.c',
+  'trx/game/output/sources/ui.c',
 ]
 
 dc_sources = files(
   'av_stub.c',
   'dc_main.c',
   'dc_watchdog.c',
-  'output_stub.c',
+  'gl_facade.c',
   'posix_compat.c',
+  'render/batcher.c',
+  'render/compositor.c',
+  'render/lights_tr4.c',
+  'render/output_common.c',
+  'render/pvr.c',
+  'render/stubs.c',
   'sdl_compat.c',
 )
 

@@ -1,4 +1,4 @@
-// Dreamcast platform layer: the part of SDL2 the engine uses, implemented on
+﻿// Dreamcast platform layer: the part of SDL2 the engine uses, implemented on
 // KallistiOS.
 //
 // The headers are the stock SDL2 ones (include/SDL2), so the engine compiles
@@ -26,7 +26,7 @@
 #define DC_SCREEN_WIDTH 640
 #define DC_SCREEN_HEIGHT 480
 #define DC_EVENT_QUEUE_SIZE 64
-#define DC_THREAD_STACK_SIZE (256 * 1024)
+#define DC_THREAD_STACK_SIZE (128 * 1024)
 // Analog trigger travel (0-255) past which the trigger also counts as the
 // shoulder button of the same side.
 #define DC_TRIGGER_BUTTON_THRESHOLD 128

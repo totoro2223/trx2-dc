@@ -467,6 +467,14 @@ RESULT LUA_Init(void)
 {
     lua_State *const L = luaL_newstate();
     ASSERT(L != nullptr);
+#if defined(__DREAMCAST__)
+    // The UI scripts leave garbage every frame. By default the collector lets
+    // the heap reach well over twice what is live before it starts, which the
+    // Dreamcast's 16 MiB cannot carry; it collects at a fifth over instead.
+    lua_gc(L, LUA_GCINC);
+    lua_gc(L, LUA_GCPARAM, LUA_GCPPAUSE, 120);
+    lua_gc(L, LUA_GCPARAM, LUA_GCPSTEPMUL, 400);
+#endif
     LUA_OpenSafeLibs(L);
     LUA_Guard_Install(L, LUA_GUARD_BUDGET_SEC);
 

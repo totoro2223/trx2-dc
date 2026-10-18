@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
+#include <zlib.h>
 
 #if defined(_WIN32)
     #include <io.h>
@@ -63,6 +64,18 @@ typedef struct {
     char *window;
 } M_DISK_STATE;
 
+#define M_ZLIB_WINDOW 16384
+
+typedef struct {
+    char *compressed;
+    size_t compressed_size;
+    z_stream stream;
+    bool stream_open;
+    size_t window_pos;
+    size_t window_len;
+    char *window;
+} M_ZLIB_STATE;
+
 struct TRX_FILE {
     const M_STRATEGY *strategy;
     void *state;
@@ -95,6 +108,15 @@ static const M_STRATEGY m_BufferStrategy = {
     .fill = M_BufferFill,
     .write = nullptr,
     .close = M_BufferClose,
+};
+
+static size_t M_ZlibFill(void *state, size_t offset, const char **out_data);
+static void M_ZlibClose(void *state);
+
+static const M_STRATEGY m_ZlibStrategy = {
+    .fill = M_ZlibFill,
+    .write = nullptr,
+    .close = M_ZlibClose,
 };
 
 static const M_STRATEGY m_DiskStrategy = {
@@ -211,6 +233,73 @@ static void M_DiskClose(void *const state)
     fclose(disk->fp);
     Memory_Free(disk->window);
     Memory_Free(disk);
+}
+
+// Inflates as the reader goes, holding the compressed data and one window of
+// output. Reading on moves forward; going back starts the stream over.
+static bool M_ZlibRestart(M_ZLIB_STATE *const zs)
+{
+    if (zs->stream_open) {
+        inflateEnd(&zs->stream);
+        zs->stream_open = false;
+    }
+    zs->stream = (z_stream) {
+        .next_in = (Bytef *)zs->compressed,
+        .avail_in = (uInt)zs->compressed_size,
+    };
+    if (inflateInit(&zs->stream) != Z_OK) {
+        return false;
+    }
+    zs->stream_open = true;
+    zs->window_pos = 0;
+    zs->window_len = 0;
+    return true;
+}
+
+static size_t M_ZlibFill(
+    void *const state, const size_t offset, const char **const out_data)
+{
+    M_ZLIB_STATE *const zs = state;
+    *out_data = nullptr;
+    if (offset < zs->window_pos
+        || (!zs->stream_open && offset >= zs->window_pos + zs->window_len)) {
+        if (!M_ZlibRestart(zs)) {
+            return 0;
+        }
+    }
+    while (offset >= zs->window_pos + zs->window_len) {
+        if (!zs->stream_open) {
+            return 0;
+        }
+        zs->window_pos += zs->window_len;
+        zs->stream.next_out = (Bytef *)zs->window;
+        zs->stream.avail_out = M_ZLIB_WINDOW;
+        const int rc = inflate(&zs->stream, Z_NO_FLUSH);
+        zs->window_len = M_ZLIB_WINDOW - zs->stream.avail_out;
+        if (rc != Z_OK) {
+            // The end, or a broken stream: either way no more output comes,
+            // and the inflater's memory can go.
+            inflateEnd(&zs->stream);
+            zs->stream_open = false;
+            if (zs->window_len == 0) {
+                return 0;
+            }
+        }
+    }
+    const size_t skip = offset - zs->window_pos;
+    *out_data = zs->window + skip;
+    return zs->window_len - skip;
+}
+
+static void M_ZlibClose(void *const state)
+{
+    M_ZLIB_STATE *const zs = state;
+    if (zs->stream_open) {
+        inflateEnd(&zs->stream);
+    }
+    Memory_Free(zs->compressed);
+    Memory_Free(zs->window);
+    Memory_Free(zs);
 }
 
 static void M_Fail(TRX_FILE *const file, const char *const message)
@@ -333,6 +422,21 @@ RESULT File_OpenPathForLoad(const char *const path, TRX_FILE **const out_file)
 #else
     return File_OpenPathInMemory(path, out_file);
 #endif
+}
+
+TRX_FILE *File_OpenZlibBuffer(
+    char *const compressed, const size_t compressed_size, const size_t size)
+{
+    M_ZLIB_STATE *const zs = Memory_Alloc(sizeof(M_ZLIB_STATE));
+    zs->compressed = compressed;
+    zs->compressed_size = compressed_size;
+    zs->window = Memory_Alloc(M_ZLIB_WINDOW);
+
+    TRX_FILE *const file = Memory_Alloc(sizeof(TRX_FILE));
+    file->strategy = &m_ZlibStrategy;
+    file->state = zs;
+    file->size = size;
+    return file;
 }
 
 TRX_FILE *File_OpenBuffer(const char *const data, const size_t size)

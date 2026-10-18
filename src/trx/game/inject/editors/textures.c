@@ -2,6 +2,11 @@
 #include <trx/core/log.h>
 #include <trx/core/memory.h>
 #include <trx/game/inject.h>
+#include <trx/game/level/texture_pages_16.h>
+
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/renderer.h>
+#endif
 #include <trx/game/objects.h>
 #include <trx/game/output.h>
 
@@ -26,6 +31,26 @@ static void M_TextureEdits(
             continue;
         }
 
+#if defined(__DREAMCAST__)
+        // The page is held at 16 bits; the edit is written in its format.
+        uint16_t *const page_16 =
+            &level_info->textures.pages_16[target_page * TEXTURE_PAGE_SIZE];
+        const TEXTURE_PAGE_FORMAT format =
+            level_info->textures.page_formats[target_page];
+        // The page lives in video memory, which takes no byte writes; a
+        // texel is a whole halfword.
+        for (int32_t y = 0; y < source_height; y++) {
+            for (int32_t x = 0; x < source_width; x++) {
+                const int32_t target_pixel =
+                    (y + target_y) * TEXTURE_PAGE_WIDTH + x + target_x;
+                const uint16_t texel = TexturePage16_Encode(
+                    format, source_img[y * source_width + x]);
+                DC_Renderer_WriteTexels(&page_16[target_pixel], &texel, 1);
+            }
+        }
+        Memory_FreePointer(&source_img);
+        continue;
+#endif
         RGBA_8888 *page =
             &level_info->textures.pages_32[target_page * TEXTURE_PAGE_SIZE];
         for (int32_t y = 0; y < source_height; y++) {

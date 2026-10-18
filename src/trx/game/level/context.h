@@ -41,6 +41,11 @@ typedef struct {
         int32_t page_count;
         uint8_t *pages_8;
         RGBA_8888 *pages_32;
+#if defined(__DREAMCAST__)
+        // Used instead of pages_8 and pages_32; see texture_pages_16.h.
+        uint16_t *pages_16;
+        uint8_t *page_formats;
+#endif
     } textures;
 
     struct {

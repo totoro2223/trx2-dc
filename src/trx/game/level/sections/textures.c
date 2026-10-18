@@ -8,6 +8,11 @@
 #include <trx/game/game_buf.h>
 #include <trx/game/inject.h>
 #include <trx/game/level/format/format.h>
+#include <trx/game/level/texture_pages_16.h>
+
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/renderer.h>
+#endif
 #include <trx/game/level/sections/append.h>
 #include <trx/game/level/sections/read.h>
 #include <trx/game/objects.h>
@@ -158,6 +163,51 @@ RESULT Level_Section_ReadTexturePages(
     LOG_INFO("texture pages: %d", num_pages);
 
     const int32_t extra_pages = Inject_GetDataCount(IDT_TEXTURE_PAGES);
+#if defined(__DREAMCAST__)
+    // Only the 16-bit pages are kept (see texture_pages_16.h). TR2 and TR3
+    // store them after the 8-bit ones, ready to use; TR1 has only the 8-bit
+    // pages, which go through the palette.
+    // The pages go straight to video memory; main memory only ever holds a
+    // row of them on the way.
+    const int32_t total_pages = num_pages + extra_pages;
+    info->textures.pages_8 = nullptr;
+    info->textures.pages_32 = nullptr;
+    info->textures.pages_16 = DC_Renderer_ReserveTexturePages(total_pages);
+    FAIL_IF(
+        info->textures.pages_16 == nullptr,
+        "no video memory for %d texture pages", total_pages);
+    info->textures.page_formats = Memory_Alloc(total_pages);
+    uint16_t row_16[TEXTURE_PAGE_WIDTH];
+    if (loader->game_version == 1) {
+        uint8_t row_8[TEXTURE_PAGE_WIDTH];
+        for (int32_t i = 0; i < num_pages * TEXTURE_PAGE_HEIGHT; i++) {
+            File_ReadData(file, row_8, TEXTURE_PAGE_WIDTH);
+            for (int32_t j = 0; j < TEXTURE_PAGE_WIDTH; j++) {
+                const uint8_t index = row_8[j];
+                const RGB_888 pix = info->palette.data_24[index];
+                row_16[j] = TexturePage16_ToARGB1555((RGBA_8888) {
+                    .r = pix.r,
+                    .g = pix.g,
+                    .b = pix.b,
+                    .a = index == 0 ? 0 : 0xFF,
+                });
+            }
+            DC_Renderer_WriteTexels(
+                &info->textures.pages_16[i * TEXTURE_PAGE_WIDTH], row_16,
+                TEXTURE_PAGE_WIDTH);
+        }
+    } else {
+        File_Skip(file, num_pages * TEXTURE_PAGE_SIZE);
+        for (int32_t i = 0; i < num_pages * TEXTURE_PAGE_HEIGHT; i++) {
+            File_ReadData(file, row_16, sizeof(row_16));
+            DC_Renderer_WriteTexels(
+                &info->textures.pages_16[i * TEXTURE_PAGE_WIDTH], row_16,
+                TEXTURE_PAGE_WIDTH);
+        }
+    }
+    Benchmark_End(&benchmark, nullptr);
+    return OK;
+#endif
     const int32_t texture_size_8_bit =
         (num_pages + extra_pages) * TEXTURE_PAGE_SIZE * sizeof(uint8_t);
     const int32_t texture_size_32_bit =

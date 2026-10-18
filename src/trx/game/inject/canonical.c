@@ -24,9 +24,24 @@ static M_BUFFER M_BufferCreate(const size_t capacity)
     };
 }
 
+// The capacity a transcoder starts with is a guess; the buffer grows past it
+// as the records need, so that the guess need not be the worst case.
+static void M_BufferReserve(M_BUFFER *const buf, const size_t extra)
+{
+    if (buf->size + extra <= buf->capacity) {
+        return;
+    }
+    size_t capacity = buf->capacity > 0 ? buf->capacity : 256;
+    while (buf->size + extra > capacity) {
+        capacity *= 2;
+    }
+    buf->data = Memory_Realloc(buf->data, capacity);
+    buf->capacity = capacity;
+}
+
 static void M_Put8(M_BUFFER *const buf, const uint8_t value)
 {
-    ASSERT(buf->size + 1 <= buf->capacity);
+    M_BufferReserve(buf, 1);
     buf->data[buf->size++] = (char)value;
 }
 
@@ -45,7 +60,7 @@ static void M_Put32(M_BUFFER *const buf, const uint32_t value)
 static void M_PutData(
     M_BUFFER *const buf, TRX_FILE *const file, const size_t size)
 {
-    ASSERT(buf->size + size <= buf->capacity);
+    M_BufferReserve(buf, size);
     File_ReadData(file, buf->data + buf->size, size);
     buf->size += size;
 }
@@ -124,10 +139,12 @@ int32_t InjectCanonical_TranscodeAnimFrames(
     VECTOR *const out_rot_counts)
 {
     // Native frames never exceed the canonical ones: a canonical rotation is
-    // six bytes against four packed, and the headers match.
+    // six bytes against four packed, and the headers match. A frame may hold
+    // up to 123 rotations, but a typical one is a body of fifteen bones; the
+    // buffer starts at that and grows for anything larger.
     M_BUFFER buf = M_BufferCreate(
         (size_t)data_count * (9 + 1) * sizeof(int16_t)
-        + (size_t)data_count * 123 * 4);
+        + (size_t)data_count * 15 * 4);
 
     for (int32_t i = 0; i < data_count; i++) {
         const int32_t offset = (int32_t)buf.size;

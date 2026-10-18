@@ -50,6 +50,17 @@ void Vector_EnsureCapacity(VECTOR *const vector, const int32_t capacity)
         Memory_Realloc(P(vector).items, vector->item_size * capacity);
 }
 
+void Vector_ShrinkToFit(VECTOR *const vector)
+{
+    const int32_t capacity = vector->count > 0 ? vector->count : 1;
+    if (vector->capacity <= capacity) {
+        return;
+    }
+    vector->capacity = capacity;
+    P(vector).items =
+        Memory_Realloc(P(vector).items, vector->item_size * capacity);
+}
+
 void Vector_Free(VECTOR *vector)
 {
     if (vector == nullptr) {

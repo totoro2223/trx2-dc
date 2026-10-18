@@ -1,4 +1,4 @@
-// Dreamcast platform layer: start-up.
+﻿// Dreamcast platform layer: start-up.
 //
 // The engine finds its data relative to its base directory (see
 // SDL_GetBasePath), which on the Dreamcast is the root of the disc. The disc
@@ -16,11 +16,13 @@
 #include <kos/init.h>
 #include <kos/thread.h>
 
+#include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 
-#define DC_MAIN_STACK_SIZE (1024 * 1024)
+#define DC_MAIN_STACK_SIZE (128 * 1024)
 
 KOS_INIT_FLAGS(INIT_DEFAULT);
 
@@ -78,8 +80,17 @@ int __wrap_main(int argc, char *argv[])
     // The KOS main thread has a 64 KiB stack; the engine was written for
     // desktop stacks of a megabyte or more, so it runs on a thread of its own.
     M_MAIN_ARGS args = { .argc = argc, .argv = argv, .result = 0 };
+    // The stack is filled with a marker so that the watchdog can tell how
+    // deep it has been used.
+    void *const stack = memalign(32, DC_MAIN_STACK_SIZE);
+    if (stack == nullptr) {
+        printf("TRX: could not allocate the main stack\n");
+        return 1;
+    }
+    memset(stack, DC_STACK_MARKER, DC_MAIN_STACK_SIZE);
     const kthread_attr_t attr = {
         .stack_size = DC_MAIN_STACK_SIZE,
+        .stack_ptr = stack,
         .label = "trx-main",
     };
     kthread_t *const thread = thd_create_ex(&attr, M_MainThread, &args);

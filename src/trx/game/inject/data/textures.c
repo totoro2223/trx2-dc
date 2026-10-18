@@ -6,6 +6,11 @@
 #include <trx/game/inject.h>
 #include <trx/game/inject/canonical.h>
 #include <trx/game/level/context.h>
+#include <trx/game/level/texture_pages_16.h>
+
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/renderer.h>
+#endif
 #include <trx/game/level/sections/append.h>
 #include <trx/game/objects/common.h>
 #include <trx/game/output/const.h>
@@ -53,6 +58,42 @@ static void M_HandleTexturePages(
     const INJECTION *const injection, const int32_t data_count)
 {
     LEVEL_CONTEXT_INFO *const info = Level_Context_GetInfo();
+#if defined(__DREAMCAST__)
+    // Each page comes as RGBA and again as palette indices; only the first is
+    // kept, a page at a time, in the 16-bit format that suits it.
+    if (info->textures.pages_16 == nullptr) {
+        File_Skip(
+            injection->fp, data_count * TEXTURE_PAGE_SIZE * sizeof(RGBA_8888));
+        File_Skip(injection->fp, data_count * TEXTURE_PAGE_SIZE);
+        return;
+    }
+    RGBA_8888 *const page_32 =
+        Memory_Alloc(TEXTURE_PAGE_SIZE * sizeof(RGBA_8888));
+    for (int32_t i = 0; i < data_count; i++) {
+        const int32_t page = info->textures.page_count + i;
+        File_ReadData(
+            injection->fp, page_32, TEXTURE_PAGE_SIZE * sizeof(RGBA_8888));
+        const TEXTURE_PAGE_FORMAT format =
+            TexturePage16_ChooseFormat(page_32, TEXTURE_PAGE_SIZE);
+        info->textures.page_formats[page] = format;
+        // The page lives in video memory (see DC_Renderer_WriteTexels).
+        uint16_t *const output =
+            &info->textures.pages_16[page * TEXTURE_PAGE_SIZE];
+        uint16_t row[TEXTURE_PAGE_WIDTH];
+        for (int32_t y = 0; y < TEXTURE_PAGE_HEIGHT; y++) {
+            for (int32_t x = 0; x < TEXTURE_PAGE_WIDTH; x++) {
+                row[x] = TexturePage16_Encode(
+                    format, page_32[y * TEXTURE_PAGE_WIDTH + x]);
+            }
+            DC_Renderer_WriteTexels(
+                &output[y * TEXTURE_PAGE_WIDTH], row, TEXTURE_PAGE_WIDTH);
+        }
+    }
+    Memory_FreePointer(&page_32);
+    File_Skip(injection->fp, data_count * TEXTURE_PAGE_SIZE);
+    info->textures.page_count += data_count;
+    return;
+#endif
     if (info->textures.pages_32 == nullptr) {
         File_Skip(
             injection->fp, data_count * TEXTURE_PAGE_SIZE * sizeof(RGBA_8888));

@@ -17,6 +17,37 @@ typedef struct {
     float reflectivity;
 } OUTPUT_MESH_TEXTURE;
 
+#if defined(__DREAMCAST__)
+// The Dreamcast keeps every mesh of a level in 16 MiB, so the vertex is held
+// at the precision the level data has: whole world units, int16 normals. The
+// fields its renderer has no use for (trapezoid filtering, reflections, the
+// TR4 ambient span) are kept only in name.
+typedef struct {
+    int16_t x;
+    int16_t y;
+    int16_t z;
+    int16_t w;
+} OUTPUT_MESH_VERTEX_POS;
+
+typedef struct {
+    int16_t x;
+    int16_t y;
+    int16_t z;
+} OUTPUT_MESH_VERTEX_NORMAL;
+
+typedef struct {
+    int32_t uvw_idx;
+    RGBA_8888 color;
+    OUTPUT_MESH_VERTEX_POS pos;
+    OUTPUT_MESH_VERTEX_NORMAL normal;
+    uint16_t flags;
+    int16_t shade;
+    int16_t trapezoid_ratio[2];
+    int16_t reflectivity;
+    int16_t tint_factor;
+    uint8_t light_table_idx;
+} OUTPUT_MESH_VERTEX;
+#else
 typedef struct {
     XYZW_F pos;
     XYZ_F normal;
@@ -32,6 +63,7 @@ typedef struct {
     RGBA_8888 color;
     uint8_t light_table_idx;
 } OUTPUT_MESH_VERTEX;
+#endif
 
 // Describes a contiguous block of vertices belonging to one face,
 // with sort keys.

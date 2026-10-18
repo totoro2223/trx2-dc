@@ -213,6 +213,16 @@ void Level_Finalize_LoadTexturePages(LEVEL_CONTEXT *const ctx)
     const LEVEL_FORMAT_LOADER *const loader = ctx->loader;
     LEVEL_CONTEXT_INFO *const info = &ctx->info;
     const int32_t num_pages = info->textures.page_count;
+#if defined(__DREAMCAST__)
+    // The pages are already in the formats the PowerVR reads, alpha included,
+    // so they go to the output as they are.
+    Output_LoadTexturePages16(
+        num_pages, info->textures.pages_16, info->textures.page_formats);
+    info->textures.pages_16 = nullptr;
+    info->textures.page_formats = nullptr;
+    Benchmark_End(&benchmark, nullptr);
+    return;
+#endif
     Output_InitialiseTexturePages(num_pages, loader->game_version >= 2);
 
     for (int32_t i = 0; i < num_pages; i++) {

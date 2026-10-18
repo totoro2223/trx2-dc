@@ -44,6 +44,13 @@ TRX_FILE *File_OpenBuffer(const char *data, size_t size);
 // it, and frees it on close. The data must come from Memory_Alloc.
 TRX_FILE *File_OpenOwnedBuffer(char *data, size_t size);
 
+// Open zlib-compressed data as the size bytes it inflates to, taking the
+// compressed data over. It is inflated as it is read, so only a small window
+// of it is ever held; going back means inflating again from the start, which
+// suits data read through once or twice.
+TRX_FILE *File_OpenZlibBuffer(
+    char *compressed, size_t compressed_size, size_t size);
+
 // Open a view onto part of another handle. The bytes of an in-memory handle
 // are not copied, so the parent handle must outlive the view; a handle read
 // from disk gives the view a copy of the range.

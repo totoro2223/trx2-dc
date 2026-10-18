@@ -495,6 +495,23 @@ static void M_ReadFile(
 
     size_t compressed_left;
     const char *const compressed = File_PeekBytes(file, &compressed_left);
+#if defined(__DREAMCAST__)
+    // A level's injections, held inflated all at once, would not fit in the
+    // Dreamcast's memory; each is inflated as it is read instead.
+    if (compressed_size < 0 || (size_t)compressed_size > compressed_left) {
+        LOG_WARNING("%s has a truncated payload", inj_name);
+        injection->relevant = false;
+        goto cleanup;
+    }
+    injection->fp = File_OpenZlibBuffer(
+        Memory_Dup(compressed, compressed_size), compressed_size,
+        uncompressed_size);
+    File_SetSoftFailure(injection->fp, true);
+    if (m_Context.mode != INJECTION_MODE_STATS) {
+        LOG_INFO("%s queued for injection", inj_name);
+    }
+    goto cleanup;
+#endif
     payload = Memory_Alloc(uncompressed_size);
 
     uLongf uncompressed_sizef = uncompressed_size;

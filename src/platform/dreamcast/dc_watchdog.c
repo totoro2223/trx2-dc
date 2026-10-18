@@ -1,4 +1,4 @@
-﻿// Dreamcast platform layer: a watchdog for finding hangs without a debugger.
+// Dreamcast platform layer: a watchdog for finding hangs without a debugger.
 //
 // Every few seconds a low-priority thread prints where the watched thread is:
 // its saved PC and PR, and the words on its stack that look like return
@@ -10,6 +10,7 @@
 #include <kos/thread.h>
 
 #include <malloc.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -23,6 +24,9 @@ extern char _executable_start[];
 extern char etext[];
 
 static kthread_t *m_Watched = nullptr;
+
+extern int32_t g_DC_BatcherMeshCount;
+extern int32_t g_DC_BatcherVertexCount;
 
 static bool M_IsCode(const uint32_t addr)
 {
@@ -40,11 +44,22 @@ static void *M_Run(void *const param)
         }
         const irq_context_t *const ctx = &thread->context;
         const struct mallinfo mem = mallinfo();
+        // The stack grows down; the marker left at its bottom is the part
+        // never used.
+        const uint8_t *const stack_bottom = thread->stack;
+        size_t untouched = 0;
+        while (untouched < thread->stack_size
+               && stack_bottom[untouched] == DC_STACK_MARKER) {
+            untouched++;
+        }
         printf(
-            "[watchdog] heap=%uK used=%uK %s pc=%08lx pr=%08lx sp=%08lx "
-            "trace:",
+            "[watchdog] heap=%uK used=%uK brk=%08lx meshes=%d/%d stack=%uK %s pc=%08lx pr=%08lx "
+            "sp=%08lx trace:",
             (unsigned)(mem.arena / 1024), (unsigned)(mem.uordblks / 1024),
-            thread->label, (unsigned long)ctx->pc, (unsigned long)ctx->pr,
+            (unsigned long)sbrk(0), (int)g_DC_BatcherMeshCount,
+            (int)g_DC_BatcherVertexCount,
+            (unsigned)((thread->stack_size - untouched) / 1024), thread->label,
+            (unsigned long)ctx->pc, (unsigned long)ctx->pr,
             (unsigned long)ctx->r[15]);
         const uint32_t *sp = (const uint32_t *)ctx->r[15];
         const uint32_t *const stack_top = (const uint32_t *)((uintptr_t)

@@ -954,3 +954,10 @@ int32_t g_PhdPersp;
 int32_t g_PhdRight;
 
 int32_t g_PhdTop;
+
+void Output_LoadTexturePages16(
+    const int32_t num_pages, const uint16_t *const pages,
+    const uint8_t *const formats)
+{
+    DC_STUB();
+}

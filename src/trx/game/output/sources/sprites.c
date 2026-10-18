@@ -67,6 +67,10 @@ static void M_PrepareMeshes(M_PRIV *const p)
     p->meshes = Memory_Alloc(sizeof(*p->meshes) * p->mesh_count);
     p->meshes_blend_add =
         Memory_Alloc(sizeof(*p->meshes_blend_add) * p->mesh_count);
+#if defined(__DREAMCAST__)
+    // Built as they are first drawn; see M_GetMesh.
+    return;
+#endif
     MESH_BUILDER *const builder = MeshBuilder_Create();
     for (int32_t i = 0; i < (int32_t)p->mesh_count; i++) {
         // The original engines painter-sorted every sprite instead of using
@@ -92,10 +96,14 @@ static void M_FreeMeshes(M_PRIV *const p)
 {
     if (p->meshes != nullptr) {
         for (size_t i = 0; i < p->mesh_count; i++) {
-            MeshBatcher_RemoveMesh(p->batcher, p->meshes[i]);
-            Output_Mesh_Destroy(p->meshes[i]);
-            MeshBatcher_RemoveMesh(p->batcher, p->meshes_blend_add[i]);
-            Output_Mesh_Destroy(p->meshes_blend_add[i]);
+            if (p->meshes[i] != nullptr) {
+                MeshBatcher_RemoveMesh(p->batcher, p->meshes[i]);
+                Output_Mesh_Destroy(p->meshes[i]);
+            }
+            if (p->meshes_blend_add[i] != nullptr) {
+                MeshBatcher_RemoveMesh(p->batcher, p->meshes_blend_add[i]);
+                Output_Mesh_Destroy(p->meshes_blend_add[i]);
+            }
         }
         Memory_FreePointer(&p->meshes);
         Memory_FreePointer(&p->meshes_blend_add);
@@ -125,12 +133,47 @@ void OutputSource_Sprites_ObserveLevelUnload(void)
     M_FreeMeshes(&m_Priv);
 }
 
+#if defined(__DREAMCAST__)
+// Builds a sprite's mesh the first time it is drawn: a level names hundreds
+// of sprites, and holding a mesh for each would not fit the Dreamcast's
+// memory.
+static OUTPUT_MESH *M_GetMesh(
+    M_PRIV *const p, const int32_t sprite_idx, const bool blend_add)
+{
+    OUTPUT_MESH **const slot =
+        blend_add ? &p->meshes_blend_add[sprite_idx] : &p->meshes[sprite_idx];
+    if (*slot == nullptr) {
+        MESH_BUILDER *const builder = MeshBuilder_Create();
+        if (blend_add) {
+            M_AddSpriteMesh(
+                builder, sprite_idx, SCENE_PASS_BLEND_ADD, VERT_USE_OWN_LIGHT,
+                true);
+        } else {
+            M_AddSpriteMesh(
+                builder, sprite_idx, SCENE_PASS_TRANSPARENT,
+                VERT_USE_OWN_LIGHT, false);
+        }
+        *slot = MeshBuilder_Seal(builder);
+        MeshBuilder_Destroy(builder);
+        MeshBatcher_AddMesh(p->batcher, *slot);
+    }
+    return *slot;
+}
+#endif
+
 void OutputSource_Sprites_Stage(
     const int32_t sprite_idx, const int16_t shade, const RGBA_F tint,
     const DRAW_TYPE draw_type)
 {
     M_PRIV *const p = &m_Priv;
+#if defined(__DREAMCAST__)
+    const bool is_blend_add =
+        draw_type == DRAW_BLEND_ADD || draw_type == DRAW_REFLECTIVE_BLEND_ADD;
+    // Only the variant drawn is built; the blend path below reads its slot.
+    OUTPUT_MESH *mesh = M_GetMesh(p, sprite_idx, is_blend_add);
+#else
     OUTPUT_MESH *mesh = p->meshes[sprite_idx];
+#endif
 
     if (memcmp(&p->last_matrix, g_WMatrixPtr, sizeof(MATRIX)) == 0) {
         p->stack++;
