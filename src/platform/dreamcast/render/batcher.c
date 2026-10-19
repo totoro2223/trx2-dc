@@ -112,6 +112,10 @@ typedef struct {
     float time_in_game;
     float sunset_duration;
     bool lighting;
+    // Bilinear filtering samples half a texel past a face's edge, into the
+    // next texture on the page; the faces' coordinates are pulled in by that
+    // much instead (the desktop clamps them to the texture in its shader).
+    bool inset_uv;
     bool fog;
     const DC_UNIFORM_LIGHTS *lights;
 } M_FRAME;
@@ -509,11 +513,45 @@ static M_CLIP_VERT M_ClipEdge(
     };
 }
 
+// Half a texel of a texture page, in page coordinates.
+#define M_HALF_TEXEL (0.5f / TEXTURE_PAGE_WIDTH)
+
+// Reads a face's texture coordinates, pulled towards their middle by up to
+// half a texel when filtering bilinearly.
+static void M_GetFaceUVs(
+    const M_BINDING *const bind, const uint32_t *const idx, const int32_t n,
+    float uv[][2])
+{
+    float cu = 0.0f;
+    float cv = 0.0f;
+    for (int32_t k = 0; k < n; k++) {
+        uv[k][0] = bind->uv[idx[k] * 2];
+        uv[k][1] = bind->uv[idx[k] * 2 + 1];
+        cu += uv[k][0];
+        cv += uv[k][1];
+    }
+    if (!m_Frame.inset_uv || bind->page[idx[0]] == M_NO_PAGE) {
+        return;
+    }
+    cu /= n;
+    cv /= n;
+    for (int32_t k = 0; k < n; k++) {
+        for (int32_t a = 0; a < 2; a++) {
+            const float d = (a == 0 ? cu : cv) - uv[k][a];
+            uv[k][a] += d > M_HALF_TEXEL ? M_HALF_TEXEL
+                : d < -M_HALF_TEXEL      ? -M_HALF_TEXEL
+                                         : d * 0.5f;
+        }
+    }
+}
+
 static void M_EmitTriangle(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const uint32_t i0, const uint32_t i1, const uint32_t i2)
 {
     const uint32_t idx[3] = { i0, i1, i2 };
+    float uv[3][2];
+    M_GetFaceUVs(bind, idx, 3, uv);
     const float near_z = m_Frame.near_z;
     int32_t inside = 0;
     for (int32_t k = 0; k < 3; k++) {
@@ -528,9 +566,7 @@ static void M_EmitTriangle(
     if (inside == 3) {
         DC_PVR_VERTEX out[3];
         for (int32_t k = 0; k < 3; k++) {
-            M_Project(
-                &batcher->xverts[idx[k]], bind->uv[idx[k] * 2],
-                bind->uv[idx[k] * 2 + 1], &out[k]);
+            M_Project(&batcher->xverts[idx[k]], uv[k][0], uv[k][1], &out[k]);
         }
         DC_PVR_Triangle(&out[0], &out[1], &out[2]);
         return;
@@ -542,8 +578,8 @@ static void M_EmitTriangle(
     for (int32_t k = 0; k < 3; k++) {
         in[k] = (M_CLIP_VERT) {
             .xv = batcher->xverts[idx[k]],
-            .u = bind->uv[idx[k] * 2],
-            .v = bind->uv[idx[k] * 2 + 1],
+            .u = uv[k][0],
+            .v = uv[k][1],
         };
     }
     M_CLIP_VERT poly[4];
@@ -616,11 +652,13 @@ static bool M_TryEmitQuad(
             return false;
         }
     }
+    // Pulled in about the middle of the whole quad, so that both halves
+    // still meet along the diagonal.
+    float uv[4][2];
+    M_GetFaceUVs(bind, strip, 4, uv);
     DC_PVR_VERTEX out[4];
     for (int32_t k = 0; k < 4; k++) {
-        M_Project(
-            &batcher->xverts[strip[k]], bind->uv[strip[k] * 2],
-            bind->uv[strip[k] * 2 + 1], &out[k]);
+        M_Project(&batcher->xverts[strip[k]], uv[k][0], uv[k][1], &out[k]);
     }
     DC_PVR_Quad(&out[0], &out[1], &out[2], &out[3]);
     return true;
@@ -756,8 +794,9 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
         return;
     }
     M_PrepareFrame();
-    DC_PVR_SetFilter(
-        g_Config.rendering.texture_filter == TEXTURE_FILTER_BILINEAR);
+    m_Frame.inset_uv =
+        g_Config.rendering.texture_filter == TEXTURE_FILTER_BILINEAR;
+    DC_PVR_SetFilter(m_Frame.inset_uv);
     VECTOR *const staged = batcher->staged[pass];
     const bool *const casters = Vector_GetData(batcher->casters[pass]);
     for (int32_t i = 0; i < staged->count; i++) {

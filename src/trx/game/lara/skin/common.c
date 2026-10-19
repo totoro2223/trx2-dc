@@ -371,8 +371,36 @@ static void M_SetGunEquipment(
     }
 }
 
+// Whether an outfit dresses Lara. Without one (a level without the outfit
+// swap objects) she keeps the level's own meshes, and the outfit's faces and
+// equipment, which name meshes that are not loaded, are left alone.
+static bool M_IsDressed(void)
+{
+    return m_SkinType != M_NO_OUTFIT;
+}
+
+// Without an outfit, a weapon shows as the original games show it: Lara's
+// mesh traded for the one in the weapon's animation object, which holds her
+// meshes with the weapon in hand or holstered.
+static void M_SetUndressedGunMesh(
+    const LARA_MESH mesh, const LARA_GUN_TYPE gun_type)
+{
+    const WEAPON_INFO *const weapon = Gun_Registry_Get(gun_type);
+    if (weapon == nullptr || weapon->anim_object_id == NO_OBJECT) {
+        return;
+    }
+    const OBJECT *const obj = Object_Get(weapon->anim_object_id);
+    if (!obj->loaded || (int32_t)mesh >= obj->mesh_count) {
+        return;
+    }
+    Lara_Mesh_SwapSingle(mesh, weapon->anim_object_id);
+}
+
 static void M_SetSpeechFace(const int32_t index)
 {
+    if (!M_IsDressed()) {
+        return;
+    }
     const LARA_SKIN_OUTFIT *const outfit = M_GetCurrentOutfit();
     if (index == M_NO_MESH) {
         const int32_t mesh_idx = M_GetMeshIdx(LM_HEAD, outfit);
@@ -395,6 +423,9 @@ static void M_SetSpeechFace(const int32_t index)
 
 static void M_SetCombatFace(const bool enabled)
 {
+    if (!M_IsDressed()) {
+        return;
+    }
     const LARA_SKIN_OUTFIT *const outfit = M_GetCurrentOutfit();
     int32_t mesh_idx = M_NO_MESH;
     if (enabled) {
@@ -812,6 +843,11 @@ void Lara_Skin_SetHolstersVisible(const bool visible)
 
 void Lara_Skin_ClearEquipment(const LARA_MESH mesh)
 {
+    if (!M_IsDressed() && Object_Get(O_LARA)->loaded
+        && (mesh == LM_HAND_L || mesh == LM_HAND_R || mesh == LM_THIGH_L
+            || mesh == LM_THIGH_R || mesh == LM_TORSO)) {
+        Lara_Mesh_SwapSingle(mesh, O_LARA);
+    }
     M_SetEquipment(
         mesh, EQUIPMENT_TYPE_NONE, M_NO_MESH, M_NO_MESH, M_GetWornOutfit());
 }
@@ -819,6 +855,9 @@ void Lara_Skin_ClearEquipment(const LARA_MESH mesh)
 void Lara_Skin_SetExtraEquipment(
     const LARA_MESH mesh, const LARA_SKIN_EXTRA_MESH extra_mesh)
 {
+    if (!M_IsDressed()) {
+        return;
+    }
     const int32_t offset = Lara_Skin_GetExtraMeshOffset(extra_mesh);
     M_SetEquipment(
         mesh, EQUIPMENT_TYPE_EXTRA, extra_mesh, offset, M_GetCurrentOutfit());
@@ -827,6 +866,12 @@ void Lara_Skin_SetExtraEquipment(
 void Lara_Skin_SetGunEquipment(
     const LARA_MESH mesh, const LARA_GUN_TYPE gun_type)
 {
+    if (!M_IsDressed()) {
+        if (Gun_Registry_IsValidType(gun_type)) {
+            M_SetUndressedGunMesh(mesh, gun_type);
+        }
+        return;
+    }
     // The armed meshes live in the swap object, and a level need not carry it.
     if (!Gun_Registry_IsValidType(gun_type)
         || !Object_Get(M_GetCurrentOutfit()->guns_obj_id)->loaded) {

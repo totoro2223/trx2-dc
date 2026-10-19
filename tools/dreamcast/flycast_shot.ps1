@@ -17,6 +17,7 @@ public class FlyShot {
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   public static IntPtr FindConsole(uint pid) {
@@ -53,6 +54,11 @@ $console = [FlyShot]::FindConsole([uint32]$p.Id)
 if ($console -ne [IntPtr]::Zero) { [FlyShot]::ShowWindow($console, 6) | Out-Null }
 [FlyShot]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 400
+# The copy is of the screen: with another window in front, it would show
+# that window instead of the game.
+if ([FlyShot]::GetForegroundWindow() -ne $h) {
+    throw 'Flycast is not in front; no screenshot taken'
+}
 $r = New-Object FlyShot+RECT
 [FlyShot]::GetClientRect($h, [ref]$r) | Out-Null
 $pt = New-Object FlyShot+POINT

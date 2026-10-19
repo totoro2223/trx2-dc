@@ -575,14 +575,12 @@ static void M_HandleBuiltInDefaults(void)
         M_GetBuiltInLayout(INPUT_ROLE_STEP_RIGHT)->bind =
             (CONTROLLER_BINDING) { .key_count = 0 };
     }
+    // Flares stay unbound for now: a chord such as walk + draw weapon holds
+    // its keys' own roles back until it is let go, which kept the weapons
+    // from coming out. (The flare goes in the inventory meanwhile.)
     if (g_TRVersion >= 2) {
-        // Flares: walk and draw weapon together.
-        const CONTROLLER_MAP y = {
-            .type = BT_BUTTON,
-            .bind.button = SDL_CONTROLLER_BUTTON_Y,
-        };
         M_GetBuiltInLayout(INPUT_ROLE_USE_FLARE)->bind =
-            (CONTROLLER_BINDING) { .key_count = 2, .keys = { r1, y } };
+            (CONTROLLER_BINDING) { .key_count = 0 };
     }
 #endif
 }

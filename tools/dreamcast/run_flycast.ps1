@@ -8,7 +8,10 @@ param(
     [int]$Seconds = 30,
     [string]$Flycast = 'G:\Flycast\flycast.exe',
     [string]$Out = 'build\dc-serial.txt',
-    [switch]$KeepRunning
+    [switch]$KeepRunning,
+    # The display to show the game on, by monitor name; empty leaves it
+    # where Flycast puts it.
+    [string]$Monitor = 'LG TV'
 )
 
 # Runs in a separate process: attaching to another console is only possible
@@ -74,6 +77,13 @@ $proc = Start-Process $Flycast -ArgumentList "`"$cdiPath`"" `
 Start-Sleep -Seconds 2
 $readerProc = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList `
     "-NoProfile -ExecutionPolicy Bypass -File `"$readerPath`" -ProcessId $($proc.Id) -OutPath `"$outPath`""
+if ($Monitor -ne '') {
+    try {
+        & (Join-Path $PSScriptRoot 'flycast_place.ps1') -Monitor $Monitor
+    } catch {
+        "could not move Flycast: $_"
+    }
+}
 
 $deadline = $logStart.AddSeconds($Seconds)
 while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {

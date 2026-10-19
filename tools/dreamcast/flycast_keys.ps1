@@ -26,6 +26,7 @@ public static class FlycastKeys {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint mapType);
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     public static IntPtr FindGame(uint pid) {
@@ -51,6 +52,11 @@ if ($window -eq [IntPtr]::Zero) {
 }
 [void][FlycastKeys]::SetForegroundWindow($window)
 Start-Sleep -Milliseconds 150
+# Keys go to whatever window has the focus: never send them anywhere but
+# the game.
+if ([FlycastKeys]::GetForegroundWindow() -ne $window) {
+    throw 'Flycast does not have the focus; no keys sent'
+}
 
 $extended = @('Up', 'Down', 'Left', 'Right', 'Insert', 'Delete', 'Home', 'End', 'PageUp', 'PageDown')
 $codes = foreach ($key in $Keys) {
