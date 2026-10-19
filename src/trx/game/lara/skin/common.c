@@ -222,9 +222,15 @@ static inline int32_t M_GetMeshIdx(
     return offset;
 }
 
+static bool M_IsDressed(void);
+
 static inline void M_ApplyMeshIfValid(
     const LARA_MESH mesh, const LARA_SKIN_OUTFIT *const outfit)
 {
+    // Without an outfit the outfit's meshes are not loaded: her own stay.
+    if (!M_IsDressed() && m_MeshOverrides[mesh] == nullptr) {
+        return;
+    }
     if (m_MeshOverrides[mesh] != nullptr) {
         // A level's own mesh belongs to no outfit object, so it takes a twin
         // of its own to follow her into gold.
@@ -408,6 +414,11 @@ static int32_t M_GetMapOffset(
 static void M_SetUndressedGunMesh(
     const LARA_MESH mesh, const LARA_GUN_TYPE gun_type)
 {
+    // Her body stays her own: the long guns' objects in the levels carry no
+    // usable back mesh, and one taken from them left her without a body.
+    if (mesh == LM_TORSO) {
+        return;
+    }
     const WEAPON_INFO *const weapon = Gun_Registry_IsValidType(gun_type)
         ? Gun_Registry_Get(gun_type)
         : nullptr;
@@ -420,8 +431,10 @@ static void M_SetUndressedGunMesh(
             type >= 0 ? type : Lara_Skin_GetDefaultType());
         const LARA_SKIN_MESH_MAP map = M_GetGunMeshMap(gun_type, outfit);
         const OBJECT *const obj = Object_Get(weapon->anim_object_id);
+        // Only an object holding a whole set of her meshes will do: one an
+        // injection gave animations alone has none of its own.
         armed = M_GetMapOffset(&map, mesh) != M_NO_MESH && obj->loaded
-            && (int32_t)mesh < obj->mesh_count
+            && obj->mesh_idx >= 0 && obj->mesh_count >= LM_NUMBER_OF
             && Object_GetMesh(obj->mesh_idx + mesh)->num_vertices > 0;
         // The original games take only some meshes from these objects: the
         // holsters for the pistol kinds, the back for the long guns.
@@ -887,7 +900,7 @@ void Lara_Skin_ClearEquipment(const LARA_MESH mesh)
 {
     if (!M_IsDressed() && Object_Get(O_LARA)->loaded
         && (mesh == LM_HAND_L || mesh == LM_HAND_R || mesh == LM_THIGH_L
-            || mesh == LM_THIGH_R || mesh == LM_TORSO)) {
+            || mesh == LM_THIGH_R)) {
         Lara_Mesh_SwapSingle(mesh, O_LARA);
     }
     M_SetEquipment(
