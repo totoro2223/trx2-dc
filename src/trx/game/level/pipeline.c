@@ -20,6 +20,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__DREAMCAST__)
+#include <platform/dreamcast/loading.h>
+#include <trx/core/filesystem.h>
+#endif
+
 typedef struct {
     int32_t game_index;
     int32_t file_index;
@@ -155,11 +160,17 @@ static void M_CompleteSetup(
     // killing mutants. This is to maintain that feature.
     Atlantean_ToggleExplosions(Object_Get(O_EXPLOSION_1)->loaded);
 
+#if defined(__DREAMCAST__)
+    DC_Loading_SetStep("Applying injections");
+#endif
     Inject_AllInjections();
     // Every injection has been applied; their data need not wait for the
     // rest of the level to be set up to be let go.
     Inject_ReleasePayloads();
 
+#if defined(__DREAMCAST__)
+    DC_Loading_SetStep("Preparing the level");
+#endif
     Level_Finalize_LoadAnimFrames(ctx);
     Level_Finalize_LoadAnimCommands(ctx);
     if (g_TRVersion == 1) {
@@ -186,10 +197,39 @@ static void M_CompleteSetup(
     Benchmark_End(&benchmark, nullptr);
 }
 
+#if defined(__DREAMCAST__)
+static uint64_t M_GetFileSize(const char *const path)
+{
+    uint64_t size = 0;
+    if (path == nullptr || !FS_GetMeta(path, &size, nullptr)) {
+        return 0;
+    }
+    return size;
+}
+
+// What the load reads from the disc: the level, its injections and its
+// sounds, for the loading screen's percentage.
+static uint64_t M_GetLoadSize(const GF_LEVEL *const level)
+{
+    uint64_t total = M_GetFileSize(level->path);
+    for (int32_t i = 0; i < level->injections.count; i++) {
+        total += M_GetFileSize(level->injections.data_paths[i]);
+    }
+    for (int32_t i = 0; i < Inject_GetDeclaredCount(); i++) {
+        total += M_GetFileSize(Inject_GetDeclaredPath(i));
+    }
+    total += M_GetFileSize(level->settings.sfx_path);
+    return total;
+}
+#endif
+
 RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
 {
     LOG_INFO("%d (%s)", level->num, level->path);
     BENCHMARK benchmark = Benchmark_Start();
+#if defined(__DREAMCAST__)
+    DC_Loading_Begin(M_GetLoadSize(level));
+#endif
 
     Inject_InitLevel(level, INJECTION_MODE_FULL);
     const LEVEL_FORMAT_LOADER *loader = nullptr;
@@ -199,6 +239,9 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
     }
     Inject_Cleanup();
 
+#if defined(__DREAMCAST__)
+    DC_Loading_End();
+#endif
     Benchmark_End(&benchmark, nullptr);
     return result;
 }

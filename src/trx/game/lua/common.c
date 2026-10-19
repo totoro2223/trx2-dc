@@ -25,6 +25,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(__DREAMCAST__)
+#include <trx/game/output/sources/objects.h>
+
+#include <stdlib.h>
+#endif
+
 // The pool beside the engine, and the root a script may not require: the
 // engine's own modules are reached as the global trx table.
 #define M_COMMON_ROOT "common"
@@ -478,6 +484,28 @@ int32_t LUA_DC_GetMemoryKB(void)
 {
     return m_Priv.state != nullptr ? lua_gc(m_Priv.state, LUA_GCCOUNT) : 0;
 }
+
+// Collects all the Lua state's garbage, for an allocation about to fail.
+int32_t LUA_DC_CollectGarbage(void)
+{
+    return m_Priv.state != nullptr ? lua_gc(m_Priv.state, LUA_GCCOLLECT) : 0;
+}
+
+// Lua's allocator, which before failing lets go of the object meshes not
+// drawn this frame (Lua collects its own garbage then by itself).
+static void *M_DCAlloc(
+    void *const ud, void *const ptr, const size_t osize, const size_t nsize)
+{
+    if (nsize == 0) {
+        free(ptr);
+        return nullptr;
+    }
+    void *result = realloc(ptr, nsize);
+    if (result == nullptr && OutputSource_Objects_EvictUnused(1) > 0) {
+        result = realloc(ptr, nsize);
+    }
+    return result;
+}
 #endif
 
 RESULT LUA_Init(void)
@@ -485,11 +513,13 @@ RESULT LUA_Init(void)
     lua_State *const L = luaL_newstate();
     ASSERT(L != nullptr);
 #if defined(__DREAMCAST__)
+    lua_setallocf(L, M_DCAlloc, nullptr);
     // The UI scripts leave garbage every frame. By default the collector lets
     // the heap reach well over twice what is live before it starts, which the
-    // Dreamcast's 16 MiB cannot carry; it collects at a fifth over instead.
+    // Dreamcast's 16 MiB cannot carry; it starts again as soon as a cycle
+    // ends instead, and works fast enough to keep up with the menus.
     lua_gc(L, LUA_GCINC);
-    lua_gc(L, LUA_GCPARAM, LUA_GCPPAUSE, 120);
+    lua_gc(L, LUA_GCPARAM, LUA_GCPPAUSE, 100);
     lua_gc(L, LUA_GCPARAM, LUA_GCPSTEPMUL, 400);
 #endif
     LUA_OpenSafeLibs(L);

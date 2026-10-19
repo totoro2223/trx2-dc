@@ -8,6 +8,7 @@
 #include <platform/dreamcast/renderer.h>
 #include <trx/config.h>
 #include <trx/core/log.h>
+#include <trx/core/memory.h>
 #include <trx/core/subsystem.h>
 #include <trx/game/clock/timer.h>
 #include <trx/game/level.h>
@@ -41,6 +42,24 @@ static OUTPUT_UNIFORMS *m_Uniforms = nullptr;
 static int32_t m_DrawnFrames = 0;
 static int32_t m_FPS = 0;
 static CLOCK_TIMER m_FPSTimer = { .type = CLOCK_TIMER_REAL };
+
+uint32_t g_DC_FrameCount = 0;
+
+// Object meshes not drawn for this many frames are let go (they are built
+// again when next drawn), checked every so many frames.
+#define M_MESH_MAX_AGE 300
+#define M_MESH_EVICT_INTERVAL 30
+
+int32_t LUA_DC_CollectGarbage(void);
+
+// An allocation is about to fail: the object meshes not drawn this frame and
+// the Lua state's garbage go, and the allocation is tried again.
+static bool M_HandleLowMemory(void)
+{
+    OutputSource_Objects_EvictUnused(1);
+    LUA_DC_CollectGarbage();
+    return true;
+}
 
 static void M_Shutdown(void)
 {
@@ -95,6 +114,7 @@ RESULT Output_Init(void)
     OutputSource_UI_Init();
 
     Output_ApplyRenderSettings();
+    Memory_SetLowMemoryHandler(M_HandleLowMemory);
     return OK;
 }
 
@@ -149,6 +169,10 @@ void Output_EndScene(void)
 #endif
     DC_PVR_EndFrame();
     m_DrawnFrames++;
+    g_DC_FrameCount++;
+    if (g_DC_FrameCount % M_MESH_EVICT_INTERVAL == 0) {
+        OutputSource_Objects_EvictUnused(M_MESH_MAX_AGE);
+    }
     if (ClockTimer_CheckElapsedAndTake(&m_FPSTimer, 1.0)) {
         m_FPS = m_DrawnFrames;
         m_DrawnFrames = 0;

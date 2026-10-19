@@ -21,6 +21,8 @@
 #include <trx/game/objects/common.h>
 #include <trx/version.h>
 
+#include <stdio.h>
+
 #define M_NO_OUTFIT (-1)
 #define M_NO_MESH (-1)
 
@@ -379,21 +381,61 @@ static bool M_IsDressed(void)
     return m_SkinType != M_NO_OUTFIT;
 }
 
+// Where a mesh map puts a weapon for one of Lara's meshes, if anywhere.
+static int32_t M_GetMapOffset(
+    const LARA_SKIN_MESH_MAP *const map, const LARA_MESH mesh)
+{
+    switch (mesh) {
+    case LM_THIGH_L:
+        return map->thigh.left;
+    case LM_THIGH_R:
+        return map->thigh.right;
+    case LM_HAND_L:
+        return map->hand.left;
+    case LM_HAND_R:
+        return map->hand.right;
+    case LM_TORSO:
+        return map->torso;
+    default:
+        return M_NO_MESH;
+    }
+}
+
 // Without an outfit, a weapon shows as the original games show it: Lara's
 // mesh traded for the one in the weapon's animation object, which holds her
-// meshes with the weapon in hand or holstered.
+// meshes with the weapon in hand or holstered, where the game's classic
+// outfit carries that weapon; her own mesh elsewhere, and when unarmed.
 static void M_SetUndressedGunMesh(
     const LARA_MESH mesh, const LARA_GUN_TYPE gun_type)
 {
-    const WEAPON_INFO *const weapon = Gun_Registry_Get(gun_type);
-    if (weapon == nullptr || weapon->anim_object_id == NO_OBJECT) {
-        return;
+    const WEAPON_INFO *const weapon = Gun_Registry_IsValidType(gun_type)
+        ? Gun_Registry_Get(gun_type)
+        : nullptr;
+    bool armed = weapon != nullptr && weapon->anim_object_id != NO_OBJECT;
+    if (armed) {
+        char name[32];
+        snprintf(name, sizeof(name), "tr%d_classic", (int)g_TRVersion);
+        const LARA_SKIN_TYPE type = Lara_Skin_FindOutfitByName(name);
+        const LARA_SKIN_OUTFIT *const outfit = Lara_Skin_GetOutfit(
+            type >= 0 ? type : Lara_Skin_GetDefaultType());
+        const LARA_SKIN_MESH_MAP map = M_GetGunMeshMap(gun_type, outfit);
+        const OBJECT *const obj = Object_Get(weapon->anim_object_id);
+        armed = M_GetMapOffset(&map, mesh) != M_NO_MESH && obj->loaded
+            && (int32_t)mesh < obj->mesh_count
+            && Object_GetMesh(obj->mesh_idx + mesh)->num_vertices > 0;
+        // The original games take only some meshes from these objects: the
+        // holsters for the pistol kinds, the back for the long guns.
+        if (mesh == LM_THIGH_L || mesh == LM_THIGH_R) {
+            armed = armed && !Gun_IsRifleType(gun_type);
+        } else if (mesh == LM_TORSO) {
+            armed = armed && Gun_IsRifleType(gun_type);
+        }
     }
-    const OBJECT *const obj = Object_Get(weapon->anim_object_id);
-    if (!obj->loaded || (int32_t)mesh >= obj->mesh_count) {
-        return;
+    if (armed) {
+        Lara_Mesh_SwapSingle(mesh, weapon->anim_object_id);
+    } else if (Object_Get(O_LARA)->loaded) {
+        Lara_Mesh_SwapSingle(mesh, O_LARA);
     }
-    Lara_Mesh_SwapSingle(mesh, weapon->anim_object_id);
 }
 
 static void M_SetSpeechFace(const int32_t index)
@@ -867,9 +909,7 @@ void Lara_Skin_SetGunEquipment(
     const LARA_MESH mesh, const LARA_GUN_TYPE gun_type)
 {
     if (!M_IsDressed()) {
-        if (Gun_Registry_IsValidType(gun_type)) {
-            M_SetUndressedGunMesh(mesh, gun_type);
-        }
+        M_SetUndressedGunMesh(mesh, gun_type);
         return;
     }
     // The armed meshes live in the swap object, and a level need not carry it.

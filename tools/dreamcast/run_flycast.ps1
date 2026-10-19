@@ -1,4 +1,4 @@
-# Boots a CDI in Flycast and saves the Dreamcast serial console to a file.
+﻿# Boots a CDI in Flycast and saves the Dreamcast serial console to a file.
 # Flycast must have Debug.SerialConsoleEnabled = yes in emu.cfg; it then shows
 # the serial output in a console window, which this script reads.
 #
@@ -11,7 +11,7 @@ param(
     [switch]$KeepRunning,
     # The display to show the game on, by monitor name; empty leaves it
     # where Flycast puts it.
-    [string]$Monitor = 'LG TV'
+    [string]$Monitor = 'JMGO'
 )
 
 # Runs in a separate process: attaching to another console is only possible

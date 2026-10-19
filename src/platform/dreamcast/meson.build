@@ -52,6 +52,7 @@ dc_sources = files(
   'dc_main.c',
   'dc_watchdog.c',
   'gl_facade.c',
+  'loading.c',
   'posix_compat.c',
   'render/batcher.c',
   'render/compositor.c',

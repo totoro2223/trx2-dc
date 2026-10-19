@@ -25,6 +25,13 @@ size_t Memory_Align(size_t size);
 
 // Allocate n bytes. In case the memory allocation fails, shows an error to the
 // user and exits the application. The allocated memory is filled with zeros.
+#if defined(__DREAMCAST__)
+// Called when an allocation fails, to free what can be rebuilt; true if it
+// may have freed something. The allocation is then tried once more.
+void Memory_SetLowMemoryHandler(bool (*handler)(void));
+bool Memory_HandleLowMemory(void);
+#endif
+
 void *Memory_Alloc(size_t size);
 
 // Reallocate existing memory to n bytes, returning an address to the

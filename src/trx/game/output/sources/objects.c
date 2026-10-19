@@ -23,8 +23,10 @@
 typedef struct {
     OUTPUT_MESH *mesh_batch;
 #if defined(__DREAMCAST__)
-    // The Dreamcast builds a mesh the first time it is drawn (see M_Stage).
+    // The Dreamcast builds a mesh the first time it is drawn (see M_Stage),
+    // and lets it go again once it has not been drawn for a while.
     bool is_built;
+    uint32_t last_used;
 #endif
 } M_MESH;
 
@@ -351,6 +353,31 @@ static void M_PrepareMeshes(M_PRIV *const p)
     Memory_Free(results);
 }
 
+#if defined(__DREAMCAST__)
+int32_t OutputSource_Objects_EvictUnused(const uint32_t max_age)
+{
+    M_PRIV *const p = &m_Priv;
+    if (p->meshes == nullptr) {
+        return 0;
+    }
+    int32_t count = 0;
+    for (size_t i = 0; i < p->mesh_count; i++) {
+        M_MESH *const batch = &p->meshes[i];
+        if (!batch->is_built || g_DC_FrameCount - batch->last_used < max_age) {
+            continue;
+        }
+        if (batch->mesh_batch != nullptr) {
+            MeshBatcher_RemoveMesh(p->batcher, batch->mesh_batch);
+            Output_Mesh_Destroy(batch->mesh_batch);
+            batch->mesh_batch = nullptr;
+            count++;
+        }
+        batch->is_built = false;
+    }
+    return count;
+}
+#endif
+
 static void M_FreeMeshes(M_PRIV *const p)
 {
     if (p->meshes != nullptr) {
@@ -452,6 +479,7 @@ static void M_Stage(const OBJECT_MESH *const mesh)
     // A level holds a few thousand meshes - every pickup, every inventory
     // model - of which a scene draws a handful. Built all at once they would
     // not fit the Dreamcast's memory, so each is built when it is first drawn.
+    batch->last_used = g_DC_FrameCount;
     if (!batch->is_built) {
         batch->is_built = true;
         MESH_BUILDER *const builder = MeshBuilder_Create();

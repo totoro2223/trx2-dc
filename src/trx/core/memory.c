@@ -24,9 +24,38 @@ size_t Memory_Align(const size_t size)
     return (size + 7) & ~7;
 }
 
+#if defined(__DREAMCAST__)
+// The Dreamcast runs close to the end of its memory: before an allocation
+// gives up, whatever can be built again later is let go and it is tried once
+// more.
+static bool (*m_LowMemoryHandler)(void) = nullptr;
+static bool m_InLowMemoryHandler = false;
+
+void Memory_SetLowMemoryHandler(bool (*const handler)(void))
+{
+    m_LowMemoryHandler = handler;
+}
+
+bool Memory_HandleLowMemory(void)
+{
+    if (m_LowMemoryHandler == nullptr || m_InLowMemoryHandler) {
+        return false;
+    }
+    m_InLowMemoryHandler = true;
+    const bool freed = m_LowMemoryHandler();
+    m_InLowMemoryHandler = false;
+    return freed;
+}
+#endif
+
 void *Memory_Alloc(const size_t size)
 {
     void *result = malloc(size);
+#if defined(__DREAMCAST__)
+    if (result == nullptr && Memory_HandleLowMemory()) {
+        result = malloc(size);
+    }
+#endif
     ASSERT(result != nullptr);
     memset(result, 0, size);
     return result;
@@ -35,6 +64,11 @@ void *Memory_Alloc(const size_t size)
 void *Memory_Realloc(void *const memory, const size_t size)
 {
     void *result = realloc(memory, size);
+#if defined(__DREAMCAST__)
+    if (result == nullptr && size > 0 && Memory_HandleLowMemory()) {
+        result = realloc(memory, size);
+    }
+#endif
     ASSERT(result != nullptr);
     return result;
 }

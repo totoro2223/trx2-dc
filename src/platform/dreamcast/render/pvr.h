@@ -40,6 +40,8 @@ typedef struct {
 #define DC_PVR_NO_TEXTURE (-1)
 // The screen capture (DC_PVR_CaptureScreen), as a texture page.
 #define DC_PVR_SCREEN_CAPTURE (-2)
+// The loading screen's text (DC_PVR_DrawLoadingScreen), as a texture page.
+#define DC_PVR_LOADING_TEXT (-3)
 
 void DC_PVR_Init(void);
 void DC_PVR_Shutdown(void);
@@ -92,6 +94,11 @@ void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *tris, int32_t count);
 // else.
 bool DC_PVR_BeginCaptureFrame(void);
 void DC_PVR_DrawScreenCapture(float brightness);
+
+// Draws a whole frame of the loading screen: two lines of text in the BIOS
+// font and a bar filled to percent. Does nothing inside another frame.
+void DC_PVR_DrawLoadingScreen(
+    const char *line1, const char *line2, int32_t percent);
 
 void DC_PVR_SetFilter(bool bilinear);
 // Selects how the next polygons are drawn. page is a texture page index, or

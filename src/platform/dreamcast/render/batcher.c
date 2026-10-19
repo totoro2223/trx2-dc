@@ -44,7 +44,8 @@ typedef struct M_BINDING {
     int32_t vertex_count;
     // Per vertex: the texture coordinates and page the vertex samples, looked
     // up once instead of every frame.
-    float *uv;
+    // (As fractions of the page in 16 bits, 0 to M_UV_ONE.)
+    uint16_t *uv;
     int8_t *page;
     bool needs_room_lights;
     bool needs_object_light;
@@ -166,19 +167,26 @@ static M_BINDING *M_GetBinding(
     return bind;
 }
 
+#define M_UV_ONE 65535.0f
+
+static inline uint16_t M_PackUV(const float x)
+{
+    return (uint16_t)(M_Clamp(x, 0.0f, 1.0f) * M_UV_ONE + 0.5f);
+}
+
 static void M_FillTexture(M_BINDING *const bind, const int32_t idx)
 {
     const OUTPUT_MESH_VERTEX *const vertex =
         Vector_Get(bind->mesh->vertices, idx);
     if (vertex->uvw_idx < 0 || (vertex->flags & VERT_FLAT_SHADED) != 0) {
-        bind->uv[idx * 2 + 0] = 0.0f;
-        bind->uv[idx * 2 + 1] = 0.0f;
+        bind->uv[idx * 2 + 0] = 0;
+        bind->uv[idx * 2 + 1] = 0;
         bind->page[idx] = M_NO_PAGE;
         return;
     }
     const OUTPUT_UVW uvw = Output_Textures_GetUVW(vertex->uvw_idx);
-    bind->uv[idx * 2 + 0] = uvw.u;
-    bind->uv[idx * 2 + 1] = uvw.v;
+    bind->uv[idx * 2 + 0] = M_PackUV(uvw.u);
+    bind->uv[idx * 2 + 1] = M_PackUV(uvw.v);
     bind->page[idx] = (int8_t)uvw.w;
 }
 
@@ -525,8 +533,8 @@ static void M_GetFaceUVs(
     float cu = 0.0f;
     float cv = 0.0f;
     for (int32_t k = 0; k < n; k++) {
-        uv[k][0] = bind->uv[idx[k] * 2];
-        uv[k][1] = bind->uv[idx[k] * 2 + 1];
+        uv[k][0] = bind->uv[idx[k] * 2] * (1.0f / M_UV_ONE);
+        uv[k][1] = bind->uv[idx[k] * 2 + 1] * (1.0f / M_UV_ONE);
         cu += uv[k][0];
         cv += uv[k][1];
     }
@@ -876,7 +884,7 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
     M_BINDING *const bind = Memory_Alloc(sizeof(M_BINDING));
     bind->mesh = mesh;
     bind->vertex_count = mesh->vertices->count;
-    bind->uv = Memory_Alloc(sizeof(float) * 2 * (bind->vertex_count + 1));
+    bind->uv = Memory_Alloc(sizeof(uint16_t) * 2 * (bind->vertex_count + 1));
     bind->page = Memory_Alloc(bind->vertex_count + 1);
     const OUTPUT_MESH_VERTEX *const vertices = Vector_GetData(mesh->vertices);
     for (int32_t i = 0; i < bind->vertex_count; i++) {

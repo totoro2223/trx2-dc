@@ -594,6 +594,7 @@ typedef struct iso_fd {
     bool broken;                /* True if the CD has been swapped out since open */
     size_t stream_part;         /* Stream DMA part of 32 bytes */
     uint8_t alignas(32) stream_data[32];
+    char trx_name[32];          /* TRX: the file's name, for the loading screen */
 } iso_fd_t;
 
 static TAILQ_HEAD(iso_fd_queue, iso_fd) iso_fd_queue;
@@ -668,6 +669,14 @@ static void * iso_open(vfs_handler_t * vfs, const char *fn, int mode) {
         .stream_data = {0},
     };
 
+    /* TRX: the name the loading screen shows. */
+    {
+        const char *base = strrchr(fn, '/');
+        base = base != NULL ? base + 1 : fn;
+        strncpy(fd->trx_name, base, sizeof(fd->trx_name) - 1);
+        fd->trx_name[sizeof(fd->trx_name) - 1] = '\0';
+    }
+
     TAILQ_INSERT_TAIL(&iso_fd_queue, fd, next);
 
     return fd;
@@ -693,6 +702,10 @@ static int iso_close(void * h) {
 static int iso_stream_done(size_t *remain_size) {
     return cdrom_stream_progress(remain_size) != 1;
 }
+
+/* TRX: told of every read from the disc (the file's name and how many bytes),
+   for the loading screen. */
+void (*trx_iso_read_observer)(const char *name, size_t bytes) = NULL;
 
 /* Read from a file */
 static ssize_t iso_read(void *h, void *buf, size_t bytes) {
@@ -859,6 +872,10 @@ end_loop:
         bytes -= toread;
         rv += toread;
     }
+
+    /* TRX: tell the loading screen. */
+    if(trx_iso_read_observer != NULL && rv > 0)
+        trx_iso_read_observer(fd->trx_name, (size_t)rv);
 
     return rv;
 

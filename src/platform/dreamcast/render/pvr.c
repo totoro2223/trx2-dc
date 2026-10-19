@@ -12,6 +12,7 @@
 #include <trx/game/output/const.h>
 #include <trx/game/level/texture_pages_16.h>
 
+#include <dc/biosfont.h>
 #include <dc/pvr.h>
 
 #include <malloc.h>
@@ -20,11 +21,15 @@
 // Double-buffered by KOS, so each holds two frames.
 // Sized by what TR2 levels use: room faces with see-through texels go to the
 // punch-through list, which takes about as much as the opaque one.
-#define M_VERTBUF_OP (2 * 192 * 1024)
-#define M_VERTBUF_TR (2 * 32 * 1024)
-#define M_VERTBUF_PT (2 * 160 * 1024)
-// Shadow volumes: a few hundred triangles of 64 bytes.
-#define M_VERTBUF_MOD (2 * 48 * 1024)
+// Measured on the Great Wall with quads sent as strips: the opaque list
+// peaks at about 130 KiB a frame, punch-through at about 70, translucent at
+// under 10; they cost main memory twice over, so each keeps only a margin.
+#define M_VERTBUF_OP (2 * 160 * 1024)
+#define M_VERTBUF_TR (2 * 24 * 1024)
+#define M_VERTBUF_PT (2 * 104 * 1024)
+// Shadow volumes: 15 casters of at most 24 triangles of 64 bytes, and their
+// headers.
+#define M_VERTBUF_MOD (2 * 28 * 1024)
 #define M_LIST_COUNT 4
 // How much of the colour a shadowed pixel keeps.
 #define M_SHADOW_SCALE 0.5f
@@ -96,6 +101,13 @@ static struct {
     pvr_ptr_t texture;
     bool valid;
 } m_Capture = {};
+
+// The loading screen's text, drawn by the BIOS font straight into video
+// memory (16-bit writes, which video memory takes), so that it needs no main
+// memory while a level loads.
+#define M_LOADING_TEXT_WIDTH 512
+#define M_LOADING_TEXT_HEIGHT 64
+static pvr_ptr_t m_LoadingText = nullptr;
 
 static void M_ResetFrame(void);
 
@@ -217,6 +229,85 @@ bool DC_PVR_BeginCaptureFrame(void)
     pvr_txr_set_stride(M_CAPTURE_WIDTH);
     m_Capture.valid = true;
     return true;
+}
+
+void DC_PVR_DrawLoadingScreen(
+    const char *const line1, const char *const line2, int32_t percent)
+{
+    if (m_InFrame) {
+        return;
+    }
+    if (m_LoadingText == nullptr) {
+        // Kept for good: the level's texture pages come and go around it.
+        m_LoadingText = pvr_mem_malloc(
+            M_LOADING_TEXT_WIDTH * M_LOADING_TEXT_HEIGHT * sizeof(uint16_t));
+        if (m_LoadingText == nullptr) {
+            return;
+        }
+    }
+    // The previous frame may still be drawing from the text; let it finish.
+    pvr_wait_ready();
+    uint32_t *const words = (uint32_t *)m_LoadingText;
+    for (int32_t i = 0; i < M_LOADING_TEXT_WIDTH * M_LOADING_TEXT_HEIGHT / 2;
+         i++) {
+        words[i] = 0;
+    }
+    // ARGB4444: white on clear.
+    uint16_t *const text = (uint16_t *)m_LoadingText;
+    bfont_draw_str_ex(
+        text, M_LOADING_TEXT_WIDTH, 0xFFFF, 0x0000, 16, true, line1);
+    bfont_draw_str_ex(
+        text + M_LOADING_TEXT_WIDTH * (M_LOADING_TEXT_HEIGHT / 2),
+        M_LOADING_TEXT_WIDTH, 0xFFFF, 0x0000, 16, true, line2);
+
+    DC_PVR_SetBackgroundColor(0.0f, 0.0f, 0.0f);
+    DC_PVR_BeginFrame();
+    const float x0 = (640 - M_LOADING_TEXT_WIDTH) / 2.0f + 32.0f;
+    const float y0 = 190.0f;
+    const float z = DC_PVR_Depth2D(0.5f);
+    DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_LOADING_TEXT, false);
+    const uint32_t white = 0xFFFFFFFF;
+    const DC_PVR_VERTEX t[4] = {
+        { .x = x0, .y = y0, .z = z, .u = 0, .v = 0, .argb = white },
+        { .x = x0 + M_LOADING_TEXT_WIDTH, .y = y0, .z = z, .u = 1, .v = 0,
+          .argb = white },
+        { .x = x0, .y = y0 + M_LOADING_TEXT_HEIGHT, .z = z, .u = 0, .v = 1,
+          .argb = white },
+        { .x = x0 + M_LOADING_TEXT_WIDTH, .y = y0 + M_LOADING_TEXT_HEIGHT,
+          .z = z, .u = 1, .v = 1, .argb = white },
+    };
+    DC_PVR_Quad(&t[0], &t[1], &t[2], &t[3]);
+
+    // The bar: its track, and the part filled.
+    if (percent < 0) {
+        percent = 0;
+    } else if (percent > 100) {
+        percent = 100;
+    }
+    const float bx0 = 120.0f;
+    const float bx1 = 520.0f;
+    const float by0 = y0 + M_LOADING_TEXT_HEIGHT + 16.0f;
+    const float by1 = by0 + 12.0f;
+    const float fill = bx0 + (bx1 - bx0) * percent / 100.0f;
+    DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_NO_TEXTURE, false);
+    const uint32_t track = 0xFF303030;
+    const uint32_t bar = 0xFFC8A040;
+    const DC_PVR_VERTEX b0[4] = {
+        { .x = bx0, .y = by0, .z = z, .argb = track },
+        { .x = bx1, .y = by0, .z = z, .argb = track },
+        { .x = bx0, .y = by1, .z = z, .argb = track },
+        { .x = bx1, .y = by1, .z = z, .argb = track },
+    };
+    DC_PVR_Quad(&b0[0], &b0[1], &b0[2], &b0[3]);
+    const float zf = DC_PVR_Depth2D(0.6f);
+    const DC_PVR_VERTEX b1[4] = {
+        { .x = bx0, .y = by0, .z = zf, .argb = bar },
+        { .x = fill, .y = by0, .z = zf, .argb = bar },
+        { .x = bx0, .y = by1, .z = zf, .argb = bar },
+        { .x = fill, .y = by1, .z = zf, .argb = bar },
+    };
+    DC_PVR_Quad(&b1[0], &b1[1], &b1[2], &b1[3]);
+    DC_PVR_EndFrame();
 }
 
 void DC_PVR_DrawScreenCapture(const float brightness)
@@ -468,6 +559,8 @@ void DC_PVR_SetState(
     m_Blend = blend;
     if (page == DC_PVR_SCREEN_CAPTURE) {
         m_Page = m_Capture.valid ? page : DC_PVR_NO_TEXTURE;
+    } else if (page == DC_PVR_LOADING_TEXT) {
+        m_Page = m_LoadingText != nullptr ? page : DC_PVR_NO_TEXTURE;
     } else {
         m_Page = page >= 0 && page < m_Pages.count
                 && m_Pages.ptr[page] != nullptr
@@ -499,6 +592,12 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
             M_CAPTURE_TEXTURE_WIDTH, M_CAPTURE_TEXTURE_HEIGHT,
             m_Capture.texture, PVR_FILTER_BILINEAR);
         cxt.txr.env = PVR_TXRENV_MODULATE;
+    } else if (m_Page == DC_PVR_LOADING_TEXT) {
+        pvr_poly_cxt_txr(
+            &cxt, list, PVR_TXRFMT_ARGB4444 | PVR_TXRFMT_NONTWIDDLED,
+            M_LOADING_TEXT_WIDTH, M_LOADING_TEXT_HEIGHT, m_LoadingText,
+            PVR_FILTER_NEAREST);
+        cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
     } else if (m_Page != DC_PVR_NO_TEXTURE) {
         const int32_t format =
             (m_Pages.format[m_Page] == TEXTURE_PAGE_ARGB4444

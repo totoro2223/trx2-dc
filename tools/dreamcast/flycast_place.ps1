@@ -1,9 +1,9 @@
 # Moves Flycast's game window onto the display whose monitor has the given
-# name (as Windows reports it, e.g. "LG TV") and maximises it there. Does
+# name (as Windows reports it, e.g. "JMGO" or "LG TV") and maximises it there. Does
 # nothing when no such display is connected.
 #
-#   .\tools\dreamcast\flycast_place.ps1 -Monitor "LG TV"
-param([string]$Monitor = 'LG TV')
+#   .\tools\dreamcast\flycast_place.ps1 -Monitor "JMGO"
+param([string]$Monitor = 'JMGO')
 
 Add-Type @'
 using System;
