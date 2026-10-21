@@ -133,6 +133,32 @@ las líneas `[frame]`/`[probe]`/`[luaev]` salen por un hilo propio
 (`DC_Watchdog_Print`, `trx-log`), así que ya no cuestan un frame. Pendiente:
 `Input_Update` (0,5 ms) sin medir por dentro; no tocar a ciegas.
 
+Medido el 21/10/2026 (Venecia, Flycast, escritorio oculto): logic 2,5 ·
+stage 5,0 · pass 16,4 (`xform` 7,2, `emit` 5,0, `cel` 0,5, `bump` 0,56,
+`soft` 0,97) · map 1,4. `xform` por partes: salas 3,0 ms (2378 vértices),
+objetos 2,7 (2215), genérico 1,1 (554), luz por instancia 0,3, trozos 0,04.
+Sin luz ni color, salas 1,07 y objetos 0,8: casi 4 ms son el color. Con la
+niebla apagada, `xform` −0,5 ms. Aplicado después: `-O2` solo en
+`render/batcher.c` (`#pragma GCC optimize`) y `m_WhiteARGB` (el color de un
+vértice blanco sin tinte, por `k`; `bind->white`; TR3 con salas de color
+sigue el camino de antes) → pass 14,9, `xform` 6,8, `emit` 4,5, `soft`
+0,8–0,9, `bump` 0,49. Lo que queda del color (~1,3 ms) es el sombreado
+(`ftrc`, `M_ShadeK`, parpadeo) y la niebla. Copiar `M_XFORM` a una local
+en los bucles no ganó nada (descartado).
+
+`emit` por caras (Venecia, por frame): 1045 quads y 721 triángulos mirados;
+290 fuera de un lado o en la niebla, 661 de dorso, 42 recortados; 2854
+vértices escritos. Sin el trabajo por esquina, `emit` 4,6 → 2,8 ms: 1,8 ms
+son las esquinas (0,63 µs cada una) y 2,8 ms el examen de cada cara. Los
+quads doblados (una mitad de dorso) son ~3 por frame. La caché de
+cabeceras de 64 huecos recompilaba 43 por frame por choques: ahora 256.
+Aplicado: caché de 256, `M_EmitFront` (el quad doblado emite su mitad
+visible sin volver a mirarla), `M_KeepCel` sin `Vector_Get`. Resultado:
+pass 14,6, `emit` 4,37, `cel` 0,40, `xform` 6,7. Queda: `emit` es volumen
+de instrucciones por cara y por esquina; bajar más pide menos caras
+miradas (dorso por trozo o por normal) o vértices ya listos para el
+PowerVR.
+
 ### Contexto: lo medido (Venecia, Lara quieta, Flycast, 30 fps)
 
 Frame: logic 4,0 · stage 5,1 · pass 18,8 · map 1,3 · submit 0,3 → ~29,5 ms

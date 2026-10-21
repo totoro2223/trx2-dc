@@ -114,7 +114,10 @@ static bool m_InFrame = false;
 static bool m_StateDirty = true;
 // Compiled polygon headers by state, which holds the textures' addresses:
 // any change of a texture starts a new generation and empties it.
-#define M_HEADER_CACHE 64
+// 256 slots: with 64, a scene's few dozen states collided and were compiled
+// again every frame (43 a frame in Venice).
+#define M_HEADER_CACHE_BITS 8
+#define M_HEADER_CACHE (1 << M_HEADER_CACHE_BITS)
 static uint32_t m_HeaderGen = 1;
 static struct {
     uint32_t gen;
@@ -1293,7 +1296,7 @@ static void M_CachedHeader(pvr_poly_hdr_t *const hdr)
         | ((uint32_t)m_Blend << 16) | ((uint32_t)(m_Current - m_Lists) << 22)
         | (m_DepthTest ? 1u << 25 : 0) | (m_Bilinear ? 1u << 26 : 0)
         | (m_HalfPages ? 1u << 27 : 0) | (M_IsShadowed() ? 1u << 28 : 0);
-    const uint32_t slot = (key * 2654435761u) >> 26;
+    const uint32_t slot = (key * 2654435761u) >> (32 - M_HEADER_CACHE_BITS);
     if (m_HeaderCache[slot].gen != m_HeaderGen
         || m_HeaderCache[slot].key != key) {
         M_CompileHeader(&m_HeaderCache[slot].hdr);

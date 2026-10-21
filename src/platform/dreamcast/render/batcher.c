@@ -10,6 +10,11 @@
 // translucent list is sorted by the PowerVR, so the transparent faces need no
 // sorting of their own.
 
+// The rest of the game is built for size; the loops here run per vertex and
+// per face, and -O2 keeps their invariants in registers (measured: pass
+// -1.1 ms in Venice).
+#pragma GCC optimize("O2", "omit-frame-pointer")
+
 #include "cel.h"
 #include "pvr.h"
 #include "shadow.h"
@@ -43,8 +48,8 @@
 #include <string.h>
 #include <uthash.h>
 
-// The build is optimised for size, which leaves inlining to GCC; the helpers
-// run per vertex and per face must be inlined all the same.
+// The helpers run per vertex and per face must be inlined, whatever GCC
+// makes of them.
 #define M_HOT static inline __attribute__((always_inline))
 #define M_SHADE_NEUTRAL 0x1000
 #define M_SHADE_MAX 0x1FFF
@@ -101,6 +106,9 @@ typedef struct M_BINDING {
     // vertices all agree is transformed without reading them.
     uint16_t flags_and;
     uint16_t flags_or;
+    // Every vertex white and opaque, as TR1 and TR2's rooms and most objects
+    // are: its colour then comes from m_WhiteARGB.
+    bool white;
     // The texture coordinates are to be looked up again before the mesh is
     // next drawn (M_RefillTextures).
     bool tex_dirty;
@@ -259,11 +267,11 @@ _Static_assert(sizeof(M_XVERT) == 32, "an M_XVERT is one cache line");
 // pixels from its own projection.
 #define M_CLIP_MARGIN 4.0f
 
-// A run of the cel shading's polygons kept for one texture page.
+// A run of the cel shading's polygons kept for one texture page; it ends
+// where the next starts.
 typedef struct {
     int32_t page;
     int32_t start;
-    int32_t count;
 } M_CEL_RUN;
 
 typedef struct MESH_BATCHER {
@@ -305,6 +313,7 @@ typedef struct MESH_BATCHER {
     int32_t cel_count;
     int32_t cel_capacity;
     VECTOR *cel_runs; // M_CEL_RUN
+    int32_t cel_page; // the last run's
     // The opaque faces of the instance just transformed that go out: its
     // runs whole, or the chunks of them that show. The nearest the instance
     // comes along z.
@@ -860,18 +869,22 @@ M_HOT uint32_t M_FogKeep(const float fog, uint8_t *const clip)
 
 // How much of its colour a vertex of shade s keeps, in 8.8: M_LightVertex's
 // mul = 2 - s / M_SHADE_NEUTRAL, in integers. The shade is clamped as there,
-// then held to the frame's minimum.
-M_HOT uint32_t M_ShadeK(int32_t s, const int32_t min_shade)
+// then held to the frame's minimum: lo is that minimum, at least 0
+// (M_ShadeLow).
+M_HOT uint32_t M_ShadeK(int32_t s, const int32_t lo)
 {
-    if (s < 0) {
-        s = 0;
-    } else if (s > M_SHADE_MAX) {
+    if (s > M_SHADE_MAX) {
         s = M_SHADE_MAX;
     }
-    if (s < min_shade) {
-        s = min_shade;
+    if (s < lo) {
+        s = lo;
     }
     return 512u - ((uint32_t)s >> 4);
+}
+
+M_HOT int32_t M_ShadeLow(void)
+{
+    return MAX((int32_t)m_Frame.min_shade, 0);
 }
 
 // A channel product in 8.8 brought back to 8 bits, saturated without a
@@ -904,6 +917,19 @@ M_HOT uint32_t M_TintK(const float t)
     return (uint32_t)(M_Clamp(t, 0.0f, 2.0f) * 256.0f);
 }
 
+// M_Colour of a white vertex in an untinted instance, for every k the shade
+// and the fog can give (0 to 512): one read in place of four products.
+#define M_WHITE_K_MAX 512
+static uint32_t m_WhiteARGB[M_WHITE_K_MAX + 1];
+
+static void M_InitWhite(void)
+{
+    const RGBA_8888 white = { .r = 255, .g = 255, .b = 255, .a = 255 };
+    for (uint32_t k = 0; k <= M_WHITE_K_MAX; k++) {
+        m_WhiteARGB[k] = M_Colour(white, 256, k, k, k);
+    }
+}
+
 // A room's vertices: lit by their own shade, the lights passing and the
 // room's flicker, in the room's tint, faded into black fog. All in integers:
 // no float colour, no clamps, no float to int conversions per channel. Only
@@ -917,7 +943,7 @@ static void M_XformRoom(
         Vector_GetData(bind->mesh->vertices);
     M_XVERT *const xverts = batcher->xverts;
     const bool lighting = m_Frame.lighting;
-    const int32_t min_shade = (int32_t)m_Frame.min_shade;
+    const int32_t min_shade = M_ShadeLow();
     const bool dyn = il->num_lights > 0;
     const int32_t flicker = (int32_t)il->flicker;
     const bool fog_on = c->fog;
@@ -928,6 +954,8 @@ static void M_XformRoom(
     const uint32_t tr = M_TintK(inst->tint.r);
     const uint32_t tg = M_TintK(inst->tint.g);
     const uint32_t tb = M_TintK(inst->tint.b);
+    const bool white =
+        bind->white && ta == 256 && tr == 256 && tg == 256 && tb == 256;
     const float(*const w)[4] = il->world;
     // The whole mesh, or the chunks that show: each a run of vertices.
     const int32_t whole[1][2] = { { 0, bind->vertex_count } };
@@ -969,7 +997,10 @@ static void M_XformRoom(
                             };
                             s = (int32_t)M_DynamicLum((float)s, world, il);
                         }
-                        s += ((vertex->light_table_idx & 31) - 16) * flicker;
+                        if (flicker != 0) {
+                            s += ((vertex->light_table_idx & 31) - 16)
+                                * flicker;
+                        }
                     }
                 }
                 k = M_ShadeK(s, min_shade);
@@ -977,8 +1008,10 @@ static void M_XformRoom(
             if (fog_on && (flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
                 k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
             }
-            out->argb = M_Colour(
-                vertex->color, ta, k * tr >> 8, k * tg >> 8, k * tb >> 8);
+            out->argb = white ? m_WhiteARGB[k]
+                              : M_Colour(
+                                    vertex->color, ta, k * tr >> 8,
+                                    k * tg >> 8, k * tb >> 8);
             out->clip = clip;
         }
     }
@@ -996,7 +1029,7 @@ static void M_XformObject(
         Vector_GetData(bind->mesh->vertices);
     M_XVERT *const xverts = batcher->xverts;
     const int32_t count = bind->vertex_count;
-    const int32_t min_shade = (int32_t)m_Frame.min_shade;
+    const int32_t min_shade = M_ShadeLow();
     const bool fog_on = c->fog;
     const bool vary = (bind->flags_or & VERT_NO_FOG) != 0;
     const bool dir = il->has_direction;
@@ -1011,6 +1044,8 @@ static void M_XformObject(
     const uint32_t tr = M_TintK(inst->tint.r);
     const uint32_t tg = M_TintK(inst->tint.g);
     const uint32_t tb = M_TintK(inst->tint.b);
+    const bool white =
+        bind->white && ta == 256 && tr == 256 && tg == 256 && tb == 256;
     for (int32_t i = 0; i < count; i++) {
         const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
         __builtin_prefetch(vertex + 2);
@@ -1035,8 +1070,10 @@ static void M_XformObject(
         if (fog_on && (!vary || (vertex->flags & VERT_NO_FOG) == 0)) {
             k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
         }
-        const uint32_t argb =
-            M_Colour(vertex->color, ta, k * tr >> 8, k * tg >> 8, k * tb >> 8);
+        const uint32_t argb = white ? m_WhiteARGB[k]
+                                    : M_Colour(
+                                          vertex->color, ta, k * tr >> 8,
+                                          k * tg >> 8, k * tb >> 8);
         out->argb = argb;
         out->clip = clip;
         if (cel) {
@@ -1044,7 +1081,11 @@ static void M_XformObject(
             // across each face, and the alpha test cuts it there.
             const float edge = 0.5f + 0.5f * (n_dot_l * cel_scale - M_CEL_EDGE);
             const uint32_t a = (uint32_t)(M_Clamp(edge, 0.0f, 1.0f) * 255.0f);
-            sargb[i] = (a << 24) | (M_ScaleRGB8(argb, dark) & 0x00FFFFFFu);
+            // White: one grey, scaled once for the three channels.
+            const uint32_t rgb = white
+                ? ((argb & 0xFFu) * dark >> 8) * 0x010101u
+                : M_ScaleRGB8(argb, dark) & 0x00FFFFFFu;
+            sargb[i] = (a << 24) | rgb;
         }
     }
 }
@@ -1662,16 +1703,14 @@ static void M_KeepCel(
         batcher->cel_buf = Memory_Realloc(
             batcher->cel_buf, batcher->cel_capacity * sizeof(pvr_vertex_t));
     }
-    M_CEL_RUN *run = batcher->cel_runs->count > 0
-        ? Vector_Get(batcher->cel_runs, batcher->cel_runs->count - 1)
-        : nullptr;
-    if (run == nullptr || run->page != batcher->emit_page) {
+    if (batcher->cel_runs->count == 0
+        || batcher->cel_page != batcher->emit_page) {
         const M_CEL_RUN fresh = {
             .page = batcher->emit_page,
             .start = batcher->cel_count,
         };
         Vector_Add(batcher->cel_runs, &fresh);
-        run = Vector_Get(batcher->cel_runs, batcher->cel_runs->count - 1);
+        batcher->cel_page = batcher->emit_page;
     }
     pvr_vertex_t *const dst = &batcher->cel_buf[batcher->cel_count];
     for (int32_t k = 0; k < n; k++) {
@@ -1680,22 +1719,26 @@ static void M_KeepCel(
         dst[k].oargb = 0;
     }
     batcher->cel_count += n;
-    run->count += n;
 }
 
 static void M_FlushCel(MESH_BATCHER *const batcher)
 {
-    for (int32_t i = 0; i < batcher->cel_runs->count; i++) {
-        const M_CEL_RUN *const run = Vector_Get(batcher->cel_runs, i);
+    const M_CEL_RUN *const runs = Vector_GetData(batcher->cel_runs);
+    const int32_t num_runs = batcher->cel_runs->count;
+    for (int32_t i = 0; i < num_runs; i++) {
+        const M_CEL_RUN *const run = &runs[i];
+        const int32_t end =
+            i + 1 < num_runs ? runs[i + 1].start : batcher->cel_count;
+        const int32_t count = end - run->start;
         DC_PVR_SetState(
             DC_BLEND_PUNCH_SHADE,
             run->page == M_NO_PAGE ? DC_PVR_NO_TEXTURE : run->page, true);
-        pvr_vertex_t *const out = DC_PVR_ReservePoly(run->count);
+        pvr_vertex_t *const out = DC_PVR_ReservePoly(count);
         if (out == nullptr) {
             continue;
         }
-        memcpy(out, &batcher->cel_buf[run->start], run->count * sizeof(*out));
-        DC_PVR_CommitPoly(run->count);
+        memcpy(out, &batcher->cel_buf[run->start], count * sizeof(*out));
+        DC_PVR_CommitPoly(count);
     }
     Vector_Clear(batcher->cel_runs);
     batcher->cel_count = 0;
@@ -1708,6 +1751,36 @@ M_HOT bool M_CelShows(const uint32_t sargb_or)
     return sargb_or >= M_CEL_CUT;
 }
 
+// A triangle known to show: in front of the near plane and facing the camera.
+static void M_EmitFront(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const OUTPUT_MESH_INDEX idx[3])
+{
+    const M_XVERT *const xv = batcher->xverts;
+    const uint32_t *const sargb = batcher->sargb;
+    float uv[3][2];
+    M_GetFaceUVs(batcher, bind, idx, 3, uv);
+    pvr_vertex_t *const out = DC_PVR_ReservePoly(3);
+    if (out == nullptr) {
+        return;
+    }
+    uint32_t cel_argb[3];
+    for (int32_t k = 0; k < 3; k++) {
+        uint32_t argb;
+        uint32_t oargb;
+        M_Colours(batcher, idx[k], &argb, &oargb);
+        M_Project(
+            &xv[idx[k]], uv[k][0], uv[k][1], argb, oargb,
+            k == 2 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
+        cel_argb[k] = sargb[idx[k]];
+    }
+    DC_PVR_CommitPoly(3);
+    if (batcher->cel_emit
+        && M_CelShows(cel_argb[0] | cel_argb[1] | cel_argb[2])) {
+        M_KeepCel(batcher, out, 3, cel_argb);
+    }
+}
+
 static void M_EmitTriangle(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const uint32_t i0, const uint32_t i1, const uint32_t i2)
@@ -1717,38 +1790,19 @@ static void M_EmitTriangle(
     if ((xv[i0].clip & xv[i1].clip & xv[i2].clip & M_CLIP_CULL) != 0) {
         return;
     }
-    const uint32_t *const sargb = batcher->sargb;
-    const bool cel = batcher->cel_emit
-        && M_CelShows(sargb[i0] | sargb[i1] | sargb[i2]);
-    // Read only for faces that are drawn: those turned away go first.
-    float uv[3][2];
-    const float near_z = m_Frame.near_z;
-
     if (((xv[i0].clip | xv[i1].clip | xv[i2].clip) & M_CLIP_NEAR) == 0) {
         if (m_Frame.cull && M_IsBackFacing(&xv[i0], &xv[i1], &xv[i2])) {
             return;
         }
-        M_GetFaceUVs(batcher, bind, idx, 3, uv);
-        pvr_vertex_t *const out = DC_PVR_ReservePoly(3);
-        if (out == nullptr) {
-            return;
-        }
-        uint32_t cel_argb[3];
-        for (int32_t k = 0; k < 3; k++) {
-            uint32_t argb;
-            uint32_t oargb;
-            M_Colours(batcher, idx[k], &argb, &oargb);
-            M_Project(
-                &xv[idx[k]], uv[k][0], uv[k][1], argb, oargb,
-                k == 2 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
-            cel_argb[k] = sargb[idx[k]];
-        }
-        DC_PVR_CommitPoly(3);
-        if (cel) {
-            M_KeepCel(batcher, out, 3, cel_argb);
-        }
+        M_EmitFront(batcher, bind, idx);
         return;
     }
+
+    const uint32_t *const sargb = batcher->sargb;
+    const bool cel = batcher->cel_emit
+        && M_CelShows(sargb[i0] | sargb[i1] | sargb[i2]);
+    float uv[3][2];
+    const float near_z = m_Frame.near_z;
 
     // Sutherland-Hodgman against the near plane: three corners in, at most
     // four out.
@@ -1859,8 +1913,10 @@ static bool M_TryEmitQuad(
             return true;
         }
         if (back0 || back1) {
-            // Folded: each half on its own.
-            return false;
+            // Folded: the half that faces the camera alone, without looking
+            // at either again.
+            M_EmitFront(batcher, bind, back0 ? t1 : t0);
+            return true;
         }
     }
     float uv[4][2];
@@ -2549,6 +2605,9 @@ static void M_DrawInstance(
 
 static void M_PrepareFrame(void)
 {
+    if (m_WhiteARGB[M_WHITE_K_MAX] == 0) {
+        M_InitWhite();
+    }
     m_Frame.screen_scale = DC_PVR_GetScreenScale();
     const DC_UNIFORM_MATRICES *const matrices =
         DC_GL_GetUniformBlock(DC_GL_BINDING_MATRICES, nullptr);
@@ -3198,9 +3257,12 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
     const OUTPUT_MESH_VERTEX *const vertices = Vector_GetData(mesh->vertices);
     bind->plain_object = bind->vertex_count > 0;
     bind->flags_and = bind->vertex_count > 0 ? 0xFFFF : 0;
+    bind->white = bind->vertex_count > 0;
     for (int32_t i = 0; i < bind->vertex_count; i++) {
         bind->flags_and &= vertices[i].flags;
         bind->flags_or |= vertices[i].flags;
+        const RGBA_8888 col = vertices[i].color;
+        bind->white &= (col.r & col.g & col.b & col.a) == 255;
         const float pos[3] = {
             vertices[i].pos.x, vertices[i].pos.y, vertices[i].pos.z,
         };
