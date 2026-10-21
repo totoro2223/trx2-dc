@@ -3,6 +3,9 @@
 Este repositorio es el port de TRX a Sega Dreamcast (rama `dreamcast`).
 Antes de empezar, lee [docs/dreamcast/TRASPASO.md](docs/dreamcast/TRASPASO.md):
 entorno, ciclo de compilación y pruebas, arquitectura, estado y pendientes.
+Las tareas listas para tomar están en
+[docs/dreamcast/TAREAS.md](docs/dreamcast/TAREAS.md), y lo ya hecho, en
+[docs/dreamcast/REGISTRO.md](docs/dreamcast/REGISTRO.md).
 
 Reglas básicas:
 

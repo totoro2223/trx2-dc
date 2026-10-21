@@ -3,7 +3,9 @@
 Estado a 21 de octubre de 2026, **DC build 202**. Este documento es para la
 persona (o el Claude) que retome el trabajo. Complementa
 [AVANCE.md](AVANCE.md), que es el resumen del 18 de octubre y ya se ha
-quedado corto en varias áreas.
+quedado corto en varias áreas. Lo hecho y medido, con builds y cifras, está en
+[REGISTRO.md](REGISTRO.md); los encargos listos para otra sesión, en
+[TAREAS.md](TAREAS.md).
 
 ## 1. Qué es esto
 
