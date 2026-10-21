@@ -258,7 +258,14 @@ typedef struct {
 
 // A rotation entry this large carries a scale the floats below would not
 // hold to the last unit; such a matrix takes the doubles.
-    #define M_FLOAT_LIMIT (1 << 30)
+    #define M_FLOAT_LIMIT (1 << 22)
+
+// To the nearest integer: a conversion the SH-4 has (ftrc), where lrintf is
+// a call into the library.
+static inline int32_t M_RoundF(const float x)
+{
+    return (int32_t)(x + (x >= 0.0f ? 0.5f : -0.5f));
+}
 
 static inline void M_QuatFNormalize(M_QUAT_F *const q)
 {
@@ -335,10 +342,11 @@ static bool M_Float3x3FromMatrix(const MATRIX *const m, float e[3][3])
     return true;
 }
 
-// As M_MatrixToQuaternion.
-static void M_Float3x3ToQuat(float e[3][3], M_QUAT_F *const q)
+// As M_MatrixToQuaternion. TR's rotations are orthonormal but for the fixed
+// point's rounding, which normalising the quaternion takes care of: only the
+// blended result is made orthonormal again (M_InterpolateFloat).
+static void M_Float3x3ToQuat(const float e[3][3], M_QUAT_F *const q)
 {
-    M_Float3x3Ortho(e);
     const float tr = e[0][0] + e[1][1] + e[2][2];
     if (tr > 0.0f) {
         const float s = sqrtf(tr + 1.0f) * 2.0f;
@@ -410,7 +418,7 @@ static bool M_LerpTranslation(
     if (delta >= INT32_MAX / 2 || delta <= -INT32_MAX / 2) {
         return false;
     }
-    *out = from + lrintf((float)(int32_t)delta * t);
+    *out = from + M_RoundF((float)(int32_t)delta * t);
     return true;
 }
 
@@ -450,15 +458,15 @@ static bool M_InterpolateFloat(
     M_Float3x3Ortho(e);
 
     const float s = (float)(1 << W2V_SHIFT);
-    result->_00 = lrintf(e[0][0] * s);
-    result->_01 = lrintf(e[0][1] * s);
-    result->_02 = lrintf(e[0][2] * s);
-    result->_10 = lrintf(e[1][0] * s);
-    result->_11 = lrintf(e[1][1] * s);
-    result->_12 = lrintf(e[1][2] * s);
-    result->_20 = lrintf(e[2][0] * s);
-    result->_21 = lrintf(e[2][1] * s);
-    result->_22 = lrintf(e[2][2] * s);
+    result->_00 = M_RoundF(e[0][0] * s);
+    result->_01 = M_RoundF(e[0][1] * s);
+    result->_02 = M_RoundF(e[0][2] * s);
+    result->_10 = M_RoundF(e[1][0] * s);
+    result->_11 = M_RoundF(e[1][1] * s);
+    result->_12 = M_RoundF(e[1][2] * s);
+    result->_20 = M_RoundF(e[2][0] * s);
+    result->_21 = M_RoundF(e[2][1] * s);
+    result->_22 = M_RoundF(e[2][2] * s);
     result->_03 = pos[0];
     result->_13 = pos[1];
     result->_23 = pos[2];

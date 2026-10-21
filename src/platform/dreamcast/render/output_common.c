@@ -8,6 +8,7 @@
 
 #include <platform/dreamcast/dc_mode.h>
 #include <platform/dreamcast/dc_probe.h> // TEMP
+#include <platform/dreamcast/dc_watchdog.h>
 
 #include <platform/dreamcast/renderer.h>
 #include <trx/config.h>
@@ -310,8 +311,12 @@ static void M_StatsEndScene(void)
     }
     memset(g_DC_LuaEvUs, 0, sizeof(g_DC_LuaEvUs));
     memset(g_DC_LuaEvN, 0, sizeof(g_DC_LuaEvN));
+    // Through the log thread: written straight to the serial port, the three
+    // lines held the game up for a frame every window.
     DC_PROBE(
-        DC_PROBE_LOG, LOG_DEBUG("%s", line); printf("%s\n%s\n", probes, events));
+        DC_PROBE_LOG, DC_Watchdog_Print(line); DC_Watchdog_Print("\n");
+        DC_Watchdog_Print(probes); DC_Watchdog_Print("\n");
+        DC_Watchdog_Print(events); DC_Watchdog_Print("\n"));
     memset(m_Stats.sum, 0, sizeof(m_Stats.sum));
     memset(m_Stats.max, 0, sizeof(m_Stats.max));
     memset(m_Stats.probe_sum, 0, sizeof(m_Stats.probe_sum));

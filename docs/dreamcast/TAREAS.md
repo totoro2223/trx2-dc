@@ -118,6 +118,21 @@ horneado en `bind->uv` (`M_InsetRun`) con relleno perezoso
 caras ordenadas por página (`M_SortByPage`); `M_BumpLight` sin
 trigonometría (`M_Atan2` polinómico, `fsrra`).
 
+Revisión posterior (misma sesión, también sin probar): los trozos de sala
+reordenan los vértices de la malla por trozo (`M_BuildChunks` →
+`M_PlaceVertices`), así que cada trozo es un rango contiguo y no hay lista
+(`vlist`/`chunk_verts`/`always` fuera; `batcher->vranges`); la sombra suave
+transforma solo esos rangos; `M_EmitIndices` conserva la página entre rangos
+(`*page`); los planos de los lados se calculan una vez por instancia
+(`M_XFORM.planes`); `M_RefillTextures` sin `Vector_Get` por vértice; la caché
+de agua de Lara se invalida al cambiar de nivel; la mezcla de matrices de Lara
+redondea con `ftrc` (`M_RoundF`), ortonormaliza solo la salida y cae a
+`double` por encima de 2^22; `Item_Control` recalcula los puntos de vida solo
+cuando cambian las propiedades (`ObjectProperty_GetGeneration`) o las escalas;
+las líneas `[frame]`/`[probe]`/`[luaev]` salen por un hilo propio
+(`DC_Watchdog_Print`, `trx-log`), así que ya no cuestan un frame. Pendiente:
+`Input_Update` (0,5 ms) sin medir por dentro; no tocar a ciegas.
+
 ### Contexto: lo medido (Venecia, Lara quieta, Flycast, 30 fps)
 
 Frame: logic 4,0 · stage 5,1 · pass 18,8 · map 1,3 · submit 0,3 → ~29,5 ms

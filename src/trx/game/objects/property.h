@@ -159,6 +159,9 @@ bool ObjectProperty_GetItemValue(
 const char *ObjectProperty_SetItemValueRaw(
     ITEM *item, const char *name, TRX_VALUE value);
 
+// A number that changes with every property set or reset, anywhere.
+int32_t ObjectProperty_GetGeneration(void);
+
 int32_t ObjectProperty_GetObjectNameCount(const OBJECT *obj);
 const char *ObjectProperty_GetObjectName(const OBJECT *obj, int32_t index);
 

@@ -684,7 +684,26 @@ bool Item_IsFading(const ITEM *const item)
 
 void Item_Control(void)
 {
+#if defined(__DREAMCAST__)
+    // Every item's maximum is a property lookup by name: once a tick for all
+    // of them cost most of a millisecond. Only what the maximum is worked out
+    // from can change it, so it is looked at again when one of those does.
+    static struct {
+        int32_t generation;
+        float scale;
+        float enemy_scale;
+    } last = { .generation = -1 };
+    const int32_t generation = ObjectProperty_GetGeneration();
+    if (generation != last.generation || g_Rules.health.scale != last.scale
+        || g_Config.gameplay.enemy_health_scale != last.enemy_scale) {
+        last.generation = generation;
+        last.scale = g_Rules.health.scale;
+        last.enemy_scale = g_Config.gameplay.enemy_health_scale;
+        M_SyncAllHitPoints();
+    }
+#else
     M_SyncAllHitPoints();
+#endif
 
     int16_t item_num = Item_GetNextSimulated();
     while (item_num != NO_ITEM) {

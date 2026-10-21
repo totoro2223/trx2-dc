@@ -1,6 +1,7 @@
 #include <trx/config.h>
 #include <trx/debug.h>
 #include <trx/game/camera.h>
+#include <trx/game/game/state.h>
 #include <trx/game/lara.h>
 #include <trx/game/output.h>
 #include <trx/game/output/state.h>
@@ -54,6 +55,9 @@ static int32_t M_ProbeWaterSurface(const GAME_VECTOR pos)
 // a grid of columns round the cell she stands in, once while she stays in it.
 static struct {
     bool valid;
+    // The level the answer was found in: another level may put her in a room
+    // of the same number and cell.
+    const GF_LEVEL *level;
     int32_t cell_x;
     int32_t cell_z;
     int16_t room_num;
@@ -75,8 +79,9 @@ static bool M_IsWaterNearLara(const XYZ_32 mesh_pos)
         return true;
     }
     const bool flipped = Room_GetFlipStatus();
-    if (m_Near.valid && m_Near.cell_x == cell_x && m_Near.cell_z == cell_z
-        && m_Near.room_num == lara_item->room_num
+    const GF_LEVEL *const level = Game_GetCurrentLevel();
+    if (m_Near.valid && m_Near.level == level && m_Near.cell_x == cell_x
+        && m_Near.cell_z == cell_z && m_Near.room_num == lara_item->room_num
         && m_Near.flipped == flipped) {
         return m_Near.has_water;
     }
@@ -102,6 +107,7 @@ static bool M_IsWaterNearLara(const XYZ_32 mesh_pos)
     }
     m_Near = (typeof(m_Near)) {
         .valid = true,
+        .level = level,
         .cell_x = cell_x,
         .cell_z = cell_z,
         .room_num = lara_item->room_num,

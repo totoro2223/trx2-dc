@@ -33,6 +33,10 @@ static void M_AssertNumeric(const TRX_VALUE_TYPE type)
     ASSERT(type != TVT_STRING && type != TVT_DYNAMIC_ENUM);
 }
 
+// Counts every change to any object's or item's properties, so that what is
+// worked out from them can tell when to look again (Item_Control).
+static int32_t m_Generation = 0;
+
 static void M_FreeSet(OBJECT_PROPERTY_SET *const set)
 {
     Memory_FreePointer(&set->entries);
@@ -206,11 +210,13 @@ static const char *M_ApplyItemValue(
 
 void ObjectProperty_ResetObject(OBJECT *const obj)
 {
+    m_Generation++;
     M_FreeSet(&obj->properties);
 }
 
 void ObjectProperty_ResetItem(ITEM *const item)
 {
+    m_Generation++;
     M_FreeSet(&item->properties);
 }
 
@@ -315,6 +321,7 @@ bool ObjectProperty_GetObjectValue(
 const char *ObjectProperty_SetObjectValueRaw(
     OBJECT *const obj, const char *const name, const TRX_VALUE value)
 {
+    m_Generation++;
     OBJECT_PROPERTY_ENTRY *const entry =
         obj == nullptr ? nullptr : M_GetEntry(&obj->properties, name);
     if (entry == nullptr) {
@@ -346,6 +353,7 @@ bool ObjectProperty_GetItemValue(
 const char *ObjectProperty_SetItemValueRaw(
     ITEM *const item, const char *const name, const TRX_VALUE value)
 {
+    m_Generation++;
     if (item == nullptr) {
         return "no such item";
     }
@@ -423,3 +431,8 @@ RESULT ObjectProperty_ReadItemOverrides(
 }
 
 REGISTER_SUBSYSTEM(.shutdown = M_Shutdown)
+
+int32_t ObjectProperty_GetGeneration(void)
+{
+    return m_Generation;
+}

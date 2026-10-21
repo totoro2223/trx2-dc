@@ -167,6 +167,47 @@ static void *M_Profile(void *const param)
 }
 #endif
 
+// Text for the console from the game's thread, written out by a thread of
+// its own: the serial port takes ~0.1 ms a character, and a frame's
+// statistics (M_StatsEndScene) would otherwise hold the game up for a frame.
+// One writer and one reader, so the ring needs no lock; what does not fit
+// is dropped.
+#define M_LOG_BYTES 8192
+static char m_Log[M_LOG_BYTES];
+static volatile uint32_t m_LogHead = 0;
+static volatile uint32_t m_LogTail = 0;
+
+void DC_Watchdog_Print(const char *text)
+{
+    uint32_t head = m_LogHead;
+    for (; *text != '\0'; text++) {
+        const uint32_t next = (head + 1) % M_LOG_BYTES;
+        if (next == m_LogTail) {
+            break;
+        }
+        m_Log[head] = *text;
+        head = next;
+    }
+    m_LogHead = head;
+}
+
+static void *M_LogRun(void *const param)
+{
+    while (true) {
+        thd_sleep(20);
+        const uint32_t head = m_LogHead;
+        uint32_t tail = m_LogTail;
+        while (tail != head) {
+            const uint32_t end = head > tail ? head : M_LOG_BYTES;
+            fwrite(&m_Log[tail], 1, end - tail, stdout);
+            tail = end % M_LOG_BYTES;
+        }
+        m_LogTail = tail;
+        fflush(stdout);
+    }
+    return nullptr;
+}
+
 void DC_Watchdog_Start(kthread_t *const thread)
 {
     m_Watched = thread;
@@ -176,6 +217,12 @@ void DC_Watchdog_Start(kthread_t *const thread)
         .label = "trx-watchdog",
     };
     thd_create_ex(&attr, M_Run, nullptr);
+    const kthread_attr_t log_attr = {
+        .create_detached = true,
+        .stack_size = 8 * 1024,
+        .label = "trx-log",
+    };
+    thd_create_ex(&log_attr, M_LogRun, nullptr);
 #if defined(TRX_DC_PROFILE)
     const kthread_attr_t prof_attr = {
         .create_detached = true,

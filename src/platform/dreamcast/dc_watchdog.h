@@ -9,6 +9,10 @@
 // Prints where the given thread is every few seconds (debug builds).
 void DC_Watchdog_Start(kthread_t *thread);
 
+// Queues text for the console, written out by another thread so that the
+// serial port never holds the caller up. Dropped when the queue is full.
+void DC_Watchdog_Print(const char *text);
+
 // Test discs (START.TXT's second number) load a saved game this many times,
 // one after another, to show what each load leaves behind.
 void DC_Watchdog_SetTestLoads(int32_t count);

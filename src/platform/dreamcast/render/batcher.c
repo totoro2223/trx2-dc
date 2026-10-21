@@ -62,7 +62,8 @@ typedef struct {
     // Bounding sphere, in object space.
     float center[3];
     float radius;
-    // Its vertices, in the binding's chunk_verts.
+    // Its vertices: a range of the mesh's, which M_BuildChunks lays out by
+    // chunk.
     int32_t vert_start;
     int32_t vert_count;
     // Its faces in each opaque run (0: the opaque ones, 1: the punch-through
@@ -112,13 +113,12 @@ typedef struct M_BINDING {
     // side by side as M_PairQuads left them.
     OUTPUT_MESH_INDEX *env;
     int32_t env_count;
-    // A room's chunks (none for other meshes), their vertices back to back,
-    // and the vertices of the faces outside them (the added and transparent
+    // A room's chunks (none for other meshes), and the range of its vertices
+    // that belong to the faces outside them (the added and transparent
     // ones), which are always transformed.
     M_CHUNK *chunks;
     int32_t chunk_count;
-    uint16_t *chunk_verts;
-    uint16_t *always;
+    int32_t always_start;
     int32_t always_count;
     UT_hash_handle hh;
 } M_BINDING;
@@ -311,9 +311,11 @@ typedef struct MESH_BATCHER {
     M_RANGE ranges[2 * M_MAX_CHUNKS + 2];
     int32_t range_count;
     float z_near;
-    // The vertices of a room's chunks that show, to be transformed.
-    uint16_t *vlist;
-    int32_t vlist_capacity;
+    // The ranges of vertices of the instance just transformed that were
+    // transformed (a room's chunks that show, and its faces outside them),
+    // or -1 ranges for all of them.
+    int32_t vranges[M_MAX_CHUNKS + 1][2];
+    int32_t vrange_count;
 } MESH_BATCHER;
 
 // What a pass needs that holds for every instance in it.
@@ -503,10 +505,10 @@ static inline uint16_t M_PackUV(const float x)
     return (uint16_t)(M_Clamp(x, 0.0f, 1.0f) * M_UV_ONE + 0.5f);
 }
 
-static void M_FillTexture(M_BINDING *const bind, const int32_t idx)
+static void M_FillTexture(
+    M_BINDING *const bind, const OUTPUT_MESH_VERTEX *const vertex,
+    const int32_t idx)
 {
-    const OUTPUT_MESH_VERTEX *const vertex =
-        Vector_Get(bind->mesh->vertices, idx);
     if (vertex->uvw_idx < 0 || (vertex->flags & VERT_FLAT_SHADED) != 0) {
         bind->uv[idx * 2 + 0] = 0;
         bind->uv[idx * 2 + 1] = 0;
@@ -781,6 +783,10 @@ typedef struct {
     float right;
     float top;
     float bottom;
+    // The sides as planes through the eye, once per instance: per side the
+    // factors of x (left, right) or y (top, bottom), and of z; positive
+    // outside.
+    float planes[4][2];
     bool ortho;
     bool sides; // some vertex may lie past a side
     bool near; // some vertex may lie before the near plane
@@ -905,12 +911,11 @@ M_HOT uint32_t M_TintK(const float t)
 static void M_XformRoom(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
-    M_XFORM *const c, const uint16_t *const list, const int32_t list_count)
+    M_XFORM *const c, const int32_t (*const vranges)[2], const int32_t nvr)
 {
     const OUTPUT_MESH_VERTEX *const vertices =
         Vector_GetData(bind->mesh->vertices);
     M_XVERT *const xverts = batcher->xverts;
-    const int32_t count = list != nullptr ? list_count : bind->vertex_count;
     const bool lighting = m_Frame.lighting;
     const int32_t min_shade = (int32_t)m_Frame.min_shade;
     const bool dyn = il->num_lights > 0;
@@ -924,52 +929,58 @@ static void M_XformRoom(
     const uint32_t tg = M_TintK(inst->tint.g);
     const uint32_t tb = M_TintK(inst->tint.b);
     const float(*const w)[4] = il->world;
-    for (int32_t n = 0; n < count; n++) {
-        const int32_t i = list != nullptr ? list[n] : n;
-        const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
-        // The SH-4 does not wait for a line it was told to fetch ahead.
-        if (list == nullptr) {
+    // The whole mesh, or the chunks that show: each a run of vertices.
+    const int32_t whole[1][2] = { { 0, bind->vertex_count } };
+    const int32_t(*const ranges)[2] = nvr < 0 ? whole : vranges;
+    const int32_t nranges = nvr < 0 ? 1 : nvr;
+    for (int32_t r = 0; r < nranges; r++) {
+        const int32_t end = ranges[r][0] + ranges[r][1];
+        for (int32_t i = ranges[r][0]; i < end; i++) {
+            const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
+            // The SH-4 does not wait for a line it was told to fetch ahead.
             __builtin_prefetch(vertex + 2);
-        } else if (n + 2 < count) {
-            __builtin_prefetch(&vertices[list[n + 2]]);
-        }
-        const uint16_t flags = vary ? vertex->flags : VERT_USE_DYNAMIC_LIGHT;
-        float x = vertex->pos.x;
-        float y = vertex->pos.y;
-        float z = vertex->pos.z;
-        float w1 = 1.0f;
-        mat_trans_nodiv(x, y, z, w1);
-        M_XVERT *const out = &xverts[i];
-        uint8_t clip = M_Place(out, x, y, z, c);
+            const uint16_t flags =
+                vary ? vertex->flags : VERT_USE_DYNAMIC_LIGHT;
+            float x = vertex->pos.x;
+            float y = vertex->pos.y;
+            float z = vertex->pos.z;
+            float w1 = 1.0f;
+            mat_trans_nodiv(x, y, z, w1);
+            M_XVERT *const out = &xverts[i];
+            uint8_t clip = M_Place(out, x, y, z, c);
 
-        uint32_t k = 256;
-        if ((flags & VERT_NO_LIGHTING) == 0) {
-            int32_t s = M_SHADE_NEUTRAL;
-            if (lighting) {
-                s = vertex->shade;
-                if ((flags & VERT_USE_DYNAMIC_LIGHT) != 0) {
-                    if (dyn) {
-                        const float px = vertex->pos.x;
-                        const float py = vertex->pos.y;
-                        const float pz = vertex->pos.z;
-                        const float world[3] = {
-                            w[0][0] * px + w[0][1] * py + w[0][2] * pz + w[0][3],
-                            w[1][0] * px + w[1][1] * py + w[1][2] * pz + w[1][3],
-                            w[2][0] * px + w[2][1] * py + w[2][2] * pz + w[2][3],
-                        };
-                        s = (int32_t)M_DynamicLum((float)s, world, il);
+            uint32_t k = 256;
+            if ((flags & VERT_NO_LIGHTING) == 0) {
+                int32_t s = M_SHADE_NEUTRAL;
+                if (lighting) {
+                    s = vertex->shade;
+                    if ((flags & VERT_USE_DYNAMIC_LIGHT) != 0) {
+                        if (dyn) {
+                            const float px = vertex->pos.x;
+                            const float py = vertex->pos.y;
+                            const float pz = vertex->pos.z;
+                            const float world[3] = {
+                                w[0][0] * px + w[0][1] * py + w[0][2] * pz
+                                    + w[0][3],
+                                w[1][0] * px + w[1][1] * py + w[1][2] * pz
+                                    + w[1][3],
+                                w[2][0] * px + w[2][1] * py + w[2][2] * pz
+                                    + w[2][3],
+                            };
+                            s = (int32_t)M_DynamicLum((float)s, world, il);
+                        }
+                        s += ((vertex->light_table_idx & 31) - 16) * flicker;
                     }
-                    s += ((vertex->light_table_idx & 31) - 16) * flicker;
                 }
+                k = M_ShadeK(s, min_shade);
             }
-            k = M_ShadeK(s, min_shade);
+            if (fog_on && (flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
+                k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
+            }
+            out->argb = M_Colour(
+                vertex->color, ta, k * tr >> 8, k * tg >> 8, k * tb >> 8);
+            out->clip = clip;
         }
-        if (fog_on && (flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
-            k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
-        }
-        out->argb =
-            M_Colour(vertex->color, ta, k * tr >> 8, k * tg >> 8, k * tb >> 8);
-        out->clip = clip;
     }
 }
 
@@ -1192,11 +1203,6 @@ static void M_GrowVertexBuffers(MESH_BATCHER *const batcher, const int32_t count
     batcher->env_uv = Memory_Alloc(n * sizeof(*batcher->env_uv));
     Memory_Free(batcher->eargb);
     batcher->eargb = Memory_Alloc(n * sizeof(*batcher->eargb));
-    // TR's vertices belong each to one face, so the chunks' lists, and the
-    // faces' outside them, never hold a vertex twice.
-    Memory_Free(batcher->vlist);
-    batcher->vlist = Memory_Alloc(n * sizeof(*batcher->vlist));
-    batcher->vlist_capacity = n;
 }
 
 // The instance just transformed goes out with its opaque runs whole.
@@ -1247,15 +1253,9 @@ static bool M_SphereShows(
         return false;
     }
     if (c->sides) {
-        const float planes[4][2] = {
-            { -c->proj_x, c->left },
-            { c->proj_x, -c->right },
-            { -c->proj_y, c->top },
-            { c->proj_y, -c->bottom },
-        };
         for (int32_t p = 0; p < 4; p++) {
-            const float a = planes[p][0];
-            const float b = planes[p][1];
+            const float a = c->planes[p][0];
+            const float b = c->planes[p][1];
             const float d = a * eye[p < 2 ? 0 : 1] + b * eye[2];
             if (d > 0.0f && d * d > radius * radius * (a * a + b * b)) {
                 return false;
@@ -1267,8 +1267,8 @@ static bool M_SphereShows(
 
 // Picks the chunks of a room that show, and gathers their faces into the
 // ranges and their vertices (with the ones always transformed) into the
-// list. Returns how many vertices the list holds, or -1 when every chunk
-// shows and the room goes out whole.
+// vertex ranges. Returns how many vertex ranges, or -1 when every chunk shows
+// and the room goes out whole.
 static int32_t M_CullChunks(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const float mv[4][4], const float scale, const M_XFORM *const c)
@@ -1293,19 +1293,20 @@ static int32_t M_CullChunks(
         return -1;
     }
 
-    uint16_t *const list = batcher->vlist;
-    int32_t listed = 0;
+    int32_t nvr = 0;
     for (int32_t k = 0; k < bind->chunk_count; k++) {
-        if (shows[k]) {
-            const M_CHUNK *const chunk = &bind->chunks[k];
-            memcpy(
-                &list[listed], &bind->chunk_verts[chunk->vert_start],
-                chunk->vert_count * sizeof(*list));
-            listed += chunk->vert_count;
+        const M_CHUNK *const chunk = &bind->chunks[k];
+        if (shows[k] && chunk->vert_count > 0) {
+            batcher->vranges[nvr][0] = chunk->vert_start;
+            batcher->vranges[nvr][1] = chunk->vert_count;
+            nvr++;
         }
     }
-    memcpy(&list[listed], bind->always, bind->always_count * sizeof(*list));
-    listed += bind->always_count;
+    if (bind->always_count > 0) {
+        batcher->vranges[nvr][0] = bind->always_start;
+        batcher->vranges[nvr][1] = bind->always_count;
+        nvr++;
+    }
 
     int32_t n = 0;
     for (int32_t run = 0; run < 2; run++) {
@@ -1322,7 +1323,7 @@ static int32_t M_CullChunks(
         }
     }
     batcher->range_count = n;
-    return listed;
+    return nvr;
 }
 
 static bool M_TransformInstance(
@@ -1363,9 +1364,18 @@ static bool M_TransformInstance(
         c.top = MAX(c.top, s->y - s->height - m_Frame.center_y - M_CLIP_MARGIN);
         c.bottom = MIN(c.bottom, s->y - m_Frame.center_y + M_CLIP_MARGIN);
     }
+    {
+        const float px = m_Frame.proj_x;
+        const float py = m_Frame.proj_y;
+        const float planes[4][2] = {
+            { -px, c.left }, { px, -c.right }, { -py, c.top }, { py, -c.bottom },
+        };
+        memcpy(c.planes, planes, sizeof(planes));
+    }
 
     float eye_sq = 0.0f;
     batcher->z_near = -FLT_MAX;
+    batcher->vrange_count = -1;
     if (!m_Frame.ortho) {
         float center[3];
         float radius_sq = 0.0f;
@@ -1399,17 +1409,10 @@ static bool M_TransformInstance(
         // side is a plane through the eye, sx = side for x:
         // proj_x * x - side * z = 0, the same for y.
         if (!bind->billboard) {
-            const float px = m_Frame.proj_x;
-            const float py = m_Frame.proj_y;
-            // Per side: the factors of x (left, right) or y (top, bottom),
-            // and of z; positive outside.
-            const float planes[4][2] = {
-                { -px, c.left }, { px, -c.right }, { -py, c.top }, { py, -c.bottom },
-            };
             bool inside = true;
             for (int32_t p = 0; p < 4; p++) {
-                const float a = planes[p][0];
-                const float b = planes[p][1];
+                const float a = c.planes[p][0];
+                const float b = c.planes[p][1];
                 const float d = a * eye[p < 2 ? 0 : 1] + b * eye[2];
                 const float rr = radius * radius * (a * a + b * b);
                 if (d > 0.0f && d * d > rr) {
@@ -1472,16 +1475,18 @@ static bool M_TransformInstance(
     if (bind->needs_room_lights && !bind->needs_object_light
         && !bind->needs_own_light && !bind->billboard && black_fog
         && !m_Frame.ortho && !batcher->env && !batcher->cel) {
-        const int32_t listed = bind->chunk_count > 0
+        const int32_t nvr = bind->chunk_count > 0
             ? M_CullChunks(batcher, bind, mv, scale, &c)
             : -1;
-        if (listed >= 0) {
-            transformed = listed;
+        batcher->vrange_count = nvr;
+        if (nvr >= 0) {
+            transformed = 0;
+            for (int32_t r = 0; r < nvr; r++) {
+                transformed += batcher->vranges[r][1];
+            }
         }
         g_DC_ProbeUs[DC_PROBE_XF_LIT] += transformed; // TEMP
-        M_XformRoom(
-            batcher, bind, inst, &il, &c,
-            listed >= 0 ? batcher->vlist : nullptr, listed);
+        M_XformRoom(batcher, bind, inst, &il, &c, batcher->vranges, nvr);
     } else if (
         bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho
         && !batcher->env) {
@@ -1883,22 +1888,26 @@ static bool M_TryEmitQuad(
     return true;
 }
 
+// Emits a run of faces. *page is the page the list was last set to with
+// this blend (INT32_MIN for none), kept across the runs of an instance so
+// that consecutive runs on one page share a header.
 static void M_EmitIndices(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
-    const OUTPUT_MESH_INDEX *const indices, const int32_t count, const DC_BLEND blend)
+    const OUTPUT_MESH_INDEX *const indices, const int32_t count,
+    const DC_BLEND blend, int32_t *const page)
 {
     const bool env = m_Frame.emit == M_EMIT_ENV;
-    int32_t page = INT32_MIN;
     int32_t i = 0;
     while (i + 2 < count) {
         const int32_t tri_page = env ? DC_PVR_ENV_MAP : bind->page[indices[i]];
-        if (tri_page != page) {
-            page = tri_page;
-            batcher->emit_page = page;
+        if (tri_page != *page) {
+            *page = tri_page;
+            batcher->emit_page = tri_page;
             DC_PVR_SetState(
-                blend, page == M_NO_PAGE ? DC_PVR_NO_TEXTURE : page, true);
+                blend, tri_page == M_NO_PAGE ? DC_PVR_NO_TEXTURE : tri_page,
+                true);
         }
-        if (i + 5 < count && (env || bind->page[indices[i + 3]] == page)
+        if (i + 5 < count && (env || bind->page[indices[i + 3]] == tri_page)
             && M_TryEmitQuad(batcher, bind, &indices[i], &indices[i + 3])) {
             i += 6;
             continue;
@@ -1985,24 +1994,34 @@ static void M_EmitShadowFaces(
     mat_load(&m);
     float(*const soft)[3] = batcher->soft;
     uint8_t *const soft_off = batcher->soft_off;
-    for (int32_t i = 0; i < bind->vertex_count; i++) {
-        const M_XVERT *const xv = &batcher->xverts[i];
-        float x = xv->x;
-        float y = xv->y;
-        float z = xv->z;
-        float w = 1.0f;
-        mat_trans_nodiv(x, y, z, w);
-        soft[i][0] = x;
-        soft[i][1] = y;
-        soft[i][2] = z;
-        uint8_t off = (x < 0.0f ? M_SOFT_OFF_LEFT : 0)
-            | (x > 1.0f ? M_SOFT_OFF_RIGHT : 0) | (y < 0.0f ? M_SOFT_OFF_TOP : 0)
-            | (y > 1.0f ? M_SOFT_OFF_BOTTOM : 0);
-        if (world) {
-            off |= (z > M_SOFT_REACH ? M_SOFT_OFF_FAR : 0)
-                | (z < -M_SOFT_SPAN * 0.25f ? M_SOFT_OFF_BEHIND : 0);
+    // Only the vertices transformed this instance: a room's chunks off the
+    // screen were not.
+    const int32_t whole[1][2] = { { 0, bind->vertex_count } };
+    const int32_t(*const vr)[2] =
+        batcher->vrange_count < 0 ? whole : batcher->vranges;
+    const int32_t nvr = batcher->vrange_count < 0 ? 1 : batcher->vrange_count;
+    for (int32_t r = 0; r < nvr; r++) {
+        const int32_t end = vr[r][0] + vr[r][1];
+        for (int32_t i = vr[r][0]; i < end; i++) {
+            const M_XVERT *const xv = &batcher->xverts[i];
+            float x = xv->x;
+            float y = xv->y;
+            float z = xv->z;
+            float w = 1.0f;
+            mat_trans_nodiv(x, y, z, w);
+            soft[i][0] = x;
+            soft[i][1] = y;
+            soft[i][2] = z;
+            uint8_t off = (x < 0.0f ? M_SOFT_OFF_LEFT : 0)
+                | (x > 1.0f ? M_SOFT_OFF_RIGHT : 0)
+                | (y < 0.0f ? M_SOFT_OFF_TOP : 0)
+                | (y > 1.0f ? M_SOFT_OFF_BOTTOM : 0);
+            if (world) {
+                off |= (z > M_SOFT_REACH ? M_SOFT_OFF_FAR : 0)
+                    | (z < -M_SOFT_SPAN * 0.25f ? M_SOFT_OFF_BEHIND : 0);
+            }
+            soft_off[i] = off;
         }
-        soft_off[i] = off;
     }
 
     const OUTPUT_MESH *const mesh = bind->mesh;
@@ -2397,8 +2416,10 @@ static bool m_InsetUV = false;
 // the filtering changed), and pulls the faces' coordinates in if need be.
 static void M_RefillTextures(M_BINDING *const bind)
 {
+    const OUTPUT_MESH_VERTEX *const vertices =
+        Vector_GetData(bind->mesh->vertices);
     for (int32_t i = 0; i < bind->vertex_count; i++) {
-        M_FillTexture(bind, i);
+        M_FillTexture(bind, &vertices[i], i);
     }
     if (m_InsetUV) {
         const OUTPUT_MESH *const mesh = bind->mesh;
@@ -2465,11 +2486,12 @@ static void M_DrawInstance(
     }
 
     const OUTPUT_MESH *const mesh = inst->mesh;
+    int32_t page = INT32_MIN;
     if (blended) {
         M_EmitIndices(
             batcher, bind, Vector_GetData(mesh->blend_add_vertex_indices),
             mesh->blend_add_vertex_indices->count,
-            pass == SCENE_PASS_BLEND_ADD ? DC_BLEND_ADD : DC_BLEND_SUB);
+            pass == SCENE_PASS_BLEND_ADD ? DC_BLEND_ADD : DC_BLEND_SUB, &page);
         return;
     }
 
@@ -2480,13 +2502,20 @@ static void M_DrawInstance(
     // out, and drawn over them after.
     batcher->cel_emit = batcher->cel && !faded;
     DC_PROBE_START(probe_emit);
+    int32_t last_run = -1;
     for (int32_t i = 0; i < batcher->range_count; i++) {
         const M_RANGE *const range = &batcher->ranges[i];
+        // The header carries the blend too: a new run means a new one.
+        if (range->run != last_run) {
+            last_run = range->run;
+            page = INT32_MIN;
+        }
         M_EmitIndices(
             batcher, bind, opaque + range->start, range->count,
             faded              ? DC_BLEND_ALPHA
                 : range->run == 0 ? DC_BLEND_OPAQUE
-                                  : DC_BLEND_PUNCH);
+                                  : DC_BLEND_PUNCH,
+            &page);
     }
     DC_PROBE_STOP(DC_PROBE_EMIT, probe_emit);
     batcher->cel_emit = false;
@@ -2500,18 +2529,21 @@ static void M_DrawInstance(
     if (batcher->env && !faded) {
         // The reflections, added over the faces just drawn.
         m_Frame.emit = M_EMIT_ENV;
+        page = INT32_MIN;
         DC_PROBE(
             DC_PROBE_ENV,
             M_EmitIndices(
-                batcher, bind, bind->env, bind->env_count, DC_BLEND_ADD));
+                batcher, bind, bind->env, bind->env_count, DC_BLEND_ADD,
+                &page));
         m_Frame.emit = M_EMIT_PLAIN;
     }
+    page = INT32_MIN;
     for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
         const OUTPUT_MESH_FACE *const face =
             Vector_Get(mesh->transparent_faces, i);
         M_EmitIndices(
             batcher, bind, (const OUTPUT_MESH_INDEX *)face->vertex_indices,
-            face->vertex_count, DC_BLEND_ALPHA);
+            face->vertex_count, DC_BLEND_ALPHA, &page);
     }
 }
 
@@ -2751,7 +2783,6 @@ void MeshBatcher_Destroy(MESH_BATCHER *const batcher)
     Memory_Free(batcher->sargb);
     Memory_Free(batcher->env_uv);
     Memory_Free(batcher->eargb);
-    Memory_Free(batcher->vlist);
     Memory_Free(batcher->cel_buf);
     Vector_Free(batcher->cel_runs);
     Memory_Free(batcher);
@@ -2832,30 +2863,43 @@ static int M_CompareChunkPrims(const void *const a, const void *const b)
     return pa->start < pb->start ? -1 : 1;
 }
 
-// The vertices of the faces of a run, each once, into list; stamp holds
-// per vertex the mark of the last list it went into.
-static int32_t M_GatherVertices(
+// Gives the vertices of a run of faces their places in the new order, after
+// the ones placed so far. False when a face of another owner placed one of
+// them first: such a vertex would be transformed with the wrong chunk.
+static bool M_PlaceVertices(
     const OUTPUT_MESH_INDEX *const indices, const int32_t count,
-    int32_t *const stamp, const int32_t mark, uint16_t *const list)
+    int32_t *const remap, int32_t *const owner, const int32_t who,
+    int32_t *const next)
 {
-    int32_t n = 0;
+    bool own = true;
     for (int32_t i = 0; i < count; i++) {
         const OUTPUT_MESH_INDEX v = indices[i];
-        if (stamp[v] != mark) {
-            stamp[v] = mark;
-            if (list != nullptr) {
-                list[n] = (uint16_t)v;
-            }
-            n++;
+        if (owner[v] < 0) {
+            owner[v] = who;
+            remap[v] = (*next)++;
+        } else if (owner[v] != who) {
+            own = false;
         }
     }
-    return n;
+    return own;
+}
+
+static void M_RemapIndices(
+    OUTPUT_MESH_INDEX *const indices, const int32_t count,
+    const int32_t *const remap)
+{
+    for (int32_t i = 0; i < count; i++) {
+        indices[i] = (OUTPUT_MESH_INDEX)remap[indices[i]];
+    }
 }
 
 // Sorts each opaque run of a room by chunk (the cell of the grid its faces'
-// middle lies in) and within a chunk by page, and keeps per chunk its
-// faces, vertices and bounds. A room it cannot cut in two or more stays
-// whole, sorted by page alone.
+// middle lies in) and within a chunk by page, then lays the room's vertices
+// out in the same order, so that each chunk's vertices are one range of the
+// mesh, and the faces outside the runs (the added and transparent ones) have
+// another after them: a chunk that shows is transformed as a run, with no
+// list of its vertices. A room it cannot cut in two or more, or whose faces
+// share a vertex across chunks, stays whole, sorted by page alone.
 static void M_BuildChunks(M_BINDING *const bind)
 {
     OUTPUT_MESH *const mesh = bind->mesh;
@@ -2949,61 +2993,128 @@ static void M_BuildChunks(M_BINDING *const bind)
         return;
     }
 
-    // Per chunk its vertices (counted, then listed) and bounds; then the
-    // vertices of the faces outside the runs.
-    int32_t *const stamp = Memory_Alloc(sizeof(int32_t) * bind->vertex_count);
-    for (int32_t i = 0; i < bind->vertex_count; i++) {
-        stamp[i] = -1;
+    // Each vertex's place in the new order: the chunks' faces in turn, then
+    // the faces outside the runs, then whatever no face names.
+    const int32_t nv = bind->vertex_count;
+    int32_t *const remap = Memory_Alloc(sizeof(int32_t) * nv);
+    int32_t *const owner = Memory_Alloc(sizeof(int32_t) * nv);
+    for (int32_t i = 0; i < nv; i++) {
+        remap[i] = -1;
+        owner[i] = -1;
     }
-    int32_t listed = 0;
+    M_CHUNK *const chunks = Memory_Alloc(sizeof(M_CHUNK) * chunk_count);
+    int32_t next = 0;
+    bool own = true;
     for (int32_t c = 0; c < chunk_count; c++) {
-        for (int32_t run = 0; run < 2; run++) {
-            listed += M_GatherVertices(
-                opaque + run_cells[run][c][0], run_cells[run][c][1], stamp, c,
-                nullptr);
-        }
-    }
-    const int32_t outside = M_MAX_CHUNKS;
-    int32_t always = M_GatherVertices(
-        Vector_GetData(mesh->blend_add_vertex_indices),
-        mesh->blend_add_vertex_indices->count, stamp, outside, nullptr);
-    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
-        const OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, i);
-        always += M_GatherVertices(
-            (const OUTPUT_MESH_INDEX *)face->vertex_indices, face->vertex_count,
-            stamp, outside, nullptr);
-    }
-    // A vertex two faces share would go into the list twice, past the room
-    // the list has (one per vertex): such a room stays whole.
-    if (listed + always > bind->vertex_count) {
-        Memory_Free(stamp);
-        return;
-    }
-
-    bind->chunks = Memory_Alloc(sizeof(M_CHUNK) * chunk_count);
-    bind->chunk_verts = Memory_Alloc(sizeof(uint16_t) * MAX(listed, 1));
-    bind->always = Memory_Alloc(sizeof(uint16_t) * MAX(always, 1));
-    bind->chunk_count = chunk_count;
-    for (int32_t i = 0; i < bind->vertex_count; i++) {
-        stamp[i] = -1;
-    }
-    int32_t at = 0;
-    for (int32_t c = 0; c < chunk_count; c++) {
-        M_CHUNK *const chunk = &bind->chunks[c];
-        chunk->vert_start = at;
+        M_CHUNK *const chunk = &chunks[c];
+        chunk->vert_start = next;
         for (int32_t run = 0; run < 2; run++) {
             chunk->start[run] = run_cells[run][c][0];
             chunk->count[run] = run_cells[run][c][1];
-            at += M_GatherVertices(
-                opaque + chunk->start[run], chunk->count[run], stamp, c,
-                &bind->chunk_verts[at]);
+            own &= M_PlaceVertices(
+                opaque + chunk->start[run], chunk->count[run], remap, owner, c,
+                &next);
         }
-        chunk->vert_count = at - chunk->vert_start;
+        chunk->vert_count = next - chunk->vert_start;
+    }
+    const int32_t always_start = next;
+    own &= M_PlaceVertices(
+        Vector_GetData(mesh->blend_add_vertex_indices),
+        mesh->blend_add_vertex_indices->count, remap, owner, chunk_count,
+        &next);
+    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
+        const OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, i);
+        own &= M_PlaceVertices(
+            (const OUTPUT_MESH_INDEX *)face->vertex_indices, face->vertex_count,
+            remap, owner, chunk_count, &next);
+    }
+    const int32_t always_count = next - always_start;
+    if (!own) {
+        Memory_Free(chunks);
+        Memory_Free(owner);
+        Memory_Free(remap);
+        return;
+    }
+    for (int32_t i = 0; i < nv; i++) {
+        if (remap[i] < 0) {
+            remap[i] = next++;
+        }
+    }
+
+    // The vertices, and what the binding keeps per vertex, in the new order.
+    OUTPUT_MESH_VERTEX *const vs = Vector_GetData(mesh->vertices);
+    OUTPUT_MESH_VERTEX *const moved = Memory_Alloc(sizeof(*vs) * nv);
+    uint16_t *const uv = Memory_Alloc(sizeof(uint16_t) * 2 * (nv + 1));
+    int8_t *const page = Memory_Alloc(nv + 1);
+    for (int32_t i = 0; i < nv; i++) {
+        const int32_t to = remap[i];
+        moved[to] = vs[i];
+        uv[to * 2] = bind->uv[i * 2];
+        uv[to * 2 + 1] = bind->uv[i * 2 + 1];
+        page[to] = bind->page[i];
+    }
+    memcpy(vs, moved, sizeof(*vs) * nv);
+    Memory_Free(moved);
+    Memory_Free(bind->uv);
+    bind->uv = uv;
+    Memory_Free(bind->page);
+    bind->page = page;
+
+    // Every index into them.
+    M_RemapIndices(opaque, total, remap);
+    M_RemapIndices(
+        Vector_GetData(mesh->blend_add_vertex_indices),
+        mesh->blend_add_vertex_indices->count, remap);
+    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
+        OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, i);
+        M_RemapIndices(
+            (OUTPUT_MESH_INDEX *)face->vertex_indices, face->vertex_count, remap);
+    }
+    if (mesh->opaque_discard_indices != nullptr) {
+        M_RemapIndices(
+            Vector_GetData(mesh->opaque_discard_indices),
+            mesh->opaque_discard_indices->count, remap);
+    }
+    // The animated vertices as runs of the new order (the batcher only asks
+    // whether a mesh has any).
+    VECTOR *const animated = mesh->animated_vertices;
+    if (animated->count > 0) {
+        bool *const is_animated = Memory_Alloc(nv);
+        memset(is_animated, 0, nv);
+        for (int32_t i = 0; i < animated->count; i++) {
+            const OUTPUT_VERTEX_RANGE *const range = Vector_Get(animated, i);
+            for (int32_t v = range->vertex_start;
+                 v < range->vertex_start + range->vertex_count && v < nv; v++) {
+                is_animated[remap[v]] = true;
+            }
+        }
+        Vector_Clear(animated);
+        for (int32_t i = 0; i < nv;) {
+            if (!is_animated[i]) {
+                i++;
+                continue;
+            }
+            const int32_t start = i;
+            while (i < nv && is_animated[i]) {
+                i++;
+            }
+            const OUTPUT_VERTEX_RANGE range = {
+                .vertex_start = start,
+                .vertex_count = i - start,
+            };
+            Vector_Add(animated, &range);
+        }
+        Memory_Free(is_animated);
+    }
+
+    // Each chunk's bounds, from its vertices where they lie now.
+    for (int32_t c = 0; c < chunk_count; c++) {
+        M_CHUNK *const chunk = &chunks[c];
         float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
         float hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-        for (int32_t i = chunk->vert_start; i < at; i++) {
-            const OUTPUT_MESH_VERTEX *const v = &vertices[bind->chunk_verts[i]];
-            const float p[3] = { v->pos.x, v->pos.y, v->pos.z };
+        for (int32_t i = chunk->vert_start;
+             i < chunk->vert_start + chunk->vert_count; i++) {
+            const float p[3] = { vs[i].pos.x, vs[i].pos.y, vs[i].pos.z };
             for (int32_t k = 0; k < 3; k++) {
                 lo[k] = MIN(lo[k], p[k]);
                 hi[k] = MAX(hi[k], p[k]);
@@ -3017,16 +3128,12 @@ static void M_BuildChunks(M_BINDING *const bind)
         }
         chunk->radius = sqrtf(radius_sq);
     }
-    bind->always_count = M_GatherVertices(
-        Vector_GetData(mesh->blend_add_vertex_indices),
-        mesh->blend_add_vertex_indices->count, stamp, outside, bind->always);
-    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
-        const OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, i);
-        bind->always_count += M_GatherVertices(
-            (const OUTPUT_MESH_INDEX *)face->vertex_indices, face->vertex_count,
-            stamp, outside, &bind->always[bind->always_count]);
-    }
-    Memory_Free(stamp);
+    bind->chunks = chunks;
+    bind->chunk_count = chunk_count;
+    bind->always_start = always_start;
+    bind->always_count = always_count;
+    Memory_Free(owner);
+    Memory_Free(remap);
 }
 
 static bool M_IsReflective(
@@ -3148,8 +3255,6 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     Memory_Free(bind->page);
     Memory_Free(bind->env);
     Memory_Free(bind->chunks);
-    Memory_Free(bind->chunk_verts);
-    Memory_Free(bind->always);
     Vector_Remove(batcher->bindings, &bind);
     HASH_DEL(batcher->map, bind);
     Memory_Free(bind);
