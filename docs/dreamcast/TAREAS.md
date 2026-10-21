@@ -251,3 +251,68 @@ Venecia y Lara se ven igual.
 `xform` y `pass` en Venecia bajan de forma medible paso a paso, con las
 cifras en REGISTRO.md, sin cambios visibles, sondas retiradas y commit en
 `dreamcast`.
+
+---
+
+## 3. `stage` y `pass`: Lara, UI, trozos de sala y relieve
+
+**Estado**: aplicado el 21/10/2026, **compilado pero sin probar** salvo el
+paso A (medido en DC builds 209–212). Antes de nada: CDI de Great Wall y de
+Venecia, comparar `stage`/`pass`/`xform` y las sondas `s*`/`l*` con la tabla
+de abajo, y captura para ver que todo se ve igual (salas en los bordes de la
+pantalla y de los portales, Lara, relieve). Todo debe valer también para TR3.
+
+### Lo medido antes (Lara quieta, Flycast, DC builds 209/210)
+
+| Parte | Great Wall | Venecia |
+|---|---|---|
+| `stage` | 5,2 | 5,3 |
+| Lara (`slara`) | 2,67 | 2,67 |
+| ↳ tinte de agua + mezcla de matrices (`lwater`) | 1,12 | 1,11 |
+| ↳ mallas (`lmesh`) | 1,19 | 1,20 |
+| UI (`sui`; `UI_RESERVE` 9×/frame, 1,0 ms) | 1,62 | 1,63 |
+| `pass` | 10,9 | 6,9 |
+| `bump` | 1,5 | 0,4 |
+
+### Lo aplicado
+
+- **A. Lara, una sola mezcla por malla** (`lara/draw.c`, DC): la matriz
+  mezclada se queda en la pila para la malla en vez de recalcularse en
+  `Output_DrawObjectMesh_I` y `Lara_Joints_StashMatrix`. Medido: `lmesh`
+  1,19 → 0,28 ms, `slara` 2,67 → 1,67 ms.
+- **B. Mezcla de matrices en float** (`matrix.c`, `M_InterpolateFloat`,
+  DC): con `-m4-single` cada `double` se emula; la mezcla por cuaterniones
+  (~60 µs) pasa a float, con nlerp para giros pequeños y slerp (`acosf`,
+  `sinf`) para los grandes; vuelve a los `double` si una entrada no cabe en
+  32 bits o el objeto saltó. Vale para todo lo que se dibuja interpolado
+  (enemigos incluidos). Esperado: `lwater` ~1,0 → ~0,2 ms.
+- **C. Tinte de agua de Lara** (`water/tr123.c`, DC; TR1–3 usan este
+  modelo): si ninguna columna de una rejilla 3×3 alrededor de su celda de
+  512 tiene agua (`Room_GetWaterHeight`, que cuenta pantanos), ninguna malla
+  busca sector; se recalcula al cambiar de celda, de sala o de flipmap.
+- **D. UI**: `LUA_EVENT_UI_RESERVE_ALL` (interno) se lanza una vez y
+  `trx/ui/regions.lua` recorre las 9 regiones en Lua; `UI_RESERVE` por
+  región sigue para scripts de terceros (sin oyentes no cuesta nada). Los
+  arneses de tests lanzan también el nuevo evento.
+- **E. Trozos de sala** (`batcher.c`, `M_BuildChunks`): las salas de ≥ 256
+  vértices se ordenan por celda de 2048 (doblada hasta ≤ 64 trozos) y luego
+  por página; cada trozo guarda sus rangos de caras, sus vértices y su
+  esfera. Por frame (`M_CullChunks`, solo en el camino `M_XformRoom`) se
+  descartan los trozos enteros tras la niebla, ante el plano cercano o
+  fuera de un lado (la pantalla o la ventana del portal): ni se transforman
+  ni se emiten. Emisión, sombra suave y relieve recorren `batcher->ranges`.
+- **F. Relieve**: `M_EmitBump` salía por todas las caras opacas de todas las
+  salas; ahora se salta la sala o el trozo cuyo punto más cercano
+  (`z_near`) está más allá de `M_BUMP_RANGE`.
+
+Nota aparte: la luz por instancia (`Output_Lights_FillInstanceLight`) no
+hace nada en TR1–3, así que no había nada que reutilizar por personaje.
+
+Pendiente, no tocado: el relieve se apaga si un frame baja de 28 fps (p. ej.
+al cargar) y no vuelve en la misma escena (`M_UpdateBumpLoad`), lo que
+falsea las medidas de `bump` (pasó en la build 211).
+
+### Hecho cuando
+
+Medido en las dos escenas, sin cambios visibles, sondas `TEMP` retiradas,
+cifras en REGISTRO.md y commit en `dreamcast`.

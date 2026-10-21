@@ -20,6 +20,15 @@
 #include <trx/game/rooms.h>
 #include <trx/version.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+    #define DC_PROBE_START(t)
+    #define DC_PROBE_STOP(i, t)
+#endif
+
 #if defined(__DREAMCAST__)
 #include <platform/dreamcast/render/shadow.h>
 #endif
@@ -136,13 +145,23 @@ static void M_DrawLaraMesh(
     }
     // Takes the matrix the mesh is drawn with, which for a blended frame is
     // the blend rather than either end of it.
+    DC_PROBE_START(probe_water);
     MATRIX wmatrix = *g_WMatrixPtr;
     if (interpolated) {
         Matrix_Push();
         Matrix_Interpolate();
         wmatrix = *g_WMatrixPtr;
+#if !defined(__DREAMCAST__)
         Matrix_Pop();
+#endif
     }
+#if defined(__DREAMCAST__)
+    // The blend stays on the stack for the mesh below, which then needs no
+    // blending of its own: each blend is two 64-bit matrices worked out again.
+    const bool mesh_interpolated = false;
+#else
+    const bool mesh_interpolated = interpolated;
+#endif
 
     const GAME_VECTOR pos = {
         .room_num = item->room_num,
@@ -158,18 +177,30 @@ static void M_DrawLaraMesh(
             .pos = Matrix_MulVec32_M(&wmatrix, (XYZ_32) {}),
         });
     Output_Water_PushLaraMesh(mesh_num, pos, mesh->radius);
+    DC_PROBE_STOP(DC_PROBE_L_WATER, probe_water);
+    DC_PROBE_START(probe_stash);
     if (m_IsLara) {
-        Lara_Joints_StashMatrix(mesh_num, interpolated);
+        Lara_Joints_StashMatrix(mesh_num, mesh_interpolated);
     }
-    if (interpolated) {
+    DC_PROBE_STOP(DC_PROBE_L_JOINTS, probe_stash);
+    DC_PROBE_START(probe_mesh);
+    if (mesh_interpolated) {
         Output_DrawObjectMesh_I(mesh, clip);
     } else {
         Output_DrawObjectMesh(mesh, clip);
     }
+    DC_PROBE_STOP(DC_PROBE_L_MESH, probe_mesh);
+#if defined(__DREAMCAST__)
+    if (interpolated) {
+        Matrix_Pop();
+    }
+#endif
 
+    DC_PROBE_START(probe_joints);
     if (m_IsLara) {
         Lara_Joints_Draw(mesh_num, clip, interpolated);
     }
+    DC_PROBE_STOP(DC_PROBE_L_JOINTS, probe_joints);
     Output_Water_PopLaraMesh();
 }
 
@@ -207,7 +238,9 @@ static inline void M_DrawEquipment(
         return;
     }
 
+    DC_PROBE_START(probe_equip);
     M_DrawEquipmentMesh(equipment, clip, interpolated);
+    DC_PROBE_STOP(DC_PROBE_L_EQUIP, probe_equip);
 }
 
 static bool M_Draw_I(
@@ -219,7 +252,9 @@ static bool M_Draw_I(
     const BOUNDS_16 *const shadow_bounds = Item_GetBoundsAccurate(item);
 
     if (!Lara_Vehicle_IsMounted()) {
+        DC_PROBE_START(probe_shadow);
         OutputSource_Shadows_Draw(obj->shadow_size, shadow_bounds, item);
+        DC_PROBE_STOP(DC_PROBE_L_SHADOW, probe_shadow);
     }
 
     MATRIX saved_matrix = *g_MatrixPtr;
@@ -243,7 +278,7 @@ static bool M_Draw_I(
 
     m_CacheMatrices = m_IsLara;
     Matrix_Push();
-    M_CalculateLight(item, frame1);
+    DC_PROBE(DC_PROBE_L_LIGHT, M_CalculateLight(item, frame1));
     if (m_CacheMatrices) {
         lara->mesh_pos_matrices_valid = false;
     }
@@ -298,7 +333,7 @@ static bool M_Draw_I(
     *g_MatrixPtr = saved_matrix;
     *g_WMatrixPtr = wsaved_matrix;
     if (m_IsLara) {
-        Lara_Hair_Draw();
+        DC_PROBE(DC_PROBE_L_HAIR, Lara_Hair_Draw());
     }
     Matrix_Pop_I();
 
@@ -524,7 +559,9 @@ static bool M_Draw(const ITEM *const item)
     const OBJECT *const obj = Object_Get(item->object_id);
     const BOUNDS_16 *const shadow_bounds = Item_GetBoundsAccurate(item);
     if (!Lara_Vehicle_IsMounted()) {
+        DC_PROBE_START(probe_shadow);
         OutputSource_Shadows_Draw(obj->shadow_size, shadow_bounds, item);
+        DC_PROBE_STOP(DC_PROBE_L_SHADOW, probe_shadow);
     }
 
     MATRIX saved_matrix = *g_MatrixPtr;
@@ -549,7 +586,7 @@ static bool M_Draw(const ITEM *const item)
 
     m_CacheMatrices = m_IsLara;
     Matrix_Push();
-    M_CalculateLight(item, frame);
+    DC_PROBE(DC_PROBE_L_LIGHT, M_CalculateLight(item, frame));
     if (m_CacheMatrices) {
         lara->mesh_pos_matrices_valid = false;
     }
@@ -602,7 +639,7 @@ static bool M_Draw(const ITEM *const item)
     *g_MatrixPtr = saved_matrix;
     *g_WMatrixPtr = wsaved_matrix;
     if (m_IsLara) {
-        Lara_Hair_Draw();
+        DC_PROBE(DC_PROBE_L_HAIR, Lara_Hair_Draw());
     }
 
     Matrix_Pop();

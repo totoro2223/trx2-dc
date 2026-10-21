@@ -128,6 +128,10 @@ void LUA_UI_ReserveRegions(void)
         return;
     }
     LUA_UI_SetReserving(true);
+    // The shipped regions reserve in one call, which walks the regions in Lua:
+    // a call per region cost a protected call each, nine a frame. The event per
+    // region stays for scripts of others, and costs nothing with none.
+    LUA_FireEvent(LUA_EVENT_UI_RESERVE_ALL);
     for (int32_t i = 0; i < UI_REGION_NUMBER_OF; i++) {
         LUA_FireEventInt32(LUA_EVENT_UI_RESERVE, i);
     }

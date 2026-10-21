@@ -80,6 +80,7 @@ static int M_FakeScene(lua_State *const L)
     FakeUIDraw_Forget();
     UI_BeginScene();
     LUA_UI_SetReserving(true);
+    LUA_FireEvent(LUA_EVENT_UI_RESERVE_ALL);
     for (int32_t i = 0; i < UI_REGION_NUMBER_OF; i++) {
         LUA_FireEventInt32(LUA_EVENT_UI_RESERVE, i);
     }

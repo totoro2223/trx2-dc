@@ -212,6 +212,9 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "ev",  "lua",  "rem",  "inp",  "items", "fx",   "lara", "post",
     "end", "ctrl", "mctl", "flip", "log",   "tcyc", "tuvw", "tcomp",
     "vroom", "vobj", "vgen", "soft", "emit", "cel", "bump", "envp",
+    "sscene", "spre", "sbounds", "ssky", "sroom", "sstat", "sitem", "slara",
+    "sfx", "spaint", "sgflush", "sui", "soflush", "nrooms",
+    "llight", "lshadow", "lmesh", "lwater", "ljoint", "lhair", "lequip",
 };
 uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
 uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};
@@ -286,7 +289,7 @@ static void M_StatsEndScene(void)
             (unsigned long)(m_Stats.max[i] / div));
     }
     // TEMP: see dc_probe.h. Its own line, in microseconds, timed itself.
-    char probes[512];
+    char probes[1024];
     len = snprintf(probes, sizeof(probes), "[probe]");
     for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
         len += snprintf(

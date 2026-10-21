@@ -20,6 +20,15 @@
 
 #include <string.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+    #define DC_PROBE_START(t)
+    #define DC_PROBE_STOP(i, t)
+#endif
+
 #define M_MAX_BOUND_ROOMS 128
 
 typedef struct {
@@ -433,7 +442,10 @@ static void M_DrawSingleRoom(const ROOM *const room)
     }
 
     Matrix_TranslateAbs32(room->pos);
-    Output_DrawRoom(room, false);
+    DC_PROBE(DC_PROBE_S_ROOMGEO, Output_DrawRoom(room, false));
+#if defined(__DREAMCAST__)
+    g_DC_ProbeUs[DC_PROBE_S_ROOMS]++;
+#endif
 
     Output_Water_SetupFromRoom(room);
 
@@ -445,6 +457,7 @@ static void M_DrawSingleRoom(const ROOM *const room)
     g_PhdRight = bind->bound_right;
     g_PhdBottom = bind->bound_bottom;
 
+    DC_PROBE_START(probe_statics);
     for (int32_t i = 0; i < room->num_static_meshes; i++) {
         const STATIC_MESH *const mesh = &room->static_meshes[i];
         if (M_DrawSet_Has(&m_DrawnStatics, mesh->draw_num)) {
@@ -475,20 +488,26 @@ static void M_DrawSingleRoom(const ROOM *const room)
         Matrix_Pop();
     }
 
+    DC_PROBE_STOP(DC_PROBE_S_STATICS, probe_statics);
+
+    DC_PROBE_START(probe_items);
     M_DrawSet_ForEach(&room->drawn_items, M_DrawRoomItem, nullptr);
     Output_Water_SetupFromRoom(room);
+    DC_PROBE_STOP(DC_PROBE_S_ITEMS, probe_items);
 
     g_PhdLeft = Viewport_GetMinX(VIEWPORT_GAME);
     g_PhdTop = Viewport_GetMinY(VIEWPORT_GAME);
     g_PhdRight = Viewport_GetMaxX(VIEWPORT_GAME);
     g_PhdBottom = Viewport_GetMaxY(VIEWPORT_GAME);
 
+    DC_PROBE_START(probe_effects);
     int16_t effect_num = room->effect_num;
     while (effect_num != NO_EFFECT) {
         const EFFECT *const effect = Effect_Get(effect_num);
         Effect_Draw(effect_num);
         effect_num = effect->next_free;
     }
+    DC_PROBE_STOP(DC_PROBE_S_FX, probe_effects);
 
     Matrix_Pop();
 }
@@ -567,10 +586,10 @@ void Room_DrawAllRooms(const int16_t current_room, const int16_t target_room)
         m_OutsideRight = Viewport_GetMinX(VIEWPORT_GAME);
     }
 
-    M_GetBounds();
+    DC_PROBE(DC_PROBE_S_BOUNDS, M_GetBounds());
 
     if (m_Outside) {
-        M_DrawSkybox();
+        DC_PROBE(DC_PROBE_S_SKY, M_DrawSkybox());
     }
 
     Output_Bind_ResetItems();
@@ -586,11 +605,12 @@ void Room_DrawAllRooms(const int16_t current_room, const int16_t target_room)
         const ROOM *const lara_room = Room_Get(lara_item->room_num);
         Output_Water_SetupFromRoom(lara_room);
         Output_SetCurrentRoom(lara_room);
-        Lara_Draw(lara_item);
+        DC_PROBE(DC_PROBE_S_LARA, Lara_Draw(lara_item));
     }
 
     CutSeq_DrawActors();
 
+    DC_PROBE_START(probe_fx);
     Output_Water_SetupAboveWater(false);
     if (!M_IsSceneryOnly()) {
         FX_Draw();
@@ -598,6 +618,7 @@ void Room_DrawAllRooms(const int16_t current_room, const int16_t target_room)
     }
     Rope_DrawAll();
     Output_LensFlares_Draw();
+    DC_PROBE_STOP(DC_PROBE_S_FX, probe_fx);
 }
 
 bool Room_IsSkyVisible(void)

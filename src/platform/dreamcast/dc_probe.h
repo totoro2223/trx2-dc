@@ -34,6 +34,29 @@ enum {
     DC_PROBE_CEL, // the cel shading pass
     DC_PROBE_BUMP, // M_EmitBump
     DC_PROBE_ENV, // the reflections pass
+    // The "stage" part of a frame (everything drawn outside the passes).
+    DC_PROBE_S_SCENE, // Output_BeginScene + viewport switches + EndScene
+    DC_PROBE_S_PRE, // Interpolate, CutSeq_PreDraw, Camera_Apply, fog
+    DC_PROBE_S_BOUNDS, // M_GetBounds: portal traversal
+    DC_PROBE_S_SKY, // M_DrawSkybox
+    DC_PROBE_S_ROOMGEO, // Output_DrawRoom
+    DC_PROBE_S_STATICS, // static meshes of the rooms
+    DC_PROBE_S_ITEMS, // items of the rooms
+    DC_PROBE_S_LARA, // Lara_Draw
+    DC_PROBE_S_FX, // effects, FX, sparks, ropes, lens flares
+    DC_PROBE_S_PAINT, // LUA_Scene_Paint
+    DC_PROBE_S_GFLUSH, // SceneCompositor_Flush in Game_Draw (has passes)
+    DC_PROBE_S_UI, // UI_BeginScene .. UI_Draw
+    DC_PROBE_S_OFLUSH, // Output_Flush (has passes)
+    DC_PROBE_S_ROOMS, // rooms drawn (count, not time)
+    // Inside Lara_Draw.
+    DC_PROBE_L_LIGHT, // M_CalculateLight
+    DC_PROBE_L_SHADOW, // OutputSource_Shadows_Draw
+    DC_PROBE_L_MESH, // Output_DrawObjectMesh(_I) of her meshes
+    DC_PROBE_L_WATER, // water observe/push and the matrix copies before it
+    DC_PROBE_L_JOINTS, // Lara_Joints_StashMatrix + Lara_Joints_Draw
+    DC_PROBE_L_HAIR, // Lara_Hair_Draw
+    DC_PROBE_L_EQUIP, // M_DrawEquipment
     DC_PROBE_COUNT,
 };
 
@@ -50,3 +73,8 @@ extern uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS];
         stmt;                                                                  \
         g_DC_ProbeUs[i] += (uint32_t)(timer_us_gettime64() - _probe_t0);       \
     } while (0)
+
+// For spans with commas in them, which DC_PROBE cannot take.
+#define DC_PROBE_START(t) const uint64_t t = timer_us_gettime64()
+#define DC_PROBE_STOP(i, t)                                                    \
+    (g_DC_ProbeUs[i] += (uint32_t)(timer_us_gettime64() - (t)))

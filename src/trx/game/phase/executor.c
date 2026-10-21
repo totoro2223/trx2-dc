@@ -38,6 +38,8 @@
     #include <platform/dreamcast/dc_probe.h>
 #else
     #define DC_PROBE(i, stmt) stmt
+    #define DC_PROBE_START(t)
+    #define DC_PROBE_STOP(i, t)
 #endif
 
 #define M_MAX_PHASES 10
@@ -323,22 +325,24 @@ static void M_Draw(PHASE *const phase)
 {
     BENCHMARK benchmark = Benchmark_Start();
 
-    Output_BeginScene();
-    Output_SwitchViewport(VIEWPORT_GAME);
-    UI_BeginScene();
+    DC_PROBE(DC_PROBE_S_SCENE, Output_BeginScene());
+    DC_PROBE(DC_PROBE_S_SCENE, Output_SwitchViewport(VIEWPORT_GAME));
+    DC_PROBE(DC_PROBE_S_UI, UI_BeginScene());
     if (phase != nullptr && phase->draw != nullptr) {
         phase->draw(phase);
     }
 
+    DC_PROBE_START(probe_ui);
     LUA_UI_ReserveRegions();
     TouchOverlay_Draw();
     LUA_UI_EndScene();
+    DC_PROBE_STOP(DC_PROBE_S_UI, probe_ui);
 
-    Output_SwitchViewport(VIEWPORT_UI);
-    UI_Draw();
+    DC_PROBE(DC_PROBE_S_SCENE, Output_SwitchViewport(VIEWPORT_UI));
+    DC_PROBE(DC_PROBE_S_UI, UI_Draw());
 
-    Output_Flush();
-    Output_EndScene();
+    DC_PROBE(DC_PROBE_S_OFLUSH, Output_Flush());
+    DC_PROBE(DC_PROBE_S_SCENE, Output_EndScene());
 
     TRX_GL_GpuTimer_Collect();
     if (Shell_GetArgs()->debug_render_performance) {

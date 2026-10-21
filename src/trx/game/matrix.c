@@ -247,6 +247,225 @@ static void M_QuaternionSlerp(
     M_QuaternionNormalize(out);
 }
 
+#if defined(__DREAMCAST__)
+// The Dreamcast's FPU runs in single precision (-m4-single), so every double
+// above is worked out in software: one blend of two matrices took ~60 us, and
+// Lara alone blends two per mesh. The same steps in floats hold the 14-bit
+// fixed point with room to spare.
+typedef struct {
+    float x, y, z, w;
+} M_QUAT_F;
+
+// A rotation entry this large carries a scale the floats below would not
+// hold to the last unit; such a matrix takes the doubles.
+    #define M_FLOAT_LIMIT (1 << 30)
+
+static inline void M_QuatFNormalize(M_QUAT_F *const q)
+{
+    const float n2 = q->x * q->x + q->y * q->y + q->z * q->z + q->w * q->w;
+    if (n2 > 0.0f) {
+        const float inv = 1.0f / sqrtf(n2);
+        q->x *= inv;
+        q->y *= inv;
+        q->z *= inv;
+        q->w *= inv;
+    } else {
+        q->x = q->y = q->z = 0.0f;
+        q->w = 1.0f;
+    }
+}
+
+// As M_Double3x3Ortho.
+static void M_Float3x3Ortho(float r[3][3])
+{
+    float rt_r[3][3] = {};
+    for (int32_t i = 0; i < 3; i++) {
+        for (int32_t j = 0; j < 3; j++) {
+            for (int32_t k = 0; k < 3; k++) {
+                rt_r[i][j] += r[k][i] * r[k][j];
+            }
+        }
+    }
+    float rn[3][3] = {};
+    for (int32_t i = 0; i < 3; i++) {
+        for (int32_t j = 0; j < 3; j++) {
+            for (int32_t k = 0; k < 3; k++) {
+                rn[i][j] += r[i][k] * ((k == j ? 3.0f : 0.0f) - rt_r[k][j]);
+            }
+        }
+    }
+    for (int32_t i = 0; i < 3; i++) {
+        for (int32_t j = 0; j < 3; j++) {
+            r[i][j] = 0.5f * rn[i][j];
+        }
+    }
+}
+
+// As M_Double3x3FromMatrix and M_Double3x3RemoveScale. False for a matrix
+// whose entries do not fit 32 bits.
+static bool M_Float3x3FromMatrix(const MATRIX *const m, float e[3][3])
+{
+    const int64_t v[3][3] = {
+        { m->_00, m->_01, m->_02 },
+        { m->_10, m->_11, m->_12 },
+        { m->_20, m->_21, m->_22 },
+    };
+    for (int32_t i = 0; i < 3; i++) {
+        for (int32_t j = 0; j < 3; j++) {
+            if (v[i][j] >= M_FLOAT_LIMIT || v[i][j] <= -M_FLOAT_LIMIT) {
+                return false;
+            }
+            e[i][j] = (float)(int32_t)v[i][j];
+        }
+    }
+    float scale = 0.0f;
+    for (int32_t i = 0; i < 3; i++) {
+        scale += sqrtf(
+            e[i][0] * e[i][0] + e[i][1] * e[i][1] + e[i][2] * e[i][2]);
+    }
+    if (scale <= 0.0f) {
+        return false;
+    }
+    const float inv = 3.0f / scale;
+    for (int32_t i = 0; i < 3; i++) {
+        for (int32_t j = 0; j < 3; j++) {
+            e[i][j] *= inv;
+        }
+    }
+    return true;
+}
+
+// As M_MatrixToQuaternion.
+static void M_Float3x3ToQuat(float e[3][3], M_QUAT_F *const q)
+{
+    M_Float3x3Ortho(e);
+    const float tr = e[0][0] + e[1][1] + e[2][2];
+    if (tr > 0.0f) {
+        const float s = sqrtf(tr + 1.0f) * 2.0f;
+        const float inv = 1.0f / s;
+        q->w = 0.25f * s;
+        q->x = (e[2][1] - e[1][2]) * inv;
+        q->y = (e[0][2] - e[2][0]) * inv;
+        q->z = (e[1][0] - e[0][1]) * inv;
+    } else {
+        int32_t i = 0;
+        if (e[1][1] > e[0][0]) {
+            i = 1;
+        }
+        if (e[2][2] > e[i][i]) {
+            i = 2;
+        }
+        const int32_t j = (i + 1) % 3;
+        const int32_t k = (i + 2) % 3;
+        const float s = sqrtf(e[i][i] - e[j][j] - e[k][k] + 1.0f) * 2.0f;
+        const float inv = 1.0f / s;
+        float qv[3];
+        qv[i] = 0.25f * s;
+        qv[j] = (e[j][i] + e[i][j]) * inv;
+        qv[k] = (e[k][i] + e[i][k]) * inv;
+        q->x = qv[0];
+        q->y = qv[1];
+        q->z = qv[2];
+        q->w = (e[k][j] - e[j][k]) * inv;
+    }
+    M_QuatFNormalize(q);
+}
+
+// As M_QuaternionSlerp. Two frames of an animation lie close together, where
+// the straight blend, normalised, is the arc to within float rounding: the
+// arc's sines are only worked out for a wider turn.
+static void M_QuatFSlerp(
+    const M_QUAT_F *const a, M_QUAT_F b, const float t, M_QUAT_F *const out)
+{
+    float cosom = a->x * b.x + a->y * b.y + a->z * b.z + a->w * b.w;
+    if (cosom < 0.0f) {
+        cosom = -cosom;
+        b.x = -b.x;
+        b.y = -b.y;
+        b.z = -b.z;
+        b.w = -b.w;
+    }
+    CLAMP(cosom, -1.0f, 1.0f);
+    float scale0 = 1.0f - t;
+    float scale1 = t;
+    if (cosom < 0.999f) {
+        const float omega = acosf(cosom);
+        const float sinom = 1.0f / sinf(omega);
+        scale0 = sinf((1.0f - t) * omega) * sinom;
+        scale1 = sinf(t * omega) * sinom;
+    }
+    out->x = scale0 * a->x + scale1 * b.x;
+    out->y = scale0 * a->y + scale1 * b.y;
+    out->z = scale0 * a->z + scale1 * b.z;
+    out->w = scale0 * a->w + scale1 * b.w;
+    M_QuatFNormalize(out);
+}
+
+// One axis of the position, blended: the step between the two frames fits
+// 32 bits unless the item jumped, which takes the doubles.
+static bool M_LerpTranslation(
+    const int64_t from, const int64_t to, const float t, int64_t *const out)
+{
+    const int64_t delta = to - from;
+    if (delta >= INT32_MAX / 2 || delta <= -INT32_MAX / 2) {
+        return false;
+    }
+    *out = from + lrintf((float)(int32_t)delta * t);
+    return true;
+}
+
+// M_Interpolate in floats. False, with nothing written, for a matrix it
+// cannot take.
+static bool M_InterpolateFloat(
+    const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
+{
+    float t = (m_IMRate != 0) ? (float)m_IMFrac / (float)m_IMRate : 0.0f;
+    CLAMP(t, 0.0f, 1.0f);
+
+    float e1[3][3];
+    float e2[3][3];
+    int64_t pos[3];
+    if (!M_Float3x3FromMatrix(m1, e1) || !M_Float3x3FromMatrix(m2, e2)
+        || !M_LerpTranslation(m1->_03, m2->_03, t, &pos[0])
+        || !M_LerpTranslation(m1->_13, m2->_13, t, &pos[1])
+        || !M_LerpTranslation(m1->_23, m2->_23, t, &pos[2])) {
+        return false;
+    }
+
+    M_QUAT_F q1;
+    M_QUAT_F q2;
+    M_QUAT_F q;
+    M_Float3x3ToQuat(e1, &q1);
+    M_Float3x3ToQuat(e2, &q2);
+    M_QuatFSlerp(&q1, q2, t, &q);
+
+    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    float e[3][3] = {
+        { 1.0f - 2.0f * (yy + zz), 2.0f * (xy - wz), 2.0f * (xz + wy) },
+        { 2.0f * (xy + wz), 1.0f - 2.0f * (xx + zz), 2.0f * (yz - wx) },
+        { 2.0f * (xz - wy), 2.0f * (yz + wx), 1.0f - 2.0f * (xx + yy) },
+    };
+    M_Float3x3Ortho(e);
+
+    const float s = (float)(1 << W2V_SHIFT);
+    result->_00 = lrintf(e[0][0] * s);
+    result->_01 = lrintf(e[0][1] * s);
+    result->_02 = lrintf(e[0][2] * s);
+    result->_10 = lrintf(e[1][0] * s);
+    result->_11 = lrintf(e[1][1] * s);
+    result->_12 = lrintf(e[1][2] * s);
+    result->_20 = lrintf(e[2][0] * s);
+    result->_21 = lrintf(e[2][1] * s);
+    result->_22 = lrintf(e[2][2] * s);
+    result->_03 = pos[0];
+    result->_13 = pos[1];
+    result->_23 = pos[2];
+    return true;
+}
+#endif
+
 static void M_ScaleX(MATRIX *const m, const int32_t scale)
 {
     m->_00 = ((int64_t)m->_00 * scale) >> W2V_SHIFT;
@@ -431,6 +650,11 @@ static void M_InterpolateArm(MATRIX *const m, const MATRIX *const mi)
 static void M_Interpolate(
     const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
 {
+#if defined(__DREAMCAST__)
+    if (M_InterpolateFloat(m1, m2, result)) {
+        return;
+    }
+#endif
     double rate = (m_IMRate != 0) ? ((double)m_IMFrac / (double)m_IMRate) : 0.0;
     CLAMP(rate, 0.0, 1.0);
 

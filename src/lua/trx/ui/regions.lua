@@ -205,9 +205,17 @@ end
 
 base.set_unplace(remove)
 
+-- The regions in the order the engine builds them.
+---@type trx.ui.Region[]
+local REGION_ORDER = {}
+for region in pairs(ALIGN_OF) do
+  REGION_ORDER[#REGION_ORDER + 1] = region
+end
+table.sort(REGION_ORDER)
+
 -- Reserve room for each region while the scene is being built. Signal changes
 -- have already invalidated any stale widget measurements by this point.
-trx.ui.on_reserve(function(region)
+local function reserve(region)
   local root = roots[region]
   if root == nil then
     return
@@ -233,6 +241,13 @@ trx.ui.on_reserve(function(region)
     if w > 0 and h > 0 then
       slots[root] = primitive.reserve(region, w, h)
     end
+  end
+end
+
+-- All regions in one event: one per region cost a protected call each.
+trxc.events.attach(h.constants("LUA_EVENT_TYPE").UI_RESERVE_ALL, function()
+  for _, region in ipairs(REGION_ORDER) do
+    reserve(region)
   end
 end)
 
