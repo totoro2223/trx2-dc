@@ -19,6 +19,9 @@ después Tomb Raider III. Debe correr en Flycast y en consola real con GDEMU
   comportamiento en PC.
 - **Los datos del juego nunca entran en el repositorio.** `make_disc.sh` los
   toma de la copia del jugador al hacer el CDI.
+- Tampoco entran: CDIs ni nada de `build/`, herramientas que se pueden
+  descargar (DreamSDK/KallistiOS, Flycast, `deps/`), ni recursos con
+  copyright del juego (texturas, sonidos, FMV, `textures.vq`, capturas).
 
 ## 2. Entorno
 

@@ -7,7 +7,10 @@ entorno, ciclo de compilación y pruebas, arquitectura, estado y pendientes.
 Reglas básicas:
 
 - El usuario habla en español; haz las preguntas de una en una.
-- Los datos del juego (`*.TR2`, `MAIN.SFX`, etc.) nunca entran en el repo.
+- Nunca hagas commit de: CDIs ni otros productos de compilación (`build/`),
+  herramientas descargables (DreamSDK/KallistiOS, Flycast, `deps/`), ni
+  nada con copyright del juego (niveles `*.TR2`, `MAIN.SFX`, texturas,
+  sonidos, FMV, `textures.vq`, capturas).
 - Compila tras cada cambio
   (`.\tools\dreamcast\dcsh.ps1 "bash tools/dreamcast/build.sh minsize"`).
   Genera un CDI solo si el usuario lo pide o si necesitas probar en Flycast,
