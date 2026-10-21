@@ -89,7 +89,7 @@ static void M_CalculateSpheres(
     const LARA_INFO *const lara = Lara_GetLaraInfo();
 
     const LARA_POSE *const pose = Lara_Pose_Get();
-    const XYZ_16 *mesh_rots = pose != nullptr ? pose->rots : frame->mesh_rots;
+    const XYZ_16 *mesh_rots = pose != nullptr ? pose->rots : Anim_GetFrameRots(frame);
 
     Matrix_TranslateRel16(pose != nullptr ? pose->offset : frame->offset);
     Matrix_Rot16(mesh_rots[LM_HIPS]);
@@ -107,7 +107,7 @@ static void M_CalculateSpheres(
     Matrix_TranslateRel32(bone[LM_TORSO - 1].pos);
     if (Lara_IsMachineGunActive() && pose == nullptr) {
         mesh_rots =
-            lara->right_arm.frame_base[lara->right_arm.frame_num].mesh_rots;
+            Anim_GetFrameRots(&lara->right_arm.frame_base[lara->right_arm.frame_num]);
     }
 
     Matrix_Rot16(mesh_rots[LM_TORSO]);
@@ -166,8 +166,8 @@ static void M_CalculateSpheres_I(
 {
     const LARA_INFO *const lara = Lara_GetLaraInfo();
 
-    const XYZ_16 *mesh_rots_1 = frame_1->mesh_rots;
-    const XYZ_16 *mesh_rots_2 = frame_2->mesh_rots;
+    const XYZ_16 *mesh_rots_1 = Anim_GetFrameRots(frame_1);
+    const XYZ_16 *mesh_rots_2 = Anim_GetFrameRots(frame_2);
     Matrix_InitInterpolate(frac, rate);
     Matrix_TranslateRel16_ID(frame_1->offset, frame_2->offset);
     Matrix_Rot16_ID(mesh_rots_1[LM_HIPS], mesh_rots_2[LM_HIPS]);
@@ -186,7 +186,7 @@ static void M_CalculateSpheres_I(
     Matrix_TranslateRel32_I(bone[LM_TORSO - 1].pos);
     if (Lara_IsMachineGunActive()) {
         mesh_rots_1 =
-            lara->right_arm.frame_base[lara->right_arm.frame_num].mesh_rots;
+            Anim_GetFrameRots(&lara->right_arm.frame_base[lara->right_arm.frame_num]);
         mesh_rots_2 = mesh_rots_1;
     }
 

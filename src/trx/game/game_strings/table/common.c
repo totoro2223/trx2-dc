@@ -18,9 +18,9 @@ static void M_Apply(const GS_TABLE *const table, const bool is_level)
         if (cur->value == nullptr) {
             LOG_ERROR("Invalid game string value: %s", cur->key);
         } else if (is_level) {
-            GameString_Override(cur->key, cur->value);
+            GameString_OverrideFromTable(cur->key, cur->value);
         } else {
-            GameString_Define(cur->key, cur->value);
+            GameString_DefineFromTable(cur->key, cur->value);
         }
     }
 }
@@ -95,6 +95,8 @@ void GameStringTable_Init(void)
 void GameStringTable_Shutdown(void)
 {
     if (m_GST_Layers != nullptr) {
+        // The strings point into the files' text, which goes now.
+        GameString_ForgetTables();
         for (int32_t i = 0; i < m_GST_Layers->count; i++) {
             GS_FILE *const gs_file = *(GS_FILE **)Vector_Get(m_GST_Layers, i);
             GS_File_Free(gs_file);

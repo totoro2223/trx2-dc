@@ -9,6 +9,8 @@
 #include <trx/game/level/cache.h>
 #include <trx/game/locale/path.h>
 
+#include <string.h>
+
 static const GF_LEVEL *m_CurrentLevel = nullptr;
 static GF_COMMAND m_OverrideCommand = { .action = GF_NOOP };
 static bool m_IsOverrideImmediate = true;
@@ -390,6 +392,12 @@ void GF_SetCurrentLevel(const GF_LEVEL *const level)
 
 void GF_SetLevelTitle(GF_LEVEL *const level, const char *const title)
 {
+    // Set again as each level loads: the same title is kept where it is,
+    // rather than made anew in the middle of the memory the level fills.
+    if (level->title != nullptr && title != nullptr
+        && strcmp(level->title, title) == 0) {
+        return;
+    }
     Memory_FreePointer(&level->title);
     level->title = title != nullptr ? Memory_DupStr(title) : nullptr;
 }

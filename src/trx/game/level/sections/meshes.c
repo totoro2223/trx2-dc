@@ -30,8 +30,10 @@ static RESULT M_ReadFace(
             face->vertices[i] >= num_vertices,
             "face names vertex %d of the %d the mesh holds", face->vertices[i],
             num_vertices);
+#if !defined(__DREAMCAST__)
         face->texture_zw[i].z = 1.0f;
         face->texture_zw[i].w = 1.0f;
+#endif
     }
     const uint16_t texture_idx = File_ReadU16(file);
     face->texture_idx = texture_idx & 0x7FFF;

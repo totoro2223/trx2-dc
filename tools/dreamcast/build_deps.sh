@@ -36,5 +36,19 @@ rm -f "$PREFIX/lib/libpcre2-8.a"
 kos-ar rcs "$PREFIX/lib/libpcre2-8.a" "${OBJS[@]}"
 cp "$BUILD/pcre2.h" "$PREFIX/include/"
 
+# luac for this PC, configured as kos-ports configures the Dreamcast's Lua
+# (LUA_32BITS is all it changes), so that the build can embed the engine's
+# scripts as bytecode the console loads as it is.
+LUA_TAR="$DEPS/dl/lua-5.5.0.tar.gz"
+if [ -f "$LUA_TAR" ]; then
+  LUA_BUILD="$DEPS/build/lua"
+  rm -rf "$LUA_BUILD" && mkdir -p "$LUA_BUILD" "$DEPS/host"
+  tar xzf "$LUA_TAR" -C "$LUA_BUILD"
+  (cd "$LUA_BUILD/lua-5.5.0/src" \
+    && gcc -std=gnu99 -O2 -DLUA_32BITS -o "$DEPS/host/luac.exe" \
+      $(ls *.c | grep -v '^lua\.c$'))
+  echo "luac built: $DEPS/host/luac.exe"
+fi
+
 echo "deps installed into $PREFIX"
 ls -la "$PREFIX/lib"

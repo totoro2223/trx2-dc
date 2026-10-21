@@ -123,6 +123,9 @@ X_CFG_BOOL(input.enable_tr3_sidesteps,                   true)
 X_CFG_BOOL(profile.new_game_plus_unlock,                 false)
 X_CFG_BOOL(rendering.enable_affine_mapping,              false)
 X_CFG_BOOL(rendering.enable_lighting,                    true)
+#if defined(__DREAMCAST__)
+X_CFG_BOOL(rendering.dc_cel_shading,                     true)
+#endif
 X_CFG_BOOL(rendering.enable_palette_quantize,            false)
 X_CFG_BOOL(rendering.enable_ps1_blending,                false)
 X_CFG_BOOL(rendering.enable_ps1_fog,                     false)
@@ -130,7 +133,11 @@ X_CFG_BOOL(rendering.enable_textures,                    true)
 X_CFG_BOOL(rendering.enable_trapezoid_filter,            true)
 X_CFG_BOOL(rendering.enable_vsync,                       true)
 X_CFG_BOOL(rendering.enable_wireframe,                   false)
+#if defined(__DREAMCAST__)
+X_CFG_BOOL(ui.enable_fps_counter,                        true)
+#else
 X_CFG_BOOL(ui.enable_fps_counter,                        false)
+#endif
 X_CFG_BOOL(ui.enable_game_ui,                            true)
 X_CFG_BOOL(ui.enable_photo_mode_ui,                      true)
 X_CFG_BOOL(ui.instant_save_load_screen,                  false)
@@ -182,6 +189,7 @@ X_CFG_ENUM(rendering.fmv_filter,                         TEXTURE_FILTER_BILINEAR
 X_CFG_ENUM(rendering.screenshot_format,                  SCREENSHOT_FORMAT_JPEG, SCREENSHOT_FORMAT)
 X_CFG_ENUM(rendering.sprite_lock_mode,                   BILLBOARD_LOCK_PERSPECTIVE, BILLBOARD_LOCK_MODE)
 #if defined(__DREAMCAST__)
+X_CFG_ENUM(rendering.dc_mode,                            DC_MODE_GRAPHICS, DC_MODE)
 // The PowerVR filters for free.
 X_CFG_ENUM(rendering.texture_filter,                     TEXTURE_FILTER_BILINEAR, TEXTURE_FILTER)
 #else
@@ -242,8 +250,15 @@ X_CFG_INT32_RANGE(rendering.fps,                         60, 30, 60)
 X_CFG_INT32_RANGE(rendering.multisampling_factor,        1, 1, 8)
 X_CFG_INT32_RANGE(rendering.supersampling_factor,        1, 1, 4)
 X_CFG_INT32_RANGE(rendering.upscaling_factor,            1, 1, 10)
+#if defined(__DREAMCAST__)
+// The original TR2 and TR3 distances: past them nothing is drawn, which the
+// Dreamcast's vertex buffers need in the large outdoor views.
+X_CFG_INT32_RANGE(visuals.fog_end,                       20, 1, 100)
+X_CFG_INT32_RANGE(visuals.fog_start,                     12, 1, 100)
+#else
 X_CFG_INT32_RANGE(visuals.fog_end,                       30, 1, 100)
 X_CFG_INT32_RANGE(visuals.fog_start,                     22, 1, 100)
+#endif
 X_CFG_INT32_RANGE(visuals.fov,                           80, 30, 150)
 X_CFG_RGB888(visuals.fog_color,                          0, 0, 0)
 X_CFG_STRING(audio.media_language,                       "auto")

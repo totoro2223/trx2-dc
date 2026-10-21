@@ -3,7 +3,7 @@
 // Define a game string mapping: associates an ID with a text value.
 // @param id    Compile-time identifier for the string.
 // @param value Text to map to the identifier.
-#define GS_DEFINE(id, value) GameString_Define(#id, value);
+#define GS_DEFINE(id, value) GameString_DefineStatic(#id, value);
 
 // Retrieve a game string by a slash-separated path literal.
 #define GS(path) GameString_Get(path)
@@ -29,6 +29,18 @@ void GameString_RestoreDefaults(void);
 // @param key   Identifier for the string (e.g. "GAME_OVER").
 // @param value Text to associate with the identifier.
 void GameString_Define(const char *key, const char *value);
+
+// GameString_Define without a copy of the value: a string literal, which
+// lives as long as the program.
+void GameString_DefineStatic(const char *key, const char *value);
+
+// GameString_Define and GameString_Override without a copy of the value: one
+// held by a loaded strings file, which lives until GameString_ForgetTables.
+void GameString_DefineFromTable(const char *key, const char *value);
+void GameString_OverrideFromTable(const char *key, const char *value);
+
+// Drops every value that a strings file holds, before the files go.
+void GameString_ForgetTables(void);
 
 // Define a game string mapping that GameString_RevertOverrides() takes back.
 // The value the identifier had before its first override is kept, so a key

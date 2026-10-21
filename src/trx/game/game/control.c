@@ -29,6 +29,10 @@
 #include <trx/game/ui/menu.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_watchdog.h>
+#endif
+
 #define M_FRAME_BUFFER(key)                                                    \
     do {                                                                       \
         Shell_ProcessEvents();                                                 \
@@ -127,6 +131,21 @@ GF_COMMAND Game_Control(const bool demo_mode)
     Game_ProcessInput();
     Camera_Binoculars_Control();
 
+#if defined(__DREAMCAST__)
+    if (!demo_mode) {
+        // Test discs load saved games in turn (see DC_Watchdog_TakeTestLoad).
+        const int32_t test_load = DC_Watchdog_TakeTestLoad();
+        const SAVEGAME_SLOT_REF slot = test_load >= 0
+            ? SG_Manager_NormalSlot(test_load)
+            : SG_Manager_InvalidSlot();
+        if (SG_Manager_IsValidSlotRef(slot) && !SG_Manager_IsSlotFree(slot)) {
+            return (GF_COMMAND) {
+                .action = GF_START_SAVED_GAME,
+                .param = SG_Manager_SlotToParam(slot),
+            };
+        }
+    }
+#endif
     if ((g_InputDB.quick_save || g_InputDB.quick_load) && !demo_mode
         && !g_Config.flow.load_save_disabled) {
         bool quick_handled = false;

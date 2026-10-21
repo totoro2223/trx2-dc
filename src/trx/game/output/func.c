@@ -9,6 +9,7 @@
 #include <trx/game/matrix.h>
 #include <trx/game/output/const.h>
 #include <trx/game/output/state.h>
+#include <trx/game/output/utils.h>
 #include <trx/game/output/vars.h>
 #include <trx/gl/context.h>
 
@@ -52,6 +53,23 @@ CLIP Output_CheckBoundsClip(const BOUNDS_16 *const bounds)
 
         num_z++;
         const int32_t zp = zv / g_PhdPersp;
+#if defined(__DREAMCAST__)
+        // The SH-4 has no 64-bit division, which libgcc does in dozens of
+        // steps; in floats it is one reciprocal, to within a pixel.
+        const float inv_zp = 1.0f / (float)zp;
+        // clang-format off
+        const int32_t xv = (int32_t)(Output_MatrixToFloat(
+            g_MatrixPtr->_00 * vtx[i].x +
+            g_MatrixPtr->_01 * vtx[i].y +
+            g_MatrixPtr->_02 * vtx[i].z +
+            g_MatrixPtr->_03) * inv_zp);
+        const int32_t yv = (int32_t)(Output_MatrixToFloat(
+            g_MatrixPtr->_10 * vtx[i].x +
+            g_MatrixPtr->_11 * vtx[i].y +
+            g_MatrixPtr->_12 * vtx[i].z +
+            g_MatrixPtr->_13) * inv_zp);
+        // clang-format on
+#else
         // clang-format off
         const int32_t xv = (
             g_MatrixPtr->_00 * vtx[i].x +
@@ -64,6 +82,7 @@ CLIP Output_CheckBoundsClip(const BOUNDS_16 *const bounds)
             g_MatrixPtr->_12 * vtx[i].z +
             g_MatrixPtr->_13) / zp;
         // clang-format on
+#endif
 
         CLAMPG(x_min, xv);
         CLAMPL(x_max, xv);

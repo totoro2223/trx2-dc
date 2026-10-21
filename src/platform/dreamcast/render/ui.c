@@ -4,6 +4,7 @@
 // the translucent list, at the depth their z gives them. Models (the
 // inventory) go through the objects source, over the flat interface.
 
+#include "cel.h"
 #include "pvr.h"
 
 #include <platform/dreamcast/stub.h>
@@ -139,6 +140,7 @@ static void M_DrawColoredMeshes(
     const OUTPUT_UI_MESH_LIGHT *const light)
 {
     const OBJECT *const obj = mesh->object;
+    const XYZ_16 *const rots = Anim_GetFrameRots(frame);
     Matrix_Push();
     for (int32_t i = 0; i < obj->mesh_count && i < 32; i++) {
         if (i > 0) {
@@ -150,7 +152,7 @@ static void M_DrawColoredMeshes(
                 Matrix_Push();
             }
             Matrix_TranslateRel32(bone->pos);
-            Matrix_Rot16(frame->mesh_rots[i]);
+            Matrix_Rot16(rots[i]);
         }
         const uint32_t bit = 1u << i;
         if ((mesh->mesh_mask & bit) == 0) {
@@ -192,7 +194,7 @@ static void M_PoseOnCanvas(
         .y = -(frame->bounds.min.y + frame->bounds.max.y) / 2,
         .z = -(frame->bounds.min.z + frame->bounds.max.z) / 2,
     });
-    Matrix_Rot16(frame->mesh_rots[0]);
+    Matrix_Rot16(Anim_GetFrameRots(frame)[0]);
 }
 
 static void M_PoseInWorld(const OUTPUT_UI_MESH_WORLD *const world)
@@ -304,6 +306,7 @@ static void M_DrawMeshes(const M_PRIV *const p)
     const int32_t old_fog_end = Output_GetFogEnd();
     Output_SetFogStart(20 * WALL_L);
     Output_SetFogEnd(100 * WALL_L);
+    DC_Cel_SetAllowed(false);
 
     for (int32_t i = 0; i < p->meshes->count; i++) {
         const OUTPUT_UI_MESH *const mesh = Vector_Get(p->meshes, i);
@@ -337,7 +340,7 @@ static void M_DrawMeshes(const M_PRIV *const p)
                     posed = frame;
                 }
                 Matrix_TranslateRel16(posed->offset);
-                Matrix_Rot16(posed->mesh_rots[0]);
+                Matrix_Rot16(Anim_GetFrameRots(posed)[0]);
             }
             M_DrawColoredMeshes(mesh, posed, &light);
         } else if (mesh->world != nullptr) {
@@ -364,6 +367,7 @@ static void M_DrawMeshes(const M_PRIV *const p)
 
     Output_SetFogStart(old_fog_start);
     Output_SetFogEnd(old_fog_end);
+    DC_Cel_SetAllowed(true);
 }
 
 static uint32_t M_PackF(const RGBA_F c)
@@ -410,7 +414,12 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     if (pass != SCENE_PASS_UI) {
         return;
     }
-    DC_PVR_SetFilter(g_Config.rendering.ui_filter == TEXTURE_FILTER_BILINEAR);
+    // At 320x240 filtering blurs the text past reading.
+    DC_PVR_SetFilter(
+        g_Config.rendering.ui_filter == TEXTURE_FILTER_BILINEAR
+        && !DC_PVR_IsLowRes());
+    // There the text is drawn smaller than its texels, from pages at half size.
+    DC_PVR_SetHalfPages(DC_PVR_IsLowRes());
     for (int32_t i = 0; i < p->prims->count; i++) {
         M_PRIM *const prim = Vector_Get(p->prims, i);
         for (int32_t j = 0; j < 4; j++) {
@@ -423,6 +432,7 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
             DC_PVR_Quad(&prim->v[0], &prim->v[1], &prim->v[2], &prim->v[3]);
         }
     }
+    DC_PVR_SetHalfPages(false);
 
     // The models go over the flat interface.
     if (p->meshes->count > 0) {

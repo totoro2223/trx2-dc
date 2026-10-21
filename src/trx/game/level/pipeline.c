@@ -5,6 +5,7 @@
 #include <trx/core/log.h>
 #include <trx/core/memory.h>
 #include <trx/game/camera.h>
+#include <trx/game/game_buf.h>
 #include <trx/game/inject.h>
 #include <trx/game/items/carrier.h>
 #include <trx/game/level.h>
@@ -21,6 +22,7 @@
 #include <string.h>
 
 #if defined(__DREAMCAST__)
+#include <platform/dreamcast/dc_alloc_trace.h>
 #include <platform/dreamcast/loading.h>
 #include <trx/core/filesystem.h>
 #endif
@@ -223,11 +225,31 @@ static uint64_t M_GetLoadSize(const GF_LEVEL *const level)
 }
 #endif
 
+#if defined(__DREAMCAST__)
+int32_t LUA_DC_CollectGarbage(void);
+#endif
+
 RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
 {
     LOG_INFO("%d (%s)", level->num, level->path);
     BENCHMARK benchmark = Benchmark_Start();
 #if defined(__DREAMCAST__)
+    #if defined(TRX_DC_WATCHDOG)
+    // What the previous level (or the title) left behind.
+    DC_AllocTrace_DumpLive(level->path);
+    #endif
+    // The previous level's data goes before the injections are read: both at
+    // once do not fit, and a restart or a level change ran out of memory.
+    GameBuf_Reset();
+    // Lua's garbage is spread over what the previous level held; letting it
+    // go leaves room for the next level's big blocks.
+    LUA_DC_CollectGarbage();
+    #if defined(TRX_DC_WATCHDOG)
+    DC_AllocTrace_DumpKept(level->path);
+    DC_AllocTrace_DumpHeapMap(level->path);
+    // From here on: what the loads leave is listed at the next.
+    DC_AllocTrace_StartKeeping();
+    #endif
     DC_Loading_Begin(M_GetLoadSize(level));
 #endif
 

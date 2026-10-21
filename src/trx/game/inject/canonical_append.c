@@ -24,6 +24,11 @@ static int32_t M_GameVersion(void)
 
 static void M_Shutdown(void)
 {
+    InjectCanonical_ReleaseFrames();
+}
+
+void InjectCanonical_ReleaseFrames(void)
+{
     if (m_FrameOffsets != nullptr) {
         Vector_Free(m_FrameOffsets);
         Vector_Free(m_FrameRotCounts);

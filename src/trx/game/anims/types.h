@@ -43,7 +43,15 @@ typedef struct {
 typedef struct {
     BOUNDS_16 bounds;
     XYZ_16 offset;
+#if defined(__DREAMCAST__)
+    // Each rotation as three 10-bit angles in one word, as the level stores
+    // them: two thirds of the room of XYZ_16, over ~20000 frames. Read them
+    // through Anim_GetFrameRots.
+    uint8_t mesh_count;
+    uint32_t *packed_rots;
+#else
     XYZ_16 *mesh_rots;
+#endif
 } ANIM_FRAME;
 
 typedef struct {

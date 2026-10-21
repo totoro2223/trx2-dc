@@ -94,7 +94,7 @@ ANIM_POSE Anim_Pose_FromFrame(const ANIM_FRAME *const frame)
     }
     return (ANIM_POSE) {
         .offset_a = frame->offset,
-        .rots_a = frame->mesh_rots,
+        .rots_a = Anim_GetFrameRots(frame),
     };
 }
 
@@ -108,8 +108,8 @@ ANIM_POSE Anim_Pose_FromFrames(
     return (ANIM_POSE) {
         .offset_a = frame_a->offset,
         .offset_b = frame_b->offset,
-        .rots_a = frame_a->mesh_rots,
-        .rots_b = frame_b->mesh_rots,
+        .rots_a = Anim_GetFrameRots(frame_a),
+        .rots_b = Anim_GetFrameRots(frame_b),
         .frac = frac,
         .rate = rate,
     };

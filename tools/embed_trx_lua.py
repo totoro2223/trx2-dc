@@ -8,12 +8,20 @@ meson source list it is named in, not by anything the loader has to work out.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from shared.luaannot import signatures_module  # noqa: E402
+from shared.luaannot import (  # noqa: E402
+    annotated_modules,
+    parse_files,
+    signatures,
+    signatures_module,
+    to_lua,
+)
 
 Script = tuple[str, str, bytes]
 
@@ -63,6 +71,34 @@ def _collect(paths: list[Path], root: Path, taken: set[str]) -> list[Script]:
     return scripts
 
 
+def _lean_signatures(root: Path) -> str:
+    # Only what the modules are built against (members) and what type checking
+    # looks names up in. The rest serves strict mode and the seal's audits,
+    # which a game that never turns strict mode on and seals partially does
+    # without.
+    full = signatures(parse_files(annotated_modules(root)))
+    kept = ("members", "records", "types")
+    lean = {k: v if k in kept else {} for k, v in full.items()}
+    return f"return {to_lua(lean)}\n"
+
+
+def _compile(scripts: list[Script], luac: Path) -> list[Script]:
+    # Stripped bytecode in place of the source: no parsing on the target, and
+    # none of the debug information it would keep. The target loads it from
+    # where it lies (a fixed buffer), so the arrays are aligned.
+    compiled: list[Script] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "in.lua"
+        out = Path(tmp) / "out.luac"
+        for path, c_ident, data in scripts:
+            src.write_bytes(data)
+            subprocess.run(
+                [str(luac), "-s", "-o", str(out), str(src)], check=True
+            )
+            compiled.append((path, c_ident, out.read_bytes()))
+    return compiled
+
+
 def _emit_array(name: str, scripts: list[Script]) -> list[str]:
     lines = [f"const LUA_EMBEDDED_SCRIPT {name}[] = {{"]
     for path, c_ident, data in scripts:
@@ -82,6 +118,8 @@ def main() -> int:
     parser.add_argument("--modules", nargs="*", default=[], type=Path)
     parser.add_argument("--script-root", required=True, type=Path)
     parser.add_argument("--scripts", nargs="*", default=[], type=Path)
+    parser.add_argument("--luac", type=Path)
+    parser.add_argument("--lean-signatures", action="store_true")
     args = parser.parse_args()
 
     taken: set[str] = set()
@@ -89,22 +127,30 @@ def main() -> int:
     # trx.internal.signatures is generated from the annotations of the modules
     # above,
     # for strict mode to check calls against.
-    signatures = signatures_module(args.module_root).encode("utf-8")
+    source = (
+        _lean_signatures(args.module_root)
+        if args.lean_signatures
+        else signatures_module(args.module_root)
+    )
     modules.append(
         (
             "internal/signatures.lua",
             _c_ident_from_path(Path("internal/signatures.lua"), taken),
-            signatures,
+            source.encode("utf-8"),
         )
     )
     scripts = _collect(args.scripts, args.script_root, taken)
+    if args.luac:
+        modules = _compile(modules, args.luac)
+        scripts = _compile(scripts, args.luac)
+    align = " _Alignas(8)" if args.luac else ""
 
     lines: list[str] = []
     lines.append("// Auto-generated file; do not edit.")
     lines.append("#include <trx/game/lua/embedded_scripts.h>")
     lines.append("")
     for _, c_ident, data in modules + scripts:
-        lines.append(f"static const uint8_t {c_ident}[] = {{")
+        lines.append(f"static const uint8_t{align} {c_ident}[] = {{")
         lines.append(_bytes_to_c_array(data) + ",")
         lines.append("};")
         lines.append("")

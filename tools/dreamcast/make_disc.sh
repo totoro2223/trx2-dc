@@ -3,15 +3,19 @@
 # and GDEMU. The game data comes from the player's own copy and never goes
 # into the repository.
 #
-#   tools/dreamcast/make_disc.sh <build-dir> <tr2-data-dir> [output.cdi]
+#   tools/dreamcast/make_disc.sh <build-dir> <tr2-data-dir> [output.cdi] [level]
 #
 # <tr2-data-dir> is the original DATA directory (*.TR2 and MAIN.SFX).
+# [level] starts the disc straight in that TR2 level, past the level select
+# (test discs); "1 8" also loads saved games 0 and 1 in turn, 8 times (see
+# DC_Watchdog_TakeTestLoad).
 source /opt/toolchains/dc/kos/environ.sh
 set -eo pipefail
 
 BUILD_DIR="$(cd "${1:?build dir}" && pwd)"
 TR2_DATA="$(cd "${2:?TR2 DATA dir}" && pwd)"
 OUT="${3:-$BUILD_DIR/TRX.cdi}"
+START_LEVEL="${4:-}"
 ROOT="$(pwd)"
 SHIP="$ROOT/data/trx/ship"
 STAGE="$BUILD_DIR/disc"
@@ -26,6 +30,18 @@ echo "== boot binary"
 /opt/toolchains/dc/kos/utils/makeip/makeip -f \
   -g "TRX" -c "TRX PORT" -n "T-TRX00" \
   "$TMP/IP.BIN" > /dev/null
+
+echo "== version"
+# Every disc made gets the next number; the loading screen shows it.
+COUNTER="$ROOT/build/dc-build-number"
+BUILD_NUM=$(( $(cat "$COUNTER" 2>/dev/null || echo 0) + 1 ))
+echo "$BUILD_NUM" > "$COUNTER"
+echo "DC build $BUILD_NUM" > "$STAGE/VERSION.TXT"
+cat "$STAGE/VERSION.TXT"
+if [ -n "$START_LEVEL" ]; then
+  echo "$START_LEVEL" > "$STAGE/START.TXT"
+  echo "starts in level $START_LEVEL"
+fi
 
 echo "== engine data"
 cp -r "$SHIP/cfg" "$STAGE/cfg"
@@ -57,6 +73,22 @@ for f in "$TR2_DATA"/*; do
     main.sfx) cp "$f" "$STAGE/games/tr2/main.sfx" ;;
   esac
 done
+
+echo "== texture pages in VQ"
+# Every page of every level and injection on the disc, which the game finds
+# by its contents (see tools/dreamcast/texvq.c); made again only when the
+# tool or the data change.
+VQ="$BUILD_DIR/textures.vq"
+VQ_TOOL="$BUILD_DIR/texvq.exe"
+if [ ! -f "$VQ_TOOL" ] || [ "$ROOT/tools/dreamcast/texvq.c" -nt "$VQ_TOOL" ]; then
+  gcc -O2 -fopenmp -o "$VQ_TOOL" "$ROOT/tools/dreamcast/texvq.c" -lz
+fi
+VQ_INPUTS=("$STAGE"/games/tr2/levels/*.tr2 "$STAGE"/games/tr2/injections/*.bin)
+if [ ! -f "$VQ" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
+  || [ -n "$(find "$TR2_DATA" "$SHIP/games/tr2/injections" -newer "$VQ" -print -quit)" ]; then
+  "$VQ_TOOL" "$VQ" "${VQ_INPUTS[@]}"
+fi
+cp "$VQ" "$STAGE/textures.vq"
 
 echo "== image"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \

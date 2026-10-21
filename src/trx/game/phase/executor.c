@@ -31,6 +31,7 @@
 #include <trx/gl/track.h>
 
 #include <SDL2/SDL_timer.h>
+#include <stdio.h>
 
 #define M_MAX_PHASES 10
 
@@ -98,6 +99,50 @@ static void M_SetHalfFrameRate(void)
     Interpolation_SetUIRate(0.5);
 }
 
+#if defined(__DREAMCAST__)
+// The Dreamcast draws 60 frames only where a scene is light, so instead of a
+// frame between every two ticks it draws as often as it can, each frame at
+// the point between the last two ticks that the real clock has reached, and
+// runs as many ticks as the clock asks for: the game keeps its speed however
+// many frames are drawn.
+    #define M_FRACTIONAL_FRAMES
+#endif
+
+#if defined(M_FRACTIONAL_FRAMES)
+// Draws the next frame frac of the way from the tick before last to the last.
+static void M_SetFractionalRate(const double frac)
+{
+    Interpolation_SetRate(m_Exiting ? 1.0 : frac);
+    Interpolation_SetUIRate(frac);
+    Output_SetTime(m_CurrentFrame - 1 + frac);
+}
+
+// For the debug console: game ticks and frames drawn per second of real time,
+// every few seconds. The ticks keep to LOGIC_FPS however few frames are drawn.
+static void M_LogTickRate(const int32_t ticks)
+{
+    static Uint64 start = 0;
+    static int32_t tick_count = 0;
+    static int32_t frame_count = 0;
+    const Uint64 now = SDL_GetPerformanceCounter();
+    if (start == 0) {
+        start = now;
+    }
+    tick_count += ticks;
+    frame_count++;
+    const double seconds =
+        (double)(now - start) / (double)SDL_GetPerformanceFrequency();
+    if (seconds >= 4.0) {
+        printf(
+            "[clock] %.1f ticks/s, %.1f frames/s\n", tick_count / seconds,
+            frame_count / seconds);
+        start = now;
+        tick_count = 0;
+        frame_count = 0;
+    }
+}
+#endif
+
 static void M_DrawHeldScreen(void)
 {
     Output_BeginScene();
@@ -148,7 +193,14 @@ static GF_COMMAND M_ChangeScreen(const PHASE *const phase)
     // to end, such as to load a level, does not run as ticks of the fade.
     Clock_SyncTick();
     while (LUA_UI_IsHoldingScreen()) {
+#if defined(M_FRACTIONAL_FRAMES)
+        double frac = 1.0;
+        const bool fractional = M_HasHalfFrames();
+        const int32_t nframes =
+            fractional ? Clock_WaitLogicTicks(&frac) : Clock_WaitTick();
+#else
         const int32_t nframes = Clock_WaitTick();
+#endif
         for (int32_t frame = 0; frame < nframes; frame++) {
             m_CurrentFrame++;
 
@@ -175,6 +227,15 @@ static GF_COMMAND M_ChangeScreen(const PHASE *const phase)
         if (!LUA_UI_IsHoldingScreen()) {
             break;
         }
+
+#if defined(M_FRACTIONAL_FRAMES)
+        if (fractional) {
+            M_SetFractionalRate(frac);
+            M_DrawHeldScreen();
+            Interpolation_SetRate(1.0);
+            continue;
+        }
+#endif
 
         // Draws the frame between two ticks as the main loop does, so that a
         // tick lasts as long here as in a phase.
@@ -351,9 +412,17 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
     }
 
     while (true) {
+#if defined(M_FRACTIONAL_FRAMES)
+        double frac = 1.0;
+        const bool fractional = M_HasHalfFrames();
+        // No tick may be due yet when the last frame was quick.
+        int32_t nframes =
+            fractional ? Clock_WaitLogicTicks(&frac) : Clock_WaitTick();
+#else
         int32_t nframes = Clock_WaitTick();
+#endif
         int32_t frame = 0;
-        while (true) {
+        while (frame < nframes) {
             const PHASE_CONTROL control = M_Control(phase);
             if (control.action == PHASE_ACTION_END
                 || control.action == PHASE_ACTION_END_FAST) {
@@ -372,10 +441,20 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
             }
 
             frame++;
-            if (frame >= nframes) {
-                break;
-            }
         }
+
+#if defined(M_FRACTIONAL_FRAMES)
+        if (fractional) {
+            M_LogTickRate(nframes);
+            M_SetFractionalRate(frac);
+            // The rooms move on once a tick, so on the first frame after one.
+            Output_SetControlFrame(nframes > 0);
+            M_Draw(phase);
+            Output_SetControlFrame(false);
+            Interpolation_SetRate(1.0);
+            continue;
+        }
+#endif
 
         if (!Shell_ShouldPauseForFocusLoss() && M_HasHalfFrames()) {
             M_SetHalfFrameRate();

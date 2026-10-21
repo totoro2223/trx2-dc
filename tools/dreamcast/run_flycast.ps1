@@ -84,6 +84,12 @@ if ($Monitor -ne '') {
         "could not move Flycast: $_"
     }
 }
+# The serial console opens last and takes the focus; the game wants it.
+try {
+    & (Join-Path $PSScriptRoot 'flycast_keys.ps1') -FocusOnly
+} catch {
+    "could not focus Flycast: $_"
+}
 
 $deadline = $logStart.AddSeconds($Seconds)
 while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {

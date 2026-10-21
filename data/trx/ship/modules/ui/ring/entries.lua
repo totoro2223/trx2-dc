@@ -157,6 +157,12 @@ end
 -- The entries of the menu ring, in the order each game shows them.
 local function menu(mode)
   local list = { objects.PASSPORT_CLOSED }
+  -- The Dreamcast keeps only the passport and the graphics (its rendering
+  -- tab): the other dialogs' Lua does not fit the console's memory.
+  if pcall(trx.config.describe, "rendering.dc_mode") then
+    list[#list + 1] = objects.GRAPHICS_OPTION
+    return list
+  end
   if trx.game.version == 1 then
     list[#list + 1] = objects.CONTROLS_OPTION
     list[#list + 1] = objects.SOUND_OPTION

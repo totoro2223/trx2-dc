@@ -39,12 +39,25 @@ static bool m_IsGolden = false;
 // Answers with the default where she wears nothing yet, and leaves the type
 // alone: a level being set up has none on purpose, and healing it here once
 // left the outfit applied to nothing.
+// Each of her meshes asks, every frame; what a level can dress her in only
+// changes as it loads (Lara_Skin_Initialise), so the answer is kept until
+// then or until she changes.
+static struct {
+    bool valid;
+    LARA_SKIN_TYPE skin_type;
+    LARA_SKIN_TYPE worn;
+} m_Worn = {};
+
 static inline const LARA_SKIN_OUTFIT *M_GetWornOutfit(void)
 {
-    const LARA_SKIN_TYPE type = Lara_Skin_IsOutfitAvailable(m_SkinType)
-        ? m_SkinType
-        : Lara_Skin_GetDefaultType();
-    return Lara_Skin_GetOutfit(type);
+    if (!m_Worn.valid || m_Worn.skin_type != m_SkinType) {
+        m_Worn.valid = true;
+        m_Worn.skin_type = m_SkinType;
+        m_Worn.worn = Lara_Skin_IsOutfitAvailable(m_SkinType)
+            ? m_SkinType
+            : Lara_Skin_GetDefaultType();
+    }
+    return Lara_Skin_GetOutfit(m_Worn.worn);
 }
 
 static inline const LARA_SKIN_OUTFIT *M_GetCurrentOutfit(void)
@@ -593,6 +606,7 @@ void Lara_Skin_Initialise(void)
     // Before the bail below, so a level that cannot dress her does not inherit
     // the outgoing level's outfit - the meshes it names are not loaded here.
     m_SkinType = M_NO_OUTFIT;
+    m_Worn.valid = false;
     m_HolsterType_L = LGT_UNARMED;
     m_HolsterType_R = LGT_UNARMED;
     m_UseCombatFace = false;

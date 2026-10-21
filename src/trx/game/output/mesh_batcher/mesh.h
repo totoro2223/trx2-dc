@@ -42,9 +42,8 @@ typedef struct {
     OUTPUT_MESH_VERTEX_NORMAL normal;
     uint16_t flags;
     int16_t shade;
-    int16_t trapezoid_ratio[2];
-    int16_t reflectivity;
-    int16_t tint_factor;
+    // No trapezoid ratio, reflectivity or tint factor: the PowerVR path reads
+    // none of them, and they were a fifth of every mesh's memory.
     uint8_t light_table_idx;
 } OUTPUT_MESH_VERTEX;
 #else
@@ -65,11 +64,23 @@ typedef struct {
 } OUTPUT_MESH_VERTEX;
 #endif
 
+#if defined(__DREAMCAST__)
+// A mesh never reaches 65536 vertices (one room's faces at most), and the
+// indices are a seventh of its memory.
+typedef uint16_t OUTPUT_MESH_INDEX;
+#else
+typedef uint32_t OUTPUT_MESH_INDEX;
+#endif
+
 // Describes a contiguous block of vertices belonging to one face,
 // with sort keys.
 typedef struct {
     int32_t vertex_count;
+#if defined(__DREAMCAST__)
+    OUTPUT_MESH_INDEX *vertex_indices;
+#else
     int32_t *vertex_indices;
+#endif
     XYZ_F mesh_centroid;
 } OUTPUT_MESH_FACE;
 
@@ -80,10 +91,10 @@ typedef struct {
     int32_t sealed;
     VECTOR *animated_vertices; // OUTPUT_VERTEX_RANGE
     VECTOR *transparent_faces; // OUTPUT_MESH_FACE
-    VECTOR *opaque_vertex_indices; // uint32_t
+    VECTOR *opaque_vertex_indices; // OUTPUT_MESH_INDEX
     int32_t opaque_nodiscard_count;
-    VECTOR *opaque_discard_indices; // uint32_t
-    VECTOR *blend_add_vertex_indices; // uint32_t
+    VECTOR *opaque_discard_indices; // OUTPUT_MESH_INDEX
+    VECTOR *blend_add_vertex_indices; // OUTPUT_MESH_INDEX
 } OUTPUT_MESH;
 
 OUTPUT_MESH *Output_Mesh_Create(void);

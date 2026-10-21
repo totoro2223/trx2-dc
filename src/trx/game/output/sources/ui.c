@@ -175,6 +175,7 @@ static void M_DrawColoredMeshes(
     const OUTPUT_UI_MESH_LIGHT *const light)
 {
     const OBJECT *const obj = mesh->object;
+    const XYZ_16 *const rots = Anim_GetFrameRots(frame);
     Matrix_Push();
     for (int32_t i = 0; i < obj->mesh_count && i < 32; i++) {
         if (i > 0) {
@@ -186,7 +187,7 @@ static void M_DrawColoredMeshes(
                 Matrix_Push();
             }
             Matrix_TranslateRel32(bone->pos);
-            Matrix_Rot16(frame->mesh_rots[i]);
+            Matrix_Rot16(rots[i]);
         }
         const uint32_t bit = 1u << i;
         if ((mesh->mesh_mask & bit) == 0) {
@@ -232,7 +233,7 @@ static void M_PoseOnCanvas(
         .y = -(frame->bounds.min.y + frame->bounds.max.y) / 2,
         .z = -(frame->bounds.min.z + frame->bounds.max.z) / 2,
     });
-    Matrix_Rot16(frame->mesh_rots[0]);
+    Matrix_Rot16(Anim_GetFrameRots(frame)[0]);
 }
 
 // Poses a model where it stands in a world of its own, as that world's camera
@@ -423,7 +424,7 @@ static void M_DrawMeshes(const M_PRIV *const p)
                     posed = frame;
                 }
                 Matrix_TranslateRel16(posed->offset);
-                Matrix_Rot16(posed->mesh_rots[0]);
+                Matrix_Rot16(Anim_GetFrameRots(posed)[0]);
             }
             M_DrawColoredMeshes(mesh, posed, &light);
         } else if (mesh->world != nullptr) {

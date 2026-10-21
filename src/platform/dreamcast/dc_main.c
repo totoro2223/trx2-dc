@@ -9,7 +9,9 @@
 // The link wraps main (-Wl,--wrap=main), so this runs once KOS is up and
 // before the engine's own main.
 
+#include "dc_level_select.h"
 #include "dc_watchdog.h"
+#include "vmu.h"
 
 #include <arch/mmu.h>
 #include <kos/dbgio.h>
@@ -45,8 +47,10 @@ static void M_SetupEnvironment(void)
 
     setenv("TRX_DIR", "/cd", 0);
     setenv("TRX_CACHE_DIR", "/ram/trx/cache", 0);
-    setenv("TRX_SAVES_DIR", "/ram/trx/saves", 0);
+    // The RAM disk cannot make directories (no mkdir), so the saves sit at its root.
+    setenv("TRX_SAVES_DIR", "/ram", 0);
     setenv("TRX_SCREENSHOTS_DIR", "/ram/trx/screenshots", 0);
+    DC_VMU_RestoreSaves(getenv("TRX_SAVES_DIR"));
 }
 
 typedef struct {
@@ -88,6 +92,30 @@ int __wrap_main(int argc, char *argv[])
     };
     argc = 5;
     argv = start_argv;
+#else
+    // Test discs name their level (make_disc.sh's fourth argument).
+    int level = -1;
+    FILE *const start = fopen("/cd/START.TXT", "r");
+    if (start != nullptr) {
+        if (fscanf(start, "%d", &level) != 1) {
+            level = -1;
+        }
+        // And, optionally, how many saved games to load in turn.
+        int loads = 0;
+        if (fscanf(start, "%d", &loads) == 1) {
+            DC_Watchdog_SetTestLoads(loads);
+        }
+        fclose(start);
+    } else {
+        level = DC_LevelSelect_Run();
+    }
+    static char level_arg[12];
+    static char *level_argv[] = { "trx", "-e", "2", "-l", level_arg, nullptr };
+    if (level >= 0) {
+        snprintf(level_arg, sizeof(level_arg), "%d", (int)level);
+        argc = 5;
+        argv = level_argv;
+    }
 #endif
     M_MAIN_ARGS args = { .argc = argc, .argv = argv, .result = 0 };
     // The stack is filled with a marker so that the watchdog can tell how

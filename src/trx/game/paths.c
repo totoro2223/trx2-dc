@@ -496,6 +496,12 @@ static void M_SetResolveCache(
     }
     M_RESOLVE_CACHE_ENTRY *const existing = M_FindResolveCache(path, rel);
     if (existing != nullptr) {
+        // Kept where it is when it resolves the same again.
+        if (existing->resolved != nullptr && resolved != nullptr
+            && strcmp(existing->resolved, resolved) == 0) {
+            existing->found = true;
+            return;
+        }
         Memory_FreePointer(&existing->resolved);
         existing->resolved =
             resolved != nullptr ? Memory_DupStr(resolved) : nullptr;

@@ -97,6 +97,7 @@ static void M_FillLight(
         dst_light->falloff = src_light->u.legacy.falloff.value_1;
     }
     dst_light->kind = entry->kind;
+    dst_light->_pad = 0.0f;
 }
 
 static int16_t M_GetMinShade(void)
@@ -221,7 +222,10 @@ void Output_Uniforms_UploadFogDistance(
 void Output_Uniforms_UploadRoomLights(
     const OUTPUT_UNIFORMS *const uniforms, const ROOM *const room)
 {
-    M_UNIFORM_LIGHTS lights = {};
+    // Only the header is cleared: each frame and instance comes here, and the
+    // slots past num_lights are neither compared nor uploaded.
+    M_UNIFORM_LIGHTS lights;
+    memset(&lights, 0, offsetof(M_UNIFORM_LIGHTS, lights));
 
     // Only dynamic lights for now.
     M_UNIFORM_LIGHT *dst_light = lights.lights;
@@ -244,10 +248,10 @@ void Output_Uniforms_UploadRoomLights(
         + lights.num_lights * sizeof(M_UNIFORM_LIGHT);
 
     M_PRIV *const p = uniforms->priv;
-    if (memcmp(&p->last_lights, &lights, sizeof(lights)) == 0) {
+    if (memcmp(&p->last_lights, &lights, size) == 0) {
         return;
     }
-    memcpy(&p->last_lights, &lights, sizeof(lights));
+    memcpy(&p->last_lights, &lights, size);
 
     glBindBuffer(GL_UNIFORM_BUFFER, uniforms->lights);
     TRX_GL_TRACK_SUBDATA(glBufferSubData, GL_UNIFORM_BUFFER, 0, size, &lights);

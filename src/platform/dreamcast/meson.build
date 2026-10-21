@@ -49,7 +49,10 @@ dc_excluded_sources = [
 
 dc_sources = files(
   'av_stub.c',
+  'dc_level_select.c',
+  'dc_lua_alloc.c',
   'dc_main.c',
+  'dc_mode.c',
   'dc_watchdog.c',
   'gl_facade.c',
   'loading.c',
@@ -62,6 +65,7 @@ dc_sources = files(
   'render/stubs.c',
   'render/ui.c',
   'sdl_compat.c',
+  'vmu.c',
 )
 
 # The SH-4 has fsqrt, which GCC only uses when sqrtf need not set errno;
@@ -103,6 +107,7 @@ if get_option('buildtype') != 'release'
     '-Wl,--wrap=malloc',
     '-Wl,--wrap=calloc',
     '-Wl,--wrap=realloc',
+    '-Wl,--wrap=free',
   ]
 endif
 

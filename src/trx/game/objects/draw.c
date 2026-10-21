@@ -194,6 +194,7 @@ void Object_DrawStaticObject(
     const uint32_t mesh_mask)
 {
     Matrix_Push();
+    const XYZ_16 *const rots = Anim_GetFrameRots(frame);
     if ((mesh_mask & 1u) != 0) {
         Object_DrawMesh(obj->mesh_idx, 0, false);
     }
@@ -207,7 +208,7 @@ void Object_DrawStaticObject(
         }
 
         Matrix_TranslateRel32(bone->pos);
-        Matrix_Rot16(frame->mesh_rots[i]);
+        Matrix_Rot16(rots[i]);
         if ((mesh_mask & (1u << i)) != 0) {
             Object_DrawMesh(obj->mesh_idx + i, 0, false);
         }
@@ -424,7 +425,7 @@ bool Object_DrawPickupItem(const ITEM *const item)
     const XYZ_16 *mesh_rots = nullptr;
     if (obj->anim_idx != NO_ANIM) {
         const ANIM_FRAME *const frame = obj->frame_base;
-        mesh_rots = frame->mesh_rots;
+        mesh_rots = Anim_GetFrameRots(frame);
         offset = frame->offset;
         if (ObjectFamily_Has(item->object_id, OBJ_FAMILY_ELEVATED_PICKUP)) {
             offset.y = (frame->bounds.min.y - frame->offset.y) / 2;

@@ -12,7 +12,9 @@ param(
     # Down presses the keys and leaves them held, Up lets them go (to hold
     # one key while others come and go); Hold does both.
     [ValidateSet('Hold', 'Down', 'Up')]
-    [string]$Action = 'Hold'
+    [string]$Action = 'Hold',
+    # Only gives the game window the focus (run_flycast.ps1 does it at start).
+    [switch]$FocusOnly
 )
 
 Add-Type @'
@@ -27,6 +29,20 @@ public static class FlycastKeys {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    // Windows lets only the window with the focus hand it on: sharing its
+    // thread's input for a moment makes this one count as it.
+    public static void Focus(IntPtr h) {
+        uint p;
+        uint fg = GetWindowThreadProcessId(GetForegroundWindow(), out p);
+        uint me = GetCurrentThreadId();
+        bool attached = fg != 0 && fg != me && AttachThreadInput(me, fg, true);
+        BringWindowToTop(h);
+        SetForegroundWindow(h);
+        if (attached) AttachThreadInput(me, fg, false);
+    }
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint mapType);
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     public static IntPtr FindGame(uint pid) {
@@ -46,12 +62,21 @@ public static class FlycastKeys {
 Add-Type -AssemblyName System.Windows.Forms
 
 $proc = Get-Process flycast -ErrorAction Stop | Select-Object -First 1
-$window = [FlycastKeys]::FindGame([uint32]$proc.Id)
+$window = [IntPtr]::Zero
+for ($i = 0; $i -lt 40 -and $window -eq [IntPtr]::Zero; $i++) {
+    $window = [FlycastKeys]::FindGame([uint32]$proc.Id)
+    if ($window -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 250 }
+}
 if ($window -eq [IntPtr]::Zero) {
     throw 'Flycast game window not found'
 }
-[void][FlycastKeys]::SetForegroundWindow($window)
-Start-Sleep -Milliseconds 150
+if ([FlycastKeys]::GetForegroundWindow() -ne $window) {
+    [FlycastKeys]::Focus($window)
+    Start-Sleep -Milliseconds 150
+}
+if ($FocusOnly) {
+    return
+}
 # Keys go to whatever window has the focus: never send them anywhere but
 # the game.
 if ([FlycastKeys]::GetForegroundWindow() -ne $window) {

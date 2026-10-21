@@ -29,11 +29,23 @@ typedef struct M_SLOT {
     const char *value;
 } M_SLOT;
 
+// Who holds a value's text: the entry (its own copy), a loaded strings file,
+// or the program (a string literal). Only the first is freed here.
+typedef enum {
+    M_OWNED,
+    M_FROM_TABLE,
+    M_STATIC,
+} M_HOLDER;
+
 typedef struct {
     char *key;
     M_SLOT *slot;
     bool is_overridden;
     const char *base_value;
+    M_HOLDER value_holder;
+    M_HOLDER base_holder;
+    // The slot lives in the entry, which never moves once made.
+    M_SLOT slot_storage;
     UT_hash_handle hh;
 } M_STRING_ENTRY;
 
@@ -87,7 +99,7 @@ static M_STRING_ENTRY *M_FindOrAdd(const char *const key)
     if (entry == nullptr) {
         entry = Memory_Alloc(sizeof(*entry));
         entry->key = Memory_DupStr(key);
-        entry->slot = Memory_Alloc(sizeof(*entry->slot));
+        entry->slot = &entry->slot_storage;
         HASH_ADD_KEYPTR(
             hh, m_StringTable, entry->key, strlen(entry->key), entry);
     }
@@ -105,22 +117,83 @@ void GameString_Reset(void)
     GameString_RestoreDefaults();
 }
 
-void GameString_Define(const char *const key, const char *value)
+static void M_Release(const char *const value, const M_HOLDER holder)
 {
-    M_STRING_ENTRY *const entry = M_FindOrAdd(key);
-    Memory_Free((void *)entry->slot->value);
-    entry->slot->value = Memory_DupStr(value);
+    if (holder == M_OWNED) {
+        Memory_Free((void *)value);
+    }
 }
 
-void GameString_Override(const char *const key, const char *const value)
+static void M_Define(
+    const char *const key, const char *const value, const M_HOLDER holder)
+{
+    M_STRING_ENTRY *const entry = M_FindOrAdd(key);
+    // Defined again as each level loads: the same value is kept where it is,
+    // rather than made anew in the middle of the memory the level fills.
+    if (entry->slot->value != nullptr && value != nullptr
+        && holder == entry->value_holder
+        && strcmp(entry->slot->value, value) == 0) {
+        return;
+    }
+    M_Release(entry->slot->value, entry->value_holder);
+    entry->slot->value = holder == M_OWNED ? Memory_DupStr(value) : value;
+    entry->value_holder = holder;
+}
+
+static void M_Override(
+    const char *const key, const char *const value, const M_HOLDER holder)
 {
     M_STRING_ENTRY *const entry = M_FindOrAdd(key);
     if (!entry->is_overridden) {
         entry->is_overridden = true;
         entry->base_value = entry->slot->value;
+        entry->base_holder = entry->value_holder;
         entry->slot->value = nullptr;
+        entry->value_holder = M_OWNED;
     }
-    GameString_Define(key, value);
+    M_Define(key, value, holder);
+}
+
+void GameString_Define(const char *const key, const char *value)
+{
+    M_Define(key, value, M_OWNED);
+}
+
+void GameString_DefineStatic(const char *const key, const char *const value)
+{
+    M_Define(key, value, M_STATIC);
+}
+
+void GameString_DefineFromTable(const char *const key, const char *const value)
+{
+    M_Define(key, value, M_FROM_TABLE);
+}
+
+void GameString_Override(const char *const key, const char *const value)
+{
+    M_Override(key, value, M_OWNED);
+}
+
+void GameString_OverrideFromTable(
+    const char *const key, const char *const value)
+{
+    M_Override(key, value, M_FROM_TABLE);
+}
+
+void GameString_ForgetTables(void)
+{
+    M_STRING_ENTRY *entry, *tmp;
+    HASH_ITER(hh, m_StringTable, entry, tmp)
+    {
+        if (entry->value_holder == M_FROM_TABLE) {
+            entry->slot->value = nullptr;
+            entry->value_holder = M_OWNED;
+        }
+        if (entry->base_holder == M_FROM_TABLE) {
+            entry->base_value = nullptr;
+            entry->base_holder = M_OWNED;
+        }
+    }
 }
 
 void GameString_RevertOverrides(void)
@@ -131,9 +204,11 @@ void GameString_RevertOverrides(void)
         if (!entry->is_overridden) {
             continue;
         }
-        Memory_Free((void *)entry->slot->value);
+        M_Release(entry->slot->value, entry->value_holder);
         entry->slot->value = entry->base_value;
+        entry->value_holder = entry->base_holder;
         entry->base_value = nullptr;
+        entry->base_holder = M_OWNED;
         entry->is_overridden = false;
     }
 }
@@ -183,9 +258,8 @@ void GameString_Clear(void)
     {
         HASH_DEL(m_StringTable, entry);
         Memory_Free(entry->key);
-        Memory_Free((void *)entry->slot->value);
-        Memory_Free((void *)entry->base_value);
-        Memory_Free(entry->slot);
+        M_Release(entry->slot->value, entry->value_holder);
+        M_Release(entry->base_value, entry->base_holder);
         Memory_Free(entry);
     }
 }

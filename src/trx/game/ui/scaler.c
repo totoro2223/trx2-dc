@@ -5,10 +5,28 @@
 #include <trx/debug.h>
 #include <trx/game/viewport.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/renderer.h>
+
+    // At 320x240 the text takes this much more room: at its own size it has
+    // too few lines to read.
+    #define M_LOW_RES_TEXT_SCALE 1.25f
+#endif
+
 #define M_MAX_SCALE_DEPTH 8
 
 static float m_TextScaleStack[M_MAX_SCALE_DEPTH] = { 1.0f };
 static size_t m_TextScaleDepth = 0;
+
+static float M_GetPlayerTextScale(void)
+{
+#if defined(__DREAMCAST__)
+    if (DC_Renderer_IsLowRes()) {
+        return g_Config.ui.text_scale * M_LOW_RES_TEXT_SCALE;
+    }
+#endif
+    return g_Config.ui.text_scale;
+}
 
 static float M_DoCalc(
     const float unit, const float base_width, const float base_height,
@@ -48,12 +66,12 @@ float UI_Scaler_CalcInverse(const float unit, const UI_SCALER_TARGET target)
 
 float UI_Scaler_GetTextScale(void)
 {
-    return g_Config.ui.text_scale * m_TextScaleStack[m_TextScaleDepth];
+    return M_GetPlayerTextScale() * m_TextScaleStack[m_TextScaleDepth];
 }
 
 float UI_Scaler_GetBaseTextScale(void)
 {
-    return g_Config.ui.text_scale;
+    return M_GetPlayerTextScale();
 }
 
 float UI_Scaler_GetContentScale(void)

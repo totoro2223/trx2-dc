@@ -124,6 +124,9 @@ void Room_InitialiseRooms(const int32_t num_rooms)
         ? nullptr
         : GameBuf_Alloc(sizeof(ROOM) * num_rooms, GBUF_ROOMS);
 
+    // The old level's, which would otherwise wait out most of this level's
+    // load in the middle of the memory it loads into.
+    Memory_FreePointer(&m_OverlapMap);
     m_OutsideRoomTable = nullptr;
     m_OutsideRoomOffsets = nullptr;
     m_OutsideGridX = 0;

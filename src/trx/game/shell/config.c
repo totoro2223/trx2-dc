@@ -178,6 +178,9 @@ void Shell_HandleConfigChange(const CONFIG_CHANGE *const change)
     }
 
     if (L_CHANGED(visuals.fog_start) || L_CHANGED(visuals.fog_end)
+#if defined(__DREAMCAST__)
+        || L_CHANGED(rendering.dc_mode)
+#endif
         || L_CHANGED(visuals.fog_color) || L_CHANGED(visuals.fog_transparency)
         || L_CHANGED(visuals.water_color)) {
         Output_ApplyLevelSettings();

@@ -26,9 +26,7 @@
 #include <string.h>
 
 #if defined(__DREAMCAST__)
-#include <trx/game/output/sources/objects.h>
-
-#include <stdlib.h>
+    #include <platform/dreamcast/dc_lua_alloc.h>
 #endif
 
 // The pool beside the engine, and the root a script may not require: the
@@ -48,6 +46,103 @@ typedef struct {
 static M_PRIV m_Priv = {
     .context = LUA_CONTEXT_GLOBAL,
 };
+
+
+// What each script costs the Lua state, as code (with and without its debug
+// information) and as what it leaves behind once run, logged as [luamem].
+// Each measure is taken after a full collection, so boot is slow: define
+// M_CENSUS only to measure.
+// #define M_CENSUS 1
+
+#if defined(__DREAMCAST__)
+typedef struct {
+    char *data;
+    size_t size;
+} M_DUMP;
+
+static int M_DumpWriter(
+    lua_State *const L, const void *const p, const size_t sz, void *const ud)
+{
+    M_DUMP *const d = ud;
+    d->data = Memory_Realloc(d->data, d->size + sz);
+    memcpy(d->data + d->size, p, sz);
+    d->size += sz;
+    return 0;
+}
+
+// Puts the same chunk without its debug information in place of the one just
+// loaded on top: the Dreamcast's heap cannot keep it for every script read
+// from the disc. Errors in those scripts then name no line.
+static void M_StripLoaded(lua_State *const L, const char *const name)
+{
+    M_DUMP d = {};
+    lua_dump(L, M_DumpWriter, &d, 1);
+    const int status = luaL_loadbufferx(L, d.data, d.size, name, "b");
+    Memory_FreePointer(&d.data);
+    if (status != LUA_OK) {
+        LOG_WARNING(
+            "%s kept its debug information: %s", name, lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return;
+    }
+    lua_replace(L, -2);
+}
+#endif
+
+#if defined(M_CENSUS)
+typedef struct {
+    size_t base;
+    size_t code;
+    size_t strip;
+    size_t children;
+} M_CENSUS_ENTRY;
+
+// What the scripts measured so far account for, so that a script requiring
+// another is not charged for it.
+static size_t m_CensusAccounted = 0;
+static size_t m_CensusCode = 0;
+static size_t m_CensusStrip = 0;
+static size_t m_CensusData = 0;
+
+static size_t M_CensusBytes(lua_State *const L)
+{
+    lua_gc(L, LUA_GCCOLLECT);
+    return (size_t)lua_gc(L, LUA_GCCOUNT) * 1024 + lua_gc(L, LUA_GCCOUNTB);
+}
+
+static void M_CensusBefore(lua_State *const L, M_CENSUS_ENTRY *const e)
+{
+    e->base = M_CensusBytes(L);
+    e->children = m_CensusAccounted;
+}
+
+// With the chunk just loaded on top: measures it, and puts in its place the
+// same chunk without its debug information, measured too.
+static void M_CensusLoaded(
+    lua_State *const L, M_CENSUS_ENTRY *const e, const char *const name)
+{
+    e->code = M_CensusBytes(L) - e->base;
+    M_StripLoaded(L, name);
+    e->strip = M_CensusBytes(L) - e->base;
+}
+
+static void M_CensusRan(
+    lua_State *const L, const M_CENSUS_ENTRY *const e, const char *const name)
+{
+    const size_t children = m_CensusAccounted - e->children;
+    const size_t total = M_CensusBytes(L) - e->base - children;
+    const size_t data = total > e->strip ? total - e->strip : 0;
+    m_CensusCode += e->code;
+    m_CensusStrip += e->strip;
+    m_CensusData += data;
+    m_CensusAccounted += total;
+    LOG_INFO(
+        "[luamem] %s code=%u strip=%u data=%u (all: code=%u strip=%u data=%u)",
+        name, (unsigned)e->code, (unsigned)e->strip, (unsigned)data,
+        (unsigned)m_CensusCode, (unsigned)m_CensusStrip,
+        (unsigned)m_CensusData);
+}
+#endif
 
 // What a game's scripts have required so far, one table per context. They live
 // in the registry rather than in globals, so a script can neither read them nor
@@ -83,6 +178,11 @@ static LUA_RESULT M_LuaLoadAndRun(
         lua_settop(L, base);
         return result;
     }
+#if defined(__DREAMCAST__)
+    if (loader == M_LoadFile) {
+        M_StripLoaded(L, src);
+    }
+#endif
     status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (status != LUA_OK) {
         result.code = status;
@@ -101,14 +201,26 @@ static int M_TRXEmbeddedModuleLoader(lua_State *const L)
     // require() calls a preload loader with the module name and ":preload:".
     // Those are still on the stack, and they are not the module.
     const int32_t base = lua_gettop(L);
-    int status = luaL_loadbuffer(L, (const char *)data, size, chunk_name);
+#if defined(M_CENSUS)
+    M_CENSUS_ENTRY e;
+    M_CensusBefore(L, &e);
+#endif
+    // Bytecode where the build embedded it, loaded from where it lies.
+    int status =
+        luaL_loadbufferx(L, (const char *)data, size, chunk_name, "Bt");
     if (status != LUA_OK) {
         lua_error(L);
     }
+#if defined(M_CENSUS)
+    M_CensusLoaded(L, &e, chunk_name);
+#endif
     status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (status != LUA_OK) {
         lua_error(L);
     }
+#if defined(M_CENSUS)
+    M_CensusRan(L, &e, chunk_name);
+#endif
     return lua_gettop(L) - base;
 }
 
@@ -162,8 +274,18 @@ static RESULT M_SealPublicAPI(lua_State *const L)
 {
     FAIL_IF(
         !LUA_API_PushEntrypoint(L, "seal"), "api.lua handed over no sealer");
+#if defined(__DREAMCAST__)
+    // The build keeps of the signatures only what loading and type checking
+    // read (--lean-signatures), so the seal audits what is there and no more.
+    lua_newtable(L);
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -2, "partial");
+    const int32_t args = 1;
+#else
+    const int32_t args = 0;
+#endif
     FAIL_IF(
-        lua_pcall(L, 0, 0, 0) != LUA_OK, "the Lua API would not seal: %s",
+        lua_pcall(L, args, 0, 0) != LUA_OK, "the Lua API would not seal: %s",
         lua_tostring(L, -1));
     lua_pushnil(L);
     lua_setglobal(L, "trxc");
@@ -215,8 +337,8 @@ static RESULT M_RunTRXRuntimeScripts(lua_State *const L)
         const char *const chunk_name =
             String_FormatStatic("@trx/%s", script->path);
         FAIL_IF(
-            luaL_loadbuffer(
-                L, (const char *)script->data, script->size, chunk_name)
+            luaL_loadbufferx(
+                L, (const char *)script->data, script->size, chunk_name, "Bt")
                     != LUA_OK
                 || lua_pcall(L, 0, 0, 0) != LUA_OK,
             "%s: %s", script->path, lua_tostring(L, -1));
@@ -451,9 +573,18 @@ static int M_L_Require(lua_State *const L)
     if (path == nullptr) {
         return luaL_error(L, "no such script: %s", raw);
     }
+#if defined(M_CENSUS)
+    M_CENSUS_ENTRY e;
+    M_CensusBefore(L, &e);
+#endif
     if (luaL_loadfilex(L, path, "t") != LUA_OK) {
         return luaL_error(L, "%s: %s", raw, lua_tostring(L, -1));
     }
+#if defined(M_CENSUS)
+    M_CensusLoaded(L, &e, name);
+#elif defined(__DREAMCAST__)
+    M_StripLoaded(L, name);
+#endif
 
     // Marked as running before it runs, so two scripts that require each other
     // are told so rather than running each other until Lua is out of stack.
@@ -466,6 +597,9 @@ static int M_L_Require(lua_State *const L)
         lua_setfield(L, 3, name);
         return lua_error(L);
     }
+#if defined(M_CENSUS)
+    M_CensusRan(L, &e, name);
+#endif
 
     // A script that returns nothing is still required only once.
     if (lua_isnil(L, 4)) {
@@ -490,22 +624,6 @@ int32_t LUA_DC_CollectGarbage(void)
 {
     return m_Priv.state != nullptr ? lua_gc(m_Priv.state, LUA_GCCOLLECT) : 0;
 }
-
-// Lua's allocator, which before failing lets go of the object meshes not
-// drawn this frame (Lua collects its own garbage then by itself).
-static void *M_DCAlloc(
-    void *const ud, void *const ptr, const size_t osize, const size_t nsize)
-{
-    if (nsize == 0) {
-        free(ptr);
-        return nullptr;
-    }
-    void *result = realloc(ptr, nsize);
-    if (result == nullptr && OutputSource_Objects_EvictUnused(1) > 0) {
-        result = realloc(ptr, nsize);
-    }
-    return result;
-}
 #endif
 
 RESULT LUA_Init(void)
@@ -513,7 +631,9 @@ RESULT LUA_Init(void)
     lua_State *const L = luaL_newstate();
     ASSERT(L != nullptr);
 #if defined(__DREAMCAST__)
-    lua_setallocf(L, M_DCAlloc, nullptr);
+    // What the state took before this goes back to the heap: the region
+    // only takes what lies inside it.
+    lua_setallocf(L, DC_LuaAlloc, nullptr);
     // The UI scripts leave garbage every frame. By default the collector lets
     // the heap reach well over twice what is live before it starts, which the
     // Dreamcast's 16 MiB cannot carry; it starts again as soon as a cycle
@@ -523,7 +643,14 @@ RESULT LUA_Init(void)
     lua_gc(L, LUA_GCPARAM, LUA_GCPSTEPMUL, 400);
 #endif
     LUA_OpenSafeLibs(L);
+#if defined(__DREAMCAST__)
+    // No guard: its count hook sends every VM instruction through the hook
+    // check, a tenth of the inventory's time on the SH-4.
+    // shortcut: a script stuck in a loop hangs the game instead of failing;
+    // install the guard again if scripts other than the shipped ones run.
+#else
     LUA_Guard_Install(L, LUA_GUARD_BUDGET_SEC);
+#endif
 
     lua_newtable(L);
     lua_setglobal(L, "trxc");

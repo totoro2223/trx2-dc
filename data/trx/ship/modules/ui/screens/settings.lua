@@ -1,14 +1,31 @@
 -- The settings dialogs of the inventory ring: the graphics, the sound and the
 -- gameplay settings, each a dialog of tabs, and the controls.
 
-local color_editor = require("common.ui.settings.color_editor")
-local controls = require("common.ui.settings.controls")
-local dialog = require("common.ui.settings.dialog")
-local editor = require("common.ui.settings.editor")
-local handlers = require("common.ui.settings.handlers")
-local preset_tab = require("common.ui.settings.preset_tab")
 local ring = require("common.ui.ring")
-local tabs = require("common.ui.settings.tabs")
+local timer = require("common.timer")
+
+-- The dialogs' modules come in when one is first used rather than at the
+-- start: a hundred KiB that the Dreamcast's heap needs for the levels.
+local loaded = {}
+local function lazy(name)
+  local proxy = {}
+  return setmetatable(proxy, {
+    __index = function(_, key)
+      local module = require(name)
+      loaded[proxy] = true
+      setmetatable(proxy, { __index = module })
+      return module[key]
+    end,
+  })
+end
+
+local color_editor = lazy("common.ui.settings.color_editor")
+local controls = lazy("common.ui.settings.controls")
+local dialog = lazy("common.ui.settings.dialog")
+local editor = lazy("common.ui.settings.editor")
+local handlers = lazy("common.ui.settings.handlers")
+local preset_tab = lazy("common.ui.settings.preset_tab")
+local tabs = lazy("common.ui.settings.tabs")
 
 local M = {}
 
@@ -17,6 +34,16 @@ local M = {}
 -- so that it follows the player's language.
 local DIALOGS = {
   graphics = function()
+    -- The Dreamcast shows the rendering tab alone (see ring/entries.lua).
+    if pcall(trx.config.describe, "rendering.dc_mode") then
+      return trx.locale.get("general/settings/graphic_settings/title"),
+        {
+          {
+            trx.locale.get("general/settings/graphic_settings/tabs/rendering"),
+            "graphic_rendering",
+          },
+        }
+    end
     return trx.locale.get("general/settings/graphic_settings/title"),
       {
         {
@@ -161,6 +188,9 @@ local places = {}
 local function opener(which)
   ---@param ctx trx.ui.EntryContext
   return function(ctx)
+    -- The dialog is the largest Lua the game builds: it starts from a
+    -- collected heap, and what it leaves goes as soon as it closes.
+    collectgarbage("collect")
     local settings_dialog = build_dialog(which, function(settings)
       return ctx:push(settings)
     end)
@@ -172,6 +202,9 @@ local function opener(which)
       places[which] = settings_dialog:remember()
       settings_dialog:close()
       resting:stop()
+      timer.after(0, function()
+        collectgarbage("collect")
+      end, { clock = timer.Clock.UI })
     end)
     return ctx:push({
       root = trx.ui.widgets.Stack({
@@ -218,7 +251,9 @@ end
 function M.setup()
   trx.events.on_level_unload(function()
     places = {}
-    controls.forget()
+    if loaded[controls] then
+      controls.forget()
+    end
   end)
   trx.ui.screens.define(
     trx.ui.Screen.RING_ENTRY,

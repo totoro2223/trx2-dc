@@ -11,6 +11,10 @@
 #include <trx/game/savegame/file.h>
 #include <trx/game/shell.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/vmu.h>
+#endif
+
 static SAVEGAME_INFO *m_NormalSavegameInfo = nullptr;
 static SAVEGAME_INFO *m_QuickSavegameInfo = nullptr;
 static int32_t m_SaveSlots = 0;
@@ -25,6 +29,10 @@ static SAVEGAME_SLOT_REF m_BoundSlot = { .index = -1 };
 static const char *M_GetSaveWriteDir(void)
 {
     const char *const saves_dir = GamePath_Get(GAME_PATH_SAVES_DIR);
+#if defined(__DREAMCAST__)
+    // The RAM disk holds no directories; one game per disc anyway.
+    return saves_dir;
+#endif
     const SHELL_ARGS *const args = Shell_GetArgs();
     if (args != nullptr && args->startup.mod != nullptr
         && args->startup.mod->name != nullptr) {
@@ -499,6 +507,9 @@ bool SG_Manager_WriteSlot(const SAVEGAME_SLOT_REF slot)
     }
     if (result) {
         M_FillSlot(slot, full_path);
+#if defined(__DREAMCAST__)
+        DC_VMU_StoreSave(full_path, savegame_info->level_title);
+#endif
     }
 
     Memory_FreePointer(&file_name);
@@ -534,6 +545,9 @@ bool SG_Manager_Delete(const SAVEGAME_SLOT_REF slot)
     if (!SHOULD(FS_Delete(savegame_info->full_path))) {
         return false;
     }
+#if defined(__DREAMCAST__)
+    DC_VMU_DeleteSave(savegame_info->full_path);
+#endif
 
     if (m_BoundSlot.pool == slot.pool && m_BoundSlot.index == slot.index) {
         m_BoundSlot = SG_Manager_InvalidSlot();

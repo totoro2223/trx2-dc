@@ -32,6 +32,9 @@ int32_t InjectCanonical_TranscodeAnims(
 int32_t InjectCanonical_FrameOffset(int32_t ordinal);
 
 // Returns the number of native 16-bit words appended.
+// Lets go of what the last transcoded frames left for the animations that
+// follow them; done with once the injections are applied.
+void InjectCanonical_ReleaseFrames(void);
 int32_t InjectCanonical_AppendAnimFrames(
     const INJECTION *injection, int32_t base_idx, int32_t data_count,
     int32_t data_size);

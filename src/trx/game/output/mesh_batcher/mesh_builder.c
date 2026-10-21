@@ -172,6 +172,9 @@ void MeshBuilder_AddFace(
 
     const size_t vtx_count = builder->pending_vertex_count;
     const size_t start = builder->mesh->vertices->count - vtx_count;
+    ASSERT(
+        (size_t)builder->mesh->vertices->count
+        <= (size_t)(OUTPUT_MESH_INDEX)-1 + 1);
     OUTPUT_MESH_VERTEX *const vbuf = Vector_GetData(builder->mesh->vertices);
     if (pass == SCENE_PASS_BLEND_ADD) {
         for (size_t i = 0; i < vtx_count; i++) {
@@ -193,7 +196,8 @@ void MeshBuilder_AddFace(
             .mesh_centroid = centroid,
         };
         face.vertex_indices = Memory_ArenaAlloc(
-            &builder->mesh->allocator, sizeof(int32_t) * idx_count);
+            &builder->mesh->allocator,
+            sizeof(*face.vertex_indices) * idx_count);
         for (size_t i = 0; i < idx_count; i++) {
             face.vertex_indices[i] = start + indices[i];
         }
@@ -210,7 +214,7 @@ void MeshBuilder_AddFace(
         } else {
             target = builder->mesh->opaque_vertex_indices;
         }
-        uint32_t *const out = Vector_Expand(target, idx_count);
+        OUTPUT_MESH_INDEX *const out = Vector_Expand(target, idx_count);
         for (size_t i = 0; i < idx_count; i++) {
             out[i] = start + indices[i];
         }
@@ -259,9 +263,11 @@ void MeshBuilder_AddRoomSprite(
                 | extra_flags,
             .color = { 255, 255, 255, 255 },
             .uvw_idx = Output_Textures_GetSpriteUVWIndex(texture_idx, j),
-            .reflectivity = 1.0f,
             .shade = room_vert->light_base,
+#if !defined(__DREAMCAST__)
+            .reflectivity = 1.0f,
             .trapezoid_ratio = { 1.0f, 1.0f },
+#endif
         };
         MeshBuilder_AddVertex(builder, &vertex);
     }
@@ -292,7 +298,7 @@ OUTPUT_MESH *MeshBuilder_Seal(MESH_BUILDER *const builder)
         memcpy(
             Vector_Expand(mesh->opaque_vertex_indices, extra),
             Vector_GetData(mesh->opaque_discard_indices),
-            sizeof(uint32_t) * extra);
+            sizeof(OUTPUT_MESH_INDEX) * extra);
     }
     Vector_Free(mesh->opaque_discard_indices);
     mesh->opaque_discard_indices = nullptr;

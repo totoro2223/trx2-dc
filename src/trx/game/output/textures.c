@@ -3,6 +3,7 @@
 #include <trx/config.h>
 #include <trx/core/file.h>
 #include <trx/core/hash.h>
+#include <trx/core/log.h>
 #include <trx/core/math/func.h>
 #include <trx/core/memory.h>
 #include <trx/core/strings.h>
@@ -98,9 +99,9 @@ static uint8_t *m_TexturePages8 = nullptr;
 static RGBA_8888 *m_TexturePages32 = nullptr;
 static SDL_mutex **m_TexturePageLocks = nullptr;
 #if defined(__DREAMCAST__)
-// The level's 16-bit pages, in video memory, from Output_LoadTexturePages16
-// until they have been looked at for transparency and made ready to draw.
-static uint16_t *m_TexturePages16 = nullptr;
+// The formats of the level's 16-bit pages (which are in video memory), from
+// Output_LoadTexturePages16 until the pages have been looked at for
+// transparency and made ready to draw.
 static uint8_t *m_TexturePageFormats = nullptr;
 #endif
 
@@ -548,7 +549,7 @@ static bool M_ObjectTextureHasTransparency(const int32_t texture_idx)
 {
 #if defined(__DREAMCAST__)
     if (texture_idx < 0 || texture_idx >= Output_GetObjectTextureCount()
-        || m_TexturePages16 == nullptr) {
+        || m_TexturePageFormats == nullptr) {
         return true;
     }
 #else
@@ -594,20 +595,7 @@ static bool M_ObjectTextureHasTransparency(const int32_t texture_idx)
     CLAMP(py1, 0, TEXTURE_PAGE_HEIGHT - 1);
 
 #if defined(__DREAMCAST__)
-    const uint16_t *const page_16 =
-        &m_TexturePages16[texture->tex_page * TEXTURE_PAGE_SIZE];
-    const bool is_4444 =
-        m_TexturePageFormats[texture->tex_page] == TEXTURE_PAGE_ARGB4444;
-    for (int32_t y = py0; y <= py1; y++) {
-        const int32_t row = y * TEXTURE_PAGE_WIDTH;
-        for (int32_t x = px0; x <= px1; x++) {
-            const uint16_t texel = page_16[row + x];
-            if (is_4444 ? (texel >> 12) != 0xF : (texel & 0x8000) == 0) {
-                return true;
-            }
-        }
-    }
-    return false;
+    return DC_Renderer_HasTransparency(texture->tex_page, px0, py0, px1, py1);
 #endif
     const RGBA_8888 *const page = Output_GetTexturePage32(texture->tex_page);
     if (page == nullptr) {
@@ -691,8 +679,7 @@ static void M_UploadAtlas(void)
 {
 #if defined(__DREAMCAST__)
     // The pages are already in video memory; they are made ready to draw.
-    DC_Renderer_CommitTexturePages(m_TexturePageCount, m_TexturePageFormats);
-    m_TexturePages16 = nullptr;
+    DC_Renderer_CommitTexturePages();
     Memory_FreePointer(&m_TexturePageFormats);
     M_PrepareAtlasSizes();
 #else
@@ -1090,6 +1077,16 @@ void Output_Textures_Shutdown(void)
     m_AnimTextureRanges = nullptr;
 }
 
+#if defined(__DREAMCAST__)
+// The tables are as big as the level's textures are many, and are made after
+// the level has loaded; kept until the next level is observed, they would sit
+// in the middle of the room that level loads into, and split it.
+void Output_Textures_ObserveLevelUnload(void)
+{
+    M_FreeLevelData();
+}
+#endif
+
 void Output_Textures_ObserveLevelLoad(void)
 {
 #if defined(__DREAMCAST__)
@@ -1194,6 +1191,13 @@ int32_t Output_Textures_GetSpriteUVWIndex(int32_t texture_idx, int32_t corner)
 
 OUTPUT_UVW Output_Textures_GetUVW(const int32_t uvw_idx)
 {
+#if defined(__DREAMCAST__)
+    if (m_Priv.uvws.data == nullptr) {
+        LOG_WARNING(
+            "no texture tables, asked from %p", __builtin_return_address(0));
+        return (OUTPUT_UVW) {};
+    }
+#endif
     ASSERT(uvw_idx >= 0 && uvw_idx / 4 < m_Priv.uvws.count);
     return m_Priv.uvws.data[uvw_idx / 4].corners[uvw_idx % 4];
 }
@@ -1215,6 +1219,14 @@ bool Output_Textures_ObjectTextureHasTransparency(const int32_t texture_idx)
 
 bool Output_Textures_IsObjectTextureAnimated(const int32_t texture_idx)
 {
+#if defined(__DREAMCAST__)
+    // Between a level's unload and the next one's tables.
+    if (m_Priv.uvws.animated_objects == nullptr) {
+        LOG_WARNING(
+            "no texture tables, asked from %p", __builtin_return_address(0));
+        return false;
+    }
+#endif
     return m_Priv.uvws.animated_objects[texture_idx];
 }
 
@@ -1235,6 +1247,13 @@ bool Output_Textures_IsSpriteTextureAnimated(const int32_t texture_idx)
 void Output_Textures_SetSpriteTextureFlags(
     const int32_t texture_idx, const uint16_t flags)
 {
+#if defined(__DREAMCAST__)
+    if (m_Priv.uvws.flags_sprites == nullptr) {
+        LOG_WARNING(
+            "no texture tables, set from %p", __builtin_return_address(0));
+        return;
+    }
+#endif
     m_Priv.uvws.flags_sprites[texture_idx] = flags;
 }
 
@@ -1352,11 +1371,10 @@ void Output_SetUVRotateRangeCount(const int32_t num_ranges)
 
 #if defined(__DREAMCAST__)
 void Output_LoadTexturePages16(
-    const int32_t num_pages, uint16_t *const pages, uint8_t *const formats)
+    const int32_t num_pages, uint8_t *const formats)
 {
     Memory_FreePointer(&m_TexturePageFormats);
     m_TexturePageCount = num_pages;
-    m_TexturePages16 = pages;
     m_TexturePageFormats = formats;
 }
 #endif

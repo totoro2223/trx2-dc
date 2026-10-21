@@ -155,14 +155,16 @@ static void M_AddRoomFace(
             .normal = { .x = normal.x, .y = normal.y, .z = normal.z },
             .flags = flags,
             .uvw_idx = Output_Textures_GetObjectUVWIndex(face->texture_idx, i),
-            .reflectivity = 1.0f,
             .shade = room_vert->light_base,
             .light_table_idx = room_vert->light_table_value,
             .color = room_vert->color,
+#if !defined(__DREAMCAST__)
+            .reflectivity = 1.0f,
             .trapezoid_ratio = {
                 [0] = face->texture_zw[i].z,
                 [1] = face->texture_zw[i].w,
             },
+#endif
         };
     }
     MeshBuilder_AddVertices(builder, vertices, face->vertex_count);

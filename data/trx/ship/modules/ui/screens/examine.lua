@@ -152,6 +152,10 @@ local function open(ctx)
   return ctx:push({ root = state.dialog.widget, on_input = on_input })
 end
 
+-- Opens the screen; scripts/ui.lua defines it, and requires this module only
+-- once the screen first opens.
+M.open = open
+
 function M.setup()
   trx.ui.screens.define(trx.ui.Screen.EXAMINE, open)
 end

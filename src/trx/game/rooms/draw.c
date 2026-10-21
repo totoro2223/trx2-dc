@@ -195,6 +195,11 @@ static void M_SetBounds(
 
     M_PORTAL_VBUF portal_vbuf[4];
     int32_t too_near = 0;
+#if defined(__DREAMCAST__)
+    // Corners past the end of the fog, where it is wholly opaque.
+    const int32_t far_z = Output_GetFarZ();
+    int32_t too_far = 0;
+#endif
 
     for (int32_t i = 0; i < 4; i++) {
         M_PORTAL_VBUF *const dvbuf = &portal_vbuf[i];
@@ -208,6 +213,9 @@ static void M_SetBounds(
         dvbuf->xv = xv;
         dvbuf->yv = yv;
         dvbuf->zv = zv;
+#if defined(__DREAMCAST__)
+        too_far += zv >= far_z;
+#endif
 
         if (zv <= 0) {
             too_near++;
@@ -242,6 +250,14 @@ static void M_SetBounds(
     if (too_near == 4) {
         return;
     }
+#if defined(__DREAMCAST__)
+    // Everything seen through a portal lies beyond it: a room behind one that
+    // the fog hides is not visited, nor are its items posed (fog end in
+    // blocks: visuals.fog_end, which the graphics mode may lower).
+    if (too_far == 4) {
+        return;
+    }
+#endif
 
     if (too_near > 0) {
         const M_PORTAL_VBUF *dest = &portal_vbuf[0];
@@ -605,4 +621,6 @@ void Room_RemoveDrawnItem(const int16_t room_num, const int16_t item_num)
     }
 }
 
-REGISTER_SUBSYSTEM(.shutdown = M_Shutdown)
+// Made as the session starts, before any level: made as a level is played, it
+// would stay in the middle of the memory the next level loads into.
+REGISTER_SUBSYSTEM(.init = M_EnsureRoomsToDraw, .shutdown = M_Shutdown)

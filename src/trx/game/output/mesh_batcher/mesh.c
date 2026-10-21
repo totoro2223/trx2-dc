@@ -7,12 +7,17 @@ OUTPUT_MESH *Output_Mesh_Create(void)
 {
     OUTPUT_MESH *const mesh = Memory_Alloc(sizeof(OUTPUT_MESH));
     Memory_ArenaReset(&mesh->allocator);
+#if defined(__DREAMCAST__)
+    // The arena holds only the transparent faces' indices, mostly a few
+    // dozen bytes: the default 4 KiB chunk per mesh was ~0.8 MiB in Venice.
+    mesh->allocator.default_chunk_size = 256;
+#endif
     mesh->vertices = Vector_Create(sizeof(OUTPUT_MESH_VERTEX));
     mesh->animated_vertices = Vector_Create(sizeof(OUTPUT_VERTEX_RANGE));
     mesh->transparent_faces = Vector_Create(sizeof(OUTPUT_MESH_FACE));
-    mesh->opaque_vertex_indices = Vector_Create(sizeof(uint32_t));
-    mesh->opaque_discard_indices = Vector_Create(sizeof(uint32_t));
-    mesh->blend_add_vertex_indices = Vector_Create(sizeof(uint32_t));
+    mesh->opaque_vertex_indices = Vector_Create(sizeof(OUTPUT_MESH_INDEX));
+    mesh->opaque_discard_indices = Vector_Create(sizeof(OUTPUT_MESH_INDEX));
+    mesh->blend_add_vertex_indices = Vector_Create(sizeof(OUTPUT_MESH_INDEX));
     mesh->sealed = false;
     return mesh;
 }

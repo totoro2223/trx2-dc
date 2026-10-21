@@ -19,6 +19,11 @@ void Clock_EnableFixedFPS(int32_t fps);
 
 void Clock_SyncTick(void);
 int32_t Clock_WaitTick(void);
+// Holds no longer than to keep frames to the frame rate, then reports how many
+// game logic ticks (1/LOGIC_FPS) are due by the real clock, at most a few, and
+// in frac how far into the next one the clock is, in [0, 1): the point between
+// the last two ticks to draw at.
+int32_t Clock_WaitLogicTicks(double *frac);
 
 size_t Clock_GetDateTime(char *buffer, size_t size);
 

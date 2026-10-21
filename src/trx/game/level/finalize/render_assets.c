@@ -1,9 +1,16 @@
 #include <trx/core/benchmark.h>
+#include <trx/core/log.h>
 #include <trx/core/memory.h>
 #include <trx/core/thread_pool.h>
 #include <trx/core/utils.h>
+#include <trx/game/lara/enum.h>
 #include <trx/game/level/finalize.h>
 #include <trx/game/level/format/format.h>
+#include <trx/game/level/texture_pages_16.h>
+
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/renderer.h>
+#endif
 #include <trx/game/objects.h>
 #include <trx/game/output.h>
 #include <trx/game/rooms.h>
@@ -12,6 +19,11 @@
 
 static void M_FixTrapezoidRatios(FACE *const face, const XYZ_16 vertices[4])
 {
+#if defined(__DREAMCAST__)
+    // The PowerVR path keeps no trapezoid ratios (see FACE).
+    (void)face;
+    (void)vertices;
+#else
     // This function attempts to correct texture coordinate ratios for a
     // quadrilateral so the GPU, which typically renders a quad as two
     // triangles, does not warp the texture disproportionately across the quad's
@@ -124,6 +136,7 @@ static void M_FixTrapezoidRatios(FACE *const face, const XYZ_16 vertices[4])
             zws[3]->zw[k] = fix;
         }
     }
+#endif
 }
 
 static void M_PremultiplyTexturePage(void *userdata)
@@ -154,8 +167,125 @@ static void M_UpdateReflectivity(OBJECT_MESH *const mesh, FACE *const face)
     face->enable_reflections |= (face->effects & 0x2u) != 0u;
 }
 
+#if defined(__DREAMCAST__)
+// How far apart the colours of a texture may lie, of the brightest, for it
+// to count as grey.
+#define M_GREY_SATURATION 0.25f
+
+// Whether an object texture looks grey on average, as metal does in TR2
+// (skin and leather are brown): read from the pages in video memory, with
+// their formats, which Level_Finalize_LoadTexturePages hands on.
+static bool M_IsGreyTexture(
+    const LEVEL_CONTEXT *const ctx, const int32_t texture_idx)
+{
+    const OBJECT_TEXTURE *const texture = Output_GetObjectTexture(texture_idx);
+    if (ctx->info.textures.page_formats == nullptr
+        || texture->tex_page >= ctx->info.textures.page_count) {
+        return false;
+    }
+    int32_t x0 = TEXTURE_PAGE_WIDTH;
+    int32_t y0 = TEXTURE_PAGE_HEIGHT;
+    int32_t x1 = 0;
+    int32_t y1 = 0;
+    const int32_t corners = texture->uv_count == 3 ? 3 : 4;
+    for (int32_t i = 0; i < corners; i++) {
+        const int32_t x = texture->uv[i].u >> 8;
+        const int32_t y = texture->uv[i].v >> 8;
+        x0 = MIN(x0, x);
+        y0 = MIN(y0, y);
+        x1 = MAX(x1, x);
+        y1 = MAX(y1, y);
+    }
+    const bool argb4444 =
+        ctx->info.textures.page_formats[texture->tex_page]
+        == TEXTURE_PAGE_ARGB4444;
+    float sum[3] = {};
+    int32_t count = 0;
+    // Every other texel each way does for an average, at a quarter of the
+    // reads from video memory.
+    for (int32_t y = y0; y <= y1 && y < TEXTURE_PAGE_HEIGHT; y += 2) {
+        for (int32_t x = x0; x <= x1 && x < TEXTURE_PAGE_WIDTH; x += 2) {
+            const uint16_t c = DC_Renderer_GetTexel(texture->tex_page, x, y);
+            if (argb4444 ? (c >> 12) < 8 : (c & 0x8000) == 0) {
+                continue;
+            }
+            if (argb4444) {
+                sum[0] += ((c >> 8) & 15) / 15.0f;
+                sum[1] += ((c >> 4) & 15) / 15.0f;
+                sum[2] += (c & 15) / 15.0f;
+            } else {
+                sum[0] += ((c >> 10) & 31) / 31.0f;
+                sum[1] += ((c >> 5) & 31) / 31.0f;
+                sum[2] += (c & 31) / 31.0f;
+            }
+            count++;
+        }
+    }
+    if (count == 0) {
+        return false;
+    }
+    const float hi = MAX(sum[0], MAX(sum[1], sum[2]));
+    const float lo = MIN(sum[0], MIN(sum[1], sum[2]));
+    return hi > 0.0f && (hi - lo) / hi < M_GREY_SATURATION;
+}
+
+// The pistols reflect, as a test of the environment map: the faces of each
+// pistols mesh drawn in Lara's place (a hand holding one, a thigh with one
+// holstered) whose texture none of her own meshes uses and is grey, so the
+// gun rather than her skin or the holster's leather.
+static void M_MarkPistolReflections(const LEVEL_CONTEXT *const ctx)
+{
+    const OBJECT *const guns = Object_Get(O_LARA_PISTOLS);
+    const OBJECT *const lara = Object_Get(O_LARA);
+    if (!guns->loaded || !lara->loaded) {
+        return;
+    }
+    const int32_t meshes[] = { LM_HAND_L, LM_HAND_R, LM_THIGH_L, LM_THIGH_R };
+    int32_t last_texture = -1;
+    bool last_grey = false;
+    for (size_t i = 0; i < sizeof(meshes) / sizeof(meshes[0]); i++) {
+        if (meshes[i] >= guns->mesh_count || meshes[i] >= lara->mesh_count) {
+            continue;
+        }
+        OBJECT_MESH *const gun = Object_GetMesh(guns->mesh_idx + meshes[i]);
+        const OBJECT_MESH *const own =
+            Object_GetMesh(lara->mesh_idx + meshes[i]);
+        if (gun == own) {
+            continue;
+        }
+        int32_t marked = 0;
+        for (int32_t j = 0; j < gun->tex_faces.count; j++) {
+            FACE *const face = &gun->tex_faces.data[j];
+            bool shared = false;
+            for (int32_t m = 0; m < lara->mesh_count && !shared; m++) {
+                const OBJECT_MESH *const body =
+                    Object_GetMesh(lara->mesh_idx + m);
+                for (int32_t k = 0; k < body->tex_faces.count && !shared; k++) {
+                    shared =
+                        body->tex_faces.data[k].texture_idx == face->texture_idx;
+                }
+            }
+            // Faces in a row mostly share their texture, which is costly to
+            // read again from video memory.
+            if (face->texture_idx != last_texture) {
+                last_texture = face->texture_idx;
+                last_grey = M_IsGreyTexture(ctx, last_texture);
+            }
+            const bool metal = !shared && last_grey;
+            face->enable_reflections |= metal;
+            marked += metal ? 1 : 0;
+        }
+        LOG_INFO(
+            "pistols %d: %d/%d", meshes[i], marked, gun->tex_faces.count);
+    }
+}
+#endif
+
 void Level_Finalize_LoadTextures(LEVEL_CONTEXT *const ctx)
 {
+#if defined(__DREAMCAST__)
+    M_MarkPistolReflections(ctx);
+#endif
     for (int32_t room_num = 0; room_num < Room_GetCount(); room_num++) {
         const ROOM *const room = Room_Get(room_num);
         for (int32_t j = 0; j < room->mesh.face3s.count; j++) {
@@ -216,9 +346,7 @@ void Level_Finalize_LoadTexturePages(LEVEL_CONTEXT *const ctx)
 #if defined(__DREAMCAST__)
     // The pages are already in the formats the PowerVR reads, alpha included,
     // so they go to the output as they are.
-    Output_LoadTexturePages16(
-        num_pages, info->textures.pages_16, info->textures.page_formats);
-    info->textures.pages_16 = nullptr;
+    Output_LoadTexturePages16(num_pages, info->textures.page_formats);
     info->textures.page_formats = nullptr;
     Benchmark_End(&benchmark, nullptr);
     return;

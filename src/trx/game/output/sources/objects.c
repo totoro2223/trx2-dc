@@ -244,13 +244,15 @@ static void M_AddObjectFace(
             .normal = { .x = normal.x, .y = normal.y, .z = normal.z },
             .flags = flags,
             .uvw_idx = uvw_idx,
-            .reflectivity = M_GetReflectivity(face),
             .shade = shade,
             .color = color,
+#if !defined(__DREAMCAST__)
+            .reflectivity = M_GetReflectivity(face),
             .trapezoid_ratio = {
                 [0] = face->texture_zw[i].z,
                 [1] = face->texture_zw[i].w,
             },
+#endif
         };
     }
 
@@ -389,7 +391,13 @@ static void M_FreeMeshes(M_PRIV *const p)
         }
         p->meshes = nullptr;
     }
+#if defined(__DREAMCAST__)
+    // A chunk kept for the next level would sit in the middle of the memory
+    // that level loads into.
+    Memory_ArenaFree(&p->alloc);
+#else
     Memory_ArenaReset(&p->alloc);
+#endif
 }
 
 // The GPU buffer stores one vertex per face corner, in the same order the
@@ -448,9 +456,11 @@ static void M_ResyncVertexGeometry(
         vertex->normal.y = update->normals[idx].y;
         vertex->normal.z = update->normals[idx].z;
     }
+#if !defined(__DREAMCAST__)
     if (update->tint_factors != nullptr) {
         vertex->tint_factor = update->tint_factors[idx];
     }
+#endif
 }
 
 static void M_UpdateFlags(const OBJECT_MESH *const mesh, M_MESH *const batch)
@@ -571,6 +581,11 @@ void OutputSource_Objects_RemoveMeshPolicy(
         if (entry->policy == policy) {
             Vector_RemoveAt(m_MeshPolicies, i);
         }
+    }
+    // The policies come with a level; the next level's are made anew.
+    if (m_MeshPolicies->count == 0) {
+        Vector_Free(m_MeshPolicies);
+        m_MeshPolicies = nullptr;
     }
 }
 

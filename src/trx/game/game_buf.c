@@ -4,6 +4,8 @@
 #include <trx/core/memory.h>
 #include <trx/core/subsystem.h>
 
+#include <stdio.h>
+
 static MEMORY_ARENA_ALLOCATOR m_Allocator[GBUF_NUM_MALLOC_TYPES] = {};
 
 static void M_Init(void)
@@ -23,7 +25,23 @@ static void M_Shutdown(void)
 void GameBuf_Reset(void)
 {
     for (int32_t i = 0; i < GBUF_NUM_MALLOC_TYPES; i++) {
+#if defined(__DREAMCAST__)
+        // Kept chunks are not reused well by the next level and would hold the
+        // old level's ~5 MiB while it loads; 16 MiB cannot afford that.
+    #if defined(TRX_DC_WATCHDOG)
+        int32_t chunks = 0;
+        for (const MEMORY_ARENA_CHUNK *c = m_Allocator[i].first_chunk;
+             c != nullptr; c = c->next) {
+            chunks++;
+        }
+        if (chunks > 0) {
+            printf("[gamebuf] %d: %d chunks freed\n", (int)i, (int)chunks);
+        }
+    #endif
+        Memory_ArenaFree(&m_Allocator[i]);
+#else
         Memory_ArenaReset(&m_Allocator[i]);
+#endif
     }
 }
 

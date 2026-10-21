@@ -2,9 +2,10 @@
 """Turns the sampling profiler's "[prof]" lines from the serial console into
 time per function.
 
-    prof_report.py SERIAL_LOG TRX.elf ADDR2LINE [BLOCKS]
+    prof_report.py SERIAL_LOG TRX.elf ADDR2LINE [BLOCKS] [pr]
 
-Sums the last BLOCKS dumps (default: all of them).
+Sums the last BLOCKS dumps (default: all of them). With "pr", counts the
+return addresses instead: who called what waits or runs with interrupts off.
 """
 
 import re
@@ -16,13 +17,14 @@ from collections import defaultdict
 def main() -> None:
     log, elf, addr2line = sys.argv[1:4]
     want = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+    tag = r"\[prof\] pr" if sys.argv[5:6] == ["pr"] else r"\[prof\]"
     text = open(log, encoding="utf-8", errors="replace").read()
     blocks = re.findall(r"\[prof\] begin.*?\[prof\] end", text, re.S)
     if want > 0:
         blocks = blocks[-want:]
     counts = defaultdict(int)
     for block in blocks:
-        for pc, count in re.findall(r"\[prof\] ([0-9a-f]{8}) (\d+)", block):
+        for pc, count in re.findall(tag + r" ([0-9a-f]{8}) (\d+)", block):
             counts[pc] += int(count)
     if not counts:
         print("no samples")

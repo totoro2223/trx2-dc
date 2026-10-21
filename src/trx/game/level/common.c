@@ -7,6 +7,7 @@
 #include <trx/game/effects.h>
 #include <trx/game/fx.h>
 #include <trx/game/game.h>
+#include <trx/game/game_strings/entries.h>
 #include <trx/game/game_strings/table.h>
 #include <trx/game/gym.h>
 #include <trx/game/items.h>
@@ -66,6 +67,12 @@ void Level_Unload(void)
 
     Sound_StopAll();
     Viewport_AlterFOV(-1, FOV_MODE_GAME);
+#if defined(__DREAMCAST__)
+    // The level's own strings go with it, before the next level loads into
+    // the memory they would otherwise sit in the middle of; the next level
+    // applies its own (GameStringTable_Apply).
+    GameString_RevertOverrides();
+#endif
 }
 
 bool Level_IsWorldLoaded(void)

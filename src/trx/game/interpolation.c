@@ -1,6 +1,9 @@
 #include <trx/game/interpolation.h>
 
 #include <trx/config.h>
+#if defined(__DREAMCAST__)
+#include <platform/dreamcast/dc_mode.h>
+#endif
 #include <trx/core/utils.h>
 #include <trx/debug.h>
 #include <trx/game/camera.h>
@@ -57,7 +60,11 @@ static double m_CameraRate = 0.0;
 
 static int32_t M_GetFPS(void)
 {
+#if defined(__DREAMCAST__)
+    return DC_Mode_Get()->fps;
+#else
     return g_Config.rendering.fps;
+#endif
 }
 
 static XYZ_32 M_GetItemMaxDelta(const ITEM *const item)

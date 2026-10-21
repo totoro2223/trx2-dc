@@ -37,6 +37,9 @@ typedef struct {
 void Output_Textures_Init(void);
 void Output_Textures_Shutdown(void);
 void Output_Textures_ObserveLevelLoad(void);
+#if defined(__DREAMCAST__)
+void Output_Textures_ObserveLevelUnload(void);
+#endif
 void Output_Textures_UpdateEnvironmentMap(void);
 void Output_Textures_CycleAnimations(void);
 void Output_Textures_ApplyRenderSettings(void);
@@ -80,10 +83,9 @@ RGBA_8888 *Output_GetTexturePage32(int32_t page_idx);
 // Takes over the level's 16-bit texture pages (see
 // trx/game/level/texture_pages_16.h) in place of Output_InitialiseTexturePages
 // and the page accessors above. The pages are in video memory (see
-// platform/dreamcast/renderer.h); the formats come from Memory_Alloc, and the
+// platform/dreamcast/renderer.h); their formats come from Memory_Alloc, and the
 // output frees them.
-void Output_LoadTexturePages16(
-    int32_t num_pages, uint16_t *pages, uint8_t *formats);
+void Output_LoadTexturePages16(int32_t num_pages, uint8_t *formats);
 #endif
 
 void Output_LockTexturePage32(int32_t page_idx);

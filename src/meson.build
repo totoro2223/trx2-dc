@@ -159,11 +159,15 @@ trx_lua_script_sources = files(
   'lua/commands/weather.lua',
 )
 
+trx_lua_compiler = get_option('lua_compiler')
 trx_lua_embed = custom_target(
   'trx_lua_embed',
   input: trx_lua_api_sources + trx_lua_script_sources,
   output: ['trx_embedded_lua.c'],
-  depend_files: files('../tools/shared/luaannot.py'),
+  depend_files: files(
+    '../tools/embed_trx_lua.py',
+    '../tools/shared/luaannot.py',
+  ),
   command: [
     python3,
     meson.project_source_root() + '/../tools/embed_trx_lua.py',
@@ -177,7 +181,10 @@ trx_lua_embed = custom_target(
     meson.project_source_root() + '/lua',
     '--scripts',
     trx_lua_script_sources,
-  ],
+  ] + (trx_lua_compiler != '' ? ['--luac', trx_lua_compiler] : [])
+    # The Dreamcast keeps of the signatures only what loading and type
+    # checking read.
+    + (host_machine.system() == 'dreamcast' ? ['--lean-signatures'] : []),
 )
 
 prefix_map = fs.relative_to(meson.current_source_dir() / 'trx', meson.global_build_root())

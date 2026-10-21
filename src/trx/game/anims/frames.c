@@ -20,6 +20,35 @@ typedef enum {
 
 static ANIM_FRAME *m_Frames = nullptr;
 
+#if defined(__DREAMCAST__)
+#define M_MAX_FRAME_MESHES 64
+// Unpacked rotations, handed out in turn: enough that every frame an item's
+// drawing reads (two of Lara's, her arms', her hair's) stays whole.
+#define M_ROT_BUFFERS 32
+static XYZ_16 m_RotBuffers[M_ROT_BUFFERS][M_MAX_FRAME_MESHES];
+static int32_t m_NextRotBuffer = 0;
+#endif
+
+const XYZ_16 *Anim_GetFrameRots(const ANIM_FRAME *const frame)
+{
+#if defined(__DREAMCAST__)
+    if (frame->packed_rots == nullptr) {
+        return nullptr;
+    }
+    XYZ_16 *const out = m_RotBuffers[m_NextRotBuffer];
+    m_NextRotBuffer = (m_NextRotBuffer + 1) % M_ROT_BUFFERS;
+    for (int32_t i = 0; i < frame->mesh_count; i++) {
+        const uint32_t packed = frame->packed_rots[i];
+        out[i].x = (int16_t)(((packed >> 20) & 0x3FF) << 6);
+        out[i].y = (int16_t)(((packed >> 10) & 0x3FF) << 6);
+        out[i].z = (int16_t)((packed & 0x3FF) << 6);
+    }
+    return out;
+#else
+    return frame->mesh_rots;
+#endif
+}
+
 static int32_t M_GetAnimFrameCount(
     const LEVEL_FORMAT_LOADER *const loader, const int32_t anim_idx,
     const int32_t frame_data_length)
@@ -136,12 +165,28 @@ static int32_t M_ParseFrame(
         mesh_count = *data_ptr++;
     }
 
+#if defined(__DREAMCAST__)
+    // shortcut: angles keep 10 bits (TR1-3's); TR4's 12-bit ones would lose
+    // their low two, if the Dreamcast ever loads TR4.
+    ASSERT(mesh_count <= M_MAX_FRAME_MESHES);
+    frame->mesh_count = (uint8_t)mesh_count;
+    frame->packed_rots =
+        GameBuf_Alloc(sizeof(uint32_t) * mesh_count, GBUF_ANIM_FRAMES);
+    for (int32_t i = 0; i < mesh_count; i++) {
+        XYZ_16 rot;
+        M_ParseMeshRotation(loader, &rot, &data_ptr);
+        frame->packed_rots[i] = ((uint32_t)(uint16_t)rot.x >> 6 << 20)
+            | ((uint32_t)(uint16_t)rot.y >> 6 << 10)
+            | ((uint32_t)(uint16_t)rot.z >> 6);
+    }
+#else
     frame->mesh_rots =
         GameBuf_Alloc(sizeof(XYZ_16) * mesh_count, GBUF_ANIM_FRAMES);
     for (int32_t i = 0; i < mesh_count; i++) {
         XYZ_16 *const rot = &frame->mesh_rots[i];
         M_ParseMeshRotation(loader, rot, &data_ptr);
     }
+#endif
 
     if (loader->game_version > 1) {
         data_ptr += MAX(0, frame_size - (data_ptr - frame_start));

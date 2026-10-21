@@ -176,8 +176,23 @@ typedef enum {
     SHADOW_TYPE_OCTAGON,
     SHADOW_TYPE_CIRCLE,
     SHADOW_TYPE_SPRITE,
+#if defined(__DREAMCAST__)
+    // Lara only: the Dreamcast shadow volumes, and the soft shadows of up to
+    // three lights.
+    SHADOW_TYPE_VOLUME,
+    SHADOW_TYPE_SOFT,
+#endif
     SHADOW_TYPE_NUMBER_OF,
 } SHADOW_TYPE;
+
+// Dreamcast: what the renderer spends its frame on (see
+// platform/dreamcast/dc_mode.h).
+typedef enum {
+    DC_MODE_GRAPHICS,
+    DC_MODE_PERFORMANCE,
+    DC_MODE_EXPERIMENTAL_60,
+    DC_MODE_NUMBER_OF,
+} DC_MODE;
 
 typedef enum {
     BLOOD_EFFECTS_DISABLED,

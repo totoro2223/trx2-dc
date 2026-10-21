@@ -268,51 +268,51 @@ static bool M_Draw(const ITEM *const item)
     if (frac != 0) {
         Matrix_InitInterpolate(frac, rate);
         Matrix_TranslateRel16_ID(frames[0]->offset, frames[1]->offset);
-        Matrix_Rot16_ID(frames[0]->mesh_rots[0], frames[1]->mesh_rots[0]);
+        Matrix_Rot16_ID(Anim_GetFrameRots(frames[0])[0], Anim_GetFrameRots(frames[1])[0]);
         Output_DrawObjectMesh_I(Object_GetMesh(obj->mesh_idx), clip);
 
         Matrix_Push_I();
         Matrix_TranslateRel32_I(bone[0].pos);
-        Matrix_Rot16_ID(frames[0]->mesh_rots[1], frames[1]->mesh_rots[1]);
+        Matrix_Rot16_ID(Anim_GetFrameRots(frames[0])[1], Anim_GetFrameRots(frames[1])[1]);
         Matrix_RotX_I((item->rot.z + (p->rot_x >> 13)));
         Output_DrawObjectMesh_I(Object_GetMesh(obj->mesh_idx + 1), clip);
         Matrix_Pop_I();
 
         Matrix_Push_I();
         Matrix_TranslateRel32_I(bone[1].pos);
-        Matrix_Rot16_ID(frames[0]->mesh_rots[2], frames[1]->mesh_rots[2]);
+        Matrix_Rot16_ID(Anim_GetFrameRots(frames[0])[2], Anim_GetFrameRots(frames[1])[2]);
         Matrix_RotX_I(((p->rot_x >> 13) - item->rot.z));
         Output_DrawObjectMesh_I(Object_GetMesh(obj->mesh_idx + 2), clip);
         Matrix_Pop_I();
 
         Matrix_Push_I();
         Matrix_TranslateRel32_I(bone[2].pos);
-        Matrix_Rot16_ID(frames[0]->mesh_rots[3], frames[1]->mesh_rots[3]);
+        Matrix_Rot16_ID(Anim_GetFrameRots(frames[0])[3], Anim_GetFrameRots(frames[1])[3]);
         Matrix_RotZ_I(p->fan_rot);
         Output_DrawObjectMesh_I(Object_GetMesh(obj->mesh_idx + 3), clip);
         Matrix_Pop_I();
     } else {
         Matrix_TranslateRel16(frames[0]->offset);
-        Matrix_Rot16(frames[0]->mesh_rots[0]);
+        Matrix_Rot16(Anim_GetFrameRots(frames[0])[0]);
         Output_DrawObjectMesh(Object_GetMesh(obj->mesh_idx), clip);
 
         Matrix_Push();
         Matrix_TranslateRel32(bone[0].pos);
-        Matrix_Rot16(frames[0]->mesh_rots[1]);
+        Matrix_Rot16(Anim_GetFrameRots(frames[0])[1]);
         Matrix_RotX((item->rot.z + (p->rot_x >> 13)));
         Output_DrawObjectMesh(Object_GetMesh(obj->mesh_idx + 1), clip);
         Matrix_Pop();
 
         Matrix_Push();
         Matrix_TranslateRel32(bone[1].pos);
-        Matrix_Rot16(frames[0]->mesh_rots[2]);
+        Matrix_Rot16(Anim_GetFrameRots(frames[0])[2]);
         Matrix_RotX(((p->rot_x >> 13) - item->rot.z));
         Output_DrawObjectMesh(Object_GetMesh(obj->mesh_idx + 2), clip);
         Matrix_Pop();
 
         Matrix_Push();
         Matrix_TranslateRel32(bone[2].pos);
-        Matrix_Rot16(frames[0]->mesh_rots[3]);
+        Matrix_Rot16(Anim_GetFrameRots(frames[0])[3]);
         Matrix_RotZ(p->fan_rot);
         Output_DrawObjectMesh(Object_GetMesh(obj->mesh_idx + 3), clip);
         Matrix_Pop();

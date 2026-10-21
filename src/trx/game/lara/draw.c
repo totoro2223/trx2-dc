@@ -250,8 +250,8 @@ static bool M_Draw_I(
 
     const ANIM_BONE *const bone =
         m_IsLara ? Lara_Skin_GetBoneBase() : Object_GetBone(obj, 0);
-    const XYZ_16 *mesh_rots_1 = frame1->mesh_rots;
-    const XYZ_16 *mesh_rots_2 = frame2->mesh_rots;
+    const XYZ_16 *mesh_rots_1 = Anim_GetFrameRots(frame1);
+    const XYZ_16 *mesh_rots_2 = Anim_GetFrameRots(frame2);
 
     Matrix_InitInterpolate(frac, rate);
     Matrix_TranslateRel16_ID(frame1->offset, frame2->offset);
@@ -277,7 +277,7 @@ static bool M_Draw_I(
     Matrix_TranslateRel32_I(bone[LM_TORSO - 1].pos);
     if (Lara_IsMachineGunActive()) {
         mesh_rots_2 =
-            lara->right_arm.frame_base[lara->right_arm.frame_num].mesh_rots;
+            Anim_GetFrameRots(&lara->right_arm.frame_base[lara->right_arm.frame_num]);
         mesh_rots_1 = mesh_rots_2;
     }
 
@@ -322,9 +322,8 @@ static bool M_Draw_I(
         if (lara->flare.control) {
             const ANIM *const anim = Anim_GetAnim(lara->left_arm.anim_num);
             mesh_rots_1 =
-                lara->left_arm
-                    .frame_base[lara->left_arm.frame_num - anim->frame_base]
-                    .mesh_rots;
+                Anim_GetFrameRots(&lara->left_arm
+                    .frame_base[lara->left_arm.frame_num - anim->frame_base]);
             mesh_rots_2 = mesh_rots_1;
         }
 
@@ -355,9 +354,8 @@ static bool M_Draw_I(
 
         const ANIM *anim = Anim_GetAnim(lara->right_arm.anim_num);
         mesh_rots_1 =
-            lara->right_arm
-                .frame_base[lara->right_arm.frame_num - anim->frame_base]
-                .mesh_rots;
+            Anim_GetFrameRots(&lara->right_arm
+                .frame_base[lara->right_arm.frame_num - anim->frame_base]);
         Matrix_Rot16(mesh_rots_1[LM_UARM_R]);
         M_CacheMatrix(LM_UARM_R);
         M_DrawLaraMesh(item, LM_UARM_R, clip, false);
@@ -382,9 +380,8 @@ static bool M_Draw_I(
 
         anim = Anim_GetAnim(lara->left_arm.anim_num);
         mesh_rots_1 =
-            lara->left_arm
-                .frame_base[lara->left_arm.frame_num - anim->frame_base]
-                .mesh_rots;
+            Anim_GetFrameRots(&lara->left_arm
+                .frame_base[lara->left_arm.frame_num - anim->frame_base]);
         Matrix_Rot16(mesh_rots_1[LM_UARM_L]);
         M_CacheMatrix(LM_UARM_L);
         M_DrawLaraMesh(item, LM_UARM_L, clip, false);
@@ -409,7 +406,7 @@ static bool M_Draw_I(
         Matrix_Push_I();
         Matrix_TranslateRel32_I(bone[LM_UARM_R - 1].pos);
         mesh_rots_1 =
-            lara->right_arm.frame_base[lara->right_arm.frame_num].mesh_rots;
+            Anim_GetFrameRots(&lara->right_arm.frame_base[lara->right_arm.frame_num]);
         mesh_rots_2 = mesh_rots_1;
         Matrix_Rot16_ID(mesh_rots_1[LM_UARM_R], mesh_rots_2[LM_UARM_R]);
         M_CacheMatrix(LM_UARM_R);
@@ -467,8 +464,12 @@ static bool M_Draw(const ITEM *const item);
 bool Lara_Draw(const ITEM *const item)
 {
 #if defined(__DREAMCAST__)
-    // Lara's body casts a shadow volume in place of the round shadow.
-    DC_Shadow_SetCasting(item == Lara_GetItem());
+    // Lara's body casts a shadow volume or soft shadows in place of the
+    // round shadow, when one of those is chosen.
+    const SHADOW_TYPE type = g_Config.visuals.shadow_type;
+    DC_Shadow_SetCasting(
+        item == Lara_GetItem()
+        && (type == SHADOW_TYPE_VOLUME || type == SHADOW_TYPE_SOFT));
     const bool drawn = M_Draw(item);
     DC_Shadow_SetCasting(false);
     return drawn;
@@ -556,7 +557,7 @@ static bool M_Draw(const ITEM *const item)
     const ANIM_BONE *const bone =
         m_IsLara ? Lara_Skin_GetBoneBase() : Object_GetBone(obj, 0);
     const LARA_POSE *const pose = Lara_Pose_Get();
-    const XYZ_16 *mesh_rots = pose != nullptr ? pose->rots : frame->mesh_rots;
+    const XYZ_16 *mesh_rots = pose != nullptr ? pose->rots : Anim_GetFrameRots(frame);
 
     Matrix_TranslateRel16(pose != nullptr ? pose->offset : frame->offset);
     Matrix_Rot16(mesh_rots[LM_HIPS]);
@@ -581,7 +582,7 @@ static bool M_Draw(const ITEM *const item)
     Matrix_TranslateRel32(bone[LM_TORSO - 1].pos);
     if (Lara_IsMachineGunActive() && pose == nullptr) {
         mesh_rots =
-            lara->right_arm.frame_base[lara->right_arm.frame_num].mesh_rots;
+            Anim_GetFrameRots(&lara->right_arm.frame_base[lara->right_arm.frame_num]);
     }
 
     Matrix_Rot16(mesh_rots[LM_TORSO]);
@@ -628,9 +629,8 @@ static bool M_Draw(const ITEM *const item)
         if (lara->flare.control && pose == nullptr) {
             const ANIM *const anim = Anim_GetAnim(lara->left_arm.anim_num);
             mesh_rots =
-                lara->left_arm
-                    .frame_base[lara->left_arm.frame_num - anim->frame_base]
-                    .mesh_rots;
+                Anim_GetFrameRots(&lara->left_arm
+                    .frame_base[lara->left_arm.frame_num - anim->frame_base]);
         }
 
         Matrix_Rot16(mesh_rots[LM_UARM_L]);
@@ -678,9 +678,8 @@ static bool M_Draw(const ITEM *const item)
         if (pose == nullptr) {
             const ANIM *const anim = Anim_GetAnim(lara->right_arm.anim_num);
             mesh_rots =
-                lara->right_arm
-                    .frame_base[lara->right_arm.frame_num - anim->frame_base]
-                    .mesh_rots;
+                Anim_GetFrameRots(&lara->right_arm
+                    .frame_base[lara->right_arm.frame_num - anim->frame_base]);
         }
         Matrix_Rot16(mesh_rots[LM_UARM_R]);
         M_DrawLaraMesh(item, LM_UARM_R, clip, false);
@@ -724,9 +723,8 @@ static bool M_Draw(const ITEM *const item)
         if (pose == nullptr) {
             const ANIM *const anim = Anim_GetAnim(lara->left_arm.anim_num);
             mesh_rots =
-                lara->left_arm
-                    .frame_base[lara->left_arm.frame_num - anim->frame_base]
-                    .mesh_rots;
+                Anim_GetFrameRots(&lara->left_arm
+                    .frame_base[lara->left_arm.frame_num - anim->frame_base]);
         }
         Matrix_Rot16(mesh_rots[LM_UARM_L]);
         M_CacheMatrix(LM_UARM_L);
@@ -754,7 +752,7 @@ static bool M_Draw(const ITEM *const item)
         Matrix_TranslateRel32(bone[LM_UARM_R - 1].pos);
         if (pose == nullptr) {
             mesh_rots =
-                lara->right_arm.frame_base[lara->right_arm.frame_num].mesh_rots;
+                Anim_GetFrameRots(&lara->right_arm.frame_base[lara->right_arm.frame_num]);
         }
         Matrix_Rot16(mesh_rots[LM_UARM_R]);
         M_CacheMatrix(LM_UARM_R);

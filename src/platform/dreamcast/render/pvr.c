@@ -1,35 +1,44 @@
 ﻿// The PowerVR side of the Dreamcast renderer (see pvr.h).
 //
-// Polygons go through vertex DMA: each list has a buffer in main memory that
-// the frame's polygons are written into in whatever order the engine's passes
-// produce them, and KOS hands the buffers to the tile accelerator when the
-// scene is finished. That frees the passes from the order the hardware wants
-// the lists in.
+// Each list has a buffer in main memory that the frame's polygons are written
+// into in whatever order the engine's passes produce them; when the frame
+// ends, each buffer goes to the tile accelerator in one go through the store
+// queues. That frees the passes from the order the hardware wants the lists
+// in, without KOS's vertex DMA: its chain of transfers kept the CPU waiting
+// with interrupts off, about a quarter of every frame in Flycast.
 
 #include "pvr.h"
 
+#include <platform/dreamcast/dc_mode.h>
+
 #include <trx/core/log.h>
+#include <trx/core/math/const.h>
+#include <trx/core/utils.h>
 #include <trx/game/output/const.h>
 #include <trx/game/level/texture_pages_16.h>
 
+#include <arch/timer.h>
 #include <dc/biosfont.h>
 #include <dc/pvr.h>
+#include <dc/video.h>
 
 #include <malloc.h>
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
-// Double-buffered by KOS, so each holds two frames.
 // Sized by what TR2 levels use: room faces with see-through texels go to the
 // punch-through list, which takes about as much as the opaque one.
 // Measured on the Great Wall with quads sent as strips: the opaque list
 // peaks at about 130 KiB a frame, punch-through at about 70, translucent at
-// under 10; they cost main memory twice over, so each keeps only a margin.
-#define M_VERTBUF_OP (2 * 160 * 1024)
-#define M_VERTBUF_TR (2 * 24 * 1024)
-#define M_VERTBUF_PT (2 * 104 * 1024)
+// under 10; each keeps only a margin. The translucent one also takes the
+// relief of the room faces near the camera (DC_BLEND_BUMP).
+#define M_VERTBUF_OP (160 * 1024)
+#define M_VERTBUF_TR (64 * 1024)
+#define M_VERTBUF_PT (104 * 1024)
 // Shadow volumes: 15 casters of at most 24 triangles of 64 bytes, and their
-// headers.
-#define M_VERTBUF_MOD (2 * 28 * 1024)
+// headers, for each of up to 3 lights.
+#define M_VERTBUF_MOD (3 * 24 * 1024)
 #define M_LIST_COUNT 4
 // How much of the colour a shadowed pixel keeps.
 #define M_SHADOW_SCALE 0.5f
@@ -65,6 +74,7 @@ typedef struct {
     int32_t page;
     bool depth_test;
     bool filter;
+    bool half;
     bool shadow;
 } M_LIST;
 
@@ -82,7 +92,37 @@ static DC_BLEND m_Blend = DC_BLEND_OPAQUE;
 static int32_t m_Page = DC_PVR_NO_TEXTURE;
 static bool m_DepthTest = true;
 static bool m_Bilinear = false;
+// Pages drawn smaller than their texels (the interface's text at 320x240)
+// sample a copy at half their size, made the first time it is asked for:
+// unfiltered, the whole page would drop whole strokes of the letters. (A
+// mipmapped page would do on the console, but Flycast samples mipmaps only
+// when filtering.)
+static bool m_HalfPages = false;
+static struct {
+    pvr_ptr_t ptr[M_MAX_TEXTURE_PAGES];
+    bool failed[M_MAX_TEXTURE_PAGES];
+} m_Half = {};
+// The pages' relief (M_GetBumpPage), likewise.
+static struct {
+    pvr_ptr_t ptr[M_MAX_TEXTURE_PAGES];
+    bool failed[M_MAX_TEXTURE_PAGES];
+    // Pages made so far: making one stalls the frame it happens in.
+    uint32_t made;
+} m_Bump = {};
 static bool m_InFrame = false;
+// The state was set since M_Reserve last matched a list to it.
+static bool m_StateDirty = true;
+// Compiled polygon headers by state, which holds the textures' addresses:
+// any change of a texture starts a new generation and empties it.
+#define M_HEADER_CACHE 64
+static uint32_t m_HeaderGen = 1;
+static struct {
+    uint32_t gen;
+    uint32_t key;
+    pvr_poly_hdr_t hdr;
+} m_HeaderCache[M_HEADER_CACHE];
+// A screen frame is being built whose scene has not started yet.
+static bool m_ScreenPending = false;
 static struct {
     // Where the current layer starts; 0 for the first.
     float floor;
@@ -95,8 +135,24 @@ static struct {
     bool background;
     bool sky;
 } m_Depth = {};
+// The soft shadows' silhouettes: cells of SIZE x SIZE texels side by side,
+// 16-bit as the PowerVR renders them, all rendered in one frame (each frame
+// rendered into a texture costs KOS a wait for the vertical blank). Flycast
+// renders nothing into a texture taller than its width, and stops on a
+// strided texture narrower than the stride; this one is neither.
+#define M_SHADOW_MAP_WIDTH (DC_PVR_SHADOW_MAP_SIZE * DC_PVR_SHADOW_MAP_SLOTS)
+#define M_SHADOW_MAP_BYTES (M_SHADOW_MAP_WIDTH * DC_PVR_SHADOW_MAP_SIZE * 2)
+static pvr_ptr_t m_ShadowMap = nullptr;
+// The environment map (DC_PVR_ENV_MAP), made by M_MakeEnvMap.
+#define M_ENV_MAP_SIZE 64
+static pvr_ptr_t m_EnvMap = nullptr;
+// 320x240: everything drawn to the screen is given in 640x480 and halved.
+static bool m_LowRes = false;
+static float m_ScreenScale = 1.0f;
 static int32_t m_Submitted = 0;
 static int32_t m_Dropped = 0;
+static uint32_t m_WaitUs = 0;
+static uint32_t m_MapWaitUs = 0;
 static struct {
     pvr_ptr_t texture;
     bool valid;
@@ -110,17 +166,35 @@ static struct {
 static pvr_ptr_t m_LoadingText = nullptr;
 
 static void M_ResetFrame(void);
+static void M_InitHardware(void);
+static void M_CloseVQ(void);
+static int32_t M_Twiddle(int32_t x, int32_t y);
 
-// The level's texture pages, in one block of video memory. They are written
-// there linear as the level loads, and twiddled in place once it is complete
-// (DC_PVR_CommitTexturePages), so that no copy of them is held in main RAM.
+// The level's texture pages, each in a block of video memory of its own,
+// twiddled, or in VQ when the disc has them so (M_LoadVQ); no copy of them is
+// held in main RAM.
 static struct {
     int32_t count;
-    pvr_ptr_t block;
     bool committed;
     pvr_ptr_t ptr[M_MAX_TEXTURE_PAGES];
     uint8_t format[M_MAX_TEXTURE_PAGES];
+    bool vq[M_MAX_TEXTURE_PAGES];
 } m_Pages = {};
+// A VQ page: a codebook of 256 2x2 blocks, then a byte per block of the page,
+// twiddled (tools/dreamcast/texvq.c makes them).
+#define M_VQ_PATH "/cd/textures.vq"
+#define M_VQ_BOOK_BYTES (256 * 4 * 2)
+#define M_VQ_BYTES (M_VQ_BOOK_BYTES + TEXTURE_PAGE_SIZE / 4)
+// The disc's VQ pages while a level loads: the file, its index, and room for
+// one page on its way to video memory.
+static struct {
+    FILE *fp;
+    uint32_t count;
+    uint32_t *index;
+    uint8_t *data;
+    // Where the file stands, to seek only when the next page is elsewhere.
+    long at;
+} m_VQ = {};
 
 static M_LIST *M_GetList(const DC_BLEND blend)
 {
@@ -128,6 +202,7 @@ static M_LIST *M_GetList(const DC_BLEND blend)
     case DC_BLEND_OPAQUE:
         return &m_Lists[0];
     case DC_BLEND_PUNCH:
+    case DC_BLEND_PUNCH_SHADE:
         return &m_Lists[2];
     default:
         return &m_Lists[1];
@@ -148,6 +223,83 @@ void DC_PVR_Init(void)
     if (m_Initialised) {
         return;
     }
+    M_InitHardware();
+    const size_t sizes[M_LIST_COUNT] = {
+        M_VERTBUF_OP, M_VERTBUF_TR, M_VERTBUF_PT, M_VERTBUF_MOD,
+    };
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        m_Lists[i].buffer = M_AllocVertbuf(sizes[i]);
+        m_Lists[i].frame_capacity = sizes[i];
+    }
+    m_Initialised = true;
+    LOG_INFO(
+        "PowerVR ready, %u KiB of video memory free",
+        (unsigned)(pvr_mem_available() / 1024));
+}
+
+// Switches between 640x480 and 320x240. The PowerVR is set up again for the
+// new screen, which empties video memory: only between levels, once their
+// pages are gone.
+static void M_SetLowRes(const bool low_res)
+{
+    if (low_res == m_LowRes || m_InFrame) {
+        return;
+    }
+    pvr_wait_ready();
+    pvr_shutdown();
+    m_HeaderGen++;
+    vid_set_mode(low_res ? DM_320x240 : DM_640x480, PM_RGB565);
+    m_LoadingText = nullptr;
+    M_InitHardware();
+    m_LowRes = low_res;
+    LOG_INFO("Screen now %s", low_res ? "320x240" : "640x480");
+}
+
+// A night sky over dark ground as a polished surface shows it: a bright band
+// at the horizon, a key light up to one side and a weaker one opposite. Made
+// here, as the game's data holds none.
+static void M_MakeEnvMap(void)
+{
+    m_EnvMap = pvr_mem_malloc(M_ENV_MAP_SIZE * M_ENV_MAP_SIZE * 2);
+    if (m_EnvMap == nullptr) {
+        return;
+    }
+    // Video memory takes 16-bit writes.
+    volatile uint16_t *const texels = m_EnvMap;
+    for (int32_t y = 0; y < M_ENV_MAP_SIZE; y++) {
+        for (int32_t x = 0; x < M_ENV_MAP_SIZE; x++) {
+            // The normal this texel stands for, y up.
+            const float nx = (x + 0.5f) * (2.0f / M_ENV_MAP_SIZE) - 1.0f;
+            const float ny = 1.0f - (y + 0.5f) * (2.0f / M_ENV_MAP_SIZE);
+            const float r2 = nx * nx + ny * ny;
+            const float nz = r2 < 1.0f ? sqrtf(1.0f - r2) : 0.0f;
+            // Sky above, ground below, the horizon between: dark, so that
+            // only the highlights cover the texture under them.
+            float v = ny > 0.0f ? 0.04f + 0.12f * ny
+                                : 0.02f * (1.0f + ny);
+            v += 0.3f * expf(-ny * ny * 40.0f);
+            // The lights: the cosine to each, sharpened.
+            const float k1 = -0.45f * nx + 0.6f * ny + 0.66f * nz;
+            const float k2 = 0.7f * nx + 0.2f * ny + 0.68f * nz;
+            if (k1 > 0.0f) {
+                v += 0.9f * powf(k1, 24.0f);
+            }
+            if (k2 > 0.0f) {
+                v += 0.35f * powf(k2, 12.0f);
+            }
+            v = v > 1.0f ? 1.0f : v;
+            // Cold: blue a little over red.
+            const uint32_t r = (uint32_t)(v * 0.85f * 31.0f + 0.5f);
+            const uint32_t g = (uint32_t)(v * 0.92f * 63.0f + 0.5f);
+            const uint32_t b = (uint32_t)(v * 31.0f + 0.5f);
+            texels[y * M_ENV_MAP_SIZE + x] =
+                (uint16_t)((r << 11) | (g << 5) | b);
+        }
+    }
+}
+
+static void M_InitHardware(void)
+{
     pvr_init_params_t params = {
         .opb_sizes = {
             PVR_BINSIZE_16, // opaque polygons
@@ -157,33 +309,24 @@ void DC_PVR_Init(void)
             PVR_BINSIZE_16, // punch-through polygons
         },
         .vertex_buf_size = 512 * 1024,
-        .dma_enabled = 1,
+        .dma_enabled = 0,
         .fsaa_enabled = 0,
         .autosort_disabled = 0,
         .opb_overflow_count = 3,
         .vbuf_doublebuf_disabled = 0,
     };
     pvr_init(&params);
-
-    const size_t sizes[M_LIST_COUNT] = {
-        M_VERTBUF_OP, M_VERTBUF_TR, M_VERTBUF_PT, M_VERTBUF_MOD,
-    };
-    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
-        m_Lists[i].buffer = M_AllocVertbuf(sizes[i]);
-        // KOS splits the buffer in two, wants every write to stay strictly
-        // below the half's end and closes each list with up to 64 bytes of
-        // its own (a blank header and a zero marker).
-        m_Lists[i].frame_capacity = sizes[i] / 2 - 128;
-        pvr_set_vertbuf(m_Lists[i].list, m_Lists[i].buffer, sizes[i]);
-    }
     pvr_set_bg_color(0.0f, 0.0f, 0.0f);
     pvr_set_zclip(M_BACKGROUND_PLANE_DEPTH);
     // Polygons inside a shadow volume keep this much of their colour.
     pvr_set_shadow_scale(true, M_SHADOW_SCALE);
-    m_Initialised = true;
-    LOG_INFO(
-        "PowerVR ready, %u KiB of video memory free",
-        (unsigned)(pvr_mem_available() / 1024));
+    // Punch-through keeps the texels whose alpha reaches half. TR's colour
+    // key is all or nothing either side of it; the cel shading's edge lies
+    // on it (DC_BLEND_PUNCH_SHADE).
+    PVR_SET(PVR_PT_ALPHA_REF, 0x80);
+    // Kept for good, before any level's pages, so that it never splits them.
+    m_ShadowMap = pvr_mem_malloc(M_SHADOW_MAP_BYTES);
+    M_MakeEnvMap();
 }
 
 void DC_PVR_Shutdown(void)
@@ -193,10 +336,26 @@ void DC_PVR_Shutdown(void)
 
 void DC_PVR_FreeTexturePages(void)
 {
-    if (m_Pages.block != nullptr) {
-        pvr_mem_free(m_Pages.block);
+    for (int32_t i = 0; i < m_Pages.count; i++) {
+        if (m_Pages.ptr[i] != nullptr) {
+            pvr_mem_free(m_Pages.ptr[i]);
+        }
     }
+    m_HeaderGen++;
     m_Pages = (typeof(m_Pages)) {};
+    M_CloseVQ();
+    for (int32_t i = 0; i < M_MAX_TEXTURE_PAGES; i++) {
+        if (m_Half.ptr[i] != nullptr) {
+            pvr_mem_free(m_Half.ptr[i]);
+        }
+    }
+    m_Half = (typeof(m_Half)) {};
+    for (int32_t i = 0; i < M_MAX_TEXTURE_PAGES; i++) {
+        if (m_Bump.ptr[i] != nullptr) {
+            pvr_mem_free(m_Bump.ptr[i]);
+        }
+    }
+    m_Bump = (typeof(m_Bump)) {};
     // Freed with the level's pages, so that the next level's find video
     // memory in one piece.
     if (m_Capture.texture != nullptr) {
@@ -213,6 +372,7 @@ bool DC_PVR_BeginCaptureFrame(void)
     }
     if (m_Capture.texture == nullptr) {
         m_Capture.texture = pvr_mem_malloc(M_CAPTURE_BYTES);
+        m_HeaderGen++;
         if (m_Capture.texture == nullptr) {
             LOG_WARNING("No video memory for a screen capture");
             return false;
@@ -231,6 +391,24 @@ bool DC_PVR_BeginCaptureFrame(void)
     return true;
 }
 
+bool DC_PVR_BeginShadowMapFrame(void)
+{
+    if (m_InFrame || m_ShadowMap == nullptr) {
+        return false;
+    }
+    const uint64_t start = timer_us_gettime64();
+    pvr_wait_ready();
+    m_MapWaitUs = (uint32_t)(timer_us_gettime64() - start);
+    if (pvr_scene_begin_rtt(
+            m_ShadowMap, M_SHADOW_MAP_WIDTH, DC_PVR_SHADOW_MAP_SIZE,
+            M_SHADOW_MAP_WIDTH)
+        != 0) {
+        return false;
+    }
+    M_ResetFrame();
+    return true;
+}
+
 void DC_PVR_DrawLoadingScreen(
     const char *const line1, const char *const line2, int32_t percent)
 {
@@ -239,6 +417,7 @@ void DC_PVR_DrawLoadingScreen(
     }
     if (m_LoadingText == nullptr) {
         // Kept for good: the level's texture pages come and go around it.
+        m_HeaderGen++;
         m_LoadingText = pvr_mem_malloc(
             M_LOADING_TEXT_WIDTH * M_LOADING_TEXT_HEIGHT * sizeof(uint16_t));
         if (m_LoadingText == nullptr) {
@@ -335,83 +514,155 @@ void DC_PVR_DrawScreenCapture(const float brightness)
     DC_PVR_SetBackgroundMode(was_background);
 }
 
-uint16_t *DC_PVR_ReserveTexturePages(const int32_t count)
+static void M_CloseVQ(void)
+{
+    if (m_VQ.fp != nullptr) {
+        fclose(m_VQ.fp);
+    }
+    free(m_VQ.index);
+    free(m_VQ.data);
+    m_VQ = (typeof(m_VQ)) {};
+}
+
+// The disc's VQ pages, if it has them, for the level about to load.
+static void M_OpenVQ(void)
+{
+    m_VQ.fp = fopen(M_VQ_PATH, "rb");
+    uint32_t head[2];
+    if (m_VQ.fp == nullptr || fread(head, 4, 2, m_VQ.fp) != 2
+        || memcmp(head, "TVQ1", 4) != 0) {
+        M_CloseVQ();
+        return;
+    }
+    m_VQ.count = head[1];
+    m_VQ.at = -1;
+    m_VQ.index = malloc(m_VQ.count * 8);
+    m_VQ.data = memalign(32, M_VQ_BYTES);
+    if (m_VQ.index == nullptr || m_VQ.data == nullptr
+        || fread(m_VQ.index, 8, m_VQ.count, m_VQ.fp) != m_VQ.count) {
+        M_CloseVQ();
+    }
+}
+
+bool DC_PVR_ReserveTexturePages(const int32_t count)
 {
     DC_PVR_FreeTexturePages();
+    M_SetLowRes(DC_Mode_Get()->low_res);
     if (count <= 0) {
-        return nullptr;
+        return false;
     }
     if (count > M_MAX_TEXTURE_PAGES) {
         LOG_ERROR(
             "%d texture pages, more than the %d the renderer holds", count,
             M_MAX_TEXTURE_PAGES);
-        return nullptr;
-    }
-    const size_t page_bytes = TEXTURE_PAGE_SIZE * sizeof(uint16_t);
-    m_Pages.block = pvr_mem_malloc(page_bytes * count);
-    if (m_Pages.block == nullptr) {
-        LOG_ERROR(
-            "No video memory for %d texture pages (%u KiB free)", count,
-            (unsigned)(pvr_mem_available() / 1024));
-        return nullptr;
+        return false;
     }
     m_Pages.count = count;
-    for (int32_t i = 0; i < count; i++) {
-        m_Pages.ptr[i] = (char *)m_Pages.block + i * page_bytes;
-    }
-    return (uint16_t *)m_Pages.block;
+    M_OpenVQ();
+    return true;
 }
 
-void DC_PVR_WriteTexels(
+static void M_WriteTexels(
     uint16_t *const dst, const uint16_t *const src, const size_t count)
 {
     // Video memory takes no byte writes, which memcpy may make; whole words
     // it does take.
-    if ((((uintptr_t)dst | (uintptr_t)src) & 3) == 0) {
-        uint32_t *const dst32 = (uint32_t *)dst;
-        const uint32_t *const src32 = (const uint32_t *)src;
-        for (size_t i = 0; i < count / 2; i++) {
-            dst32[i] = src32[i];
-        }
-        if ((count & 1) != 0) {
-            dst[count - 1] = src[count - 1];
-        }
-        return;
-    }
-    for (size_t i = 0; i < count; i++) {
-        dst[i] = src[i];
+    uint32_t *const dst32 = (uint32_t *)dst;
+    const uint32_t *const src32 = (const uint32_t *)src;
+    for (size_t i = 0; i < count / 2; i++) {
+        dst32[i] = src32[i];
     }
 }
 
-void DC_PVR_CommitTexturePages(const int32_t count, const uint8_t *const formats)
+// FNV-1a over the page a 32-bit word at a time, as texvq.c keys them.
+static uint32_t M_HashPage(const uint16_t *const texels)
 {
-    printf("[pvr] commit %d pages, block %p, committed %d\n", (int)count, m_Pages.block, (int)m_Pages.committed);
-    if (m_Pages.block == nullptr || m_Pages.committed) {
-        return;
+    const uint32_t *const words = (const uint32_t *)texels;
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < TEXTURE_PAGE_SIZE / 2; i++) {
+        h = (h ^ words[i]) * 16777619u;
     }
-    // Twiddled textures sample faster; each page is turned in place, by way
-    // of one page's worth of main memory.
-    const size_t page_bytes = TEXTURE_PAGE_SIZE * sizeof(uint16_t);
-    uint16_t *const linear = memalign(32, page_bytes);
-    for (int32_t i = 0; i < m_Pages.count && i < count; i++) {
-        m_Pages.format[i] = formats != nullptr ? formats[i] : 0;
-        if (linear != nullptr) {
-            const uint32_t *const src = (const uint32_t *)m_Pages.ptr[i];
-            uint32_t *const dst = (uint32_t *)linear;
-            for (size_t j = 0; j < page_bytes / 4; j++) {
-                dst[j] = src[j];
+    return h;
+}
+
+// The page in VQ, an eighth of the size, if the disc has it so: its index is
+// {hash, position} pairs sorted by hash, ARGB1555 pages only. A level's own
+// pages lie one after another in the file, so mostly no seek is needed.
+static pvr_ptr_t M_LoadVQ(const uint16_t *const texels)
+{
+    if (m_VQ.fp == nullptr) {
+        return nullptr;
+    }
+    const uint32_t hash = M_HashPage(texels);
+    int32_t lo = 0;
+    int32_t hi = (int32_t)m_VQ.count - 1;
+    while (lo <= hi) {
+        const int32_t mid = (lo + hi) / 2;
+        if (m_VQ.index[mid * 2] < hash) {
+            lo = mid + 1;
+        } else if (m_VQ.index[mid * 2] > hash) {
+            hi = mid - 1;
+        } else {
+            const long at =
+                8 + m_VQ.count * 8 + (long)m_VQ.index[mid * 2 + 1] * M_VQ_BYTES;
+            pvr_ptr_t ptr = pvr_mem_malloc(M_VQ_BYTES);
+            if (ptr != nullptr
+                && ((at != m_VQ.at && fseek(m_VQ.fp, at, SEEK_SET) != 0)
+                    || fread(m_VQ.data, 1, M_VQ_BYTES, m_VQ.fp)
+                        != M_VQ_BYTES)) {
+                pvr_mem_free(ptr);
+                ptr = nullptr;
             }
-            pvr_txr_load_ex(
-                linear, m_Pages.ptr[i], TEXTURE_PAGE_WIDTH,
-                TEXTURE_PAGE_HEIGHT, PVR_TXRLOAD_16BPP);
+            m_VQ.at = ptr != nullptr ? at + M_VQ_BYTES : -1;
+            if (ptr != nullptr) {
+                M_WriteTexels(ptr, (const uint16_t *)m_VQ.data, M_VQ_BYTES / 2);
+            }
+            return ptr;
         }
     }
-    m_Pages.committed = linear != nullptr;
-    free(linear);
+    return nullptr;
+}
+
+void DC_PVR_StoreTexturePage(
+    const int32_t page, const uint16_t *const texels, const uint8_t format)
+{
+    if (page < 0 || page >= m_Pages.count) {
+        return;
+    }
+    if (m_Pages.ptr[page] != nullptr) {
+        pvr_mem_free(m_Pages.ptr[page]);
+    }
+    m_HeaderGen++;
+    m_Pages.format[page] = format;
+    m_Pages.ptr[page] =
+        format == TEXTURE_PAGE_ARGB1555 ? M_LoadVQ(texels) : nullptr;
+    m_Pages.vq[page] = m_Pages.ptr[page] != nullptr;
+    if (m_Pages.vq[page]) {
+        return;
+    }
+    // Twiddled, as textures sample faster.
+    m_Pages.ptr[page] = pvr_mem_malloc(TEXTURE_PAGE_SIZE * sizeof(uint16_t));
+    if (m_Pages.ptr[page] == nullptr) {
+        LOG_ERROR(
+            "No video memory for texture page %d (%u KiB free)", page,
+            (unsigned)(pvr_mem_available() / 1024));
+        return;
+    }
+    pvr_txr_load_ex(
+        (void *)texels, m_Pages.ptr[page], TEXTURE_PAGE_WIDTH,
+        TEXTURE_PAGE_HEIGHT, PVR_TXRLOAD_16BPP);
+}
+
+void DC_PVR_CommitTexturePages(void)
+{
+    M_CloseVQ();
+    m_Pages.committed = true;
+    m_HeaderGen++;
     char formats_text[M_MAX_TEXTURE_PAGES + 1] = {};
     for (int32_t i = 0; i < m_Pages.count; i++) {
-        formats_text[i] =
-            m_Pages.format[i] == TEXTURE_PAGE_ARGB4444 ? '4' : '1';
+        formats_text[i] = m_Pages.vq[i]
+            ? 'v'
+            : (m_Pages.format[i] == TEXTURE_PAGE_ARGB4444 ? '4' : '1');
     }
     LOG_INFO(
         "%d texture pages ready (%s), %u KiB of video memory free",
@@ -421,6 +672,16 @@ void DC_PVR_CommitTexturePages(const int32_t count, const uint8_t *const formats
 int32_t DC_PVR_GetTexturePageCount(void)
 {
     return m_Pages.count;
+}
+
+uint32_t DC_PVR_GetBumpPagesMade(void)
+{
+    return m_Bump.made;
+}
+
+bool DC_PVR_IsLowRes(void)
+{
+    return m_LowRes;
 }
 
 void DC_PVR_SetBackgroundColor(const float r, const float g, const float b)
@@ -442,6 +703,9 @@ static void M_ResetFrame(void)
     m_Submitted = 0;
     m_Dropped = 0;
     m_InFrame = true;
+    m_StateDirty = true;
+    // Frames rendered into a texture keep their size; the screen's set it.
+    m_ScreenScale = 1.0f;
 }
 
 void DC_PVR_BeginFrame(void)
@@ -449,9 +713,12 @@ void DC_PVR_BeginFrame(void)
     if (m_InFrame) {
         return;
     }
-    pvr_wait_ready();
-    pvr_scene_begin();
+    // The scene starts only once its lists are built (DC_PVR_EndFrame): they
+    // wait in main memory, so the previous frame goes on drawing meanwhile
+    // instead of holding the CPU up here.
+    m_ScreenPending = true;
     M_ResetFrame();
+    m_ScreenScale = m_LowRes ? 0.5f : 1.0f;
 }
 
 void DC_PVR_EndFrame(void)
@@ -459,18 +726,25 @@ void DC_PVR_EndFrame(void)
     if (!m_InFrame) {
         return;
     }
+    if (m_ScreenPending) {
+        m_ScreenPending = false;
+        const uint64_t start = timer_us_gettime64();
+        pvr_wait_ready();
+        m_WaitUs = (uint32_t)(timer_us_gettime64() - start);
+        pvr_scene_begin();
+    }
+    // Each list once, as the tile accelerator wants; KOS sends a blank one
+    // for those left empty.
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        if (m_Lists[i].frame_written == 0) {
+            continue;
+        }
+        pvr_list_begin(m_Lists[i].list);
+        pvr_prim(m_Lists[i].buffer, m_Lists[i].frame_written);
+        pvr_list_finish();
+    }
     pvr_scene_finish();
     m_InFrame = false;
-#if defined(TRX_DC_WATCHDOG)
-    static int32_t frames = 0;
-    if (++frames % 120 == 0) {
-        LOG_DEBUG(
-            "%d polygons (OP %uK TR %uK PT %uK)", m_Submitted,
-            (unsigned)(m_Lists[0].frame_written / 1024),
-            (unsigned)(m_Lists[1].frame_written / 1024),
-            (unsigned)(m_Lists[2].frame_written / 1024));
-    }
-#endif
     if (m_Dropped > 0) {
         LOG_WARNING(
             "%d polygons did not fit the vertex buffers this frame "
@@ -550,7 +824,276 @@ float DC_PVR_Depth2D(float v)
 
 void DC_PVR_SetFilter(const bool bilinear)
 {
+    m_StateDirty |= m_Bilinear != bilinear;
     m_Bilinear = bilinear;
+}
+
+void DC_PVR_SetHalfPages(const bool half)
+{
+    m_StateDirty |= m_HalfPages != half;
+    m_HalfPages = half;
+}
+
+// One texel of the half page from the 2x2 it covers: the colour of the solid
+// ones, and as alpha the most solid. Strokes a texel wide keep all their
+// length so (an average would cut the thin ones and the diagonals).
+static uint16_t M_HalfTexel(const uint16_t *const t, const bool argb4444)
+{
+    uint32_t r = 0;
+    uint32_t g = 0;
+    uint32_t b = 0;
+    uint32_t weight = 0;
+    if (argb4444) {
+        uint32_t a = 0;
+        for (int32_t k = 0; k < 4; k++) {
+            const uint32_t ta = t[k] >> 12;
+            a = ta > a ? ta : a;
+            weight += ta;
+            r += ((t[k] >> 8) & 15) * ta;
+            g += ((t[k] >> 4) & 15) * ta;
+            b += (t[k] & 15) * ta;
+        }
+        if (weight == 0) {
+            return 0;
+        }
+        return (uint16_t)((a << 12) | ((r / weight) << 8)
+                          | ((g / weight) << 4) | (b / weight));
+    }
+    for (int32_t k = 0; k < 4; k++) {
+        if ((t[k] & 0x8000) != 0) {
+            weight++;
+            r += (t[k] >> 10) & 31;
+            g += (t[k] >> 5) & 31;
+            b += t[k] & 31;
+        }
+    }
+    if (weight == 0) {
+        return 0;
+    }
+    return (uint16_t)(0x8000 | ((r / weight) << 10) | ((g / weight) << 5)
+                      | (b / weight));
+}
+
+// The four texels of a committed page's 2x2 block i. The page is twiddled,
+// and a square twiddled texture lays out each 2x2 block as four texels in a
+// row, in the order the texel it makes lies in the half page; a VQ page
+// holds them in its codebook.
+static const uint16_t *M_PageBlock(const int32_t page, const int32_t i)
+{
+    const uint16_t *const texels = (const uint16_t *)m_Pages.ptr[page];
+    if (!m_Pages.vq[page]) {
+        return &texels[i * 4];
+    }
+    // The block's byte, read with the word it is in.
+    const volatile uint32_t *const words =
+        (const volatile uint32_t *)((const uint8_t *)texels + M_VQ_BOOK_BYTES);
+    return &texels[((words[i >> 2] >> ((i & 3) * 8)) & 0xFF) * 4];
+}
+
+bool DC_PVR_HasTransparency(
+    const int32_t page, const int32_t x0, const int32_t y0, const int32_t x1,
+    const int32_t y1)
+{
+    if (page < 0 || page >= m_Pages.count || m_Pages.ptr[page] == nullptr) {
+        return true;
+    }
+    const bool argb4444 = m_Pages.format[page] == TEXTURE_PAGE_ARGB4444;
+    // A 2x2 block at a time, its texels in twiddled order: (0,0), (0,1),
+    // (1,0), (1,1); the block's place is read once.
+    for (int32_t by = y0 >> 1; by <= y1 >> 1; by++) {
+        for (int32_t bx = x0 >> 1; bx <= x1 >> 1; bx++) {
+            const uint16_t *const t = M_PageBlock(page, M_Twiddle(bx, by));
+            for (int32_t k = 0; k < 4; k++) {
+                const int32_t x = bx * 2 + (k >> 1);
+                const int32_t y = by * 2 + (k & 1);
+                if (x < x0 || x > x1 || y < y0 || y > y1) {
+                    continue;
+                }
+                const uint16_t texel = t[k];
+                if (argb4444 ? (texel >> 12) != 0xF : (texel & 0x8000) == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+uint16_t DC_PVR_GetTexel(const int32_t page, const int32_t x, const int32_t y)
+{
+    if (page < 0 || page >= m_Pages.count || m_Pages.ptr[page] == nullptr) {
+        return 0;
+    }
+    const int32_t t = M_Twiddle(x, y);
+    return M_PageBlock(page, t >> 2)[t & 3];
+}
+
+// The page at half its size.
+static pvr_ptr_t M_GetHalfPage(const int32_t page)
+{
+    if (m_Half.ptr[page] != nullptr || m_Half.failed[page]) {
+        return m_Half.ptr[page];
+    }
+    const int32_t texels = TEXTURE_PAGE_SIZE / 4;
+    uint16_t *const half = pvr_mem_malloc(texels * sizeof(uint16_t));
+    if (half == nullptr) {
+        LOG_WARNING("No video memory for page %d at half size", page);
+        m_Half.failed[page] = true;
+        return nullptr;
+    }
+    const bool argb4444 = m_Pages.format[page] == TEXTURE_PAGE_ARGB4444;
+    for (int32_t i = 0; i < texels; i++) {
+        half[i] = M_HalfTexel(M_PageBlock(page, i), argb4444);
+    }
+    m_Half.ptr[page] = half;
+    m_HeaderGen++;
+    LOG_INFO("Page %d made at half size", page);
+    return half;
+}
+
+
+// The pages' relief, for DC_BLEND_BUMP: at half their size, as the PowerVR's
+// bump maps take it, each texel the way its surface faces, made the first
+// time a page is asked for so. A texture's brightness stands for its height,
+// which is about right for rock, brick and earth; see-through texels lie
+// flat.
+// How steep a step of the whole brightness range makes the surface.
+#define M_BUMP_SLOPE 6.0f
+#define M_BUMP_SIZE (TEXTURE_PAGE_WIDTH / 2)
+
+// Where texel (x, y) of a square twiddled texture lies: the bits of y and x
+// in turn, y's lowest first.
+static int32_t M_Twiddle(const int32_t x, const int32_t y)
+{
+    // Each 8-bit coordinate spread to every other bit.
+    uint32_t sx = x & 0xFF;
+    uint32_t sy = y & 0xFF;
+    sx = (sx | (sx << 4)) & 0x0F0F;
+    sy = (sy | (sy << 4)) & 0x0F0F;
+    sx = (sx | (sx << 2)) & 0x3333;
+    sy = (sy | (sy << 2)) & 0x3333;
+    sx = (sx | (sx << 1)) & 0x5555;
+    sy = (sy | (sy << 1)) & 0x5555;
+    return (int32_t)(sy | (sx << 1));
+}
+
+// A texel's height in a relief being made; one that is see-through or off
+// the page stands at the height of the texel asking, h.
+static int32_t M_HeightAt(
+    const uint8_t *const height, const int32_t x, const int32_t y,
+    const int32_t h)
+{
+    if (x < 0 || x >= M_BUMP_SIZE || y < 0 || y >= M_BUMP_SIZE) {
+        return h;
+    }
+    const int32_t at = height[y * M_BUMP_SIZE + x];
+    return at != 0 ? at : h;
+}
+
+static pvr_ptr_t M_GetBumpPage(const int32_t page)
+{
+    if (m_Bump.ptr[page] != nullptr || m_Bump.failed[page]) {
+        return m_Bump.ptr[page];
+    }
+    m_Bump.failed[page] = true;
+    const int32_t size = M_BUMP_SIZE;
+    uint8_t *const height = malloc(size * size);
+    if (height == nullptr) {
+        return nullptr;
+    }
+    uint16_t *const bump = pvr_mem_malloc(size * size * sizeof(uint16_t));
+    if (bump == nullptr) {
+        LOG_WARNING("No video memory for page %d's relief", page);
+        free(height);
+        return nullptr;
+    }
+    // Heights by row, from the page's 2x2 groups (see M_HalfTexel); 0 for
+    // see-through, as no texel is wholly black and solid.
+    int32_t lo = 255;
+    int32_t hi = 0;
+    const bool argb4444 = m_Pages.format[page] == TEXTURE_PAGE_ARGB4444;
+    for (int32_t y = 0; y < size; y++) {
+        for (int32_t x = 0; x < size; x++) {
+            const uint16_t t =
+                M_HalfTexel(M_PageBlock(page, M_Twiddle(x, y)), argb4444);
+            int32_t r, g, b;
+            bool solid;
+            if (argb4444) {
+                solid = (t >> 12) >= 8;
+                r = ((t >> 8) & 15) * 17;
+                g = ((t >> 4) & 15) * 17;
+                b = (t & 15) * 17;
+            } else {
+                solid = (t & 0x8000) != 0;
+                r = ((t >> 10) & 31) * 255 / 31;
+                g = ((t >> 5) & 31) * 255 / 31;
+                b = (t & 31) * 255 / 31;
+            }
+            const int32_t luma = (r * 77 + g * 151 + b * 28) >> 8;
+            height[y * size + x] = solid ? (uint8_t)MAX(luma, 1) : 0;
+            if (solid) {
+                lo = MIN(lo, luma);
+                hi = MAX(hi, luma);
+            }
+        }
+    }
+    // Stretched to the whole range: TR2's rock is dark and low in contrast,
+    // and would come out all but flat.
+    if (hi > lo) {
+        for (int32_t i = 0; i < size * size; i++) {
+            if (height[i] != 0) {
+                height[i] = (uint8_t)(
+                    1 + (MAX(height[i], lo) - lo) * 254 / (hi - lo));
+            }
+        }
+    }
+    // The PowerVR's bump texel: the surface's elevation off its plane in
+    // the high byte (0 to 90 degrees), the way it leans about the normal in
+    // the low one (a whole turn, from u towards v).
+    for (int32_t y = 0; y < size; y++) {
+        for (int32_t x = 0; x < size; x++) {
+            const int32_t h = height[y * size + x];
+            uint16_t texel = 0xFF00;
+            if (h != 0) {
+                const float dx = (M_HeightAt(height, x + 1, y, h)
+                                  - M_HeightAt(height, x - 1, y, h))
+                    * (0.5f / 255.0f);
+                const float dy = (M_HeightAt(height, x, y + 1, h)
+                                  - M_HeightAt(height, x, y - 1, h))
+                    * (0.5f / 255.0f);
+                const float nx = -dx * M_BUMP_SLOPE;
+                const float ny = -dy * M_BUMP_SLOPE;
+                const float len = sqrtf(nx * nx + ny * ny + 1.0f);
+                const float s = asinf(1.0f / len);
+                float r = atan2f(ny, nx);
+                if (r < 0.0f) {
+                    r += 2.0f * (float)M_PI;
+                }
+                const uint32_t sb =
+                    (uint32_t)(s * (255.0f / ((float)M_PI * 0.5f)) + 0.5f);
+                const uint32_t rb =
+                    (uint32_t)(r * (256.0f / (2.0f * (float)M_PI))) & 0xFF;
+                texel = (uint16_t)((MIN(sb, 255u) << 8) | rb);
+            }
+            ((volatile uint16_t *)bump)[M_Twiddle(x, y)] = texel;
+        }
+    }
+    free(height);
+    m_Bump.ptr[page] = bump;
+    m_HeaderGen++;
+    m_Bump.failed[page] = false;
+    m_Bump.made++;
+    LOG_INFO("Page %d's relief made", page);
+    return bump;
+}
+
+// The current page at half its size, when that is asked for.
+static pvr_ptr_t M_CurrentHalfPage(void)
+{
+    if (!m_HalfPages || m_Page < 0 || !m_Pages.committed) {
+        return nullptr;
+    }
+    return M_GetHalfPage(m_Page);
 }
 
 void DC_PVR_SetState(
@@ -561,6 +1104,10 @@ void DC_PVR_SetState(
         m_Page = m_Capture.valid ? page : DC_PVR_NO_TEXTURE;
     } else if (page == DC_PVR_LOADING_TEXT) {
         m_Page = m_LoadingText != nullptr ? page : DC_PVR_NO_TEXTURE;
+    } else if (page == DC_PVR_SHADOW_MAP) {
+        m_Page = m_ShadowMap != nullptr ? page : DC_PVR_NO_TEXTURE;
+    } else if (page == DC_PVR_ENV_MAP) {
+        m_Page = m_EnvMap != nullptr ? page : DC_PVR_NO_TEXTURE;
     } else {
         m_Page = page >= 0 && page < m_Pages.count
                 && m_Pages.ptr[page] != nullptr
@@ -569,15 +1116,24 @@ void DC_PVR_SetState(
     }
     m_DepthTest = depth_test;
     m_Current = M_GetList(blend);
+    m_StateDirty = true;
 }
 
 static bool M_IsShadowed(void)
 {
-    return m_ShadowReceiver && m_Blend <= DC_BLEND_PUNCH && m_DepthTest;
+    return m_ShadowReceiver
+        && (m_Blend <= DC_BLEND_PUNCH || m_Blend == DC_BLEND_PUNCH_SHADE)
+        && m_DepthTest;
+}
+
+void DC_PVR_SetShadowStrength(const float strength)
+{
+    pvr_set_shadow_scale(true, 1.0f - strength);
 }
 
 void DC_PVR_SetShadowReceiver(const bool receive)
 {
+    m_StateDirty |= m_ShadowReceiver != receive;
     m_ShadowReceiver = receive;
 }
 
@@ -585,7 +1141,22 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
 {
     const pvr_list_t list = m_Current->list;
     pvr_poly_cxt_t cxt;
-    if (m_Page == DC_PVR_SCREEN_CAPTURE) {
+    const pvr_ptr_t bump = m_Blend == DC_BLEND_BUMP && m_Page >= 0
+        ? M_GetBumpPage(m_Page)
+        : nullptr;
+    if (m_Blend == DC_BLEND_BUMP) {
+        // Without its relief the face is drawn white: what is there stays.
+        if (bump != nullptr) {
+            pvr_poly_cxt_txr(
+                &cxt, list, PVR_TXRFMT_BUMP | PVR_TXRFMT_TWIDDLED,
+                M_BUMP_SIZE, M_BUMP_SIZE, bump,
+                m_Bilinear ? PVR_FILTER_BILINEAR : PVR_FILTER_NEAREST);
+            // The texture as it is: KOS's decal keeps the vertex alpha.
+            cxt.txr.env = PVR_TXRENV_REPLACE;
+        } else {
+            pvr_poly_cxt_col(&cxt, list);
+        }
+    } else if (m_Page == DC_PVR_SCREEN_CAPTURE) {
         pvr_poly_cxt_txr(
             &cxt, list,
             PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED | PVR_TXRFMT_X32_STRIDE,
@@ -598,16 +1169,35 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
             M_LOADING_TEXT_WIDTH, M_LOADING_TEXT_HEIGHT, m_LoadingText,
             PVR_FILTER_NEAREST);
         cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
+    } else if (m_Page == DC_PVR_SHADOW_MAP) {
+        pvr_poly_cxt_txr(
+            &cxt, list, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED,
+            M_SHADOW_MAP_WIDTH, DC_PVR_SHADOW_MAP_SIZE, m_ShadowMap,
+            PVR_FILTER_BILINEAR);
+        cxt.txr.env = PVR_TXRENV_MODULATE;
+        // Past the map's edges it is lit: its white border stretches out.
+        cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
+    } else if (m_Page == DC_PVR_ENV_MAP) {
+        pvr_poly_cxt_txr(
+            &cxt, list, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED,
+            M_ENV_MAP_SIZE, M_ENV_MAP_SIZE, m_EnvMap, PVR_FILTER_BILINEAR);
+        cxt.txr.env = PVR_TXRENV_MODULATE;
+        cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
     } else if (m_Page != DC_PVR_NO_TEXTURE) {
+        // The same coordinates sample the half page as the whole.
+        const pvr_ptr_t half = M_CurrentHalfPage();
         const int32_t format =
             (m_Pages.format[m_Page] == TEXTURE_PAGE_ARGB4444
                  ? PVR_TXRFMT_ARGB4444
                  : PVR_TXRFMT_ARGB1555)
-            | (m_Pages.committed ? PVR_TXRFMT_TWIDDLED
-                                 : PVR_TXRFMT_NONTWIDDLED);
+            | PVR_TXRFMT_TWIDDLED
+            | (m_Pages.vq[m_Page] && half == nullptr ? PVR_TXRFMT_VQ_ENABLE
+                                                     : 0);
         pvr_poly_cxt_txr(
-            &cxt, list, format, TEXTURE_PAGE_WIDTH, TEXTURE_PAGE_HEIGHT,
-            m_Pages.ptr[m_Page],
+            &cxt, list, format,
+            half != nullptr ? TEXTURE_PAGE_WIDTH / 2 : TEXTURE_PAGE_WIDTH,
+            half != nullptr ? TEXTURE_PAGE_HEIGHT / 2 : TEXTURE_PAGE_HEIGHT,
+            half != nullptr ? half : m_Pages.ptr[m_Page],
             m_Bilinear ? PVR_FILTER_BILINEAR : PVR_FILTER_NEAREST);
         cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
         cxt.txr.uv_clamp = PVR_UVCLAMP_NONE;
@@ -620,7 +1210,9 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
     }
     cxt.gen.culling = PVR_CULLING_NONE;
     cxt.gen.specular = true;
-    cxt.gen.alpha = m_Blend >= DC_BLEND_ALPHA;
+    // (Without it the vertex alpha reads as whole.)
+    cxt.gen.alpha =
+        m_Blend >= DC_BLEND_ALPHA || m_Blend == DC_BLEND_PUNCH_SHADE;
     cxt.depth.comparison =
         m_DepthTest ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
     // The field goes straight into the hardware's "depth write disable" bit,
@@ -639,6 +1231,7 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
     switch (m_Blend) {
     case DC_BLEND_OPAQUE:
     case DC_BLEND_PUNCH:
+    case DC_BLEND_PUNCH_SHADE:
         cxt.blend.src = PVR_BLEND_ONE;
         cxt.blend.dst = PVR_BLEND_ZERO;
         break;
@@ -656,41 +1249,78 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
         cxt.blend.src = PVR_BLEND_ZERO;
         cxt.blend.dst = PVR_BLEND_INVDESTCOLOR;
         break;
+    case DC_BLEND_BUMP:
+        // The relief comes out in the alpha, the colour white.
+        cxt.blend.src = PVR_BLEND_ZERO;
+        cxt.blend.dst = PVR_BLEND_SRCALPHA;
+        break;
+    case DC_BLEND_MUL:
+        // As a source factor, "dest colour" is the colour already there.
+        cxt.blend.src = PVR_BLEND_DESTCOLOR;
+        cxt.blend.dst = PVR_BLEND_ZERO;
+        break;
     default:
         break;
     }
     pvr_poly_compile(hdr, &cxt);
 }
 
+// The header for the current state, compiled once per generation: the same
+// few dozen states come back every frame.
+static void M_CachedHeader(pvr_poly_hdr_t *const hdr)
+{
+    const uint32_t key = ((uint32_t)m_Page & 0xFFFF)
+        | ((uint32_t)m_Blend << 16) | ((uint32_t)(m_Current - m_Lists) << 22)
+        | (m_DepthTest ? 1u << 25 : 0) | (m_Bilinear ? 1u << 26 : 0)
+        | (m_HalfPages ? 1u << 27 : 0) | (M_IsShadowed() ? 1u << 28 : 0);
+    const uint32_t slot = (key * 2654435761u) >> 26;
+    if (m_HeaderCache[slot].gen != m_HeaderGen
+        || m_HeaderCache[slot].key != key) {
+        M_CompileHeader(&m_HeaderCache[slot].hdr);
+        m_HeaderCache[slot].gen = m_HeaderGen;
+        m_HeaderCache[slot].key = key;
+    }
+    *hdr = m_HeaderCache[slot].hdr;
+}
+
 // Makes room for size bytes in the current list, putting a header first if
 // the list's state changed. Returns nullptr when the buffer is full.
+static inline void *M_Tail(const M_LIST *const list)
+{
+    return (uint8_t *)list->buffer + list->frame_written;
+}
+
 static void *M_Reserve(const size_t size)
 {
     if (!m_InFrame || m_Current == nullptr) {
         return nullptr;
     }
     M_LIST *const list = m_Current;
-    const bool same_state = list->has_state && list->blend == m_Blend
+    // Nothing set since the list last took this state: most polygons.
+    const bool same_state = !m_StateDirty
+        || (list->has_state && list->blend == m_Blend
         && list->page == m_Page && list->depth_test == m_DepthTest
-        && list->filter == m_Bilinear && list->shadow == M_IsShadowed();
+        && list->filter == m_Bilinear && list->half == m_HalfPages
+        && list->shadow == M_IsShadowed());
     const size_t needed = size + (same_state ? 0 : sizeof(pvr_poly_hdr_t));
     if (list->frame_written + needed > list->frame_capacity) {
         m_Dropped++;
         return nullptr;
     }
     if (!same_state) {
-        pvr_poly_hdr_t *const hdr = pvr_vertbuf_tail(list->list);
-        M_CompileHeader(hdr);
-        pvr_vertbuf_written(list->list, sizeof(pvr_poly_hdr_t));
+        pvr_poly_hdr_t *const hdr = M_Tail(list);
+        M_CachedHeader(hdr);
         list->frame_written += sizeof(pvr_poly_hdr_t);
         list->has_state = true;
         list->blend = m_Blend;
         list->page = m_Page;
         list->depth_test = m_DepthTest;
         list->filter = m_Bilinear;
+        list->half = m_HalfPages;
         list->shadow = M_IsShadowed();
     }
-    return pvr_vertbuf_tail(list->list);
+    m_StateDirty = false;
+    return M_Tail(list);
 }
 
 void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *const tris, const int32_t count)
@@ -709,36 +1339,33 @@ void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *const tris, const int32_t count)
     // a header of its own, closes the volume. What lies inside is shadowed.
     for (int32_t i = 0; i < count; i++) {
         if (i == 0 || i == count - 1) {
-            pvr_mod_hdr_t *const hdr = pvr_vertbuf_tail(list->list);
+            pvr_mod_hdr_t *const hdr = M_Tail(list);
             pvr_mod_compile(
                 hdr, list->list,
                 i == count - 1 ? PVR_MODIFIER_INCLUDE_LAST_POLY
                                : PVR_MODIFIER_OTHER_POLY,
                 PVR_CULLING_NONE);
-            pvr_vertbuf_written(list->list, sizeof(pvr_mod_hdr_t));
             list->frame_written += sizeof(pvr_mod_hdr_t);
         }
-        pvr_modifier_vol_t *const vol = pvr_vertbuf_tail(list->list);
+        pvr_modifier_vol_t *const vol = M_Tail(list);
         const DC_PVR_TRIANGLE *const t = &tris[i];
         vol->flags = PVR_CMD_VERTEX_EOL;
-        vol->ax = t->v[0][0];
-        vol->ay = t->v[0][1];
+        vol->ax = t->v[0][0] * m_ScreenScale;
+        vol->ay = t->v[0][1] * m_ScreenScale;
         vol->az = t->v[0][2];
-        vol->bx = t->v[1][0];
-        vol->by = t->v[1][1];
+        vol->bx = t->v[1][0] * m_ScreenScale;
+        vol->by = t->v[1][1] * m_ScreenScale;
         vol->bz = t->v[1][2];
-        vol->cx = t->v[2][0];
-        vol->cy = t->v[2][1];
+        vol->cx = t->v[2][0] * m_ScreenScale;
+        vol->cy = t->v[2][1] * m_ScreenScale;
         vol->cz = t->v[2][2];
         vol->d1 = vol->d2 = vol->d3 = vol->d4 = vol->d5 = vol->d6 = 0;
-        pvr_vertbuf_written(list->list, sizeof(pvr_modifier_vol_t));
         list->frame_written += sizeof(pvr_modifier_vol_t);
     }
 }
 
 static void M_Commit(const size_t size)
 {
-    pvr_vertbuf_written(m_Current->list, size);
     m_Current->frame_written += size;
     m_Submitted++;
 }
@@ -748,13 +1375,28 @@ static inline void M_Fill(
     const uint32_t flags)
 {
     out->flags = flags;
-    out->x = in->x;
-    out->y = in->y;
+    out->x = in->x * m_ScreenScale;
+    out->y = in->y * m_ScreenScale;
     out->z = in->z;
     out->u = in->u;
     out->v = in->v;
     out->argb = in->argb;
     out->oargb = in->oargb;
+}
+
+pvr_vertex_t *DC_PVR_ReservePoly(const int32_t count)
+{
+    return M_Reserve(count * sizeof(pvr_vertex_t));
+}
+
+void DC_PVR_CommitPoly(const int32_t count)
+{
+    M_Commit(count * sizeof(pvr_vertex_t));
+}
+
+float DC_PVR_GetScreenScale(void)
+{
+    return m_ScreenScale;
 }
 
 void DC_PVR_Triangle(
@@ -789,4 +1431,18 @@ void DC_PVR_Quad(
 int32_t DC_PVR_GetSubmittedCount(void)
 {
     return m_Submitted;
+}
+
+void DC_PVR_GetFrameStats(DC_PVR_FRAME_STATS *const out)
+{
+    out->polygons = m_Submitted;
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        out->list_bytes[i] = (uint32_t)m_Lists[i].frame_written;
+    }
+    out->wait_us = m_WaitUs;
+    out->map_wait_us = m_MapWaitUs;
+    m_MapWaitUs = 0;
+    pvr_stats_t stats;
+    out->render_us =
+        pvr_get_stats(&stats) == 0 ? (uint32_t)(stats.rnd_last_time / 1000) : 0;
 }

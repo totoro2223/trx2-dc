@@ -39,9 +39,11 @@ typedef struct {
     };
     uint16_t vertices[4];
 
+#if !defined(__DREAMCAST__)
     // trapezoid ratios for textured quads that cannot be shared between
-    // vertices
+    // vertices (the PowerVR path reads none: 32 bytes of every face)
     TEXTURE_ZW_F texture_zw[4];
+#endif
 
     uint16_t effects;
     bool double_sided;

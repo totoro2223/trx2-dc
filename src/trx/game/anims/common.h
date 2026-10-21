@@ -14,6 +14,10 @@ void Anim_InitialiseBones(int32_t num_bones);
 void Anim_LoadCommands(const int16_t *data, int32_t data_length);
 
 void Anim_InitialiseFrames(int32_t num_frames);
+// A frame's mesh rotations. On the Dreamcast they are unpacked into one of a
+// few buffers taken in turn, so the pointer holds only for a while (the
+// drawing of an item).
+const XYZ_16 *Anim_GetFrameRots(const ANIM_FRAME *frame);
 int32_t Anim_GetTotalFrameCount(
     const LEVEL_FORMAT_LOADER *loader, int32_t frame_data_length);
 void Anim_LoadFrames(

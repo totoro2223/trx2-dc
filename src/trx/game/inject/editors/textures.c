@@ -32,22 +32,28 @@ static void M_TextureEdits(
         }
 
 #if defined(__DREAMCAST__)
-        // The page is held at 16 bits; the edit is written in its format.
-        uint16_t *const page_16 =
-            &level_info->textures.pages_16[target_page * TEXTURE_PAGE_SIZE];
+        // The page, held in video memory, is read back, edited in its format
+        // and stored again (no longer in VQ: the disc has it unedited).
+        uint16_t *page_16 =
+            Memory_Alloc(TEXTURE_PAGE_SIZE * sizeof(uint16_t));
+        for (int32_t y = 0; y < TEXTURE_PAGE_HEIGHT; y++) {
+            for (int32_t x = 0; x < TEXTURE_PAGE_WIDTH; x++) {
+                page_16[y * TEXTURE_PAGE_WIDTH + x] =
+                    DC_Renderer_GetTexel(target_page, x, y);
+            }
+        }
         const TEXTURE_PAGE_FORMAT format =
             level_info->textures.page_formats[target_page];
-        // The page lives in video memory, which takes no byte writes; a
-        // texel is a whole halfword.
         for (int32_t y = 0; y < source_height; y++) {
             for (int32_t x = 0; x < source_width; x++) {
                 const int32_t target_pixel =
                     (y + target_y) * TEXTURE_PAGE_WIDTH + x + target_x;
-                const uint16_t texel = TexturePage16_Encode(
+                page_16[target_pixel] = TexturePage16_Encode(
                     format, source_img[y * source_width + x]);
-                DC_Renderer_WriteTexels(&page_16[target_pixel], &texel, 1);
             }
         }
+        DC_Renderer_StoreTexturePage(target_page, page_16, format);
+        Memory_FreePointer(&page_16);
         Memory_FreePointer(&source_img);
         continue;
 #endif

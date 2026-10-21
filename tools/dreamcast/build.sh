@@ -71,4 +71,13 @@ EOF
 if [ ! -f "$BUILD_DIR/build.ninja" ]; then
   meson setup "$BUILD_DIR" src --cross-file "$CROSS" --buildtype "$BUILD_TYPE" -Db_staticpic=false -Db_pie=false
 fi
+
+# The engine's scripts go in as bytecode when build_deps.sh made a luac.
+LUAC="$DEPS/../host/luac.exe"
+if [ -f "$LUAC" ]; then
+  LUAC="$(win "$(cd "$(dirname "$LUAC")" && pwd)/luac.exe")"
+  if ! grep -qF "$LUAC" "$BUILD_DIR/meson-info/intro-buildoptions.json"; then
+    meson configure "$BUILD_DIR" -Dlua_compiler="$LUAC"
+  fi
+fi
 ninja -C "$BUILD_DIR" "${@:3}"

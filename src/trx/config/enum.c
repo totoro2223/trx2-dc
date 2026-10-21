@@ -119,6 +119,14 @@ static __attribute__((constructor)) void M_Init(void)
     ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_CIRCLE, "circle");
     ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_SPRITE, "sprite");
 
+    ENUM_MAP(DC_MODE, DC_MODE_GRAPHICS, "graphics");
+    ENUM_MAP(DC_MODE, DC_MODE_PERFORMANCE, "performance");
+    ENUM_MAP(DC_MODE, DC_MODE_EXPERIMENTAL_60, "experimental-60");
+#if defined(__DREAMCAST__)
+    ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_VOLUME, "volume");
+    ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_SOFT, "soft");
+#endif
+
     ENUM_MAP(BLOOD_EFFECTS, BLOOD_EFFECTS_DISABLED, "disabled");
     ENUM_MAP(BLOOD_EFFECTS, BLOOD_EFFECTS_PINK, "pink");
     ENUM_MAP(BLOOD_EFFECTS, BLOOD_EFFECTS_RED, "red");

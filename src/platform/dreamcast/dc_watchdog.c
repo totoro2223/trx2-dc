@@ -6,6 +6,8 @@
 
 #include "dc_watchdog.h"
 
+#include "dc_lua_alloc.h"
+
 #include <arch/irq.h>
 #include <arch/timer.h>
 #include <kos/thread.h>
@@ -48,6 +50,8 @@ static void *M_Run(void *const param)
         }
         const irq_context_t *const ctx = &thread->context;
         const struct mallinfo mem = mallinfo();
+        DC_LUA_ALLOC_STATS lua;
+        DC_LuaAlloc_GetStats(&lua);
         // The stack grows down; the marker left at its bottom is the part
         // never used.
         const uint8_t *const stack_bottom = thread->stack;
@@ -57,10 +61,12 @@ static void *M_Run(void *const param)
             untouched++;
         }
         printf(
-            "[watchdog] heap=%uK used=%uK lua=%dK brk=%08lx meshes=%d/%d stack=%uK %s pc=%08lx pr=%08lx "
+            "[watchdog] heap=%uK used=%uK lua=%dK (small=%dK big=%dK "
+            "spilled=%d) brk=%08lx meshes=%d/%d stack=%uK %s pc=%08lx pr=%08lx "
             "sp=%08lx trace:",
             (unsigned)(mem.arena / 1024), (unsigned)(mem.uordblks / 1024),
-            (int)LUA_DC_GetMemoryKB(), (unsigned long)sbrk(0),
+            (int)LUA_DC_GetMemoryKB(), (int)lua.small_kb, (int)lua.big_kb,
+            (int)lua.spilled, (unsigned long)sbrk(0),
             (int)g_DC_BatcherMeshCount,
             (int)g_DC_BatcherVertexCount,
             (unsigned)((thread->stack_size - untouched) / 1024), thread->label,
@@ -83,7 +89,7 @@ static void *M_Run(void *const param)
     return nullptr;
 }
 
-// A sampling profiler: every millisecond or so the watched thread's saved PC
+// A sampling profiler: every 1 to 3 milliseconds the watched thread's saved PC
 // is counted, and every few seconds the counts go to the console as
 // "[prof] pc count" lines (tools/dreamcast/prof_report.py reads them back).
 // A thread that is waiting shows up in the scheduler's code.
@@ -91,21 +97,39 @@ static void *M_Run(void *const param)
 #define M_PROF_SLOTS 4096
 #define M_PROF_DUMP_MS 10000
 
-static struct {
+typedef struct {
     uint32_t pc;
     uint32_t count;
-} m_Prof[M_PROF_SLOTS];
+} M_PROF_SLOT;
 
-static void M_ProfCount(const uint32_t pc)
+// The saved PC, and the return address (PR): the caller of a function that
+// waits or runs with interrupts off shows there.
+static M_PROF_SLOT m_Prof[M_PROF_SLOTS];
+static M_PROF_SLOT m_ProfPR[M_PROF_SLOTS];
+
+static void M_ProfCount(M_PROF_SLOT *const table, const uint32_t pc)
 {
     uint32_t slot = (pc >> 1) * 2654435761u % M_PROF_SLOTS;
     for (int32_t i = 0; i < M_PROF_SLOTS; i++) {
-        if (m_Prof[slot].pc == pc || m_Prof[slot].pc == 0) {
-            m_Prof[slot].pc = pc;
-            m_Prof[slot].count++;
+        if (table[slot].pc == pc || table[slot].pc == 0) {
+            table[slot].pc = pc;
+            table[slot].count++;
             return;
         }
         slot = (slot + 1) % M_PROF_SLOTS;
+    }
+}
+
+static void M_ProfDump(M_PROF_SLOT *const table, const char *const tag)
+{
+    for (int32_t i = 0; i < M_PROF_SLOTS; i++) {
+        if (table[i].count >= 2) {
+            printf(
+                "%s %08lx %lu\n", tag, (unsigned long)table[i].pc,
+                (unsigned long)table[i].count);
+        }
+        table[i].pc = 0;
+        table[i].count = 0;
     }
 }
 
@@ -113,28 +137,28 @@ static void *M_Profile(void *const param)
 {
     uint64_t last_dump = timer_ms_gettime64();
     uint32_t samples = 0;
+    uint32_t seed = 2463534242u;
     while (true) {
-        thd_sleep(1);
+        // 1 to 3 ms at random: a fixed period locks to the 30 fps frame and
+        // keeps hitting the same spots of it.
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        thd_sleep(1 + seed % 3);
         kthread_t *const thread = m_Watched;
         if (thread == nullptr) {
             continue;
         }
-        M_ProfCount(thread->context.pc);
+        M_ProfCount(m_Prof, thread->context.pc);
+        M_ProfCount(m_ProfPR, thread->context.pr);
         samples++;
         const uint64_t now = timer_ms_gettime64();
         if (now - last_dump < M_PROF_DUMP_MS) {
             continue;
         }
         printf("[prof] begin %lu samples\n", (unsigned long)samples);
-        for (int32_t i = 0; i < M_PROF_SLOTS; i++) {
-            if (m_Prof[i].count >= 2) {
-                printf(
-                    "[prof] %08lx %lu\n", (unsigned long)m_Prof[i].pc,
-                    (unsigned long)m_Prof[i].count);
-            }
-            m_Prof[i].pc = 0;
-            m_Prof[i].count = 0;
-        }
+        M_ProfDump(m_Prof, "[prof]");
+        M_ProfDump(m_ProfPR, "[prof] pr");
         printf("[prof] end\n");
         samples = 0;
         last_dump = timer_ms_gettime64();
@@ -162,4 +186,39 @@ void DC_Watchdog_Start(kthread_t *const thread)
     };
     thd_create_ex(&prof_attr, M_Profile, nullptr);
 #endif
+}
+
+// Ticks between two loads: long enough for the level to settle.
+#define M_TEST_LOAD_TICKS 360
+
+static int32_t m_TestLoads = 0;
+static int32_t m_TestLoadsDone = 0;
+static int32_t m_TestTicks = 0;
+
+void DC_Watchdog_SetTestLoads(const int32_t count)
+{
+    m_TestLoads = count;
+}
+
+bool DC_Watchdog_IsTesting(void)
+{
+    return m_TestLoads > 0;
+}
+
+int32_t DC_Watchdog_TakeTestLoad(void)
+{
+    if (m_TestLoadsDone >= m_TestLoads || ++m_TestTicks < M_TEST_LOAD_TICKS) {
+        return -1;
+    }
+    m_TestTicks = 0;
+    const struct mallinfo mem = mallinfo();
+    DC_LUA_ALLOC_STATS lua;
+    DC_LuaAlloc_GetStats(&lua);
+    printf(
+        "[test] load %d of %d: used=%uK free=%uK lua=%dK small=%dK big=%dK "
+        "spilled=%d brk=%08lx\n",
+        (int)m_TestLoadsDone + 1, (int)m_TestLoads, mem.uordblks / 1024,
+        mem.fordblks / 1024, (int)LUA_DC_GetMemoryKB(), (int)lua.small_kb,
+        (int)lua.big_kb, (int)lua.spilled, (unsigned long)sbrk(0));
+    return m_TestLoadsDone++ % 2;
 }

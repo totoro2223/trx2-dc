@@ -293,6 +293,9 @@ local TABS = {
     "ui.enemy_healthbar_location",
   },
   graphic_rendering = {
+    "rendering.dc_mode",
+    "rendering.dc_cel_shading",
+    "ui.enable_fps_counter",
     "window.is_fullscreen",
 
     "rendering.fps",
@@ -372,6 +375,44 @@ end
 ---@return string[]
 function M.keys(name)
   return TABS[name] or {}
+end
+
+-- The Dreamcast (the only game with rendering.dc_mode) leaves out what only
+-- the PC renderer and window read: every row the dialog builds costs Lua
+-- memory the console is short of.
+if pcall(trx.config.describe, "rendering.dc_mode") then
+  local unused = {}
+  for _, key in ipairs({
+    "window.is_fullscreen",
+    "rendering.enable_trapezoid_filter",
+    "rendering.fmv_filter",
+    "rendering.anisotropy_filter",
+    "rendering.enable_vsync",
+    "visuals.game_brightness",
+    "visuals.ui_brightness",
+    "visuals.background_brightness",
+    "visuals.gamma",
+    "rendering.sprite_lock_mode",
+    "rendering.upscaling_filter",
+    "rendering.upscaling_factor",
+    "rendering.supersampling_factor",
+    "rendering.multisampling_factor",
+    "rendering.vertex_snap_mode",
+    "rendering.enable_ps1_fog",
+    "rendering.enable_ps1_blending",
+    "rendering.enable_affine_mapping",
+    "rendering.dither_mode",
+    "rendering.enable_palette_quantize",
+    "rendering.screenshot_format",
+  }) do
+    unused[key] = true
+  end
+  local keys = TABS.graphic_rendering
+  for i = #keys, 1, -1 do
+    if unused[keys[i]] then
+      table.remove(keys, i)
+    end
+  end
 end
 
 -- The last segment of a key, which is unique across the settings, so that a

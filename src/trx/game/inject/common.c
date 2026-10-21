@@ -10,6 +10,7 @@
 #include <trx/core/vector.h>
 #include <trx/debug.h>
 #include <trx/game/catalog/manager.h>
+#include <trx/game/inject/canonical.h>
 #include <trx/game/items.h>
 #include <trx/game/level.h>
 #include <trx/game/paths.h>
@@ -892,6 +893,9 @@ void Inject_Cleanup(void)
     for (int32_t i = 0; i < IDT_NUMBER_OF; i++) {
         m_DataCounts[i] = 0;
     }
+    // Held only for the frames' animations, and otherwise until the next
+    // level's injections, in the middle of the memory that level loads into.
+    InjectCanonical_ReleaseFrames();
     m_MaxStaticObject3DId = -1;
     m_MaxStaticObject2DId = -1;
 

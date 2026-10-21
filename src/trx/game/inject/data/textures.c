@@ -61,7 +61,7 @@ static void M_HandleTexturePages(
 #if defined(__DREAMCAST__)
     // Each page comes as RGBA and again as palette indices; only the first is
     // kept, a page at a time, in the 16-bit format that suits it.
-    if (info->textures.pages_16 == nullptr) {
+    if (DC_Renderer_GetTexturePageCount() == 0) {
         File_Skip(
             injection->fp, data_count * TEXTURE_PAGE_SIZE * sizeof(RGBA_8888));
         File_Skip(injection->fp, data_count * TEXTURE_PAGE_SIZE);
@@ -69,6 +69,8 @@ static void M_HandleTexturePages(
     }
     RGBA_8888 *const page_32 =
         Memory_Alloc(TEXTURE_PAGE_SIZE * sizeof(RGBA_8888));
+    uint16_t *page_16 =
+        Memory_Alloc(TEXTURE_PAGE_SIZE * sizeof(uint16_t));
     for (int32_t i = 0; i < data_count; i++) {
         const int32_t page = info->textures.page_count + i;
         File_ReadData(
@@ -76,19 +78,12 @@ static void M_HandleTexturePages(
         const TEXTURE_PAGE_FORMAT format =
             TexturePage16_ChooseFormat(page_32, TEXTURE_PAGE_SIZE);
         info->textures.page_formats[page] = format;
-        // The page lives in video memory (see DC_Renderer_WriteTexels).
-        uint16_t *const output =
-            &info->textures.pages_16[page * TEXTURE_PAGE_SIZE];
-        uint16_t row[TEXTURE_PAGE_WIDTH];
-        for (int32_t y = 0; y < TEXTURE_PAGE_HEIGHT; y++) {
-            for (int32_t x = 0; x < TEXTURE_PAGE_WIDTH; x++) {
-                row[x] = TexturePage16_Encode(
-                    format, page_32[y * TEXTURE_PAGE_WIDTH + x]);
-            }
-            DC_Renderer_WriteTexels(
-                &output[y * TEXTURE_PAGE_WIDTH], row, TEXTURE_PAGE_WIDTH);
+        for (int32_t j = 0; j < TEXTURE_PAGE_SIZE; j++) {
+            page_16[j] = TexturePage16_Encode(format, page_32[j]);
         }
+        DC_Renderer_StoreTexturePage(page, page_16, format);
     }
+    Memory_FreePointer(&page_16);
     Memory_FreePointer(&page_32);
     File_Skip(injection->fp, data_count * TEXTURE_PAGE_SIZE);
     info->textures.page_count += data_count;

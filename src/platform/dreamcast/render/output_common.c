@@ -4,6 +4,9 @@
 // changes, is the same as on the desktop.
 
 #include "pvr.h"
+#include "shadow.h"
+
+#include <platform/dreamcast/dc_mode.h>
 
 #include <platform/dreamcast/renderer.h>
 #include <trx/config.h>
@@ -35,6 +38,11 @@
 #include <trx/game/output/state.h>
 #include <trx/game/output/textures.h>
 #include <trx/game/shell.h>
+
+#include <arch/timer.h>
+
+#include <stdio.h>
+#include <string.h>
 
 static MESH_BATCHER *m_Batcher = nullptr;
 static OUTPUT_UNIFORMS *m_Uniforms = nullptr;
@@ -138,26 +146,127 @@ OUTPUT_UI_SHADER *Output_GetUIShader(void)
     return nullptr;
 }
 
+#if defined(TRX_DC_WATCHDOG)
+static void M_StatsBeginScene(void);
+static uint32_t g_DC_ShadowMapUs = 0;
+static uint32_t g_DC_SubmitUs = 0;
+extern uint32_t g_DC_PassUs;
+extern uint32_t g_DC_BatcherFrameInstances;
+extern uint32_t g_DC_BatcherFrameVertices;
+extern uint32_t g_DC_BatcherXformUs;
+#endif
+
 void Output_BeginScene(void)
 {
+#if defined(TRX_DC_WATCHDOG)
+    M_StatsBeginScene();
+#endif
     Output_ApplyFOV();
     const RGBA_F background = Output_GetBackgroundColor();
     DC_PVR_SetBackgroundColor(background.r, background.g, background.b);
+#if defined(TRX_DC_WATCHDOG)
+    const uint64_t map_start = timer_us_gettime64();
+    DC_Shadow_RenderMaps();
+    g_DC_ShadowMapUs = (uint32_t)(timer_us_gettime64() - map_start);
+#else
+    DC_Shadow_RenderMaps();
+#endif
     DC_PVR_BeginFrame();
     SceneCompositor_BeginScene();
     Output_Lights_BeginScene();
 }
 
 #if defined(TRX_DC_WATCHDOG)
-// The frame rate and polygon count go to the log every few seconds.
-static void M_LogFrameStats(void)
+
+extern _Thread_local uint64_t g_DC_SleepUs;
+
+// Where each frame's time goes, as average and peak over a window of frames:
+// logic (from the last frame's end to this one's start, less sleeping), the
+// CPU drawing it, the soft shadows' map, the wait for the PowerVR, and the
+// PowerVR's own render.
+#define M_STATS_WINDOW 120
+enum { M_LOGIC, M_DRAW, M_PASS, M_SUBMIT, M_MAP, M_MAP_WAIT, M_WAIT, M_RENDER,
+       M_POLYS, M_INSTANCES, M_VERTICES, M_OP, M_TR, M_PT, M_MOD, M_XFORM,
+       M_STAT_COUNT };
+static const char *const m_StatNames[M_STAT_COUNT] = {
+    "logic", "stage", "pass", "submit", "map", "mwait", "wait", "pvr", "polys",
+    "inst", "verts",
+    "OP", "TR", "PT", "MOD", "xform",
+};
+static struct {
+    uint64_t begin_us;
+    uint64_t end_us;
+    uint64_t sleep_us;
+    int32_t frames;
+    uint64_t sum[M_STAT_COUNT];
+    uint32_t max[M_STAT_COUNT];
+} m_Stats = {};
+
+static void M_StatsBeginScene(void)
 {
-    static int32_t frame = 0;
-    if (++frame % 120 == 0) {
-        LOG_DEBUG(
-            "frame %d: %d polygons, %d fps", frame,
-            DC_PVR_GetSubmittedCount(), m_FPS);
+    m_Stats.begin_us = timer_us_gettime64();
+}
+
+static void M_StatsEndScene(void)
+{
+    const uint64_t now = timer_us_gettime64();
+    DC_PVR_FRAME_STATS pvr;
+    DC_PVR_GetFrameStats(&pvr);
+    const uint64_t slept = g_DC_SleepUs - m_Stats.sleep_us;
+    m_Stats.sleep_us = g_DC_SleepUs;
+    uint32_t value[M_STAT_COUNT] = {
+        [M_LOGIC] = 0,
+        [M_DRAW] = (uint32_t)(now - m_Stats.begin_us) - pvr.wait_us
+            - g_DC_ShadowMapUs - g_DC_PassUs - g_DC_SubmitUs,
+        [M_PASS] = g_DC_PassUs,
+        [M_SUBMIT] = g_DC_SubmitUs,
+        [M_MAP] = g_DC_ShadowMapUs - pvr.map_wait_us,
+        [M_MAP_WAIT] = pvr.map_wait_us,
+        [M_WAIT] = pvr.wait_us,
+        [M_RENDER] = pvr.render_us,
+        [M_POLYS] = (uint32_t)pvr.polygons,
+        [M_INSTANCES] = g_DC_BatcherFrameInstances,
+        [M_VERTICES] = g_DC_BatcherFrameVertices,
+        [M_XFORM] = g_DC_BatcherXformUs,
+        [M_OP] = pvr.list_bytes[0],
+        [M_TR] = pvr.list_bytes[1],
+        [M_PT] = pvr.list_bytes[2],
+        [M_MOD] = pvr.list_bytes[3],
+    };
+    if (m_Stats.end_us != 0) {
+        const uint64_t between = m_Stats.begin_us - m_Stats.end_us;
+        value[M_LOGIC] = between > slept ? (uint32_t)(between - slept) : 0;
     }
+    m_Stats.end_us = now;
+    g_DC_PassUs = 0;
+    g_DC_BatcherFrameInstances = 0;
+    g_DC_BatcherFrameVertices = 0;
+    g_DC_BatcherXformUs = 0;
+    for (int32_t i = 0; i < M_STAT_COUNT; i++) {
+        m_Stats.sum[i] += value[i];
+        if (value[i] > m_Stats.max[i]) {
+            m_Stats.max[i] = value[i];
+        }
+    }
+    if (++m_Stats.frames < M_STATS_WINDOW) {
+        return;
+    }
+    // Times in tenths of a millisecond, list sizes in KiB.
+    char line[320];
+    int32_t len = snprintf(line, sizeof(line), "[frame] %d fps", (int)m_FPS);
+    for (int32_t i = 0; i < M_STAT_COUNT; i++) {
+        const uint32_t div = i < M_POLYS || i == M_XFORM ? 100
+            : i <= M_VERTICES                       ? 1
+                                                    : 1024;
+        len += snprintf(
+            line + len, sizeof(line) - len, " %s=%lu/%lu", m_StatNames[i],
+            (unsigned long)(m_Stats.sum[i] / m_Stats.frames / div),
+            (unsigned long)(m_Stats.max[i] / div));
+    }
+    LOG_DEBUG("%s", line);
+    memset(m_Stats.sum, 0, sizeof(m_Stats.sum));
+    memset(m_Stats.max, 0, sizeof(m_Stats.max));
+    m_Stats.frames = 0;
 }
 #endif
 
@@ -165,9 +274,13 @@ void Output_EndScene(void)
 {
     SceneCompositor_EndScene();
 #if defined(TRX_DC_WATCHDOG)
-    M_LogFrameStats();
-#endif
+    const uint64_t submit_start = timer_us_gettime64();
     DC_PVR_EndFrame();
+    g_DC_SubmitUs = (uint32_t)(timer_us_gettime64() - submit_start);
+    M_StatsEndScene();
+#else
+    DC_PVR_EndFrame();
+#endif
     m_DrawnFrames++;
     g_DC_FrameCount++;
     if (g_DC_FrameCount % M_MESH_EVICT_INTERVAL == 0) {
@@ -215,10 +328,12 @@ void Output_ApplyRenderSettings(void)
 void Output_ApplyLevelSettings(void)
 {
     Output_SetWaterColor(Level_GetWaterColor());
-    Output_SetFogColor(Level_GetFogColor());
     Output_SetBackgroundColor(Level_GetBackgroundColor());
-    Output_SetFogStart(Level_GetFogStart() * WALL_L);
-    Output_SetFogEnd(Level_GetFogEnd() * WALL_L);
+    // Fixed on the Dreamcast, whatever the level and the player ask: black
+    // fog from 12 blocks, nothing drawn past 20.
+    Output_SetFogColor((RGBA_8888) { .r = 0, .g = 0, .b = 0, .a = 255 });
+    Output_SetFogStart(12 * WALL_L);
+    Output_SetFogEnd(20 * WALL_L);
 }
 
 void Output_DispatchLevelLoad(void)
@@ -249,6 +364,8 @@ void Output_DispatchLevelUnload(void)
     OutputSource_Rooms_ObserveLevelUnload();
     OutputSource_RoomsDebug_ObserveLevelUnload();
     OutputSource_Sprites_ObserveLevelUnload();
+    // Last, once no mesh is left to read them.
+    Output_Textures_ObserveLevelUnload();
 }
 
 void Output_RefreshObjectMeshes(void)
@@ -285,21 +402,32 @@ void Output_DispatchObjectMeshGeometry(
         mesh_idx, positions, normals, tint_factors);
 }
 
-uint16_t *DC_Renderer_ReserveTexturePages(const int32_t count)
+bool DC_Renderer_ReserveTexturePages(const int32_t count)
 {
     return DC_PVR_ReserveTexturePages(count);
 }
 
-void DC_Renderer_WriteTexels(
-    uint16_t *const dst, const uint16_t *const src, const size_t count)
+void DC_Renderer_StoreTexturePage(
+    const int32_t page, const uint16_t *const texels, const uint8_t format)
 {
-    DC_PVR_WriteTexels(dst, src, count);
+    DC_PVR_StoreTexturePage(page, texels, format);
 }
 
-void DC_Renderer_CommitTexturePages(
-    const int32_t count, const uint8_t *const formats)
+uint16_t DC_Renderer_GetTexel(const int32_t page, const int32_t x, const int32_t y)
 {
-    DC_PVR_CommitTexturePages(count, formats);
+    return DC_PVR_GetTexel(page, x, y);
+}
+
+bool DC_Renderer_HasTransparency(
+    const int32_t page, const int32_t x0, const int32_t y0, const int32_t x1,
+    const int32_t y1)
+{
+    return DC_PVR_HasTransparency(page, x0, y0, x1, y1);
+}
+
+void DC_Renderer_CommitTexturePages(void)
+{
+    DC_PVR_CommitTexturePages();
 }
 
 void DC_Renderer_FreeTexturePages(void)
@@ -310,6 +438,11 @@ void DC_Renderer_FreeTexturePages(void)
 int32_t DC_Renderer_GetTexturePageCount(void)
 {
     return DC_PVR_GetTexturePageCount();
+}
+
+bool DC_Renderer_IsLowRes(void)
+{
+    return DC_PVR_IsLowRes();
 }
 
 REGISTER_SUBSYSTEM(.shutdown = M_Shutdown)

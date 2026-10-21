@@ -44,3 +44,13 @@
 #undef L_ATI_FIX
 
 void Output_FillMatrix(GLfloat m[4][4], const MATRIX *source);
+
+#if defined(__DREAMCAST__)
+// A matrix element (under 2^47) as a float, in two of the SH-4's own
+// conversions: it has none for 64 bits, and libgcc's takes about a hundred
+// cycles.
+static inline float Output_MatrixToFloat(const int64_t v)
+{
+    return (float)(int32_t)(v >> 16) * 65536.0f + (float)(int32_t)(v & 0xFFFF);
+}
+#endif

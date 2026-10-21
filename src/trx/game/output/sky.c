@@ -358,7 +358,7 @@ bool Output_Sky_Draw(void)
     }
     Matrix_PushUnit();
     Matrix_TranslateAbs32(g_ViewPos);
-    Matrix_Rot16(skybox->frame_base->mesh_rots[0]);
+    Matrix_Rot16(Anim_GetFrameRots(skybox->frame_base)[0]);
     Output_CalculateStaticLight(Output_GetSkyShade());
     const OBJECT_MESH *const mesh = Object_GetMesh(skybox->mesh_idx);
     if (g_TRVersion == 4 && m_FogGradient) {

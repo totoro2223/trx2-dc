@@ -16,12 +16,24 @@ typedef enum {
     DC_BLEND_OPAQUE,
     // Opaque, with texels of zero alpha cut away (TR's colour key).
     DC_BLEND_PUNCH,
+    // Punch-through again, over faces already drawn and at their depth, cut
+    // where the vertex alpha times the texture's falls under half: the
+    // shaded side of a cel-shaded mesh, with a hard edge however the alpha
+    // runs across a face.
+    DC_BLEND_PUNCH_SHADE,
     // src * a + dst * (1 - a)
     DC_BLEND_ALPHA,
     // src * a + dst
     DC_BLEND_ADD,
     // dst * (1 - src); the PC's take on PlayStation subtractive blending.
     DC_BLEND_SUB,
+    // src * dst: darkens what is there (the soft shadows).
+    DC_BLEND_MUL,
+    // The page's relief lit as the offset colour asks (the PowerVR's bump
+    // mapping: K1, K2, K3 and Q from high byte to low), which comes out as
+    // the alpha, times what is there.
+    // A flat texel keeps the colour when K1 + K2 is whole.
+    DC_BLEND_BUMP,
     DC_BLEND_COUNT,
 } DC_BLEND;
 
@@ -42,18 +54,33 @@ typedef struct {
 #define DC_PVR_SCREEN_CAPTURE (-2)
 // The loading screen's text (DC_PVR_DrawLoadingScreen), as a texture page.
 #define DC_PVR_LOADING_TEXT (-3)
+// The shadow map (DC_PVR_BeginShadowMapFrame), as a texture page clamped at
+// its edges: SLOTS cells of SIZE x SIZE texels side by side.
+#define DC_PVR_SHADOW_MAP (-4)
+#define DC_PVR_SHADOW_MAP_SLOTS 8
+// Each cell's side, in texels.
+#define DC_PVR_SHADOW_MAP_SIZE 64
+// The environment map the reflective faces add over themselves: a sphere
+// map, sampled at its middle by a normal facing the camera and at its rim by
+// one at right angles to it, top at the top.
+#define DC_PVR_ENV_MAP (-5)
 
 void DC_PVR_Init(void);
 void DC_PVR_Shutdown(void);
 
-// Texture pages live in video memory only. They are reserved as a level
-// starts loading and written there linear (DC_PVR_WriteTexels), then
-// twiddled in place once the level is complete.
-uint16_t *DC_PVR_ReserveTexturePages(int32_t count);
-void DC_PVR_WriteTexels(uint16_t *dst, const uint16_t *src, size_t count);
-void DC_PVR_CommitTexturePages(int32_t count, const uint8_t *formats);
+// Texture pages live in video memory only (see renderer.h).
+bool DC_PVR_ReserveTexturePages(int32_t count);
+void DC_PVR_StoreTexturePage(int32_t page, const uint16_t *texels, uint8_t format);
+uint16_t DC_PVR_GetTexel(int32_t page, int32_t x, int32_t y);
+bool DC_PVR_HasTransparency(
+    int32_t page, int32_t x0, int32_t y0, int32_t x1, int32_t y1);
+void DC_PVR_CommitTexturePages(void);
 void DC_PVR_FreeTexturePages(void);
 int32_t DC_PVR_GetTexturePageCount(void);
+// How many relief pages have been made, which stalls the frame of each.
+uint32_t DC_PVR_GetBumpPagesMade(void);
+// The screen is 320x240 (Experimental 60), not 640x480.
+bool DC_PVR_IsLowRes(void);
 
 void DC_PVR_BeginFrame(void);
 void DC_PVR_EndFrame(void);
@@ -79,6 +106,10 @@ float DC_PVR_Depth2D(float v);
 // volumes.
 void DC_PVR_SetShadowReceiver(bool receive);
 
+// How much of their colour the polygons inside shadow volumes lose, for all
+// of them (the PowerVR has one).
+void DC_PVR_SetShadowStrength(float strength);
+
 // A triangle of a shadow volume, in screen space: x, y and depth.
 typedef struct {
     float v[3][3];
@@ -93,6 +124,11 @@ void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *tris, int32_t count);
 // over the whole screen, its colour scaled by brightness, behind everything
 // else.
 bool DC_PVR_BeginCaptureFrame(void);
+
+// A frame drawn into the shadow map instead of onto the screen, closed by
+// DC_PVR_EndFrame: cell k spans x from k * SIZE to (k + 1) * SIZE. False when
+// no frame can start.
+bool DC_PVR_BeginShadowMapFrame(void);
 void DC_PVR_DrawScreenCapture(float brightness);
 
 // Draws a whole frame of the loading screen: two lines of text in the BIOS
@@ -101,9 +137,22 @@ void DC_PVR_DrawLoadingScreen(
     const char *line1, const char *line2, int32_t percent);
 
 void DC_PVR_SetFilter(bool bilinear);
+// Pages drawn from here on sample a copy at half their size, made for them
+// as they are first drawn so (unfiltered text drawn smaller than its texels
+// keeps its strokes).
+void DC_PVR_SetHalfPages(bool half);
 // Selects how the next polygons are drawn. page is a texture page index, or
 // DC_PVR_NO_TEXTURE for flat colour.
 void DC_PVR_SetState(DC_BLEND blend, int32_t page, bool depth_test);
+// Room in the current list for one polygon of count vertices (a triangle, or
+// a strip), its header put first if the state changed, for the caller to
+// fill as the PowerVR takes it (x and y times DC_PVR_GetScreenScale) and then
+// commit; nullptr when the list is full. Saves the copy DC_PVR_Triangle and
+// DC_PVR_Quad make.
+struct pvr_vertex;
+struct pvr_vertex *DC_PVR_ReservePoly(int32_t count);
+void DC_PVR_CommitPoly(int32_t count);
+float DC_PVR_GetScreenScale(void);
 void DC_PVR_Triangle(
     const DC_PVR_VERTEX *a, const DC_PVR_VERTEX *b, const DC_PVR_VERTEX *c);
 // a, b, c, d in strip order: a-b on one side, c-d on the other.
@@ -113,3 +162,17 @@ void DC_PVR_Quad(
 
 // Polygon counts for the frame just begun, for the debug console.
 int32_t DC_PVR_GetSubmittedCount(void);
+
+// What the frame being drawn costs so far, for the debug console.
+typedef struct {
+    int32_t polygons;
+    // Opaque, translucent, punch-through, shadow volumes.
+    uint32_t list_bytes[4];
+    // How long the frame waited for the PowerVR to take it.
+    uint32_t wait_us;
+    // How long the shadow map waited for the PowerVR to take it.
+    uint32_t map_wait_us;
+    // How long the PowerVR took to render the frame before.
+    uint32_t render_us;
+} DC_PVR_FRAME_STATS;
+void DC_PVR_GetFrameStats(DC_PVR_FRAME_STATS *out);

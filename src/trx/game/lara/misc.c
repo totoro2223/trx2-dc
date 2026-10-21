@@ -123,7 +123,7 @@ static bool M_PS1_GetTorso(
     M_PS1_RotYXZ(base, lara_item->rot);
 
     for (int32_t i = 0; i < 2; i++) {
-        const XYZ_16 *const rots = frames[i]->mesh_rots;
+        const XYZ_16 *const rots = Anim_GetFrameRots(frames[i]);
         body[i] = *base;
         body[i].frame_rots = rots;
         M_PS1_TranslateRel(&body[i], XYZ_32_From16(frames[i]->offset));
@@ -147,8 +147,8 @@ static void M_GetJointAbsPosition_I(
     Matrix_Rot16(item->rot);
 
     const ANIM_BONE *const bone = Object_GetBone(obj, 0);
-    const XYZ_16 *mesh_rots_1 = frame1->mesh_rots;
-    const XYZ_16 *mesh_rots_2 = frame2->mesh_rots;
+    const XYZ_16 *mesh_rots_1 = Anim_GetFrameRots(frame1);
+    const XYZ_16 *mesh_rots_2 = Anim_GetFrameRots(frame2);
     Matrix_InitInterpolate(frac, rate);
 
     Matrix_TranslateRel16_ID(frame1->offset, frame2->offset);
@@ -173,7 +173,7 @@ static void M_GetJointAbsPosition_I(
             const LARA_ARM *const arm = &lara_info->left_arm;
             const ANIM *const anim = Anim_GetAnim(arm->anim_num);
             mesh_rots_1 =
-                arm->frame_base[arm->frame_num - anim->frame_base].mesh_rots;
+                Anim_GetFrameRots(&arm->frame_base[arm->frame_num - anim->frame_base]);
         }
         Matrix_Rot16(mesh_rots_1[LM_UARM_L]);
 
@@ -188,7 +188,7 @@ static void M_GetJointAbsPosition_I(
 
         const LARA_ARM *const arm = &lara_info->right_arm;
         const ANIM *const anim = Anim_GetAnim(arm->anim_num);
-        mesh_rots_1 = arm->frame_base[arm->frame_num].mesh_rots;
+        mesh_rots_1 = Anim_GetFrameRots(&arm->frame_base[arm->frame_num]);
         Matrix_Rot16(mesh_rots_1[LM_UARM_R]);
 
         Matrix_TranslateRel32(bone[LM_LARM_R - 1].pos);
@@ -227,7 +227,7 @@ void Lara_GetJointAbsPosition(XYZ_32 *const vec, const LARA_MESH joint)
     Matrix_PushUnit();
     Matrix_Rot16(lara_item->rot);
 
-    const XYZ_16 *mesh_rots = frame_ptr->mesh_rots;
+    const XYZ_16 *mesh_rots = Anim_GetFrameRots(frame_ptr);
     const OBJECT *const obj = Object_Get(lara_item->object_id);
     const ANIM_BONE *bone = Object_GetBone(obj, 0);
 
@@ -252,7 +252,7 @@ void Lara_GetJointAbsPosition(XYZ_32 *const vec, const LARA_MESH joint)
             const LARA_ARM *const arm = &lara_info->left_arm;
             const ANIM *const anim = Anim_GetAnim(arm->anim_num);
             mesh_rots =
-                arm->frame_base[arm->frame_num - anim->frame_base].mesh_rots;
+                Anim_GetFrameRots(&arm->frame_base[arm->frame_num - anim->frame_base]);
         }
         Matrix_Rot16(mesh_rots[LM_UARM_L]);
 
@@ -266,7 +266,7 @@ void Lara_GetJointAbsPosition(XYZ_32 *const vec, const LARA_MESH joint)
 
         const LARA_ARM *const arm = &lara_info->right_arm;
         const ANIM *const anim = Anim_GetAnim(arm->anim_num);
-        mesh_rots = arm->frame_base[arm->frame_num].mesh_rots;
+        mesh_rots = Anim_GetFrameRots(&arm->frame_base[arm->frame_num]);
         Matrix_Rot16(mesh_rots[LM_UARM_R]);
 
         Matrix_TranslateRel32(bone[LM_LARM_R - 1].pos);
@@ -327,7 +327,7 @@ bool Lara_GetHandPosFromAnim(const LARA_MESH hand, XYZ_32 *const vec)
 
     const ANIM *const anim = Anim_GetAnim(arm->anim_num);
     const XYZ_16 *const arm_rots =
-        arm->frame_base[arm->frame_num - anim->frame_base].mesh_rots;
+        Anim_GetFrameRots(&arm->frame_base[arm->frame_num - anim->frame_base]);
     M_PS1_RotYXZ(&m, arm_rots[upper]);
     M_PS1_TranslateRel(&m, bone[lower - 1].pos);
     M_PS1_RotYXZ(&m, arm_rots[lower]);

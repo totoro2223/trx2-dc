@@ -26,6 +26,23 @@ static struct {
     uint64_t last_draw;
 } m_Priv = {};
 
+// Written on the disc by tools/dreamcast/make_disc.sh.
+static const char *M_GetVersion(void)
+{
+    static char version[40] = "";
+    if (version[0] == '\0') {
+        FILE *const fp = fopen("/cd/VERSION.TXT", "r");
+        if (fp == nullptr || fgets(version, sizeof(version), fp) == nullptr) {
+            strcpy(version, "DC build ?");
+        }
+        if (fp != nullptr) {
+            fclose(fp);
+        }
+        version[strcspn(version, "\r\n")] = '\0';
+    }
+    return version;
+}
+
 static int32_t M_GetPercent(void)
 {
     if (m_Priv.total == 0) {
@@ -46,8 +63,10 @@ static void M_Draw(const bool force)
     const int32_t percent = M_GetPercent();
     m_Priv.last_draw = now;
     m_Priv.shown_percent = percent;
-    char line1[48];
-    snprintf(line1, sizeof(line1), "LOADING  %ld%%", (long)percent);
+    char line1[96];
+    snprintf(
+        line1, sizeof(line1), "LOADING  %ld%%   %s", (long)percent,
+        M_GetVersion());
     DC_PVR_DrawLoadingScreen(line1, m_Priv.name, percent);
 }
 
@@ -68,6 +87,8 @@ static void M_OnRead(const char *const name, const size_t bytes)
 
 void DC_Loading_Begin(const uint64_t total_bytes)
 {
+    // Read before the disc reads are watched: reading it would draw again.
+    M_GetVersion();
     m_Priv = (typeof(m_Priv)) {
         .active = true,
         .total = total_bytes,
@@ -94,8 +115,8 @@ void DC_Loading_End(void)
     trx_iso_read_observer = nullptr;
     m_Priv.done = m_Priv.total;
     strncpy(m_Priv.name, "", sizeof(m_Priv.name));
-    char line1[48];
-    snprintf(line1, sizeof(line1), "LOADING  100%%");
+    char line1[96];
+    snprintf(line1, sizeof(line1), "LOADING  100%%   %s", M_GetVersion());
     DC_PVR_DrawLoadingScreen(line1, m_Priv.name, 100);
     m_Priv.active = false;
 }

@@ -1,6 +1,9 @@
 #include <trx/game/clock/common.h>
 
 #include <trx/config.h>
+#if defined(__DREAMCAST__)
+#include <platform/dreamcast/dc_mode.h>
+#endif
 #include <trx/core/subsystem.h>
 #include <trx/game/clock/const.h>
 #include <trx/game/clock/timer.h>
@@ -20,6 +23,10 @@ static Uint64 m_LastCounter = 0;
 static Uint64 m_InitCounter = 0;
 static Uint64 m_Frequency = 0;
 static double m_Accumulator = 0.0;
+// Clock_WaitLogicTicks: game logic ticks due, in ticks.
+static double m_LogicAccumulator = 1.0;
+// The most logic ticks a drawn frame catches up on.
+#define M_MAX_LOGIC_TICKS 3
 static struct {
     double real_time_at_last_change;
     double sim_time_at_last_change;
@@ -131,7 +138,11 @@ size_t Clock_GetDateTime(char *const buffer, const size_t size)
 
 int32_t Clock_GetCurrentFPS(void)
 {
+#if defined(__DREAMCAST__)
+    return DC_Mode_Get()->fps;
+#else
     return g_Config.rendering.fps;
+#endif
 }
 
 int32_t Clock_GetFrameAdvance(void)
@@ -143,6 +154,44 @@ void Clock_SyncTick(void)
 {
     m_LastCounter = SDL_GetPerformanceCounter();
     m_Accumulator = 0.0;
+    // A tick is due at once, so the first frame shows the world moving on.
+    m_LogicAccumulator = 1.0;
+}
+
+int32_t Clock_WaitLogicTicks(double *const frac)
+{
+    if (m_IsFixedFPS || m_Disabled) {
+        Clock_WaitTick();
+        *frac = 0.0;
+        return 1;
+    }
+
+    // Draws no faster than the frame rate.
+    Uint64 now = SDL_GetPerformanceCounter();
+    if (m_LastCounter == 0) {
+        m_LastCounter = now;
+    }
+    const double frame_ticks = (double)m_Frequency / Clock_GetCurrentFPS();
+    const double drawn = (double)(now - m_LastCounter);
+    if (drawn < frame_ticks) {
+        SDL_Delay((Uint32)((frame_ticks - drawn) * 1000.0 / m_Frequency));
+        now = SDL_GetPerformanceCounter();
+    }
+
+    m_LogicAccumulator += (double)(now - m_LastCounter) * LOGIC_FPS
+        * Clock_GetSpeedMultiplier() / m_Frequency;
+    m_LastCounter = now;
+
+    int32_t ticks = (int32_t)m_LogicAccumulator;
+    if (ticks > M_MAX_LOGIC_TICKS) {
+        // Drops what the logic cannot catch up on, or each frame would run
+        // more ticks than the last and fall further behind.
+        m_LogicAccumulator -= ticks - M_MAX_LOGIC_TICKS;
+        ticks = M_MAX_LOGIC_TICKS;
+    }
+    m_LogicAccumulator -= ticks;
+    *frac = m_LogicAccumulator;
+    return ticks;
 }
 
 int32_t Clock_WaitTick(void)

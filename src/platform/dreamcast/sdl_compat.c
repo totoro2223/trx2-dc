@@ -325,9 +325,14 @@ Uint64 SDL_GetPerformanceFrequency(void)
     return 1000000000ULL;
 }
 
+// Time this thread spent in SDL_Delay, for the frame statistics.
+_Thread_local uint64_t g_DC_SleepUs = 0;
+
 void SDL_Delay(const Uint32 ms)
 {
+    const uint64_t start = timer_us_gettime64();
     thd_sleep(ms);
+    g_DC_SleepUs += timer_us_gettime64() - start;
 }
 
 // ----------------------------------------------------------------------------

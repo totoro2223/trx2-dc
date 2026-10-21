@@ -57,7 +57,27 @@ static void M_RenderSourcePass(const M_PRIV *const p, const SCENE_PASS pass)
     }
 }
 
+#if defined(TRX_DC_WATCHDOG)
+#include <arch/timer.h>
+
+// Time spent in the passes this frame, for the frame statistics.
+uint32_t g_DC_PassUs = 0;
+#endif
+
+static void M_RenderScenePassesTimed(const M_PRIV *p);
+
 static void M_RenderScenePasses(const M_PRIV *const p)
+{
+#if defined(TRX_DC_WATCHDOG)
+    const uint64_t start = timer_us_gettime64();
+    M_RenderScenePassesTimed(p);
+    g_DC_PassUs += (uint32_t)(timer_us_gettime64() - start);
+#else
+    M_RenderScenePassesTimed(p);
+#endif
+}
+
+static void M_RenderScenePassesTimed(const M_PRIV *const p)
 {
     Output_Uniforms_UploadViewMatrix(Output_GetUniforms(), &g_ViewMatrix);
     Output_Lights_PrepareScene();

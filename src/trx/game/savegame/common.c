@@ -13,6 +13,10 @@
 #include <trx/game/savegame/identity.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/vmu.h>
+#endif
+
 static SAVEGAME_VERSION m_InitialVersion = SG_VERSION_LEGACY;
 
 static void M_LoadPreprocess(void)
@@ -169,6 +173,11 @@ RESULT Savegame_UpdateDeathCounters(
     const RESULT result = SG_File_UpdateDeathCounters(
         fp, savegame_info->level_num, death_count, savegame_info->is_quick);
     File_Close(fp);
+#if defined(__DREAMCAST__)
+    if (IS_OK(result)) {
+        DC_VMU_StoreSave(savegame_info->full_path, savegame_info->level_title);
+    }
+#endif
     return result;
 }
 

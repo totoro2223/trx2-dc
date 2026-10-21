@@ -40,6 +40,10 @@ local function open(ctx)
   })
 end
 
+-- Opens the screen; scripts/ui.lua defines it, and requires this module only
+-- once the screen first opens.
+M.open = open
+
 function M.setup()
   trx.ui.screens.define(trx.ui.Screen.LEVEL_VIEW, open)
 end

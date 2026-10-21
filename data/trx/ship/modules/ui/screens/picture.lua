@@ -87,6 +87,10 @@ local function open(ctx)
   return main
 end
 
+-- Opens the screen; scripts/ui.lua defines it, and requires this module only
+-- once the screen first opens.
+M.open = open
+
 function M.setup()
   trx.ui.screens.define(trx.ui.Screen.PICTURE, open)
 end

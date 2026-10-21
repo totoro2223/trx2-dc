@@ -3,3 +3,4 @@ option('trx_version', type: 'string', value: '', description: 'Override the TRX 
 option('lua_dep', type: 'string', value: 'lua', description: 'Override the dependency() name used for Lua.')
 option('dc_profile', type: 'boolean', value: false, description: 'Dreamcast: sample where the game thread spends its time and print it to the serial console.')
 option('dc_start_level', type: 'integer', value: -1, description: 'Dreamcast development builds: start straight in this level of the base game (-1: the title).')
+option('lua_compiler', type: 'string', value: '', description: 'A luac built as the target\'s Lua is: the engine\'s scripts are embedded as its stripped bytecode instead of source.')
