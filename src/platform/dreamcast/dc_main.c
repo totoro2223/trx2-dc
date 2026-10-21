@@ -93,6 +93,16 @@ int __wrap_main(int argc, char *argv[])
     argc = 5;
     argv = start_argv;
 #else
+    // The game on the disc (make_disc.sh's TRX_DC_GAME): TR2 unless it
+    // says otherwise.
+    int engine = 2;
+    FILE *const game = fopen("/cd/GAME.TXT", "r");
+    if (game != nullptr) {
+        if (fscanf(game, "%d", &engine) != 1) {
+            engine = 2;
+        }
+        fclose(game);
+    }
     // Test discs name their level (make_disc.sh's fourth argument).
     int level = -1;
     FILE *const start = fopen("/cd/START.TXT", "r");
@@ -107,14 +117,23 @@ int __wrap_main(int argc, char *argv[])
         }
         fclose(start);
     } else {
-        level = DC_LevelSelect_Run();
+        level = DC_LevelSelect_Run(engine);
     }
+    static char engine_arg[12];
     static char level_arg[12];
-    static char *level_argv[] = { "trx", "-e", "2", "-l", level_arg, nullptr };
+    static char *level_argv[] = {
+        "trx", "-e", engine_arg, "-l", level_arg, nullptr,
+    };
+    snprintf(engine_arg, sizeof(engine_arg), "%d", engine);
     if (level >= 0) {
         snprintf(level_arg, sizeof(level_arg), "%d", (int)level);
         argc = 5;
         argv = level_argv;
+    } else if (engine != 2) {
+        // The title of the game on the disc.
+        static char *title_argv[] = { "trx", "-e", engine_arg, nullptr };
+        argc = 3;
+        argv = title_argv;
     }
 #endif
     M_MAIN_ARGS args = { .argc = argc, .argv = argv, .result = 0 };
