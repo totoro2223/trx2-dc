@@ -6,6 +6,13 @@
 #include <trx/game/output.h>
 #include <trx/game/sound.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+#endif
+
 typedef struct {
     const GF_LEVEL *level;
     GF_SEQUENCE_CONTEXT seq_ctx;
@@ -54,7 +61,8 @@ static void M_Resume(PHASE *const phase)
 static PHASE_CONTROL M_Control(PHASE *const phase)
 {
     LUA_FireEvent(LUA_EVENT_BEFORE_CONTROL);
-    const GF_COMMAND gf_cmd = Game_Control(false);
+    GF_COMMAND gf_cmd;
+    DC_PROBE(DC_PROBE_CONTROL, gf_cmd = Game_Control(false));
     LUA_FireEvent(LUA_EVENT_AFTER_CONTROL);
     if (gf_cmd.action != GF_NOOP) {
         return (PHASE_CONTROL) {

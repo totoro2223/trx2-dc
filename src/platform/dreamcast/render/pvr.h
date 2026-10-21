@@ -98,6 +98,16 @@ void DC_PVR_SetSkyMode(bool enabled);
 // (0, 1], 1 at the near plane). The PowerVR corrects textures for
 // perspective with this same value, so it stays proportional to 1/w.
 float DC_PVR_Depth3D(float inv_w);
+// The same, for a caller that works it out itself per vertex:
+// z = max(min(inv_w, 1), lo) * scale; and when track, the nearest z it made
+// goes to DC_PVR_UseDepth once, so the next layer starts above it.
+typedef struct {
+    float lo;
+    float scale;
+    bool track;
+} DC_PVR_DEPTH3D;
+void DC_PVR_GetDepth3D(DC_PVR_DEPTH3D *out);
+void DC_PVR_UseDepth(float z);
 // Depth of a flat vertex in the current layer, in front of every
 // perspective one there: v in [0, 1], bigger is nearer.
 float DC_PVR_Depth2D(float v);

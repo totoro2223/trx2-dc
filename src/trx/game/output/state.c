@@ -21,6 +21,13 @@
 
 #include <math.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+#endif
+
 static float m_Time = 0.0f;
 static float m_TimeInGame = 0.0f;
 static bool m_ControlFrame = false;
@@ -452,13 +459,13 @@ void Output_AnimateTextures(int32_t num_frames)
     m_AnimatedTexturesOffset += num_frames * anim_delta;
     bool update = false;
     while (m_AnimatedTexturesOffset > 5) {
-        Output_CycleAnimatedTextures();
+        DC_PROBE(DC_PROBE_TEX_CYCLE, Output_CycleAnimatedTextures());
         update = true;
         m_AnimatedTexturesOffset -= 5;
     }
     if (update) {
-        Output_Textures_CycleAnimations();
-        SceneCompositor_AnimateTextures();
+        DC_PROBE(DC_PROBE_TEX_UVW, Output_Textures_CycleAnimations());
+        DC_PROBE(DC_PROBE_TEX_COMP, SceneCompositor_AnimateTextures());
     }
 
     m_UVScrollTickPrev = m_UVScrollTick;

@@ -29,6 +29,13 @@
 #include <trx/game/ui/menu.h>
 #include <trx/version.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+#endif
+
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_watchdog.h>
 #endif
@@ -89,7 +96,7 @@ GF_COMMAND Game_Control(const bool demo_mode)
         }
     }
 
-    Interpolation_Remember();
+    DC_PROBE(DC_PROBE_REMEMBER, Interpolation_Remember());
     if (!Game_IsInGym() || Gym_TrackManager_IsTimerActive(GYM_TRACK_ASSAULT)
         || Gym_TrackManager_IsTimerActive(GYM_TRACK_QUAD)
         || !Object_Get(O_ASSAULT_DIGITS)->loaded) {
@@ -108,8 +115,7 @@ GF_COMMAND Game_Control(const bool demo_mode)
         return (GF_COMMAND) { .action = GF_LEVEL_COMPLETE };
     }
 
-    Input_Update();
-    Shell_ProcessInput();
+    DC_PROBE(DC_PROBE_INPUT, Input_Update(); Shell_ProcessInput());
     if (g_InputDB.toggle_photo_mode) {
         Camera_Binoculars_Exit();
         return GF_EnterPhotoMode();
@@ -127,9 +133,9 @@ GF_COMMAND Game_Control(const bool demo_mode)
             return (GF_COMMAND) { .action = GF_EXIT_TO_TITLE };
         }
     }
-    FlybyMode_PreControl();
-    Game_ProcessInput();
-    Camera_Binoculars_Control();
+    DC_PROBE(
+        DC_PROBE_INPUT, FlybyMode_PreControl(); Game_ProcessInput();
+        Camera_Binoculars_Control());
 
 #if defined(__DREAMCAST__)
     if (!demo_mode) {
@@ -250,15 +256,14 @@ GF_COMMAND Game_Control(const bool demo_mode)
     // A cutscene poses her and steps her hair itself, so neither runs here
     // while one plays.
     if (!CutSeq_IsPlaying()) {
-        Lara_Control();
-        Lara_Hair_Control(false);
+        DC_PROBE(DC_PROBE_LARA, Lara_Control(); Lara_Hair_Control(false));
         if (g_TRVersion == 3) {
             Sparks_UpdateWind();
         }
     }
 
-    Game_TickPostControl();
-    Game_TickEndFrame();
+    DC_PROBE(DC_PROBE_POST, Game_TickPostControl());
+    DC_PROBE(DC_PROBE_END, Game_TickEndFrame());
     return (GF_COMMAND) { .action = GF_NOOP };
 }
 
@@ -270,9 +275,8 @@ void Game_TickBeginFrame(void)
 
 void Game_TickWorld(void)
 {
-    Item_Control();
-    Effect_Control();
-    Sparks_Control();
+    DC_PROBE(DC_PROBE_ITEMS, Item_Control());
+    DC_PROBE(DC_PROBE_FX, Effect_Control(); Sparks_Control());
 }
 
 void Game_TickPostControl(void)

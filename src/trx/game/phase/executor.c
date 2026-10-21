@@ -33,6 +33,13 @@
 #include <SDL2/SDL_timer.h>
 #include <stdio.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+#endif
+
 #define M_MAX_PHASES 10
 
 static int32_t m_CurrentFrame = 0;
@@ -257,7 +264,7 @@ static GF_COMMAND M_ChangeScreen(const PHASE *const phase)
 static PHASE_CONTROL M_Control(PHASE *const phase)
 {
     m_CurrentFrame++;
-    Shell_ProcessEvents();
+    DC_PROBE(DC_PROBE_EVENTS, Shell_ProcessEvents());
 
     const GF_COMMAND gf_cmd = M_HandleOverride(phase);
     if (gf_cmd.action == GF_EXIT_GAME) {
@@ -359,7 +366,7 @@ static void M_Draw(PHASE *const phase)
     if (!Output_IsHeadless()
         || TRX_GL_Context_GetScheduledScreenshotPath() != nullptr) {
         const Uint64 flip_start = SDL_GetPerformanceCounter();
-        Output_FlipScreen();
+        DC_PROBE(DC_PROBE_FLIP, Output_FlipScreen());
         m_LastFlipMs = (double)(SDL_GetPerformanceCounter() - flip_start)
             * 1000.0 / (double)SDL_GetPerformanceFrequency();
     } else {
@@ -423,7 +430,8 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
 #endif
         int32_t frame = 0;
         while (frame < nframes) {
-            const PHASE_CONTROL control = M_Control(phase);
+            PHASE_CONTROL control;
+            DC_PROBE(DC_PROBE_MCONTROL, control = M_Control(phase));
             if (control.action == PHASE_ACTION_END
                 || control.action == PHASE_ACTION_END_FAST) {
                 if (Shell_IsExiting()) {

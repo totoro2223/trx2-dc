@@ -807,6 +807,26 @@ float DC_PVR_Depth3D(float inv_w)
     return M_UseDepth(m_Depth.floor * inv_w / M_LAYER_INV_W_MIN);
 }
 
+void DC_PVR_GetDepth3D(DC_PVR_DEPTH3D *const out)
+{
+    if (M_IsBehindAll()) {
+        *out = (DC_PVR_DEPTH3D) { .scale = M_BEHIND_ALL_SCALE };
+    } else if (m_Depth.floor == 0.0f) {
+        *out = (DC_PVR_DEPTH3D) { .scale = 1.0f, .track = true };
+    } else {
+        *out = (DC_PVR_DEPTH3D) {
+            .lo = M_LAYER_INV_W_MIN,
+            .scale = m_Depth.floor / M_LAYER_INV_W_MIN,
+            .track = true,
+        };
+    }
+}
+
+void DC_PVR_UseDepth(const float z)
+{
+    M_UseDepth(z);
+}
+
 float DC_PVR_Depth2D(float v)
 {
     if (v < 0.0f) {

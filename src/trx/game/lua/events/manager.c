@@ -12,6 +12,13 @@
 #include <lua.h>
 #include <string.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+#endif
+
 typedef struct {
     // What a script detaches by. Its own, and not its Lua ref: luaL_unref hands
     // a ref back out to the next attach, so a detached listener's ref can come
@@ -294,7 +301,35 @@ static void M_Create(lua_State *const L)
     ItemAction_SetInterceptor(M_InterceptFlipEffect);
 }
 
+static bool M_FireEventInner(
+    const LUA_EVENT_TYPE ev, const int32_t key, const LUA_EVENT_ARG *const args,
+    const int32_t arg_count);
+
+// TEMP: see platform/dreamcast/dc_probe.h
 static bool M_FireEvent(
+    const LUA_EVENT_TYPE ev, const int32_t key, const LUA_EVENT_ARG *const args,
+    const int32_t arg_count)
+{
+    bool answered;
+#if defined(__DREAMCAST__)
+    if (m_L == nullptr || m_Listeners == nullptr || m_ListenerCount[ev] == 0) {
+        return false;
+    }
+    const uint64_t t0 = timer_us_gettime64();
+    answered = M_FireEventInner(ev, key, args, arg_count);
+    const uint32_t dt = (uint32_t)(timer_us_gettime64() - t0);
+    g_DC_ProbeUs[DC_PROBE_LUA] += dt;
+    if ((int32_t)ev < DC_PROBE_LUA_EVENTS) {
+        g_DC_LuaEvUs[ev] += dt;
+        g_DC_LuaEvN[ev]++;
+    }
+#else
+    answered = M_FireEventInner(ev, key, args, arg_count);
+#endif
+    return answered;
+}
+
+static bool M_FireEventInner(
     const LUA_EVENT_TYPE ev, const int32_t key, const LUA_EVENT_ARG *const args,
     const int32_t arg_count)
 {

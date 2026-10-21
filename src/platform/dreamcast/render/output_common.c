@@ -7,6 +7,7 @@
 #include "shadow.h"
 
 #include <platform/dreamcast/dc_mode.h>
+#include <platform/dreamcast/dc_probe.h> // TEMP
 
 #include <platform/dreamcast/renderer.h>
 #include <trx/config.h>
@@ -200,7 +201,20 @@ static struct {
     int32_t frames;
     uint64_t sum[M_STAT_COUNT];
     uint32_t max[M_STAT_COUNT];
+    // TEMP: see dc_probe.h
+    uint64_t probe_sum[DC_PROBE_COUNT];
+    uint32_t probe_max[DC_PROBE_COUNT];
 } m_Stats = {};
+
+// TEMP: see dc_probe.h
+uint32_t g_DC_ProbeUs[DC_PROBE_COUNT] = {};
+static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
+    "ev",  "lua",  "rem",  "inp",  "items", "fx",   "lara", "post",
+    "end", "ctrl", "mctl", "flip", "log",   "tcyc", "tuvw", "tcomp",
+    "vroom", "vobj", "vgen", "soft", "emit", "cel", "bump", "envp",
+};
+uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
+uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};
 
 static void M_StatsBeginScene(void)
 {
@@ -248,6 +262,14 @@ static void M_StatsEndScene(void)
             m_Stats.max[i] = value[i];
         }
     }
+    // TEMP: see dc_probe.h
+    for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
+        m_Stats.probe_sum[i] += g_DC_ProbeUs[i];
+        if (g_DC_ProbeUs[i] > m_Stats.probe_max[i]) {
+            m_Stats.probe_max[i] = g_DC_ProbeUs[i];
+        }
+        g_DC_ProbeUs[i] = 0;
+    }
     if (++m_Stats.frames < M_STATS_WINDOW) {
         return;
     }
@@ -263,9 +285,34 @@ static void M_StatsEndScene(void)
             (unsigned long)(m_Stats.sum[i] / m_Stats.frames / div),
             (unsigned long)(m_Stats.max[i] / div));
     }
-    LOG_DEBUG("%s", line);
+    // TEMP: see dc_probe.h. Its own line, in microseconds, timed itself.
+    char probes[512];
+    len = snprintf(probes, sizeof(probes), "[probe]");
+    for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
+        len += snprintf(
+            probes + len, sizeof(probes) - len, " %s=%lu/%lu", m_ProbeNames[i],
+            (unsigned long)(m_Stats.probe_sum[i] / m_Stats.frames),
+            (unsigned long)m_Stats.probe_max[i]);
+    }
+    // Lua events of the window: "e<type>=<us per frame>x<fires per frame>".
+    char events[320];
+    len = snprintf(events, sizeof(events), "[luaev]");
+    for (int32_t i = 0; i < DC_PROBE_LUA_EVENTS && len < 300; i++) {
+        if (g_DC_LuaEvN[i] != 0) {
+            len += snprintf(
+                events + len, sizeof(events) - len, " e%d=%lux%lu", (int)i,
+                (unsigned long)(g_DC_LuaEvUs[i] / m_Stats.frames),
+                (unsigned long)(g_DC_LuaEvN[i] / m_Stats.frames));
+        }
+    }
+    memset(g_DC_LuaEvUs, 0, sizeof(g_DC_LuaEvUs));
+    memset(g_DC_LuaEvN, 0, sizeof(g_DC_LuaEvN));
+    DC_PROBE(
+        DC_PROBE_LOG, LOG_DEBUG("%s", line); printf("%s\n%s\n", probes, events));
     memset(m_Stats.sum, 0, sizeof(m_Stats.sum));
     memset(m_Stats.max, 0, sizeof(m_Stats.max));
+    memset(m_Stats.probe_sum, 0, sizeof(m_Stats.probe_sum));
+    memset(m_Stats.probe_max, 0, sizeof(m_Stats.probe_max));
     m_Stats.frames = 0;
 }
 #endif

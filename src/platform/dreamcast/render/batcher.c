@@ -16,6 +16,7 @@
 #include "uniform_layouts.h"
 
 #include <platform/dreamcast/dc_mode.h>
+#include <platform/dreamcast/dc_probe.h> // TEMP
 #include <platform/dreamcast/gl_facade.h>
 #include <trx/config.h>
 #include <trx/core/memory.h>
@@ -37,6 +38,7 @@
 #include <dc/matrix.h>
 #include <malloc.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include <uthash.h>
 
@@ -63,13 +65,13 @@ typedef struct M_BINDING {
     bool plain_object;
     // Has sprites, whose corners stand off the box.
     bool billboard;
-    // A room's: each vertex's colour lit without fog and with no light
-    // passing, kept from frame to frame while what it is lit by holds.
-    uint32_t *lit;
-    bool lit_valid;
-    bool lit_lighting;
-    float lit_min_shade;
-    RGBA_F lit_tint;
+    // The flags every vertex has, and the ones any has: a mesh whose
+    // vertices all agree is transformed without reading them.
+    uint16_t flags_and;
+    uint16_t flags_or;
+    // The texture coordinates are to be looked up again before the mesh is
+    // next drawn (M_RefillTextures).
+    bool tex_dirty;
     // Object space bounding box: minimum then maximum corner.
     float bounds[2][3];
     // The longest of its normals, for the cel shading (0 until it is told).
@@ -176,30 +178,27 @@ _Static_assert(
 // in their lit colour times this.
 #define M_ENV_STRENGTH 0.4f
 
-// A vertex once transformed and lit: eye space, and its colours.
+// A vertex once transformed and lit: eye space, where it lands on screen,
+// and its colour. One cache line, which is what every face reads. The
+// colours only some instances need (the cel shading's shaded side, the
+// reflections', a coloured fog's) lie in arrays of the batcher alongside, by
+// the same index.
 typedef struct {
     float x;
     float y;
     float z;
-    uint32_t argb;
-    uint32_t oargb;
-    // The cel shading's shaded side (see M_CEL_*): its colour, and in its
-    // alpha how far the vertex is turned from the light, half at the edge.
-    uint32_t sargb;
-    // Where the vertex samples the environment map, and the colour it adds
-    // it in, when the instance reflects.
-    float eu;
-    float ev;
-    uint32_t eargb;
-    // M_CLIP_*: what the vertex lies past; a face whose corners all lie past
-    // one same thing is not drawn.
-    uint8_t clip;
     // Where it lands on screen, when in front of the near plane: which way
     // a face turns is told from its corners.
     float sx;
     float sy;
     float inv_z;
+    uint32_t argb;
+    // M_CLIP_*: what the vertex lies past; a face whose corners all lie past
+    // one same thing is not drawn.
+    uint8_t clip;
+    uint8_t pad[3];
 } M_XVERT;
+_Static_assert(sizeof(M_XVERT) == 32, "an M_XVERT is one cache line");
 
 // Wholly in the fog.
 #define M_CLIP_FOG 0x01
@@ -211,9 +210,22 @@ typedef struct {
 #define M_CLIP_RIGHT 0x08
 #define M_CLIP_TOP 0x10
 #define M_CLIP_BOTTOM 0x20
+// Some fog on the vertex: its offset colour is opaque black, the fog's
+// (a coloured fog's lies in the batcher's oargb array instead). Not a side
+// a face is culled past.
+#define M_CLIP_FOGGED 0x40
+// The ones that cull a face whose corners all carry them.
+#define M_CLIP_CULL 0x3F
 // Room left around a window: the game's bounds are worked out in whole
 // pixels from its own projection.
 #define M_CLIP_MARGIN 4.0f
+
+// A run of the cel shading's polygons kept for one texture page.
+typedef struct {
+    int32_t page;
+    int32_t start;
+    int32_t count;
+} M_CEL_RUN;
 
 typedef struct MESH_BATCHER {
     SCENE_SOURCE source;
@@ -223,15 +235,37 @@ typedef struct MESH_BATCHER {
     // Per staged instance: its index among the casters, or -1 (int16_t).
     VECTOR *casters[SCENE_PASS_COUNT];
     M_XVERT *xverts;
+    // Alongside xverts, by the same index: the offset colour where the fog
+    // is not black (oargb_used says the instance has one), the cel shading's
+    // shaded colour (in its alpha how far the vertex turns from the light,
+    // half at the edge), and where the vertex samples the environment map
+    // and the colour it adds it in.
+    uint32_t *oargb;
+    bool oargb_used;
+    uint32_t *sargb;
+    float (*env_uv)[2];
+    uint32_t *eargb;
+    // Per vertex of the instance just transformed, for the soft shadows:
+    // where it falls on the silhouette's cell and along the light, and
+    // which of the cell's edges and reaches it lies past (M_SOFT_OFF_*).
+    float (*soft)[3];
+    uint8_t *soft_off;
+    int32_t xverts_capacity;
     // The model-view matrix of the instance just transformed.
     matrix_t mv;
-    // Whether the instance just transformed is cel shaded.
+    // Whether the instance just transformed is cel shaded, and whether the
+    // faces going out now keep their shaded side (M_KeepCel).
     bool cel;
+    bool cel_emit;
     // Whether the instance just transformed reflects.
     bool env;
-    // Per vertex of the instance just transformed, for the soft shadows.
-    float (*soft)[3];
-    int32_t xverts_capacity;
+    // The page the faces going out sample (M_EmitIndices).
+    int32_t emit_page;
+    // The cel shading's polygons of the instance being drawn, by page.
+    pvr_vertex_t *cel_buf;
+    int32_t cel_count;
+    int32_t cel_capacity;
+    VECTOR *cel_runs; // M_CEL_RUN
 } MESH_BATCHER;
 
 // What a pass needs that holds for every instance in it.
@@ -257,25 +291,17 @@ typedef struct {
     float time_in_game;
     float sunset_duration;
     bool lighting;
-    // Bilinear filtering samples half a texel past a face's edge, into the
-    // next texture on the page; the faces' coordinates are pulled in by that
-    // much instead (the desktop clamps them to the texture in its shader).
-    bool inset_uv;
     // What pvr.c scales screen positions by (DC_PVR_GetScreenScale).
     float screen_scale;
+    // How pvr.c lays depth out this pass (DC_PVR_GetDepth3D).
+    DC_PVR_DEPTH3D depth;
     bool fog;
     // Faces turned away are not drawn, as the desktop has OpenGL cull them
     // (double sided faces come twice, once each way round).
     bool cull;
-    // The faces going out are the cel shading's shaded side: their vertices
-    // take its colours.
-    bool cel_pass;
-    // The faces going out are the reflections: the environment map, at the
-    // vertices' own coordinates on it and in their colours.
-    bool env_pass;
-    // The faces going out are the relief: white, with the offset colour
-    // lighting it.
-    bool bump_pass;
+    // What the faces going out stand for (M_EMIT_*), and the offset colour
+    // that lights the relief's.
+    int32_t emit;
     uint32_t bump_k;
     // The mode draws the relief.
     bool bump;
@@ -399,14 +425,6 @@ M_HOT uint32_t M_PackARGB(
     const uint32_t ig = (uint32_t)(M_Clamp(g, 0.0f, 1.0f) * 255.0f);
     const uint32_t ib = (uint32_t)(M_Clamp(b, 0.0f, 1.0f) * 255.0f);
     return (ia << 24) | (ir << 16) | (ig << 8) | ib;
-}
-
-// The colour of a packed ARGB scaled by k in [0, 1], its alpha kept.
-M_HOT uint32_t M_ScaleRGB(const uint32_t c, const float k)
-{
-    const uint32_t m = (uint32_t)(k * 256.0f);
-    return (c & 0xFF000000) | ((((c >> 16) & 0xFF) * m >> 8) << 16)
-        | ((((c >> 8) & 0xFF) * m >> 8) << 8) | (((c & 0xFF) * m) >> 8);
 }
 
 // Each channel of c0 towards c1 by t (in 1/256ths), in integers.
@@ -707,37 +725,472 @@ M_HOT void M_LightVertex(
     out_rgba[3] = vertex->color.a * (1.0f / 255.0f) * tint.a;
 }
 
+// What holds for every vertex of the instance being transformed: the tests
+// the whole instance passed (against the screen's sides, the near plane and
+// the start of the fog) are not made again per vertex.
+typedef struct {
+    float left;
+    float right;
+    float top;
+    float bottom;
+    bool ortho;
+    bool sides; // some vertex may lie past a side
+    bool near; // some vertex may lie before the near plane
+    bool fog; // some vertex may lie in the fog
+    float proj_x;
+    float proj_y;
+    float near_z;
+    float fog_start;
+    float fog_start_sq;
+    float fog_scale;
+    // The nearest vertex placed, as 1/z.
+    float max_inv_z;
+} M_XFORM;
+
+// Eye space to the screen, and the clipping: returns the vertex's M_CLIP_*
+// sides (never M_CLIP_FOG or M_CLIP_FOGGED, which the colour decides).
+M_HOT uint8_t M_Place(
+    M_XVERT *const out, const float x, const float y, const float z,
+    M_XFORM *const c)
+{
+    out->x = x;
+    out->y = y;
+    out->z = z;
+    if (c->ortho) {
+        return 0;
+    }
+    if (c->near && z < c->near_z) {
+        return M_CLIP_NEAR;
+    }
+    // z is past the near plane, so positive: an fsrra in place of a division.
+    const float inv_z = M_InvSqrt(z * z);
+    const float sx = c->proj_x * x * inv_z;
+    const float sy = c->proj_y * y * inv_z;
+    out->sx = sx;
+    out->sy = sy;
+    out->inv_z = inv_z;
+    if (inv_z > c->max_inv_z) {
+        c->max_inv_z = inv_z;
+    }
+    if (!c->sides) {
+        return 0;
+    }
+    return (sx < c->left ? M_CLIP_LEFT : 0) | (sx > c->right ? M_CLIP_RIGHT : 0)
+        | (sy < c->top ? M_CLIP_TOP : 0) | (sy > c->bottom ? M_CLIP_BOTTOM : 0);
+}
+
+// How much fog lies on a vertex at the eye space position, 0 to 1. Nearer
+// than the fog starts, as most is, it needs no root.
+M_HOT float M_Fog(
+    const float x, const float y, const float z, const M_XFORM *const c)
+{
+    const float dist_sq = fipr_magnitude_sqr(x, y, z, 0.0f);
+    if (dist_sq <= c->fog_start_sq) {
+        return 0.0f;
+    }
+    return M_Clamp(
+        (dist_sq * M_InvSqrt(dist_sq) - c->fog_start) * c->fog_scale, 0.0f,
+        1.0f);
+}
+
+// Marks a vertex's fog in its clip, and returns how much of its colour the
+// fog leaves it, in 8.8.
+M_HOT uint32_t M_FogKeep(const float fog, uint8_t *const clip)
+{
+    if (fog <= 0.0f) {
+        return 256;
+    }
+    *clip |= fog >= 1.0f ? M_CLIP_FOG | M_CLIP_FOGGED : M_CLIP_FOGGED;
+    return (uint32_t)((1.0f - fog) * 256.0f);
+}
+
+// How much of its colour a vertex of shade s keeps, in 8.8: M_LightVertex's
+// mul = 2 - s / M_SHADE_NEUTRAL, in integers. The shade is clamped as there,
+// then held to the frame's minimum.
+M_HOT uint32_t M_ShadeK(int32_t s, const int32_t min_shade)
+{
+    if (s < 0) {
+        s = 0;
+    } else if (s > M_SHADE_MAX) {
+        s = M_SHADE_MAX;
+    }
+    if (s < min_shade) {
+        s = min_shade;
+    }
+    return 512u - ((uint32_t)s >> 4);
+}
+
+// A channel product in 8.8 brought back to 8 bits, saturated without a
+// branch: x is under 1024, so x >> 8 is 0 or sets every bit when negated.
+M_HOT uint32_t M_Sat8(const uint32_t x)
+{
+    return (x | (0u - (x >> 8))) & 0xFFu;
+}
+
+// A vertex colour times a factor per channel (8.8), as ARGB.
+M_HOT uint32_t M_Colour(
+    const RGBA_8888 c, const uint32_t ka, const uint32_t kr, const uint32_t kg,
+    const uint32_t kb)
+{
+    return (M_Sat8(c.a * ka >> 8) << 24) | (M_Sat8(c.r * kr >> 8) << 16)
+        | (M_Sat8(c.g * kg >> 8) << 8) | M_Sat8(c.b * kb >> 8);
+}
+
+// The colour of a packed ARGB scaled by k in 8.8 (at most 256), its alpha
+// kept.
+M_HOT uint32_t M_ScaleRGB8(const uint32_t c, const uint32_t k)
+{
+    return (c & 0xFF000000u) | ((((c >> 16) & 0xFF) * k >> 8) << 16)
+        | ((((c >> 8) & 0xFF) * k >> 8) << 8) | (((c & 0xFF) * k) >> 8);
+}
+
+// A tint channel (0 to 1) as an 8.8 factor.
+M_HOT uint32_t M_TintK(const float t)
+{
+    return (uint32_t)(M_Clamp(t, 0.0f, 2.0f) * 256.0f);
+}
+
+// A room's vertices: lit by their own shade, the lights passing and the
+// room's flicker, in the room's tint, faded into black fog. All in integers:
+// no float colour, no clamps, no float to int conversions per channel.
+static void M_XformRoom(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    M_XFORM *const c)
+{
+    const OUTPUT_MESH_VERTEX *const vertices =
+        Vector_GetData(bind->mesh->vertices);
+    M_XVERT *const xverts = batcher->xverts;
+    const int32_t count = bind->vertex_count;
+    const bool lighting = m_Frame.lighting;
+    const int32_t min_shade = (int32_t)m_Frame.min_shade;
+    const bool dyn = il->num_lights > 0;
+    const int32_t flicker = (int32_t)il->flicker;
+    const bool fog_on = c->fog;
+    // Most rooms' vertices all carry the same flags: then they are not read.
+    const bool vary = (bind->flags_or & (VERT_NO_FOG | VERT_NO_LIGHTING)) != 0
+        || (bind->flags_and & VERT_USE_DYNAMIC_LIGHT) == 0;
+    const uint32_t ta = M_TintK(inst->tint.a);
+    const uint32_t tr = M_TintK(inst->tint.r);
+    const uint32_t tg = M_TintK(inst->tint.g);
+    const uint32_t tb = M_TintK(inst->tint.b);
+    const float(*const w)[4] = il->world;
+    for (int32_t i = 0; i < count; i++) {
+        const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
+        // The SH-4 does not wait for a line it was told to fetch ahead.
+        __builtin_prefetch(vertex + 2);
+        const uint16_t flags = vary ? vertex->flags : VERT_USE_DYNAMIC_LIGHT;
+        float x = vertex->pos.x;
+        float y = vertex->pos.y;
+        float z = vertex->pos.z;
+        float w1 = 1.0f;
+        mat_trans_nodiv(x, y, z, w1);
+        M_XVERT *const out = &xverts[i];
+        uint8_t clip = M_Place(out, x, y, z, c);
+
+        uint32_t k = 256;
+        if ((flags & VERT_NO_LIGHTING) == 0) {
+            int32_t s = M_SHADE_NEUTRAL;
+            if (lighting) {
+                s = vertex->shade;
+                if ((flags & VERT_USE_DYNAMIC_LIGHT) != 0) {
+                    if (dyn) {
+                        const float px = vertex->pos.x;
+                        const float py = vertex->pos.y;
+                        const float pz = vertex->pos.z;
+                        const float world[3] = {
+                            w[0][0] * px + w[0][1] * py + w[0][2] * pz + w[0][3],
+                            w[1][0] * px + w[1][1] * py + w[1][2] * pz + w[1][3],
+                            w[2][0] * px + w[2][1] * py + w[2][2] * pz + w[2][3],
+                        };
+                        s = (int32_t)M_DynamicLum((float)s, world, il);
+                    }
+                    s += ((vertex->light_table_idx & 31) - 16) * flicker;
+                }
+            }
+            k = M_ShadeK(s, min_shade);
+        }
+        if (fog_on && (flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
+            k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
+        }
+        out->argb =
+            M_Colour(vertex->color, ta, k * tr >> 8, k * tg >> 8, k * tb >> 8);
+        out->clip = clip;
+    }
+}
+
+// Lara, enemies, pickups: the object's light on each vertex, with n.l found
+// once for the light and the cel shading both. Colours in integers as the
+// rooms'.
+static void M_XformObject(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    M_XFORM *const c, const float cel_scale)
+{
+    const OUTPUT_MESH_VERTEX *const vertices =
+        Vector_GetData(bind->mesh->vertices);
+    M_XVERT *const xverts = batcher->xverts;
+    const int32_t count = bind->vertex_count;
+    const int32_t min_shade = (int32_t)m_Frame.min_shade;
+    const bool fog_on = c->fog;
+    const bool vary = (bind->flags_or & VERT_NO_FOG) != 0;
+    const bool dir = il->has_direction;
+    const float l0 = il->l[0];
+    const float l1 = il->l[1];
+    const float l2 = il->l[2];
+    const float adder = il->adder;
+    const bool cel = batcher->cel;
+    const uint32_t dark = (uint32_t)(m_CelShade * 256.0f);
+    uint32_t *const sargb = batcher->sargb;
+    const uint32_t ta = M_TintK(inst->tint.a);
+    const uint32_t tr = M_TintK(inst->tint.r);
+    const uint32_t tg = M_TintK(inst->tint.g);
+    const uint32_t tb = M_TintK(inst->tint.b);
+    for (int32_t i = 0; i < count; i++) {
+        const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
+        __builtin_prefetch(vertex + 2);
+        float x = vertex->pos.x;
+        float y = vertex->pos.y;
+        float z = vertex->pos.z;
+        float w1 = 1.0f;
+        mat_trans_nodiv(x, y, z, w1);
+        M_XVERT *const out = &xverts[i];
+        uint8_t clip = M_Place(out, x, y, z, c);
+
+        // As M_LightVertex lights a vertex of the object's light.
+        float shade = adder;
+        float n_dot_l = 0.0f;
+        if (dir) {
+            n_dot_l = fipr(
+                l0, l1, l2, 0.0f, vertex->normal.x, vertex->normal.y,
+                vertex->normal.z, 0.0f);
+            shade += n_dot_l * (1.0f / (float)(1 << 16));
+        }
+        uint32_t k = M_ShadeK((int32_t)shade, min_shade);
+        if (fog_on && (!vary || (vertex->flags & VERT_NO_FOG) == 0)) {
+            k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
+        }
+        const uint32_t argb =
+            M_Colour(vertex->color, ta, k * tr >> 8, k * tg >> 8, k * tb >> 8);
+        out->argb = argb;
+        out->clip = clip;
+        if (cel) {
+            // Half at the edge, more into the shade; the PowerVR runs it
+            // across each face, and the alpha test cuts it there.
+            const float edge = 0.5f + 0.5f * (n_dot_l * cel_scale - M_CEL_EDGE);
+            const uint32_t a = (uint32_t)(M_Clamp(edge, 0.0f, 1.0f) * 255.0f);
+            sargb[i] = (a << 24) | (M_ScaleRGB8(argb, dark) & 0x00FFFFFFu);
+        }
+    }
+}
+
+// Everything else: sprites, meshes lit by their own light or not at all,
+// coloured fog, reflections, the UI's models. The desktop shader's lighting
+// in floats, a vertex at a time.
+static void M_XformGeneric(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    M_XFORM *const c, const float mv[4][4], const float scale,
+    const float cel_scale, const bool black_fog)
+{
+    const OUTPUT_MESH_VERTEX *const vertices =
+        Vector_GetData(bind->mesh->vertices);
+    const bool cel = batcher->cel;
+    const bool env = batcher->env;
+    // Which way is right and which is down on the screen, in eye space.
+    const float env_x = m_Frame.proj_x < 0.0f ? -1.0f : 1.0f;
+    const float env_y = m_Frame.proj_y < 0.0f ? -1.0f : 1.0f;
+    batcher->oargb_used = !black_fog;
+    for (int32_t i = 0; i < bind->vertex_count; i++) {
+        const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
+        float x = vertex->pos.x;
+        float y = vertex->pos.y;
+        float z = vertex->pos.z;
+        float w1 = 1.0f;
+        mat_trans_nodiv(x, y, z, w1);
+        if ((vertex->flags & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0) {
+            x += vertex->normal.x * scale;
+            y += vertex->normal.y * scale;
+        }
+        M_XVERT *const out = &batcher->xverts[i];
+        uint8_t clip = M_Place(out, x, y, z, c);
+
+        float fog = 0.0f;
+        if (c->fog
+            && (vertex->flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
+            fog = M_Fog(x, y, z, c);
+        }
+        if (fog >= 1.0f) {
+            clip |= M_CLIP_FOG;
+        }
+
+        float rgba[4];
+        float mul;
+        M_LightVertex(vertex, il, &inst->wmatrix, inst->tint, rgba, &mul);
+        const float keep = 1.0f - fog;
+        out->argb =
+            M_PackARGB(rgba[3], rgba[0] * keep, rgba[1] * keep, rgba[2] * keep);
+        if (fog > 0.0f) {
+            clip |= M_CLIP_FOGGED;
+        }
+        if (!black_fog) {
+            batcher->oargb[i] = fog > 0.0f
+                ? M_PackARGB(
+                      1.0f, m_Frame.fog_color[0] * fog * inst->tint.r,
+                      m_Frame.fog_color[1] * fog * inst->tint.g,
+                      m_Frame.fog_color[2] * fog * inst->tint.b)
+                : 0;
+        }
+        out->clip = clip;
+        if (cel) {
+            float shade = 0.0f;
+            if ((vertex->flags & (VERT_USE_OBJECT_LIGHT | VERT_NO_LIGHTING))
+                == VERT_USE_OBJECT_LIGHT) {
+                const float cos = fipr(il->l[0], il->l[1], il->l[2], 0.0f,
+                                      vertex->normal.x, vertex->normal.y,
+                                      vertex->normal.z, 0.0f)
+                    * cel_scale;
+                shade = 0.5f + 0.5f * (cos - M_CEL_EDGE);
+            }
+            const float dark = keep * m_CelShade;
+            batcher->sargb[i] = M_PackARGB(
+                shade, rgba[0] * dark, rgba[1] * dark, rgba[2] * dark);
+        }
+        if (env && (vertex->flags & VERT_REFLECTIVE) != 0) {
+            // The normal in eye space (the camera at the origin, looking
+            // down z), turned to face the camera, mirrors the way to the
+            // vertex; the sphere map holds what lies that way.
+            const float nx = vertex->normal.x;
+            const float ny = vertex->normal.y;
+            const float nz = vertex->normal.z;
+            float n[3] = {
+                mv[0][0] * nx + mv[1][0] * ny + mv[2][0] * nz,
+                mv[0][1] * nx + mv[1][1] * ny + mv[2][1] * nz,
+                mv[0][2] * nx + mv[1][2] * ny + mv[2][2] * nz,
+            };
+            const float d_len_sq = x * x + y * y + z * z;
+            const float n_len_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+            float eu = 0.5f;
+            float ev = 0.5f;
+            if (d_len_sq > 0.0f && n_len_sq > 0.0f) {
+                const float inv_d = M_InvSqrt(d_len_sq);
+                const float d[3] = { x * inv_d, y * inv_d, z * inv_d };
+                const float inv_n = M_InvSqrt(n_len_sq);
+                float d_n = 0.0f;
+                for (int32_t k = 0; k < 3; k++) {
+                    n[k] *= inv_n;
+                    d_n += d[k] * n[k];
+                }
+                if (d_n > 0.0f) {
+                    for (int32_t k = 0; k < 3; k++) {
+                        n[k] = -n[k];
+                    }
+                    d_n = -d_n;
+                }
+                const float r[3] = {
+                    d[0] - 2.0f * d_n * n[0],
+                    d[1] - 2.0f * d_n * n[1],
+                    d[2] - 2.0f * d_n * n[2],
+                };
+                // Straight back at the camera is the map's middle, away
+                // from it its rim.
+                const float m2 =
+                    r[0] * r[0] + r[1] * r[1] + (r[2] - 1.0f) * (r[2] - 1.0f);
+                if (m2 > 0.0f) {
+                    const float inv_m = 0.5f * M_InvSqrt(m2);
+                    eu = 0.5f + env_x * r[0] * inv_m;
+                    ev = 0.5f + env_y * r[1] * inv_m;
+                }
+            }
+            batcher->env_uv[i][0] = eu;
+            batcher->env_uv[i][1] = ev;
+            // Half its own, half the light on it: metal shows its
+            // surroundings even in the shade, if less.
+            float e[3];
+            for (int32_t k = 0; k < 3; k++) {
+                e[k] = keep * M_ENV_STRENGTH
+                    * (0.5f + 0.5f * M_Clamp(rgba[k], 0.0f, 1.0f));
+            }
+            batcher->eargb[i] = M_PackARGB(1.0f, e[0], e[1], e[2]);
+        }
+    }
+}
+
+// Cel shading only this near the camera: further off, an enemy is a few
+// pixels, and its shaded side a second set of its faces for nothing.
+#define M_CEL_RANGE (6.0f * WALL_L)
+
+static void M_GrowVertexBuffers(MESH_BATCHER *const batcher, const int32_t count)
+{
+    batcher->xverts_capacity = count + 256;
+    const int32_t n = batcher->xverts_capacity;
+    Memory_Free(batcher->xverts);
+    batcher->xverts = memalign(32, n * sizeof(M_XVERT));
+    Memory_Free(batcher->soft);
+    batcher->soft = Memory_Alloc(n * sizeof(*batcher->soft));
+    Memory_Free(batcher->soft_off);
+    batcher->soft_off = Memory_Alloc(n * sizeof(*batcher->soft_off));
+    Memory_Free(batcher->oargb);
+    batcher->oargb = Memory_Alloc(n * sizeof(*batcher->oargb));
+    Memory_Free(batcher->sargb);
+    batcher->sargb = Memory_Alloc(n * sizeof(*batcher->sargb));
+    Memory_Free(batcher->env_uv);
+    batcher->env_uv = Memory_Alloc(n * sizeof(*batcher->env_uv));
+    Memory_Free(batcher->eargb);
+    batcher->eargb = Memory_Alloc(n * sizeof(*batcher->eargb));
+}
+
+// The depth the PowerVR takes for a perspective vertex of 1/w in the current
+// layer (DC_PVR_GetDepth3D), worked out here per vertex.
+M_HOT float M_Depth(const float inv_w)
+{
+    float v = inv_w > 1.0f ? 1.0f : inv_w;
+    if (v < m_Frame.depth.lo) {
+        v = m_Frame.depth.lo;
+    }
+    return v * m_Frame.depth.scale;
+}
+
 static bool M_TransformInstance(
     MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
     M_BINDING *const bind)
 {
     if (bind->vertex_count > batcher->xverts_capacity) {
-        batcher->xverts_capacity = bind->vertex_count + 256;
-        Memory_Free(batcher->xverts);
-        batcher->xverts = memalign(32, batcher->xverts_capacity * sizeof(M_XVERT));
-        Memory_Free(batcher->soft);
-        batcher->soft =
-            Memory_Alloc(batcher->xverts_capacity * sizeof(*batcher->soft));
+        M_GrowVertexBuffers(batcher, bind->vertex_count);
     }
 
     float mv[4][4];
     float scale;
     M_ModelView(&inst->wmatrix, mv, &scale);
 
+    M_XFORM c = {
+        .ortho = m_Frame.ortho,
+        .sides = true,
+        .near = true,
+        .fog = m_Frame.fog,
+        .proj_x = m_Frame.proj_x,
+        .proj_y = m_Frame.proj_y,
+        .near_z = m_Frame.near_z,
+        .fog_start = m_Frame.fog_start,
+        .fog_start_sq = m_Frame.fog_start * m_Frame.fog_start,
+        .fog_scale = m_Frame.fog_scale,
+    };
     // The sides faces are dropped past, about the screen's middle: the
     // screen's, or a room's own window onto it.
-    float left = -m_Frame.half_w;
-    float right = m_Frame.half_w;
-    float top = -m_Frame.half_h;
-    float bottom = m_Frame.half_h;
+    c.left = -m_Frame.half_w;
+    c.right = m_Frame.half_w;
+    c.top = -m_Frame.half_h;
+    c.bottom = m_Frame.half_h;
     if (bind->needs_room_lights && inst->scissor.width > 0) {
         const VIEWPORT_RECT *const s = &inst->scissor;
-        left = MAX(left, s->x - m_Frame.center_x - M_CLIP_MARGIN);
-        right = MIN(right, s->x + s->width - m_Frame.center_x + M_CLIP_MARGIN);
-        top = MAX(top, s->y - s->height - m_Frame.center_y - M_CLIP_MARGIN);
-        bottom = MIN(bottom, s->y - m_Frame.center_y + M_CLIP_MARGIN);
+        c.left = MAX(c.left, s->x - m_Frame.center_x - M_CLIP_MARGIN);
+        c.right =
+            MIN(c.right, s->x + s->width - m_Frame.center_x + M_CLIP_MARGIN);
+        c.top = MAX(c.top, s->y - s->height - m_Frame.center_y - M_CLIP_MARGIN);
+        c.bottom = MIN(c.bottom, s->y - m_Frame.center_y + M_CLIP_MARGIN);
     }
 
+    float eye_sq = 0.0f;
     if (!m_Frame.ortho) {
         float center[3];
         float radius_sq = 0.0f;
@@ -752,32 +1205,45 @@ static bool M_TransformInstance(
                 + mv[2][r] * center[2] + mv[3][r];
         }
         const float radius = sqrtf(radius_sq) * scale;
+        eye_sq = eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2];
         // Wholly past the end of the fog: nothing of it would show.
         const float reach = m_Frame.fog_end + radius;
-        if (m_Frame.fog
-            && eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2]
-                > reach * reach) {
+        if (m_Frame.fog && eye_sq > reach * reach) {
             return false;
         }
-        // Wholly past one of the sides. Each side is a plane through the
-        // eye, sx = side for x: proj_x * x - side * z = 0, the same for y.
-        // (Sprites' corners stand off their middle, past the box.)
+        // Wholly before the fog starts: no vertex needs the fog worked out.
+        const float clear = m_Frame.fog_start - radius;
+        if (clear > 0.0f && eye_sq < clear * clear) {
+            c.fog = false;
+        }
+        // Wholly past the near plane: no vertex can lie before it. (Sprites'
+        // corners stand off their middle in x and y only.)
+        c.near = eye[2] - radius < m_Frame.near_z;
+        // Wholly past one of the sides, or wholly within them all. Each
+        // side is a plane through the eye, sx = side for x:
+        // proj_x * x - side * z = 0, the same for y.
         if (!bind->billboard) {
             const float px = m_Frame.proj_x;
             const float py = m_Frame.proj_y;
             // Per side: the factors of x (left, right) or y (top, bottom),
             // and of z; positive outside.
             const float planes[4][2] = {
-                { -px, left }, { px, -right }, { -py, top }, { py, -bottom },
+                { -px, c.left }, { px, -c.right }, { -py, c.top }, { py, -c.bottom },
             };
+            bool inside = true;
             for (int32_t p = 0; p < 4; p++) {
                 const float a = planes[p][0];
                 const float b = planes[p][1];
                 const float d = a * eye[p < 2 ? 0 : 1] + b * eye[2];
-                if (d > 0.0f && d * d > radius * radius * (a * a + b * b)) {
+                const float rr = radius * radius * (a * a + b * b);
+                if (d > 0.0f && d * d > rr) {
                     return false;
                 }
+                if (!(d < 0.0f && d * d > rr)) {
+                    inside = false;
+                }
             }
+            c.sides = !inside;
         }
     }
 
@@ -791,7 +1257,8 @@ static bool M_TransformInstance(
     // cosine. The light runs across the lit side as before, so that it
     // keeps its roundness; only the shade is cut hard.
     batcher->cel = m_Frame.cel && m_Frame.lighting && !m_Frame.ortho
-        && bind->needs_object_light && il.has_direction;
+        && bind->needs_object_light && il.has_direction
+        && eye_sq < M_CEL_RANGE * M_CEL_RANGE;
     float cel_scale = 0.0f;
     if (batcher->cel) {
         if (bind->normal_len == 0.0f) {
@@ -817,416 +1284,115 @@ static bool M_TransformInstance(
         }
     }
 
-    const float fog_start_sq = m_Frame.fog_start * m_Frame.fog_start;
-    // A room's colours stay as they were while no light passes, its light
-    // does not flicker and the frame lights it as before.
-    const bool use_lit =
-        bind->lit != nullptr && il.num_lights == 0 && il.flicker == 0.0f;
-    const bool fill_lit = use_lit
-        && (!bind->lit_valid || bind->lit_lighting != m_Frame.lighting
-            || bind->lit_min_shade != m_Frame.min_shade
-            || memcmp(&bind->lit_tint, &inst->tint, sizeof(RGBA_F)) != 0);
-    if (fill_lit) {
-        bind->lit_valid = true;
-        bind->lit_lighting = m_Frame.lighting;
-        bind->lit_min_shade = m_Frame.min_shade;
-        bind->lit_tint = inst->tint;
-    }
-
     const bool black_fog = m_Frame.fog_color[0] * inst->tint.r == 0.0f
         && m_Frame.fog_color[1] * inst->tint.g == 0.0f
         && m_Frame.fog_color[2] * inst->tint.b == 0.0f;
-
     batcher->env = bind->env_count > 0 && !m_Frame.ortho;
-    // Which way is right and which is down on the screen, in eye space.
-    const float env_x = m_Frame.proj_x < 0.0f ? -1.0f : 1.0f;
-    const float env_y = m_Frame.proj_y < 0.0f ? -1.0f : 1.0f;
+    batcher->oargb_used = false;
 
     memcpy(batcher->mv, mv, sizeof(batcher->mv));
     mat_load(&batcher->mv);
-    const OUTPUT_MESH_VERTEX *const vertices =
-        Vector_GetData(bind->mesh->vertices);
 
-    if (use_lit && !fill_lit && black_fog && !m_Frame.ortho && !batcher->env
-        && !batcher->cel) {
-        // Most of the world: a room's kept colours, faded into black fog.
-        // Only what such a vertex needs, with what holds for the whole
-        // instance asked once instead of per vertex.
-        const bool fog_on = m_Frame.fog;
-        const float fog_start = m_Frame.fog_start;
-        const float fog_scale = m_Frame.fog_scale;
-        const float near_z = m_Frame.near_z;
-        const float proj_x = m_Frame.proj_x;
-        const float proj_y = m_Frame.proj_y;
-        const uint32_t *const lit = bind->lit;
-        M_XVERT *const xverts = batcher->xverts;
-        const int32_t count = bind->vertex_count;
-        for (int32_t i = 0; i < count; i++) {
-            const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
-            // The SH-4 does not wait for a line it was told to fetch ahead.
-            __builtin_prefetch(vertex + 2);
-            const uint16_t flags = vertex->flags;
-            float x = vertex->pos.x;
-            float y = vertex->pos.y;
-            float z = vertex->pos.z;
-            float w = 1.0f;
-            mat_trans_nodiv(x, y, z, w);
-            if ((flags & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0) {
-                x += vertex->normal.x * scale;
-                y += vertex->normal.y * scale;
-            }
-            M_XVERT *const out = &xverts[i];
-            out->x = x;
-            out->y = y;
-            out->z = z;
-            uint32_t argb = lit[i];
-            uint32_t oargb = 0;
-            uint8_t clip = 0;
-            if (fog_on && (flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
-                const float dist_sq = fipr_magnitude_sqr(x, y, z, 0.0f);
-                if (dist_sq > fog_start_sq) {
-                    const float fog = M_Clamp(
-                        (dist_sq * M_InvSqrt(dist_sq) - fog_start) * fog_scale,
-                        0.0f, 1.0f);
-                    if (fog > 0.0f) {
-                        clip = fog >= 1.0f ? M_CLIP_FOG : 0;
-                        argb = M_ScaleRGB(argb, 1.0f - fog);
-                        oargb = 0xFF000000u;
-                    }
-                }
-            }
-            if (z >= near_z) {
-                const float inv_z = M_InvSqrt(z * z);
-                const float sx = proj_x * x * inv_z;
-                const float sy = proj_y * y * inv_z;
-                out->sx = sx;
-                out->sy = sy;
-                out->inv_z = inv_z;
-                clip |= (sx < left ? M_CLIP_LEFT : 0)
-                    | (sx > right ? M_CLIP_RIGHT : 0)
-                    | (sy < top ? M_CLIP_TOP : 0)
-                    | (sy > bottom ? M_CLIP_BOTTOM : 0);
-            } else {
-                clip |= M_CLIP_NEAR;
-            }
-            out->clip = clip;
-            out->argb = argb;
-            out->oargb = oargb;
-        }
-        return true;
-    }
-
-    if (bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho
+    if (bind->needs_room_lights && !bind->needs_object_light
+        && !bind->needs_own_light && !bind->billboard && black_fog
+        && !m_Frame.ortho && !batcher->env && !batcher->cel) {
+        g_DC_ProbeUs[DC_PROBE_XF_LIT] += bind->vertex_count; // TEMP
+        M_XformRoom(batcher, bind, inst, &il, &c);
+    } else if (
+        bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho
         && !batcher->env) {
-        // Lara, enemies, pickups: the object's light on each vertex, with
-        // n.l found once for the light and the cel shading both.
-        const bool fog_on = m_Frame.fog;
-        const float fog_start = m_Frame.fog_start;
-        const float fog_scale = m_Frame.fog_scale;
-        const float near_z = m_Frame.near_z;
-        const float proj_x = m_Frame.proj_x;
-        const float proj_y = m_Frame.proj_y;
-        const float min_shade = m_Frame.min_shade;
-        const bool dir = il.has_direction;
-        const bool cel = batcher->cel;
-        const float cel_shade = m_CelShade;
-        const float l0 = il.l[0];
-        const float l1 = il.l[1];
-        const float l2 = il.l[2];
-        const float adder = il.adder;
-        // Colour times tint, in 0..1 for 0..255.
-        const float kr = inst->tint.r * (1.0f / 255.0f);
-        const float kg = inst->tint.g * (1.0f / 255.0f);
-        const float kb = inst->tint.b * (1.0f / 255.0f);
-        const float ka = inst->tint.a * (1.0f / 255.0f);
-        M_XVERT *const xverts = batcher->xverts;
-        const int32_t count = bind->vertex_count;
-        for (int32_t i = 0; i < count; i++) {
-            const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
-            __builtin_prefetch(vertex + 2);
-            float x = vertex->pos.x;
-            float y = vertex->pos.y;
-            float z = vertex->pos.z;
-            float w = 1.0f;
-            mat_trans_nodiv(x, y, z, w);
-            M_XVERT *const out = &xverts[i];
-            out->x = x;
-            out->y = y;
-            out->z = z;
-
-            float fog = 0.0f;
-            if (fog_on && (vertex->flags & VERT_NO_FOG) == 0) {
-                const float dist_sq = fipr_magnitude_sqr(x, y, z, 0.0f);
-                if (dist_sq > fog_start_sq) {
-                    fog = M_Clamp(
-                        (dist_sq * M_InvSqrt(dist_sq) - fog_start) * fog_scale,
-                        0.0f, 1.0f);
-                }
-            }
-            uint8_t clip = fog >= 1.0f ? M_CLIP_FOG : 0;
-            if (z >= near_z) {
-                const float inv_z = M_InvSqrt(z * z);
-                const float sx = proj_x * x * inv_z;
-                const float sy = proj_y * y * inv_z;
-                out->sx = sx;
-                out->sy = sy;
-                out->inv_z = inv_z;
-                clip |= (sx < left ? M_CLIP_LEFT : 0)
-                    | (sx > right ? M_CLIP_RIGHT : 0)
-                    | (sy < top ? M_CLIP_TOP : 0)
-                    | (sy > bottom ? M_CLIP_BOTTOM : 0);
-            } else {
-                clip |= M_CLIP_NEAR;
-            }
-            out->clip = clip;
-
-            // As M_LightVertex lights a vertex of the object's light.
-            float shade = adder;
-            float n_dot_l = 0.0f;
-            if (dir) {
-                n_dot_l = fipr(
-                    l0, l1, l2, 0.0f, vertex->normal.x, vertex->normal.y,
-                    vertex->normal.z, 0.0f);
-                shade = M_Clamp(
-                    shade + n_dot_l * (1.0f / (float)(1 << 16)), 0.0f,
-                    M_SHADE_MAX);
-            }
-            const float s = shade > min_shade ? shade : min_shade;
-            const float mul = 2.0f - s * (1.0f / M_SHADE_NEUTRAL);
-            const float r = vertex->color.r * mul * kr;
-            const float g = vertex->color.g * mul * kg;
-            const float b = vertex->color.b * mul * kb;
-            const float a = vertex->color.a * ka;
-            const float keep = 1.0f - fog;
-            out->argb = M_PackARGB(a, r * keep, g * keep, b * keep);
-            out->oargb = fog > 0.0f ? 0xFF000000u : 0;
-            if (cel) {
-                const float dark = keep * cel_shade;
-                out->sargb = M_PackARGB(
-                    0.5f + 0.5f * (n_dot_l * cel_scale - M_CEL_EDGE), r * dark,
-                    g * dark, b * dark);
-            }
-        }
-        return true;
+        g_DC_ProbeUs[DC_PROBE_XF_PLAIN] += bind->vertex_count; // TEMP
+        M_XformObject(batcher, bind, inst, &il, &c, cel_scale);
+    } else {
+        g_DC_ProbeUs[DC_PROBE_XF_GENERIC] += bind->vertex_count; // TEMP
+        M_XformGeneric(
+            batcher, bind, inst, &il, &c, mv, scale, cel_scale, black_fog);
     }
-
-    for (int32_t i = 0; i < bind->vertex_count; i++) {
-        const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
-        float x = vertex->pos.x;
-        float y = vertex->pos.y;
-        float z = vertex->pos.z;
-        float w = 1.0f;
-        mat_trans_nodiv(x, y, z, w);
-        if ((vertex->flags & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0) {
-            x += vertex->normal.x * scale;
-            y += vertex->normal.y * scale;
-        }
-
-        M_XVERT *const out = &batcher->xverts[i];
-        out->x = x;
-        out->y = y;
-        out->z = z;
-
-        float fog = 0.0f;
-        if (m_Frame.fog && (vertex->flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
-            // Nearer than the fog starts, as most is, it needs no root.
-            const float dist_sq = fipr_magnitude_sqr(x, y, z, 0.0f);
-            if (dist_sq > fog_start_sq) {
-                fog = M_Clamp(
-                    (dist_sq * M_InvSqrt(dist_sq) - m_Frame.fog_start)
-                        * m_Frame.fog_scale,
-                    0.0f, 1.0f);
-            }
-        }
-        uint8_t clip = fog >= 1.0f ? M_CLIP_FOG : 0;
-        // Kept for the projection, so that a vertex is divided once.
-        if (m_Frame.ortho) {
-        } else if (z >= m_Frame.near_z) {
-            // z is past the near plane, so positive.
-            const float inv_z = M_InvSqrt(z * z);
-            const float sx = m_Frame.proj_x * x * inv_z;
-            const float sy = m_Frame.proj_y * y * inv_z;
-            out->sx = sx;
-            out->sy = sy;
-            out->inv_z = inv_z;
-            clip |= (sx < left ? M_CLIP_LEFT : 0)
-                | (sx > right ? M_CLIP_RIGHT : 0)
-                | (sy < top ? M_CLIP_TOP : 0)
-                | (sy > bottom ? M_CLIP_BOTTOM : 0);
-        } else {
-            clip |= M_CLIP_NEAR;
-        }
-        out->clip = clip;
-        // The kept colour, faded into black fog as the lighting below
-        // would fade it.
-        if (use_lit && !fill_lit && (fog == 0.0f || black_fog)) {
-            out->argb =
-                fog == 0.0f ? bind->lit[i] : M_ScaleRGB(bind->lit[i], 1.0f - fog);
-            out->oargb = fog > 0.0f ? 0xFF000000u : 0;
-            continue;
-        }
-
-        float rgba[4];
-        float mul;
-        M_LightVertex(vertex, &il, &inst->wmatrix, inst->tint, rgba, &mul);
-        if (fill_lit) {
-            bind->lit[i] = M_PackARGB(rgba[3], rgba[0], rgba[1], rgba[2]);
-        }
-        const float keep = 1.0f - fog;
-        out->argb =
-            M_PackARGB(rgba[3], rgba[0] * keep, rgba[1] * keep, rgba[2] * keep);
-        out->oargb = fog > 0.0f
-            ? M_PackARGB(
-                  1.0f, m_Frame.fog_color[0] * fog * inst->tint.r,
-                  m_Frame.fog_color[1] * fog * inst->tint.g,
-                  m_Frame.fog_color[2] * fog * inst->tint.b)
-            : 0;
-        if (batcher->cel) {
-            // Half at the edge, more into the shade; the PowerVR runs it
-            // across each face, and the alpha test cuts it there.
-            float shade = 0.0f;
-            if ((vertex->flags & (VERT_USE_OBJECT_LIGHT | VERT_NO_LIGHTING))
-                == VERT_USE_OBJECT_LIGHT) {
-                const float cos = fipr(il.l[0], il.l[1], il.l[2], 0.0f,
-                                      vertex->normal.x, vertex->normal.y,
-                                      vertex->normal.z, 0.0f)
-                    * cel_scale;
-                shade = 0.5f + 0.5f * (cos - M_CEL_EDGE);
-            }
-            const float dark = keep * m_CelShade;
-            out->sargb = M_PackARGB(
-                shade, rgba[0] * dark, rgba[1] * dark, rgba[2] * dark);
-        }
-        if (batcher->env && (vertex->flags & VERT_REFLECTIVE) != 0) {
-            // The normal in eye space (the camera at the origin, looking
-            // down z), turned to face the camera, mirrors the way to the
-            // vertex; the sphere map holds what lies that way.
-            const float nx = vertex->normal.x;
-            const float ny = vertex->normal.y;
-            const float nz = vertex->normal.z;
-            float n[3] = {
-                mv[0][0] * nx + mv[1][0] * ny + mv[2][0] * nz,
-                mv[0][1] * nx + mv[1][1] * ny + mv[2][1] * nz,
-                mv[0][2] * nx + mv[1][2] * ny + mv[2][2] * nz,
-            };
-            const float d_len_sq = x * x + y * y + z * z;
-            const float n_len_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
-            float eu = 0.5f;
-            float ev = 0.5f;
-            if (d_len_sq > 0.0f && n_len_sq > 0.0f) {
-                const float d[3] = {
-                    x / sqrtf(d_len_sq), y / sqrtf(d_len_sq),
-                    z / sqrtf(d_len_sq),
-                };
-                const float inv_n = 1.0f / sqrtf(n_len_sq);
-                float d_n = 0.0f;
-                for (int32_t k = 0; k < 3; k++) {
-                    n[k] *= inv_n;
-                    d_n += d[k] * n[k];
-                }
-                if (d_n > 0.0f) {
-                    for (int32_t k = 0; k < 3; k++) {
-                        n[k] = -n[k];
-                    }
-                    d_n = -d_n;
-                }
-                const float r[3] = {
-                    d[0] - 2.0f * d_n * n[0],
-                    d[1] - 2.0f * d_n * n[1],
-                    d[2] - 2.0f * d_n * n[2],
-                };
-                // Straight back at the camera is the map's middle, away
-                // from it its rim.
-                const float m2 =
-                    r[0] * r[0] + r[1] * r[1] + (r[2] - 1.0f) * (r[2] - 1.0f);
-                if (m2 > 0.0f) {
-                    const float inv_m = 0.5f / sqrtf(m2);
-                    eu = 0.5f + env_x * r[0] * inv_m;
-                    ev = 0.5f + env_y * r[1] * inv_m;
-                }
-            }
-            out->eu = eu;
-            out->ev = ev;
-            // Half its own, half the light on it: metal shows its
-            // surroundings even in the shade, if less.
-            float e[3];
-            for (int32_t k = 0; k < 3; k++) {
-                e[k] = keep * M_ENV_STRENGTH
-                    * (0.5f + 0.5f * M_Clamp(rgba[k], 0.0f, 1.0f));
-            }
-            out->eargb = M_PackARGB(1.0f, e[0], e[1], e[2]);
-        }
+    // The nearest vertex, once for the instance: the layers drawn over the
+    // world start above it.
+    if (m_Frame.depth.track && c.max_inv_z > 0.0f) {
+        DC_PVR_UseDepth(M_Depth(m_Frame.near_z * c.max_inv_z));
     }
     return true;
 }
 
-M_HOT void M_Project(
-    const M_XVERT *const in, const float u, const float v,
-    DC_PVR_VERTEX *const out)
+// What the faces going out stand for, which decides their colours.
+typedef enum {
+    M_EMIT_PLAIN, // the faces themselves, in their lit colours
+    M_EMIT_ENV, // the reflections: the environment map, added
+    M_EMIT_BUMP, // the relief: white, with the offset colour lighting it
+} M_EMIT;
+
+// The colours a vertex of the instance goes out in, by the pass.
+M_HOT void M_Colours(
+    const MESH_BATCHER *const batcher, const int32_t idx, uint32_t *const argb,
+    uint32_t *const oargb)
 {
+    switch (m_Frame.emit) {
+    case M_EMIT_ENV:
+        *argb = batcher->eargb[idx];
+        *oargb = 0;
+        return;
+    case M_EMIT_BUMP:
+        *argb = 0xFFFFFFFFu;
+        *oargb = m_Frame.bump_k;
+        return;
+    default: {
+        const M_XVERT *const xv = &batcher->xverts[idx];
+        *argb = xv->argb;
+        *oargb = batcher->oargb_used ? batcher->oargb[idx]
+            : (xv->clip & M_CLIP_FOGGED)  ? 0xFF000000u
+                                          : 0;
+    }
+    }
+}
+
+// A transformed vertex onto the screen, straight into a list's buffer.
+M_HOT void M_Project(
+    const M_XVERT *const in, const float u, const float v, const uint32_t argb,
+    const uint32_t oargb, const uint32_t flags, pvr_vertex_t *const out)
+{
+    out->flags = flags;
     if (m_Frame.ortho) {
         const float(*const s) = m_Frame.ortho_scale;
         const float(*const o) = m_Frame.ortho_offset;
-        out->x = m_Frame.center_x + (s[0] * in->x + o[0]) * m_Frame.half_w;
-        out->y = m_Frame.center_y - (s[1] * in->y + o[1]) * m_Frame.half_h;
+        out->x = (m_Frame.center_x + (s[0] * in->x + o[0]) * m_Frame.half_w)
+            * m_Frame.screen_scale;
+        out->y = (m_Frame.center_y - (s[1] * in->y + o[1]) * m_Frame.half_h)
+            * m_Frame.screen_scale;
         // -1 at the near end; the PowerVR wants the nearer bigger.
         out->z = DC_PVR_Depth2D(0.5f - 0.5f * (s[2] * in->z + o[2]));
-        out->u = u;
-        out->v = v;
-        out->argb = m_Frame.bump_pass ? 0xFFFFFFFFu
-            : m_Frame.env_pass        ? in->eargb
-            : m_Frame.cel_pass        ? in->sargb
-                                      : in->argb;
-        out->oargb = m_Frame.bump_pass ? m_Frame.bump_k
-            : m_Frame.env_pass         ? 0
-                                       : in->oargb;
-        return;
+    } else {
+        out->x = (m_Frame.center_x + in->sx) * m_Frame.screen_scale;
+        out->y = (m_Frame.center_y + in->sy) * m_Frame.screen_scale;
+        out->z = M_Depth(m_Frame.near_z * in->inv_z);
     }
-    out->x = m_Frame.center_x + in->sx;
-    out->y = m_Frame.center_y + in->sy;
-    out->z = DC_PVR_Depth3D(m_Frame.near_z * in->inv_z);
     out->u = u;
     out->v = v;
-    // Most faces are in none of the extra passes: one test for them.
-    if (!(m_Frame.bump_pass | m_Frame.env_pass | m_Frame.cel_pass)) {
-        out->argb = in->argb;
-        out->oargb = in->oargb;
-        return;
-    }
-    out->argb = m_Frame.bump_pass ? 0xFFFFFFFFu
-        : m_Frame.env_pass        ? in->eargb
-        : m_Frame.cel_pass        ? in->sargb
-                                  : in->argb;
-    out->oargb = m_Frame.bump_pass ? m_Frame.bump_k
-        : m_Frame.env_pass         ? 0
-                                   : in->oargb;
-}
-
-// M_Project straight into a list's buffer (DC_PVR_ReservePoly); inlined, the
-// vertex in between is never stored.
-M_HOT void M_ProjectInto(
-    const M_XVERT *const in, const float u, const float v, const uint32_t flags,
-    pvr_vertex_t *const out)
-{
-    DC_PVR_VERTEX p;
-    M_Project(in, u, v, &p);
-    out->flags = flags;
-    out->x = p.x * m_Frame.screen_scale;
-    out->y = p.y * m_Frame.screen_scale;
-    out->z = p.z;
-    out->u = p.u;
-    out->v = p.v;
-    out->argb = p.argb;
-    out->oargb = p.oargb;
+    out->argb = argb;
+    out->oargb = oargb;
 }
 
 // A vertex of a face being clipped: transformed, with its texture
-// coordinates alongside.
+// coordinates and colours alongside.
 typedef struct {
     M_XVERT xv;
     float u;
     float v;
+    uint32_t argb;
+    uint32_t oargb;
+    uint32_t sargb;
 } M_CLIP_VERT;
+
+static M_CLIP_VERT M_LoadClipVert(
+    const MESH_BATCHER *const batcher, const int32_t idx, const float u,
+    const float v)
+{
+    M_CLIP_VERT out = { .xv = batcher->xverts[idx], .u = u, .v = v };
+    M_Colours(batcher, idx, &out.argb, &out.oargb);
+    out.sargb = batcher->cel_emit ? batcher->sargb[idx] : 0;
+    return out;
+}
 
 static M_CLIP_VERT M_ClipEdge(
     const M_CLIP_VERT *const a, const M_CLIP_VERT *const b)
@@ -1236,7 +1402,6 @@ static M_CLIP_VERT M_ClipEdge(
     const float y = a->xv.y + (b->xv.y - a->xv.y) * t;
     const float inv_z = 1.0f / m_Frame.near_z;
     const int32_t ti = (int32_t)(t * 256.0f + 0.5f);
-    // Only the colours M_Project takes in this pass.
     return (M_CLIP_VERT) {
         .xv = {
             .x = x,
@@ -1245,17 +1410,12 @@ static M_CLIP_VERT M_ClipEdge(
             .sx = m_Frame.proj_x * x * inv_z,
             .sy = m_Frame.proj_y * y * inv_z,
             .inv_z = inv_z,
-            .argb = M_LerpARGB(a->xv.argb, b->xv.argb, ti),
-            .oargb = M_LerpARGB(a->xv.oargb, b->xv.oargb, ti),
-            .sargb = m_Frame.cel_pass
-                ? M_LerpARGB(a->xv.sargb, b->xv.sargb, ti)
-                : 0,
-            .eargb = m_Frame.env_pass
-                ? M_LerpARGB(a->xv.eargb, b->xv.eargb, ti)
-                : 0,
         },
         .u = a->u + (b->u - a->u) * t,
         .v = a->v + (b->v - a->v) * t,
+        .argb = M_LerpARGB(a->argb, b->argb, ti),
+        .oargb = M_LerpARGB(a->oargb, b->oargb, ti),
+        .sargb = M_LerpARGB(a->sargb, b->sargb, ti),
     };
 }
 
@@ -1270,36 +1430,22 @@ M_HOT float M_Inset(const float d)
                             : d * 0.5f;
 }
 
-// Reads a face's texture coordinates, pulled towards their middle by up to
-// half a texel when filtering bilinearly.
-static void M_GetFaceUVs(
+// Reads a face's texture coordinates (pulled towards their middle already,
+// when filtering bilinearly: M_InsetRun).
+M_HOT void M_GetFaceUVs(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const OUTPUT_MESH_INDEX *const idx, const int32_t n, float uv[][2])
 {
-    if (m_Frame.env_pass) {
+    if (m_Frame.emit == M_EMIT_ENV) {
         for (int32_t k = 0; k < n; k++) {
-            uv[k][0] = batcher->xverts[idx[k]].eu;
-            uv[k][1] = batcher->xverts[idx[k]].ev;
+            uv[k][0] = batcher->env_uv[idx[k]][0];
+            uv[k][1] = batcher->env_uv[idx[k]][1];
         }
         return;
     }
-    float cu = 0.0f;
-    float cv = 0.0f;
     for (int32_t k = 0; k < n; k++) {
         uv[k][0] = bind->uv[idx[k] * 2] * (1.0f / M_UV_ONE);
         uv[k][1] = bind->uv[idx[k] * 2 + 1] * (1.0f / M_UV_ONE);
-        cu += uv[k][0];
-        cv += uv[k][1];
-    }
-    if (!m_Frame.inset_uv || bind->page[idx[0]] == M_NO_PAGE) {
-        return;
-    }
-    const float inv_n = n == 4 ? 0.25f : 1.0f / 3.0f;
-    cu *= inv_n;
-    cv *= inv_n;
-    for (int32_t k = 0; k < n; k++) {
-        uv[k][0] += M_Inset(cu - uv[k][0]);
-        uv[k][1] += M_Inset(cv - uv[k][1]);
     }
 }
 
@@ -1313,28 +1459,82 @@ M_HOT bool M_IsBackFacing(
         >= 0.0f;
 }
 
+// The cel shading's shaded side of a face just emitted: the same vertices
+// in the shaded colours, kept for the punch-through list until the instance
+// is done (M_FlushCel). Nothing is projected again.
+static void M_KeepCel(
+    MESH_BATCHER *const batcher, const pvr_vertex_t *const src,
+    const int32_t n, const uint32_t sargb[])
+{
+    if (batcher->cel_count + n > batcher->cel_capacity) {
+        batcher->cel_capacity = (batcher->cel_count + n) * 2;
+        batcher->cel_buf = Memory_Realloc(
+            batcher->cel_buf, batcher->cel_capacity * sizeof(pvr_vertex_t));
+    }
+    M_CEL_RUN *run = batcher->cel_runs->count > 0
+        ? Vector_Get(batcher->cel_runs, batcher->cel_runs->count - 1)
+        : nullptr;
+    if (run == nullptr || run->page != batcher->emit_page) {
+        const M_CEL_RUN fresh = {
+            .page = batcher->emit_page,
+            .start = batcher->cel_count,
+        };
+        Vector_Add(batcher->cel_runs, &fresh);
+        run = Vector_Get(batcher->cel_runs, batcher->cel_runs->count - 1);
+    }
+    pvr_vertex_t *const dst = &batcher->cel_buf[batcher->cel_count];
+    for (int32_t k = 0; k < n; k++) {
+        dst[k] = src[k];
+        dst[k].argb = sargb[k];
+        dst[k].oargb = 0;
+    }
+    batcher->cel_count += n;
+    run->count += n;
+}
+
+static void M_FlushCel(MESH_BATCHER *const batcher)
+{
+    for (int32_t i = 0; i < batcher->cel_runs->count; i++) {
+        const M_CEL_RUN *const run = Vector_Get(batcher->cel_runs, i);
+        DC_PVR_SetState(
+            DC_BLEND_PUNCH_SHADE,
+            run->page == M_NO_PAGE ? DC_PVR_NO_TEXTURE : run->page, true);
+        pvr_vertex_t *const out = DC_PVR_ReservePoly(run->count);
+        if (out == nullptr) {
+            continue;
+        }
+        memcpy(out, &batcher->cel_buf[run->start], run->count * sizeof(*out));
+        DC_PVR_CommitPoly(run->count);
+    }
+    Vector_Clear(batcher->cel_runs);
+    batcher->cel_count = 0;
+}
+
+// Whether the cel shading has anything to draw on a face: a face whose
+// corners all lie under half the alpha is lit all over.
+M_HOT bool M_CelShows(const uint32_t sargb_or)
+{
+    return sargb_or >= M_CEL_CUT;
+}
+
 static void M_EmitTriangle(
-    const MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const uint32_t i0, const uint32_t i1, const uint32_t i2)
 {
     const OUTPUT_MESH_INDEX idx[3] = { i0, i1, i2 };
     const M_XVERT *const xv = batcher->xverts;
-    if ((xv[i0].clip & xv[i1].clip & xv[i2].clip) != 0) {
+    if ((xv[i0].clip & xv[i1].clip & xv[i2].clip & M_CLIP_CULL) != 0) {
         return;
     }
-    if (m_Frame.cel_pass
-        && (xv[i0].sargb | xv[i1].sargb | xv[i2].sargb) < M_CEL_CUT) {
-        return;
-    }
+    const uint32_t *const sargb = batcher->sargb;
+    const bool cel = batcher->cel_emit
+        && M_CelShows(sargb[i0] | sargb[i1] | sargb[i2]);
     // Read only for faces that are drawn: those turned away go first.
     float uv[3][2];
     const float near_z = m_Frame.near_z;
 
     if (((xv[i0].clip | xv[i1].clip | xv[i2].clip) & M_CLIP_NEAR) == 0) {
-        if (m_Frame.cull
-            && M_IsBackFacing(
-                &batcher->xverts[i0], &batcher->xverts[i1],
-                &batcher->xverts[i2])) {
+        if (m_Frame.cull && M_IsBackFacing(&xv[i0], &xv[i1], &xv[i2])) {
             return;
         }
         M_GetFaceUVs(batcher, bind, idx, 3, uv);
@@ -1342,12 +1542,20 @@ static void M_EmitTriangle(
         if (out == nullptr) {
             return;
         }
+        uint32_t cel_argb[3];
         for (int32_t k = 0; k < 3; k++) {
-            M_ProjectInto(
-                &batcher->xverts[idx[k]], uv[k][0], uv[k][1],
+            uint32_t argb;
+            uint32_t oargb;
+            M_Colours(batcher, idx[k], &argb, &oargb);
+            M_Project(
+                &xv[idx[k]], uv[k][0], uv[k][1], argb, oargb,
                 k == 2 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
+            cel_argb[k] = sargb[idx[k]];
         }
         DC_PVR_CommitPoly(3);
+        if (cel) {
+            M_KeepCel(batcher, out, 3, cel_argb);
+        }
         return;
     }
 
@@ -1356,11 +1564,7 @@ static void M_EmitTriangle(
     M_GetFaceUVs(batcher, bind, idx, 3, uv);
     M_CLIP_VERT in[3];
     for (int32_t k = 0; k < 3; k++) {
-        in[k] = (M_CLIP_VERT) {
-            .xv = batcher->xverts[idx[k]],
-            .u = uv[k][0],
-            .v = uv[k][1],
-        };
+        in[k] = M_LoadClipVert(batcher, idx[k], uv[k][0], uv[k][1]);
     }
     M_CLIP_VERT poly[4];
     int32_t count = 0;
@@ -1376,15 +1580,27 @@ static void M_EmitTriangle(
             poly[count++] = M_ClipEdge(a, b);
         }
     }
-    DC_PVR_VERTEX out[4];
-    for (int32_t k = 0; k < count; k++) {
-        M_Project(&poly[k].xv, poly[k].u, poly[k].v, &out[k]);
+    if (count < 3) {
+        return;
     }
-    if (count == 3) {
-        DC_PVR_Triangle(&out[0], &out[1], &out[2]);
-    } else if (count == 4) {
-        // Fan 0-1-2-3 as a strip: 1, 0, 2, 3.
-        DC_PVR_Quad(&out[1], &out[0], &out[2], &out[3]);
+    pvr_vertex_t *const out = DC_PVR_ReservePoly(count);
+    if (out == nullptr) {
+        return;
+    }
+    // A fan 0-1-2-3 as a strip: 1, 0, 2, 3.
+    static const int32_t order[2][4] = { { 0, 1, 2, 3 }, { 1, 0, 2, 3 } };
+    const int32_t *const ord = order[count == 4];
+    uint32_t cel_argb[4];
+    for (int32_t k = 0; k < count; k++) {
+        const M_CLIP_VERT *const p = &poly[ord[k]];
+        M_Project(
+            &p->xv, p->u, p->v, p->argb, p->oargb,
+            k == count - 1 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
+        cel_argb[k] = p->sargb;
+    }
+    DC_PVR_CommitPoly(count);
+    if (cel) {
+        M_KeepCel(batcher, out, count, cel_argb);
     }
 }
 
@@ -1427,7 +1643,7 @@ static void M_PairQuads(OUTPUT_MESH_INDEX *const indices, const int32_t count)
 // TR's geometry is mostly quads, and the vertex buffers and the PowerVR both
 // take a third less. Only when no corner needs clipping.
 static bool M_TryEmitQuad(
-    const MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const OUTPUT_MESH_INDEX *const t0, const OUTPUT_MESH_INDEX *const t1)
 {
     if (!M_IsQuad(t0)) {
@@ -1437,13 +1653,7 @@ static bool M_TryEmitQuad(
     const M_XVERT *const xv = batcher->xverts;
     const uint8_t clip_and = xv[strip[0]].clip & xv[strip[1]].clip
         & xv[strip[2]].clip & xv[strip[3]].clip;
-    if (clip_and != 0) {
-        return true;
-    }
-    if (m_Frame.cel_pass
-        && (xv[strip[0]].sargb | xv[strip[1]].sargb | xv[strip[2]].sargb
-            | xv[strip[3]].sargb)
-            < M_CEL_CUT) {
+    if ((clip_and & M_CLIP_CULL) != 0) {
         return true;
     }
     const uint8_t clip_or = xv[strip[0]].clip | xv[strip[1]].clip
@@ -1462,39 +1672,47 @@ static bool M_TryEmitQuad(
             return false;
         }
     }
-    // Pulled in about the middle of the whole quad, so that both halves
-    // still meet along the diagonal.
     float uv[4][2];
     M_GetFaceUVs(batcher, bind, strip, 4, uv);
     pvr_vertex_t *const out = DC_PVR_ReservePoly(4);
     if (out == nullptr) {
         return true;
     }
+    const uint32_t *const sargb = batcher->sargb;
+    uint32_t cel_argb[4];
     for (int32_t k = 0; k < 4; k++) {
-        M_ProjectInto(
-            &batcher->xverts[strip[k]], uv[k][0], uv[k][1],
+        uint32_t argb;
+        uint32_t oargb;
+        M_Colours(batcher, strip[k], &argb, &oargb);
+        M_Project(
+            &xv[strip[k]], uv[k][0], uv[k][1], argb, oargb,
             k == 3 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
+        cel_argb[k] = sargb[strip[k]];
     }
     DC_PVR_CommitPoly(4);
+    if (batcher->cel_emit
+        && M_CelShows(cel_argb[0] | cel_argb[1] | cel_argb[2] | cel_argb[3])) {
+        M_KeepCel(batcher, out, 4, cel_argb);
+    }
     return true;
 }
 
 static void M_EmitIndices(
-    const MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const OUTPUT_MESH_INDEX *const indices, const int32_t count, const DC_BLEND blend)
 {
+    const bool env = m_Frame.emit == M_EMIT_ENV;
     int32_t page = INT32_MIN;
     int32_t i = 0;
     while (i + 2 < count) {
-        const int32_t tri_page =
-            m_Frame.env_pass ? DC_PVR_ENV_MAP : bind->page[indices[i]];
+        const int32_t tri_page = env ? DC_PVR_ENV_MAP : bind->page[indices[i]];
         if (tri_page != page) {
             page = tri_page;
+            batcher->emit_page = page;
             DC_PVR_SetState(
                 blend, page == M_NO_PAGE ? DC_PVR_NO_TEXTURE : page, true);
         }
-        if (i + 5 < count
-            && (m_Frame.env_pass || bind->page[indices[i + 3]] == page)
+        if (i + 5 < count && (env || bind->page[indices[i + 3]] == page)
             && M_TryEmitQuad(batcher, bind, &indices[i], &indices[i + 3])) {
             i += 6;
             continue;
@@ -1567,8 +1785,20 @@ static void M_EmitShadowFaces(
         return;
     }
 
+    // Per vertex, what it lies past, as bits: a face whose corners all lie
+    // past one same thing is off, told with two ands instead of eighteen
+    // comparisons. The near plane's bit comes from the clip.
+    enum {
+        M_SOFT_OFF_LEFT = 0x01,
+        M_SOFT_OFF_RIGHT = 0x02,
+        M_SOFT_OFF_TOP = 0x04,
+        M_SOFT_OFF_BOTTOM = 0x08,
+        M_SOFT_OFF_FAR = 0x10,
+        M_SOFT_OFF_BEHIND = 0x20,
+    };
     mat_load(&m);
     float(*const soft)[3] = batcher->soft;
+    uint8_t *const soft_off = batcher->soft_off;
     for (int32_t i = 0; i < bind->vertex_count; i++) {
         const M_XVERT *const xv = &batcher->xverts[i];
         float x = xv->x;
@@ -1579,6 +1809,14 @@ static void M_EmitShadowFaces(
         soft[i][0] = x;
         soft[i][1] = y;
         soft[i][2] = z;
+        uint8_t off = (x < 0.0f ? M_SOFT_OFF_LEFT : 0)
+            | (x > 1.0f ? M_SOFT_OFF_RIGHT : 0) | (y < 0.0f ? M_SOFT_OFF_TOP : 0)
+            | (y > 1.0f ? M_SOFT_OFF_BOTTOM : 0);
+        if (world) {
+            off |= (z > M_SOFT_REACH ? M_SOFT_OFF_FAR : 0)
+                | (z < -M_SOFT_SPAN * 0.25f ? M_SOFT_OFF_BEHIND : 0);
+        }
+        soft_off[i] = off;
     }
 
     const OUTPUT_MESH *const mesh = bind->mesh;
@@ -1590,32 +1828,24 @@ static void M_EmitShadowFaces(
     const int32_t count = mesh->opaque_vertex_indices->count;
     for (int32_t i = 0; i + 2 < count; i += 3) {
         const OUTPUT_MESH_INDEX idx[3] = { indices[i], indices[i + 1], indices[i + 2] };
+        // Faces are tested as a whole: a big one can lie under the casters
+        // with every corner far off. Off the silhouette's cell, out of
+        // reach, between the light and the casters, or culled:
+        if ((soft_off[idx[0]] & soft_off[idx[1]] & soft_off[idx[2]]) != 0) {
+            continue;
+        }
         const M_XVERT *const xv[3] = {
             &batcher->xverts[idx[0]],
             &batcher->xverts[idx[1]],
             &batcher->xverts[idx[2]],
         };
-        const float *const s[3] = { soft[idx[0]], soft[idx[1]], soft[idx[2]] };
-        // Faces are tested as a whole: a big one can lie under the casters
-        // with every corner far off. Off the silhouette's cell, out of
-        // reach, or between the light and the casters:
-        bool off = false;
-        for (int32_t k = 0; k < 2; k++) {
-            off |= (s[0][k] < 0.0f && s[1][k] < 0.0f && s[2][k] < 0.0f)
-                || (s[0][k] > 1.0f && s[1][k] > 1.0f && s[2][k] > 1.0f);
-        }
-        if (world) {
-            off |= (s[0][2] > M_SOFT_REACH && s[1][2] > M_SOFT_REACH
-                    && s[2][2] > M_SOFT_REACH)
-                || (s[0][2] < -M_SOFT_SPAN * 0.25f
-                    && s[1][2] < -M_SOFT_SPAN * 0.25f
-                    && s[2][2] < -M_SOFT_SPAN * 0.25f);
-        }
-        if (off || (xv[0]->clip & xv[1]->clip & xv[2]->clip) != 0
-            || ((xv[0]->clip | xv[1]->clip | xv[2]->clip) & M_CLIP_NEAR) != 0
+        const uint8_t clip_and = xv[0]->clip & xv[1]->clip & xv[2]->clip;
+        const uint8_t clip_or = xv[0]->clip | xv[1]->clip | xv[2]->clip;
+        if ((clip_and & M_CLIP_CULL) != 0 || (clip_or & M_CLIP_NEAR) != 0
             || M_IsBackFacing(xv[0], xv[1], xv[2])) {
             continue;
         }
+        const float *const s[3] = { soft[idx[0]], soft[idx[1]], soft[idx[2]] };
         // The face's normal, turned towards the camera (at the origin); a
         // face turned away from the light takes no shadow from it.
         const float e1[3] = {
@@ -1635,17 +1865,20 @@ static void M_EmitShadowFaces(
         }
 
         DC_PVR_SetState(DC_BLEND_MUL, DC_PVR_SHADOW_MAP, true);
-        DC_PVR_VERTEX out[3];
+        pvr_vertex_t *const out = DC_PVR_ReservePoly(3);
+        if (out == nullptr) {
+            return;
+        }
         for (int32_t k = 0; k < 3; k++) {
             const float t = strength
                 * M_Clamp(1.0f - s[k][2] * (1.0f / M_SOFT_REACH), 0.0f, 1.0f);
             M_Project(
                 xv[k], (slot + s[k][0]) * (1.0f / DC_PVR_SHADOW_MAP_SLOTS),
-                s[k][1], &out[k]);
-            out[k].argb = M_PackARGB(1.0f, t, t, t);
-            out[k].oargb = M_PackARGB(1.0f, 1.0f - t, 1.0f - t, 1.0f - t);
+                s[k][1], M_PackARGB(1.0f, t, t, t),
+                M_PackARGB(1.0f, 1.0f - t, 1.0f - t, 1.0f - t),
+                k == 2 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
         }
-        DC_PVR_Triangle(&out[0], &out[1], &out[2]);
+        DC_PVR_CommitPoly(3);
         m_SoftFaces++;
     }
 }
@@ -1680,11 +1913,40 @@ M_HOT uint32_t M_PackUnit(const float x)
     return (uint32_t)(M_Clamp(x, 0.0f, 1.0f) * 255.0f + 0.5f);
 }
 
+// atan2 to within 0.0015 radians (the relief quantises the angle to 256
+// steps of 0.025): a cubic in the smaller over the larger, then the octant.
+M_HOT float M_Atan2(const float y, const float x)
+{
+    const float ax = fabsf(x);
+    const float ay = fabsf(y);
+    const float lo = ax < ay ? ax : ay;
+    const float hi = ax < ay ? ay : ax;
+    if (hi <= 0.0f) {
+        return 0.0f;
+    }
+    const float a = lo / hi;
+    const float s = a * a;
+    float r = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a
+        + a;
+    if (ay > ax) {
+        r = (float)(M_PI / 2.0) - r;
+    }
+    if (x < 0.0f) {
+        r = (float)M_PI - r;
+    }
+    return y < 0.0f ? -r : r;
+}
+
+// The lowest a light stands over a face, as the sine of M_BUMP_MIN_ELEVATION.
+#define M_BUMP_MIN_SIN 0.342898f
+
 // The offset colour that lights a face's relief (DC_BLEND_BUMP) from eye
 // space point light, or 0 when the face takes none: K1, K2 and K3 so that a
 // flat texel keeps the colour (K1 + K2 whole) and a slope turned from the
 // light loses up to depth of it, and Q the way the light lies across the
-// face, from u towards v.
+// face, from u towards v. No trigonometry: K2 is depth times the sine of
+// the elevation, which is the light's height over the face as it is, and K3
+// depth times its cosine, the root of what is left.
 static uint32_t M_BumpLight(
     const M_BINDING *const bind, const M_XVERT *const xv,
     const OUTPUT_MESH_INDEX *const idx, const float light[3], const float depth)
@@ -1745,19 +2007,16 @@ static uint32_t M_BumpLight(
     if (tl <= 0.0f || bl <= 0.0f || nl <= 0.0f || ll <= 0.0f) {
         return 0;
     }
-    const float lx = M_Dot3(l, t) / sqrtf(tl * ll);
-    const float ly = M_Dot3(l, bt) / sqrtf(bl * ll);
-    const float lz = M_Dot3(l, n) / sqrtf(nl * ll);
-    float elevation = asinf(M_Clamp(lz, -1.0f, 1.0f));
-    if (elevation < M_BUMP_MIN_ELEVATION) {
-        elevation = M_BUMP_MIN_ELEVATION;
-    }
-    float q = atan2f(ly, lx);
+    const float lx = M_Dot3(l, t) * M_InvSqrt(tl * ll);
+    const float ly = M_Dot3(l, bt) * M_InvSqrt(bl * ll);
+    float lz = M_Dot3(l, n) * M_InvSqrt(nl * ll);
+    lz = M_Clamp(lz, M_BUMP_MIN_SIN, 1.0f);
+    float q = M_Atan2(ly, lx);
     if (q < 0.0f) {
         q += 2.0f * (float)M_PI;
     }
-    const float k2 = depth * sinf(elevation);
-    const float k3 = depth * cosf(elevation);
+    const float k2 = depth * lz;
+    const float k3 = depth * sqrtf(1.0f - lz * lz);
     return (M_PackUnit(1.0f - k2) << 24) | (M_PackUnit(k2) << 16)
         | (M_PackUnit(k3) << 8)
         | ((uint32_t)(q * (256.0f / (2.0f * (float)M_PI))) & 0xFF);
@@ -1767,7 +2026,7 @@ static uint32_t M_BumpLight(
 // the light nearest it, the room's or a passing one (or from above, with
 // none).
 static void M_EmitBump(
-    const MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst)
 {
     const float(*const v)[4] = m_Frame.view;
@@ -1811,7 +2070,7 @@ static void M_EmitBump(
         Vector_GetData(bind->mesh->opaque_vertex_indices);
     const int32_t count = bind->mesh->opaque_vertex_indices->count;
     int32_t page = INT32_MIN;
-    m_Frame.bump_pass = true;
+    m_Frame.emit = M_EMIT_BUMP;
     int32_t i = 0;
     while (i + 2 < count) {
         const OUTPUT_MESH_INDEX *const tri = &indices[i];
@@ -1824,7 +2083,9 @@ static void M_EmitBump(
         const float fade =
             M_Clamp((M_BUMP_RANGE - z_min) * (1.0f / M_BUMP_FADE), 0.0f, 1.0f);
         if (tri_page == M_NO_PAGE || fade <= 0.0f
-            || (xv[tri[0]].clip & xv[tri[1]].clip & xv[tri[2]].clip) != 0) {
+            || (xv[tri[0]].clip & xv[tri[1]].clip & xv[tri[2]].clip
+                & M_CLIP_CULL)
+                != 0) {
             i += step;
             continue;
         }
@@ -1866,7 +2127,83 @@ static void M_EmitBump(
         m_BumpFaces++;
         i += step;
     }
-    m_Frame.bump_pass = false;
+    m_Frame.emit = M_EMIT_PLAIN;
+}
+
+// Pulls the texture coordinates of each face of a run towards the face's
+// middle by up to half a texel, so that bilinear filtering samples nothing
+// of the next texture on the page (the desktop clamps them to the texture in
+// its shader). Once, as the coordinates are filled: TR's vertices belong
+// each to one face.
+static void M_InsetRun(
+    const M_BINDING *const bind, const OUTPUT_MESH_INDEX *const indices,
+    const int32_t count)
+{
+    int32_t i = 0;
+    while (i + 2 < count) {
+        const bool quad = i + 5 < count && M_IsQuad(&indices[i])
+            && bind->page[indices[i + 3]] == bind->page[indices[i]];
+        const int32_t n = quad ? 4 : 3;
+        const OUTPUT_MESH_INDEX corners[4] = {
+            indices[i], indices[i + 1], indices[i + 2],
+            quad ? indices[i + 5] : indices[i],
+        };
+        i += quad ? 6 : 3;
+        if (bind->page[corners[0]] == M_NO_PAGE) {
+            continue;
+        }
+        float uv[4][2];
+        float cu = 0.0f;
+        float cv = 0.0f;
+        for (int32_t k = 0; k < n; k++) {
+            uv[k][0] = bind->uv[corners[k] * 2] * (1.0f / M_UV_ONE);
+            uv[k][1] = bind->uv[corners[k] * 2 + 1] * (1.0f / M_UV_ONE);
+            cu += uv[k][0];
+            cv += uv[k][1];
+        }
+        const float inv_n = n == 4 ? 0.25f : 1.0f / 3.0f;
+        cu *= inv_n;
+        cv *= inv_n;
+        for (int32_t k = 0; k < n; k++) {
+            bind->uv[corners[k] * 2] =
+                M_PackUV(uv[k][0] + M_Inset(cu - uv[k][0]));
+            bind->uv[corners[k] * 2 + 1] =
+                M_PackUV(uv[k][1] + M_Inset(cv - uv[k][1]));
+        }
+    }
+}
+
+// Whether the faces' texture coordinates are pulled in (bilinear filtering
+// on, where the mode allows it).
+static bool m_InsetUV = false;
+
+// Looks every vertex's texture up again (the animated textures moved on, or
+// the filtering changed), and pulls the faces' coordinates in if need be.
+static void M_RefillTextures(M_BINDING *const bind)
+{
+    for (int32_t i = 0; i < bind->vertex_count; i++) {
+        M_FillTexture(bind, i);
+    }
+    if (m_InsetUV) {
+        const OUTPUT_MESH *const mesh = bind->mesh;
+        const OUTPUT_MESH_INDEX *const opaque =
+            Vector_GetData(mesh->opaque_vertex_indices);
+        const int32_t clean = mesh->opaque_nodiscard_count;
+        M_InsetRun(bind, opaque, clean);
+        M_InsetRun(
+            bind, opaque + clean, mesh->opaque_vertex_indices->count - clean);
+        M_InsetRun(
+            bind, Vector_GetData(mesh->blend_add_vertex_indices),
+            mesh->blend_add_vertex_indices->count);
+        for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
+            const OUTPUT_MESH_FACE *const face =
+                Vector_Get(mesh->transparent_faces, i);
+            M_InsetRun(
+                bind, (const OUTPUT_MESH_INDEX *)face->vertex_indices,
+                face->vertex_count);
+        }
+    }
+    bind->tex_dirty = false;
 }
 
 static void M_DrawInstance(
@@ -1882,6 +2219,9 @@ static void M_DrawInstance(
         pass == SCENE_PASS_BLEND_ADD || pass == SCENE_PASS_BLEND_SUB;
     if (blended && inst->mesh->blend_add_vertex_indices->count == 0) {
         return;
+    }
+    if (bind->tex_dirty) {
+        M_RefillTextures(bind);
     }
 #if defined(TRX_DC_WATCHDOG)
     const uint64_t xform_start = timer_us_gettime64();
@@ -1902,14 +2242,14 @@ static void M_DrawInstance(
         !is_caster && M_ShadowType() == SHADOW_TYPE_VOLUME);
     if (m_Soft.active && pass == SCENE_PASS_OPAQUE) {
         if (is_caster) {
-            M_EmitSelfShadow(batcher, bind, caster);
+            DC_PROBE(DC_PROBE_SOFT, M_EmitSelfShadow(batcher, bind, caster));
         } else {
-            M_EmitSoftShadows(batcher, bind);
+            DC_PROBE(DC_PROBE_SOFT, M_EmitSoftShadows(batcher, bind));
         }
     }
 
     const OUTPUT_MESH *const mesh = inst->mesh;
-    if (pass == SCENE_PASS_BLEND_ADD || pass == SCENE_PASS_BLEND_SUB) {
+    if (blended) {
         M_EmitIndices(
             batcher, bind, Vector_GetData(mesh->blend_add_vertex_indices),
             mesh->blend_add_vertex_indices->count,
@@ -1921,29 +2261,34 @@ static void M_DrawInstance(
     const bool faded = inst->tint.a < 1.0f;
     const OUTPUT_MESH_INDEX *const opaque = Vector_GetData(mesh->opaque_vertex_indices);
     const int32_t clean = mesh->opaque_nodiscard_count;
-    M_EmitIndices(
-        batcher, bind, opaque, clean, faded ? DC_BLEND_ALPHA : DC_BLEND_OPAQUE);
-    M_EmitIndices(
-        batcher, bind, opaque + clean,
-        mesh->opaque_vertex_indices->count - clean,
-        faded ? DC_BLEND_ALPHA : DC_BLEND_PUNCH);
-    if (batcher->cel && !faded) {
-        // The shaded side, over the faces just drawn.
-        m_Frame.cel_pass = true;
+    // The shaded side of the cel shading is kept face by face as they go
+    // out, and drawn over them after.
+    batcher->cel_emit = batcher->cel && !faded;
+    DC_PROBE(
+        DC_PROBE_EMIT,
         M_EmitIndices(
-            batcher, bind, opaque, mesh->opaque_vertex_indices->count,
-            DC_BLEND_PUNCH_SHADE);
-        m_Frame.cel_pass = false;
+            batcher, bind, opaque, clean,
+            faded ? DC_BLEND_ALPHA : DC_BLEND_OPAQUE);
+        M_EmitIndices(
+            batcher, bind, opaque + clean,
+            mesh->opaque_vertex_indices->count - clean,
+            faded ? DC_BLEND_ALPHA : DC_BLEND_PUNCH));
+    batcher->cel_emit = false;
+    if (batcher->cel_count > 0) {
+        DC_PROBE(DC_PROBE_CEL, M_FlushCel(batcher));
     }
-    m_FrameRooms |= bind->lit != nullptr;
-    if (m_Frame.bump && m_Frame.lighting && !faded && bind->lit != nullptr) {
-        M_EmitBump(batcher, bind, inst);
+    m_FrameRooms |= bind->needs_room_lights;
+    if (m_Frame.bump && m_Frame.lighting && !faded && bind->needs_room_lights) {
+        DC_PROBE(DC_PROBE_BUMP, M_EmitBump(batcher, bind, inst));
     }
     if (batcher->env && !faded) {
         // The reflections, added over the faces just drawn.
-        m_Frame.env_pass = true;
-        M_EmitIndices(batcher, bind, bind->env, bind->env_count, DC_BLEND_ADD);
-        m_Frame.env_pass = false;
+        m_Frame.emit = M_EMIT_ENV;
+        DC_PROBE(
+            DC_PROBE_ENV,
+            M_EmitIndices(
+                batcher, bind, bind->env, bind->env_count, DC_BLEND_ADD));
+        m_Frame.emit = M_EMIT_PLAIN;
     }
     for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
         const OUTPUT_MESH_FACE *const face =
@@ -2005,6 +2350,8 @@ static void M_PrepareFrame(void)
     m_Frame.fog_color[1] = general->fog_color[1];
     m_Frame.fog_color[2] = general->fog_color[2];
     m_Frame.lights = DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
+    DC_PVR_GetDepth3D(&m_Frame.depth);
+    m_Frame.emit = 0; // M_EMIT_PLAIN
 }
 
 static void M_RenderBegin(const SCENE_SOURCE *const source)
@@ -2090,10 +2437,19 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
         m_Soft.active = false;
     }
     m_Frame.cull = !m_Frame.ortho;
-    m_Frame.inset_uv =
+    // Bilinear filtering samples half a texel past a face's edge, into the
+    // next texture on the page; the faces' coordinates are pulled in by that
+    // much instead, as they are filled (M_InsetRun).
+    const bool inset =
         g_Config.rendering.texture_filter == TEXTURE_FILTER_BILINEAR
         && DC_Mode_Get()->bilinear;
-    DC_PVR_SetFilter(m_Frame.inset_uv);
+    if (inset != m_InsetUV) {
+        m_InsetUV = inset;
+        for (int32_t i = 0; i < batcher->bindings->count; i++) {
+            (*(M_BINDING **)Vector_Get(batcher->bindings, i))->tex_dirty = true;
+        }
+    }
+    DC_PVR_SetFilter(inset);
     VECTOR *const staged = batcher->staged[pass];
     const int16_t *const casters = Vector_GetData(batcher->casters[pass]);
     for (int32_t i = 0; i < staged->count; i++) {
@@ -2108,18 +2464,15 @@ static bool M_IsDirty(const SCENE_SOURCE *const source, const SCENE_PASS pass)
     return batcher->staged[pass]->count > 0;
 }
 
+// The animated textures moved on: the meshes that carry any look theirs up
+// again as they are next drawn, so the ones out of sight cost nothing.
 static void M_AnimateTextures(const SCENE_SOURCE *const source)
 {
     MESH_BATCHER *const batcher = source->priv;
     for (int32_t i = 0; i < batcher->bindings->count; i++) {
         M_BINDING *const bind = *(M_BINDING **)Vector_Get(batcher->bindings, i);
-        const VECTOR *const ranges = bind->mesh->animated_vertices;
-        for (int32_t j = 0; j < ranges->count; j++) {
-            const OUTPUT_VERTEX_RANGE *const range = Vector_Get(ranges, j);
-            for (int32_t k = range->vertex_start;
-                 k < range->vertex_start + range->vertex_count; k++) {
-                M_FillTexture(bind, k);
-            }
+        if (bind->mesh->animated_vertices->count > 0) {
+            bind->tex_dirty = true;
         }
     }
 }
@@ -2149,9 +2502,8 @@ MESH_BATCHER *MeshBatcher_Create(void)
         batcher->casters[pass] =
             Vector_CreateAtCapacity(sizeof(int16_t), capacity);
     }
-    batcher->xverts_capacity = M_RESERVED_VERTICES;
-    batcher->xverts = memalign(32, M_RESERVED_VERTICES * sizeof(M_XVERT));
-    batcher->soft = Memory_Alloc(M_RESERVED_VERTICES * sizeof(*batcher->soft));
+    M_GrowVertexBuffers(batcher, M_RESERVED_VERTICES - 256);
+    batcher->cel_runs = Vector_Create(sizeof(M_CEL_RUN));
     batcher->source = (SCENE_SOURCE) {
         .render_begin = M_RenderBegin,
         .render_pass = M_RenderPass,
@@ -2178,7 +2530,68 @@ void MeshBatcher_Destroy(MESH_BATCHER *const batcher)
     }
     Memory_Free(batcher->xverts);
     Memory_Free(batcher->soft);
+    Memory_Free(batcher->soft_off);
+    Memory_Free(batcher->oargb);
+    Memory_Free(batcher->sargb);
+    Memory_Free(batcher->env_uv);
+    Memory_Free(batcher->eargb);
+    Memory_Free(batcher->cel_buf);
+    Vector_Free(batcher->cel_runs);
     Memory_Free(batcher);
+}
+
+// A face of a run, for sorting the run by texture page: a quad's halves
+// (M_PairQuads) stay together.
+typedef struct {
+    int32_t start;
+    int32_t length;
+    int32_t page;
+} M_PRIM;
+
+static int M_ComparePrims(const void *const a, const void *const b)
+{
+    const M_PRIM *const pa = a;
+    const M_PRIM *const pb = b;
+    if (pa->page != pb->page) {
+        return pa->page < pb->page ? -1 : 1;
+    }
+    return pa->start < pb->start ? -1 : 1;
+}
+
+// Puts the faces of a run that sample one page together, so that the list
+// takes one header for all of them (M_EmitIndices). The order within a run
+// does not matter to the PowerVR, which sorts by depth.
+static void M_SortByPage(
+    const M_BINDING *const bind, OUTPUT_MESH_INDEX *const indices,
+    const int32_t count)
+{
+    if (count < 6) {
+        return;
+    }
+    M_PRIM *const prims = Memory_Alloc(sizeof(M_PRIM) * (count / 3));
+    int32_t n = 0;
+    for (int32_t i = 0; i + 2 < count;) {
+        const bool quad = i + 5 < count && M_IsQuad(&indices[i])
+            && bind->page[indices[i + 3]] == bind->page[indices[i]];
+        prims[n++] = (M_PRIM) {
+            .start = i,
+            .length = quad ? 6 : 3,
+            .page = bind->page[indices[i]],
+        };
+        i += quad ? 6 : 3;
+    }
+    qsort(prims, n, sizeof(M_PRIM), M_ComparePrims);
+    OUTPUT_MESH_INDEX *const sorted = Memory_Alloc(sizeof(*indices) * count);
+    int32_t at = 0;
+    for (int32_t i = 0; i < n; i++) {
+        memcpy(
+            &sorted[at], &indices[prims[i].start],
+            sizeof(*indices) * prims[i].length);
+        at += prims[i].length;
+    }
+    memcpy(indices, sorted, sizeof(*indices) * at);
+    Memory_Free(sorted);
+    Memory_Free(prims);
 }
 
 static bool M_IsReflective(
@@ -2242,8 +2655,10 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
     bind->page = Memory_Alloc(bind->vertex_count + 1);
     const OUTPUT_MESH_VERTEX *const vertices = Vector_GetData(mesh->vertices);
     bind->plain_object = bind->vertex_count > 0;
+    bind->flags_and = bind->vertex_count > 0 ? 0xFFFF : 0;
     for (int32_t i = 0; i < bind->vertex_count; i++) {
-        M_FillTexture(bind, i);
+        bind->flags_and &= vertices[i].flags;
+        bind->flags_or |= vertices[i].flags;
         const float pos[3] = {
             vertices[i].pos.x, vertices[i].pos.y, vertices[i].pos.z,
         };
@@ -2267,9 +2682,12 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
                                      | VERT_ABS_SPRITE))
             == VERT_USE_OBJECT_LIGHT;
     }
-    if (bind->needs_room_lights) {
-        bind->lit = Memory_Alloc(sizeof(uint32_t) * bind->vertex_count);
-    }
+    M_RefillTextures(bind);
+    M_SortByPage(bind, opaque, clean);
+    M_SortByPage(bind, opaque + clean, mesh->opaque_vertex_indices->count - clean);
+    M_SortByPage(
+        bind, Vector_GetData(mesh->blend_add_vertex_indices),
+        mesh->blend_add_vertex_indices->count);
     M_FindReflections(bind);
     mesh->sealed = 2;
     g_DC_BatcherMeshCount++;
@@ -2294,7 +2712,6 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     g_DC_BatcherVertexCount -= bind->vertex_count;
     Memory_Free(bind->uv);
     Memory_Free(bind->page);
-    Memory_Free(bind->lit);
     Memory_Free(bind->env);
     Vector_Remove(batcher->bindings, &bind);
     HASH_DEL(batcher->map, bind);
