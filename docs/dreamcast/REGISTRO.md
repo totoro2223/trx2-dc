@@ -468,3 +468,12 @@ Venecia, Lara quieta, Flycast oculto (`build/dc-venice-opt3..6.txt`).
   `M_GetFaceUVs`, `M_Project`, `M_Depth`, `M_Reserve`) 31 %, descarte de
   espaldas 4 %. No hay un bloque gordo que recortar: lo que queda es
   trabajo por instrucción repartido, o menos caras.
+
+## Ensamblador SH-4: emisión de caras y transform de salas (builds 267–275)
+
+Hecho el 2026-10-22. Venecia, Lara quieta, Flycast oculto.
+
+- Puntos descartados con datos: copiar `M_XFORM` a locales en `M_XformRoom`/`M_XformObject` (código +116 bytes, sin ganancia: troom 1,55 → 1,53) y listas de caras por octante (el experimento de conos ya descartó 212 caras sin ganar tiempo).
+- `render/emit_sh4.S` (`dc_emit_run`): emisión de quads/triángulos de una página directo al buffer de la lista, con descarte por lados y de espaldas, color de offset y copia del cel shading de Lara. Vuelve a C en cruces del plano cercano, quads doblados, cambio de página o falta de espacio. Verificación con `-Ddc_emit_verify=true`: 364 000 tandas, 12,2 M de índices, 0 diferencias. Medida: emit 4,6 → 2,9 ms, pass 11,6 → 9,9 ms, frame ~18,1 ms. `pvr.c`: `DC_PVR_BeginRun`/`DC_PVR_EndRun`.
+- `render/xform_sh4.S` (`dc_xform_room`): vértices de sala, caso simple (TR1/TR2, sin luz dinámica, `!vary`, perspectiva, vref): ftrv, near/lados, niebla, shade + parpadeo, tabla de blancos. Verificación (mismo flag, mensajes `[xform-verify]`): 1,6 M de vértices, 0 diferencias. Medida: troom 1,69 → 1,34 ms (pass 99 → 97).
+- Vértices de sala de Venecia por frame: 2378 en total, 1545 son copias de vértices compartidos (la copia de 32 bytes domina el tiempo que queda), 537 con parpadeo, 811 no blancos.

@@ -1332,6 +1332,79 @@ M_HOT void M_EnvVertex(
     batcher->eargb[i] = M_PackARGB(1.0f, e[0], e[1], e[2]);
 }
 
+#if defined(DC_EMIT_VERIFY)
+static uint32_t m_XVerifyN = 0;
+static uint32_t m_XVerifyBad = 0;
+
+static bool M_XNear(const float a, const float b)
+{
+    return fabsf(a - b) <= 1.0e-4f * MAX(fabsf(a), fabsf(b)) + 1.0e-6f;
+}
+
+// The C loop's vertices against the assembly's, for the ranges.
+static void M_VerifyXform(
+    const M_XVERT *const c_side, const M_XVERT *const asm_side,
+    const int32_t (*const ranges)[2], const int32_t nranges)
+{
+    for (int32_t r = 0; r < nranges; r++) {
+        for (int32_t i = ranges[r][0]; i < ranges[r][0] + ranges[r][1]; i++) {
+            const M_XVERT *const a = &asm_side[i];
+            const M_XVERT *const b = &c_side[i];
+            const bool near = (b->clip & M_CLIP_NEAR) != 0;
+            const bool ok = a->clip == b->clip && a->argb == b->argb
+                && M_XNear(a->x, b->x) && M_XNear(a->y, b->y)
+                && M_XNear(a->z, b->z)
+                && (near
+                    || (M_XNear(a->sx, b->sx) && M_XNear(a->sy, b->sy)
+                        && M_XNear(a->inv_z, b->inv_z)));
+            m_XVerifyN++;
+            if (!ok) {
+                m_XVerifyBad++;
+                if (m_XVerifyBad <= 12) {
+                    LOG_WARNING(
+                        "[xform-verify] MISMATCH vertex %d: asm clip %02x "
+                        "argb %08x x %f sx %f | C clip %02x argb %08x x %f "
+                        "sx %f",
+                        (int)i, a->clip, (unsigned)a->argb, a->x, a->sx,
+                        b->clip, (unsigned)b->argb, b->x, b->sx);
+                }
+            }
+        }
+    }
+    if (m_XVerifyN >= 400000) {
+        LOG_WARNING(
+            "[xform-verify] %u vertices, %u bad", (unsigned)m_XVerifyN,
+            (unsigned)m_XVerifyBad);
+        m_XVerifyN = 0;
+    }
+}
+#endif
+
+// What xform_sh4.S takes: the plain room (see dc_xform_room).
+typedef struct {
+    M_XFORM *c;
+    M_XVERT *xverts;
+    const OUTPUT_MESH_VERTEX *vertices;
+    const uint16_t *vref;
+    uint32_t *slot;
+    uint32_t gen;
+    const int32_t (*ranges)[2];
+    int32_t nranges;
+    int32_t min_shade;
+    int32_t flicker;
+    const uint32_t *white; // nullptr: not white, the tints below apply
+    uint32_t hits;
+    uint32_t tint[4]; // a, r, g, b in 8.8
+} M_XROOM;
+_Static_assert(offsetof(M_XROOM, white) == 40, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, hits) == 44, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, tint) == 48, "xform_sh4.S reads these");
+_Static_assert(sizeof(OUTPUT_MESH_VERTEX) == 28, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XFORM, ortho) == 48, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XFORM, proj_x) == 52, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XFORM, max_inv_z) == 76, "xform_sh4.S reads these");
+extern void dc_xform_room(M_XROOM *run);
+
 static void M_XformRoom(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
@@ -1386,12 +1459,50 @@ static void M_XformRoom(
         slot = batcher->share_slot;
         gen = batcher->share_gen << 16;
     }
+    {
+        int32_t total = 0;
+        for (int32_t r = 0; r < nranges; r++) {
+            total += ranges[r][1];
+        }
+        g_DC_ProbeUs[DC_PROBE_R_ALL] += total; // TEMP
+        g_DC_ProbeUs[dyn ? DC_PROBE_R_DYN : flicker != 0 ? DC_PROBE_R_FLICK
+                : vary                                    ? DC_PROBE_R_VARY
+                : !white                                  ? DC_PROBE_R_NOTWHITE
+                                                          : DC_PROBE_R_PLAIN] +=
+            total; // TEMP
+        g_DC_ProbeUs[DC_PROBE_R_FOG] += fog_on ? total : 0; // TEMP
+    }
+    const bool fast =
+        vref != nullptr && !tr3 && lighting && !dyn && white && !vary
+        && !c->ortho;
+    M_XROOM run = {
+        .c = c,
+        .xverts = xverts,
+        .vertices = vertices,
+        .vref = vref,
+        .slot = slot,
+        .gen = gen,
+        .ranges = ranges,
+        .nranges = nranges,
+        .min_shade = min_shade,
+        .flicker = flicker,
+        .white = white ? m_WhiteARGB : nullptr,
+        .tint = { ta, tr, tg, tb },
+    };
+#if !defined(DC_EMIT_VERIFY)
+    if (fast) {
+        dc_xform_room(&run);
+        g_DC_ProbeUs[DC_PROBE_R_HIT] += run.hits; // TEMP
+        return;
+    }
+#endif
     for (int32_t r = 0; r < nranges; r++) {
         const int32_t end = ranges[r][0] + ranges[r][1];
         for (int32_t i = ranges[r][0]; i < end; i++) {
             if (vref != nullptr) {
                 uint32_t *const s = &slot[vref[i]];
                 if ((*s & 0xFFFF0000u) == gen) {
+                    g_DC_ProbeUs[DC_PROBE_R_HIT]++; // TEMP
                     xverts[i] = xverts[*s & 0xFFFFu];
                     continue;
                 }
@@ -1469,6 +1580,29 @@ static void M_XformRoom(
             out->clip = clip;
         }
     }
+#if defined(DC_EMIT_VERIFY)
+    if (fast) {
+        // The assembly places them all again (a newer generation, so no
+        // vertex counts as placed) and the two are compared.
+        static M_XVERT *saved = nullptr;
+        static int32_t saved_cap = 0;
+        if (bind->vertex_count > saved_cap) {
+            Memory_Free(saved);
+            saved_cap = bind->vertex_count;
+            saved = Memory_Alloc(sizeof(M_XVERT) * saved_cap);
+        }
+        memcpy(saved, xverts, sizeof(M_XVERT) * bind->vertex_count);
+        if (++batcher->share_gen > 0xFFFF) {
+            memset(
+                batcher->share_slot, 0,
+                sizeof(uint32_t) * batcher->share_capacity);
+            batcher->share_gen = 1;
+        }
+        run.gen = batcher->share_gen << 16;
+        dc_xform_room(&run);
+        M_VerifyXform(saved, xverts, ranges, nranges);
+    }
+#endif
 }
 
 // Lara, enemies, pickups: the object's light on each vertex, with n.l found
@@ -2549,6 +2683,239 @@ static bool M_TryEmitQuad(
     return true;
 }
 
+// What render/emit_sh4.S takes and gives back (the layout is its own: see the
+// header of that file).
+typedef struct {
+    float center_x;
+    float center_y;
+    float screen_scale;
+    float near_z;
+    float depth_lo;
+    float depth_scale;
+    float uv_scale;
+    float one;
+    const OUTPUT_MESH_INDEX *indices;
+    int32_t count;
+    const M_XVERT *xverts;
+    const uint16_t *uv;
+    const int8_t *page;
+    const uint32_t *oargb;
+    uint8_t *out;
+    int32_t space;
+    int32_t page_id;
+    int32_t cull;
+    // Lara's cel shading: the shaded colours, and where the copies of her
+    // faces go (nullptr for none).
+    const uint32_t *sargb;
+    pvr_vertex_t *cel_out;
+    // Back from it: indices taken, bytes written, polygons made, and where
+    // the cel copies end.
+    int32_t used;
+    int32_t written;
+    int32_t polys;
+    pvr_vertex_t *cel_end;
+} M_EMIT_RUN;
+_Static_assert(offsetof(M_EMIT_RUN, indices) == 32, "emit_sh4.S layout");
+_Static_assert(offsetof(M_EMIT_RUN, page_id) == 64, "emit_sh4.S layout");
+_Static_assert(offsetof(M_EMIT_RUN, sargb) == 72, "emit_sh4.S layout");
+_Static_assert(offsetof(M_EMIT_RUN, used) == 80, "emit_sh4.S layout");
+_Static_assert(sizeof(pvr_vertex_t) == 32, "emit_sh4.S copies 32-byte vertices");
+_Static_assert(sizeof(OUTPUT_MESH_INDEX) == 2, "emit_sh4.S reads 16-bit indices");
+
+extern void dc_emit_run(M_EMIT_RUN *run);
+
+#if defined(DC_EMIT_VERIFY)
+// Checking the assembly against the C code: the run goes into a scratch buffer
+// first, the C code then does the same faces into the list as ever, and the two
+// are compared where the faces end. (-Ddc_emit_verify=true)
+static struct {
+    bool active;
+    const OUTPUT_MESH_INDEX *end;
+    int32_t faces;
+    const uint8_t *at;
+    int32_t written;
+    // The cel copies: where the C code's start in cel_buf, and how many the
+    // assembly made.
+    int32_t cel_start;
+    int32_t cel_verts;
+} m_Verify = {};
+static uint8_t m_VerifyScratch[16384] __attribute__((aligned(32)));
+static pvr_vertex_t m_VerifyCel[4096] __attribute__((aligned(32)));
+static uint32_t m_VerifyRuns = 0;
+static uint32_t m_VerifyFaces = 0;
+static uint32_t m_VerifyBad = 0;
+
+static bool M_VerifyNear(const float a, const float b, const float rel)
+{
+    const float m = MAX(fabsf(a), fabsf(b));
+    return fabsf(a - b) <= rel * m + 1.0e-9f;
+}
+
+static void M_VerifyEnd(
+    const MESH_BATCHER *const batcher, const OUTPUT_MESH_INDEX *const reached)
+{
+    m_Verify.active = false;
+    m_VerifyRuns++;
+    bool ok = reached == m_Verify.end;
+    int32_t bad_at = -1;
+    if (ok && m_Verify.cel_verts >= 0) {
+        // Lara's copies: as many, and the same bytes.
+        ok = batcher->cel_count - m_Verify.cel_start == m_Verify.cel_verts
+            && memcmp(
+                   m_VerifyCel, &batcher->cel_buf[m_Verify.cel_start],
+                   sizeof(pvr_vertex_t) * m_Verify.cel_verts)
+                == 0;
+        if (!ok) {
+            bad_at = -2;
+        }
+    }
+    if (ok) {
+        const uint32_t *const a = (const uint32_t *)m_VerifyScratch;
+        const uint32_t *const b = (const uint32_t *)m_Verify.at;
+        const float *const fa = (const float *)a;
+        const float *const fb = (const float *)b;
+        for (int32_t v = 0; v < m_Verify.written / 32 && ok; v++) {
+            const int32_t w = v * 8;
+            ok = a[w] == b[w] && a[w + 6] == b[w + 6] && a[w + 7] == b[w + 7]
+                && M_VerifyNear(fa[w + 1], fb[w + 1], 1.0e-4f)
+                && M_VerifyNear(fa[w + 2], fb[w + 2], 1.0e-4f)
+                && M_VerifyNear(fa[w + 3], fb[w + 3], 1.0e-4f)
+                && M_VerifyNear(fa[w + 4], fb[w + 4], 1.0e-6f)
+                && M_VerifyNear(fa[w + 5], fb[w + 5], 1.0e-6f);
+            bad_at = ok ? -1 : v;
+        }
+    }
+    m_VerifyFaces += (uint32_t)m_Verify.faces;
+    if (!ok) {
+        m_VerifyBad++;
+        if (m_VerifyBad <= 12) {
+            const uint32_t *const a = (const uint32_t *)m_VerifyScratch;
+            const uint32_t *const b = (const uint32_t *)m_Verify.at;
+            const int32_t w = bad_at < 0 ? 0 : bad_at * 8;
+            LOG_WARNING(
+                "[emit-verify] MISMATCH off by %d indices, vertex %d of %d: "
+                "asm %08x %08x %08x %08x %08x %08x %08x %08x | C %08x %08x "
+                "%08x %08x %08x %08x %08x %08x",
+                (int)(reached - m_Verify.end), (int)bad_at,
+                (int)(m_Verify.written / 32), (unsigned)a[w], (unsigned)a[w + 1],
+                (unsigned)a[w + 2], (unsigned)a[w + 3], (unsigned)a[w + 4],
+                (unsigned)a[w + 5], (unsigned)a[w + 6], (unsigned)a[w + 7],
+                (unsigned)b[w], (unsigned)b[w + 1], (unsigned)b[w + 2],
+                (unsigned)b[w + 3], (unsigned)b[w + 4], (unsigned)b[w + 5],
+                (unsigned)b[w + 6], (unsigned)b[w + 7]);
+        }
+    }
+    if (m_VerifyRuns % 4000 == 0) {
+        LOG_WARNING(
+            "[emit-verify] %u runs, %u indices, %u bad", (unsigned)m_VerifyRuns,
+            (unsigned)m_VerifyFaces, (unsigned)m_VerifyBad);
+    }
+}
+#endif
+
+// Takes the faces of a run that are plain (see emit_sh4.S) off M_EmitIndices's
+// hands: returns how many indices it took, none when the first face is not.
+static int32_t M_EmitRunFast(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const OUTPUT_MESH_INDEX *const indices, const int32_t count,
+    const int32_t page)
+{
+    size_t space;
+    bool header;
+    uint8_t *const at = DC_PVR_BeginRun(&space, &header);
+    if (at == nullptr) {
+        return 0;
+    }
+    M_EMIT_RUN run = {
+        .center_x = m_Frame.center_x,
+        .center_y = m_Frame.center_y,
+        .screen_scale = m_Frame.screen_scale,
+        .near_z = m_Frame.near_z,
+        .depth_lo = m_Frame.depth.lo,
+        .depth_scale = m_Frame.depth.scale,
+        .uv_scale = 1.0f / M_UV_ONE,
+        .one = 1.0f,
+        .indices = indices,
+        .count = count,
+        .xverts = batcher->xverts,
+        .uv = bind->uv,
+        .page = bind->page,
+        .oargb = batcher->oargb_used ? batcher->oargb : nullptr,
+        .out = at,
+        .space = (int32_t)MIN(space, (size_t)INT32_MAX),
+        .page_id = page,
+        .cull = m_Frame.cull ? 1 : 0,
+    };
+    // Lara's cel shading keeps a copy of each lit face (M_KeepCel): room for
+    // them all, and the run of her page they belong to, made first.
+    const bool cel = batcher->cel_emit;
+    bool fresh_run = false;
+    int32_t old_cel_page = 0;
+    if (cel) {
+        if (batcher->cel_count + count > batcher->cel_capacity) {
+            batcher->cel_capacity = (batcher->cel_count + count) * 2;
+            batcher->cel_buf = Memory_Realloc(
+                batcher->cel_buf,
+                batcher->cel_capacity * sizeof(pvr_vertex_t));
+        }
+        run.sargb = batcher->sargb;
+        run.cel_out = &batcher->cel_buf[batcher->cel_count];
+#if !defined(DC_EMIT_VERIFY)
+        if (batcher->cel_runs->count == 0
+            || batcher->cel_page != batcher->emit_page) {
+            const M_CEL_RUN made = {
+                .page = batcher->emit_page,
+                .start = batcher->cel_count,
+            };
+            Vector_Add(batcher->cel_runs, &made);
+            old_cel_page = batcher->cel_page;
+            batcher->cel_page = batcher->emit_page;
+            fresh_run = true;
+        }
+#endif
+    }
+#if defined(DC_EMIT_VERIFY)
+    if (m_Verify.active) {
+        return 0;
+    }
+    run.out = m_VerifyScratch;
+    run.space = MIN(run.space, (int32_t)sizeof(m_VerifyScratch));
+    if (cel) {
+        run.cel_out = m_VerifyCel;
+        if (count > (int32_t)(sizeof(m_VerifyCel) / sizeof(m_VerifyCel[0]))) {
+            return 0;
+        }
+    }
+    dc_emit_run(&run);
+    if (run.used > 0) {
+        m_Verify.active = true;
+        m_Verify.end = indices + run.used;
+        m_Verify.faces = run.used;
+        m_Verify.at = at;
+        m_Verify.written = run.written;
+        m_Verify.cel_start = batcher->cel_count;
+        m_Verify.cel_verts = cel ? (int32_t)(run.cel_end - m_VerifyCel) : -1;
+    }
+    return 0;
+#else
+    dc_emit_run(&run);
+    DC_PVR_EndRun((size_t)run.written, run.polys, header);
+    if (cel) {
+        const int32_t made = (int32_t)(run.cel_end - run.cel_out);
+        batcher->cel_count += made;
+        if (fresh_run && made == 0) {
+            // None of her faces here is lit: no run for them.
+            Vector_RemoveAt(batcher->cel_runs, batcher->cel_runs->count - 1);
+            batcher->cel_page = old_cel_page;
+        }
+    }
+    g_DC_ProbeUs[DC_PROBE_A_RUNS]++; // TEMP
+    g_DC_ProbeUs[DC_PROBE_A_FACES] += run.used / 3; // TEMP
+    g_DC_ProbeUs[DC_PROBE_A_EMPTY] += run.used == 0 ? 1 : 0; // TEMP
+    return run.used;
+#endif
+}
+
 // Emits a run of faces. *page is the page the list was last set to with
 // this blend (INT32_MIN for none), kept across the runs of an instance so
 // that consecutive runs on one page share a header.
@@ -2558,8 +2925,16 @@ static void M_EmitIndices(
     const DC_BLEND blend, int32_t *const page)
 {
     const bool env = m_Frame.emit == M_EMIT_ENV;
+    // The plain faces of a room or an object (not the reflections, the relief
+    // or Lara's cel shading, nor a model on the canvas) go through assembly.
+    const bool fast = !env && !m_Frame.ortho && m_Frame.emit == M_EMIT_PLAIN;
     int32_t i = 0;
     while (i + 2 < count) {
+#if defined(DC_EMIT_VERIFY)
+        if (m_Verify.active && &indices[i] >= m_Verify.end) {
+            M_VerifyEnd(batcher, &indices[i]);
+        }
+#endif
         const int32_t tri_page = env ? DC_PVR_ENV_MAP : bind->page[indices[i]];
         if (tri_page != *page) {
             *page = tri_page;
@@ -2568,6 +2943,15 @@ static void M_EmitIndices(
                 blend, tri_page == M_NO_PAGE ? DC_PVR_NO_TEXTURE : tri_page,
                 true);
         }
+        if (fast) {
+            const int32_t used =
+                M_EmitRunFast(batcher, bind, &indices[i], count - i, tri_page);
+            if (used > 0) {
+                i += used;
+                continue;
+            }
+        }
+        g_DC_ProbeUs[DC_PROBE_A_CFACES]++; // TEMP
         if (i + 5 < count && (env || bind->page[indices[i + 3]] == tri_page)
             && M_TryEmitQuad(batcher, bind, &indices[i], &indices[i + 3])) {
             i += 6;
@@ -2576,6 +2960,12 @@ static void M_EmitIndices(
         M_EmitTriangle(batcher, bind, indices[i], indices[i + 1], indices[i + 2]);
         i += 3;
     }
+#if defined(DC_EMIT_VERIFY)
+    if (m_Verify.active && &indices[i] >= m_Verify.end) {
+        M_VerifyEnd(batcher, &indices[i]);
+    }
+    m_Verify.active = false;
+#endif
 }
 
 M_HOT float M_Dot3(const float a[3], const float b[3])

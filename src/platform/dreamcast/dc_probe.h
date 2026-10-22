@@ -104,6 +104,23 @@ enum {
     // The item lights worked out (time) and the hair welds done (count).
     DC_PROBE_I_LIGHT,
     DC_PROBE_L_WELD,
+    // The face assembly: calls (counts), faces it took (indices / 3), faces
+    // the C code did after it, and runs that took none.
+    DC_PROBE_A_RUNS,
+    DC_PROBE_A_FACES,
+    DC_PROBE_A_CFACES,
+    DC_PROBE_A_EMPTY,
+    // Room vertices by what the transform has to do (counts): all, those with
+    // no dynamic light and no flicker (the plain case), the lit by lights, the
+    // flickering, those that vary in flags, and the not white.
+    DC_PROBE_R_ALL,
+    DC_PROBE_R_PLAIN,
+    DC_PROBE_R_DYN,
+    DC_PROBE_R_FLICK,
+    DC_PROBE_R_VARY,
+    DC_PROBE_R_NOTWHITE,
+    DC_PROBE_R_FOG,
+    DC_PROBE_R_HIT,
     DC_PROBE_COUNT,
 };
 

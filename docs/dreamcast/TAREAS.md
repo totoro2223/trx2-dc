@@ -475,3 +475,10 @@ para ver que nada cambia, código compartido bajo `__DREAMCAST__` salvo
 equivalentes exactos, sondas `TEMP` retiradas, cifras en REGISTRO.md y commit
 en `dreamcast`. Al regenerar el disco de medida, recordar que
 `build/dc-build-number` de esta máquina (257) no es el del registro.
+
+### Cómo retomar el ensamblador del transform (estado al 2026-10-22)
+
+1. Compilar con la verificación: `meson configure build/dc-minsize -Ddc_emit_verify=true`, luego `build.sh minsize`; disco de Venecia (`make_disc.sh ... 3`), Flycast oculto 75 s; buscar `[xform-verify]` (y `[emit-verify]`) en el log: deben decir `0 bad` (la línea se parte a 120 caracteres: leer la siguiente). Después poner `-Ddc_emit_verify=false` y medir `troom`/`pass` con `probes.py`.
+2. `xform_sh4.S`: la ruta de vértices NO blancos (macro `CHANNEL`, etiqueta `tinted`) está escrita pero desactivada con `.if 0` (no ensambla) y la puerta en C (`fast` en `M_XformRoom`) exige `white`; al arreglarla, quitar `.if 0` y el `white &&`: el ensamblador daba `Cannot represent relocation` en las invocaciones de `CHANNEL` (se quitaron los comentarios `!` de las líneas de invocación; sin comprobar). Si sigue fallando, expandir la macro a mano. La ruta blanca sí está verificada.
+3. Pendiente: `M_XformObject` (1,8 ms; Lara y enemigos, con luz de objeto y cel), la copia de vértices compartidos (1545 de 2378), y la ruta tr3. Quitar a granel las sondas `TEMP` de `dc_probe.h` y `batcher.c` al terminar.
+4. Falta medir en la consola real (hoy solo Flycast).

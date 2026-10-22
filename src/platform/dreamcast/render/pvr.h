@@ -170,6 +170,13 @@ void DC_PVR_SetState(DC_BLEND blend, int32_t page, bool depth_test);
 struct pvr_vertex;
 struct pvr_vertex *DC_PVR_ReservePoly(int32_t count);
 void DC_PVR_CommitPoly(int32_t count);
+// Polygons written outside, as a run (render/emit_sh4.S): where they go and
+// how much room there is, or nullptr for none; header says whether the list
+// takes a header first (put by DC_PVR_EndRun, in the room BeginRun left
+// before the returned address). Nothing is taken until EndRun, which says
+// how many bytes of how many polygons were written.
+uint8_t *DC_PVR_BeginRun(size_t *space, bool *header);
+void DC_PVR_EndRun(size_t bytes, int32_t polys, bool header);
 float DC_PVR_GetScreenScale(void);
 void DC_PVR_Triangle(
     const DC_PVR_VERTEX *a, const DC_PVR_VERTEX *b, const DC_PVR_VERTEX *c);

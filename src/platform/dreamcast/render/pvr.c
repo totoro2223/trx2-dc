@@ -1427,37 +1427,79 @@ static inline void *M_Tail(const M_LIST *const list)
     return (uint8_t *)list->buffer + list->frame_written;
 }
 
+// Whether the list already holds the state now set: nothing set since it last
+// took it, which is most polygons, or what was set is what it has.
+static bool M_SameState(const M_LIST *const list)
+{
+    return !m_StateDirty
+        || (list->has_state && list->blend == m_Blend
+            && list->page == m_Page && list->depth_test == m_DepthTest
+            && list->filter == m_Bilinear && list->half == m_HalfPages
+            && list->shadow == M_IsShadowed());
+}
+
+// Puts the header for the state now set at the tail of the list.
+static void M_PutHeader(M_LIST *const list)
+{
+    pvr_poly_hdr_t *const hdr = M_Tail(list);
+    M_CachedHeader(hdr);
+    list->frame_written += sizeof(pvr_poly_hdr_t);
+    list->has_state = true;
+    list->blend = m_Blend;
+    list->page = m_Page;
+    list->depth_test = m_DepthTest;
+    list->filter = m_Bilinear;
+    list->half = m_HalfPages;
+    list->shadow = M_IsShadowed();
+}
+
 static void *M_Reserve(const size_t size)
 {
     if (!m_InFrame || m_Current == nullptr) {
         return nullptr;
     }
     M_LIST *const list = m_Current;
-    // Nothing set since the list last took this state: most polygons.
-    const bool same_state = !m_StateDirty
-        || (list->has_state && list->blend == m_Blend
-        && list->page == m_Page && list->depth_test == m_DepthTest
-        && list->filter == m_Bilinear && list->half == m_HalfPages
-        && list->shadow == M_IsShadowed());
+    const bool same_state = M_SameState(list);
     const size_t needed = size + (same_state ? 0 : sizeof(pvr_poly_hdr_t));
     if (list->frame_written + needed > list->frame_capacity) {
         m_Dropped++;
         return nullptr;
     }
     if (!same_state) {
-        pvr_poly_hdr_t *const hdr = M_Tail(list);
-        M_CachedHeader(hdr);
-        list->frame_written += sizeof(pvr_poly_hdr_t);
-        list->has_state = true;
-        list->blend = m_Blend;
-        list->page = m_Page;
-        list->depth_test = m_DepthTest;
-        list->filter = m_Bilinear;
-        list->half = m_HalfPages;
-        list->shadow = M_IsShadowed();
+        M_PutHeader(list);
     }
     m_StateDirty = false;
     return M_Tail(list);
+}
+
+uint8_t *DC_PVR_BeginRun(size_t *const space, bool *const header)
+{
+    if (!m_InFrame || m_Current == nullptr) {
+        return nullptr;
+    }
+    const M_LIST *const list = m_Current;
+    *header = !M_SameState(list);
+    const size_t used =
+        list->frame_written + (*header ? sizeof(pvr_poly_hdr_t) : 0);
+    if (used >= list->frame_capacity) {
+        return nullptr;
+    }
+    *space = list->frame_capacity - used;
+    return (uint8_t *)list->buffer + used;
+}
+
+void DC_PVR_EndRun(const size_t bytes, const int32_t polys, const bool header)
+{
+    if (polys <= 0) {
+        return;
+    }
+    M_LIST *const list = m_Current;
+    if (header) {
+        M_PutHeader(list);
+    }
+    list->frame_written += bytes;
+    m_Submitted += (uint32_t)polys;
+    m_StateDirty = false;
 }
 
 void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *const tris, const int32_t count)

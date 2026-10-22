@@ -227,7 +227,8 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "llight", "lshadow", "lmesh", "lwater", "ljoint", "lhair", "lequip", "troom", "tplain", "tgen", "gown", "genv", "gfog", "gbill", "goth", "equad", "etri", "eclip", "eout", "eback", "msil", "mend",
     "src0", "src1", "src2", "src3", "src4", "src5", "src6", "src7", "src8", "src9",
     "plprep", "pvol", "ppsoft", "pdrawi", "ptransp", "pntransp", "udraw", "uops",
-    "ilight", "lweld",
+    "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
+    "rall", "rplain", "rdyn", "rflick", "rvary", "rnw", "rfog", "rhit",
 };
 uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
 uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};

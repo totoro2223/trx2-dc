@@ -61,6 +61,8 @@ dc_sources = files(
   'posix_compat.c',
   'render/batcher.c',
   'render/compositor.c',
+  'render/emit_sh4.S',
+  'render/xform_sh4.S',
   'render/lights_tr4.c',
   'render/output_common.c',
   'render/pvr.c',
@@ -79,6 +81,9 @@ if get_option('buildtype') != 'release'
 endif
 if get_option('dc_profile')
   add_project_arguments('-DTRX_DC_PROFILE', language: 'c')
+endif
+if get_option('dc_emit_verify')
+  add_project_arguments('-DDC_EMIT_VERIFY', language: 'c')
 endif
 if get_option('dc_start_level') >= 0
   add_project_arguments(
