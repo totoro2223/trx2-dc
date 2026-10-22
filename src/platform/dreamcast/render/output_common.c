@@ -6,6 +6,7 @@
 #include "pvr.h"
 #include "shadow.h"
 
+#include <platform/dreamcast/dc_bench.h>
 #include <platform/dreamcast/dc_mode.h>
 #include <platform/dreamcast/dc_probe.h> // TEMP
 #include <platform/dreamcast/dc_watchdog.h>
@@ -42,6 +43,7 @@
 #include <trx/game/shell.h>
 
 #include <arch/timer.h>
+#include <kos/thread.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -228,6 +230,82 @@ static void M_StatsBeginScene(void)
     m_Stats.begin_us = timer_us_gettime64();
 }
 
+// The benchmark (dc_bench.h): every frame of a demo, from its first drawn
+// to its last.
+static struct {
+    bool active;
+    uint64_t last_us;
+    int32_t frames;
+    uint64_t time_us;
+    uint32_t worst_us;
+    int32_t slow;
+    uint64_t sum[M_STAT_COUNT];
+} m_Bench = {};
+
+static void M_BenchFrame(const uint64_t now, const uint32_t value[])
+{
+    if (!m_Bench.active) {
+        return;
+    }
+    // A gap of a second or more is a load, not a frame.
+    if (m_Bench.last_us != 0 && now - m_Bench.last_us < 1000000) {
+        const uint32_t dt = (uint32_t)(now - m_Bench.last_us);
+        m_Bench.frames++;
+        m_Bench.time_us += dt;
+        if (dt > m_Bench.worst_us) {
+            m_Bench.worst_us = dt;
+        }
+        // Slower than 30 fps, with a little room for the timer.
+        if (dt > 35000) {
+            m_Bench.slow++;
+        }
+        for (int32_t i = 0; i < M_STAT_COUNT; i++) {
+            m_Bench.sum[i] += value[i];
+        }
+    }
+    m_Bench.last_us = now;
+}
+
+void DC_Bench_Begin(void)
+{
+    m_Bench = (typeof(m_Bench)) { .active = true };
+}
+
+void DC_Bench_End(void)
+{
+    m_Bench.active = false;
+    const int32_t n = m_Bench.frames > 0 ? m_Bench.frames : 1;
+    const uint32_t fps10 = m_Bench.time_us > 0
+        ? (uint32_t)((uint64_t)m_Bench.frames * 10000000 / m_Bench.time_us)
+        : 0;
+    const uint32_t min10 =
+        m_Bench.worst_us > 0 ? 10000000 / m_Bench.worst_us : 0;
+    // Averages in tenths of a millisecond.
+#define M_AVG(i) ((unsigned)(m_Bench.sum[i] / n / 100))
+    char line1[96];
+    char line2[96];
+    snprintf(
+        line1, sizeof(line1), "BENCH %d frames  avg %u.%u fps  min %u.%u  slow %d%%",
+        m_Bench.frames, fps10 / 10, fps10 % 10, min10 / 10, min10 % 10,
+        m_Bench.slow * 100 / n);
+    snprintf(
+        line2, sizeof(line2),
+        "logic %u.%u stage %u.%u pass %u.%u map %u.%u pvr %u.%u ms",
+        M_AVG(M_LOGIC) / 10, M_AVG(M_LOGIC) % 10, M_AVG(M_DRAW) / 10,
+        M_AVG(M_DRAW) % 10, M_AVG(M_PASS) / 10, M_AVG(M_PASS) % 10,
+        M_AVG(M_MAP) / 10, M_AVG(M_MAP) % 10, M_AVG(M_RENDER) / 10,
+        M_AVG(M_RENDER) % 10);
+#undef M_AVG
+    char log[200];
+    snprintf(log, sizeof(log), "[bench] %s | %s\n", line1, line2);
+    DC_Watchdog_Print(log);
+    // Shown until read: ten seconds.
+    for (int32_t i = 0; i < 100; i++) {
+        DC_PVR_DrawLoadingScreen(line1, line2, 100);
+        thd_sleep(100);
+    }
+}
+
 static void M_StatsEndScene(void)
 {
     const uint64_t now = timer_us_gettime64();
@@ -259,6 +337,7 @@ static void M_StatsEndScene(void)
         value[M_LOGIC] = between > slept ? (uint32_t)(between - slept) : 0;
     }
     m_Stats.end_us = now;
+    M_BenchFrame(now, value);
     g_DC_PassUs = 0;
     g_DC_BatcherFrameInstances = 0;
     g_DC_BatcherFrameVertices = 0;
@@ -326,7 +405,20 @@ static void M_StatsEndScene(void)
     memset(m_Stats.probe_max, 0, sizeof(m_Stats.probe_max));
     m_Stats.frames = 0;
 }
+#else
+// shortcut: without the watchdog's frame stats there is nothing to measure;
+// the demo just runs.
+void DC_Bench_Begin(void)
+{
+}
+
+void DC_Bench_End(void)
+{
+}
 #endif
+
+int32_t g_DC_StartDemo = -1;
+bool g_DC_BenchRequested = false;
 
 void Output_EndScene(void)
 {

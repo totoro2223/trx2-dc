@@ -129,8 +129,20 @@ static LARA_STATE_SLOT M_GetBackstepState(void)
     return g_TRVersion == 3 ? LS(LS_CROUCH_IDLE) : LS(LS_WALK_BACK);
 }
 
+#if defined(__DREAMCAST__)
+bool DC_Input_TakeEndLevelCombo(void);
+#endif
+
 void Lara_Cheat_CheckKeys(void)
 {
+#if defined(__DREAMCAST__)
+    // L, R, X and Y pressed together: the end of the dance, without it, and
+    // in Lara's home too, which the dance leaves alone.
+    if (DC_Input_TakeEndLevelCombo()) {
+        M_CompleteLevel();
+        return;
+    }
+#endif
     if (Game_IsInGym()) {
         return;
     }

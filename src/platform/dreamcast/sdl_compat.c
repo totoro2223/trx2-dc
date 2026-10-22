@@ -72,8 +72,14 @@ static Sint16 m_AxisValue[SDL_CONTROLLER_AXIS_MAX] = {};
 // next read would be lost. A thread watching the controller between frames
 // keeps every button it saw down until the game has read it once.
 #define DC_LATCH_INTERVAL_MS 8
+// Older than this, what the latch holds is dropped (a load went by).
+#define DC_LATCH_STALE_MS 250
 static uint32_t m_LatchedButtons = 0;
 static bool m_LatchStarted = false;
+// L, R, X and Y: held together last poll, and pressed together since the
+// last DC_Input_TakeEndLevelCombo.
+static bool m_ComboHeld = false;
+static bool m_ComboPressed = false;
 
 static const char *const m_ButtonNames[SDL_CONTROLLER_BUTTON_MAX] = {
     [SDL_CONTROLLER_BUTTON_A] = "a",
@@ -230,9 +236,18 @@ static void M_PollController(void)
         return;
     }
 
-    // What is held now, and what was pressed since the last read.
-    const uint32_t latched =
+    // What is held now, and what was pressed since the last read: only for a
+    // read soon after the last. After a load, the latch holds whatever was
+    // held through it (the end-level shortcut's X and Y), and those would
+    // read as pressed afresh, skipping the cutscene that follows.
+    static uint64_t last_read = 0;
+    const uint64_t now = timer_ms_gettime64();
+    uint32_t latched =
         __atomic_exchange_n(&m_LatchedButtons, 0, __ATOMIC_RELAXED);
+    if (now - last_read > DC_LATCH_STALE_MS) {
+        latched = 0;
+    }
+    last_read = now;
     const uint32_t b = state->buttons | latched;
     if ((state->buttons & CONT_RESET_BUTTONS) == CONT_RESET_BUTTONS) {
         const SDL_Event quit = { .quit = { .type = SDL_QUIT } };
@@ -260,12 +275,29 @@ static void M_PollController(void)
         SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
         state->rtrig >= DC_TRIGGER_BUTTON_THRESHOLD);
 
+    const bool combo = state->ltrig >= DC_TRIGGER_BUTTON_THRESHOLD
+        && state->rtrig >= DC_TRIGGER_BUTTON_THRESHOLD
+        && (state->buttons & (CONT_X | CONT_Y)) == (CONT_X | CONT_Y);
+    if (combo && !m_ComboHeld) {
+        m_ComboPressed = true;
+    }
+    m_ComboHeld = combo;
+
     M_SetAxis(SDL_CONTROLLER_AXIS_LEFTX, M_StickToAxis(state->joyx));
     M_SetAxis(SDL_CONTROLLER_AXIS_LEFTY, M_StickToAxis(state->joyy));
     M_SetAxis(SDL_CONTROLLER_AXIS_RIGHTX, M_StickToAxis(state->joy2x));
     M_SetAxis(SDL_CONTROLLER_AXIS_RIGHTY, M_StickToAxis(state->joy2y));
     M_SetAxis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, M_TriggerToAxis(state->ltrig));
     M_SetAxis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, M_TriggerToAxis(state->rtrig));
+}
+
+// Whether L, R, X and Y were pressed together since last asked: the pad's
+// shortcut for the end-level cheat (lara/cheat_keys.c).
+bool DC_Input_TakeEndLevelCombo(void)
+{
+    const bool pressed = m_ComboPressed;
+    m_ComboPressed = false;
+    return pressed;
 }
 
 // ----------------------------------------------------------------------------

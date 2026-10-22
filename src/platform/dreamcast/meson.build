@@ -48,6 +48,7 @@ dc_excluded_sources = [
 ]
 
 dc_sources = files(
+  'audio.c',
   'av_stub.c',
   'dc_level_heap.c',
   'dc_level_select.c',

@@ -127,6 +127,23 @@ for f in "$STAGE"/pix/*.565; do
   [ -f "$f" ] && : > "$STAGE/games/$GAME/images/$(basename "$f" .565).webp"
 done
 
+echo "== music"
+# The game's tracks as WAV files of stereo Yamaha ADPCM at 44.1 kHz, which the
+# AICA plays itself (src/platform/dreamcast/audio.c): ~2.6 MB a minute. Kept
+# between discs; without ffmpeg the game has no music.
+MUSIC_CACHE="$BUILD_DIR/music-$GAME"
+mkdir -p "$MUSIC_CACHE" "$STAGE/games/$GAME/music"
+for f in "$GAME_DATA"/../TRACKS/*.OGG; do
+  [ -f "$f" ] || continue
+  out="$MUSIC_CACHE/$(basename "$f" .OGG).wav"
+  if [ ! -f "$out" ] && command -v ffmpeg > /dev/null; then
+    ffmpeg -hide_banner -loglevel error -y -i "$f" -ac 2 -ar 44100 \
+      -c:a adpcm_yamaha "$out"
+  fi
+  [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music/"
+done
+echo "$(ls "$STAGE/games/$GAME/music" | wc -l) tracks"
+
 echo "== image"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
   -o "$TMP/TRX.iso" "$STAGE"

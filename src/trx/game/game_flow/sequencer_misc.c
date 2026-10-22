@@ -21,6 +21,10 @@
 #include <trx/game/shell/common.h>
 #include <trx/game/ui/menu.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_bench.h>
+#endif
+
 static void M_PlayIntroFMVs(void)
 {
     if (g_Config.gameplay.intro_fmv_mode != INTRO_FMV_LAUNCH) {
@@ -140,6 +144,17 @@ GF_COMMAND GF_RunGlobeSelect(const char *const background_path)
 RESULT GF_DoFrontendSequence(GF_COMMAND *const out_cmd)
 {
     const SHELL_ARGS *const args = Shell_GetArgs();
+#if defined(__DREAMCAST__)
+    // A demo picked from the level select, once.
+    if (g_DC_StartDemo >= 0) {
+        *out_cmd = (GF_COMMAND) {
+            .action = GF_START_DEMO,
+            .param = g_DC_StartDemo,
+        };
+        g_DC_StartDemo = -1;
+        return OK;
+    }
+#endif
     if (args != nullptr) {
         if (args->startup.save_to_load >= 0) {
             *out_cmd = (GF_COMMAND) {
@@ -236,6 +251,16 @@ RESULT GF_DoDemoSequence(int32_t demo_num, GF_COMMAND *const out_cmd)
     }
     const GF_LEVEL *const level = GF_GetLevel(GFLT_DEMOS, demo_num);
     FAIL_IF(level == nullptr, "the game flow has no demo %d", demo_num);
+#if defined(__DREAMCAST__)
+    if (g_DC_BenchRequested) {
+        g_DC_BenchRequested = false;
+        DC_Bench_Begin();
+        const RESULT result =
+            GF_InterpretSequence(level, GFSC_NORMAL, nullptr, out_cmd);
+        DC_Bench_End();
+        return result;
+    }
+#endif
     return GF_InterpretSequence(level, GFSC_NORMAL, nullptr, out_cmd);
 }
 

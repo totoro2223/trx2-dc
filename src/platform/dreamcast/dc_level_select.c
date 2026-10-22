@@ -6,6 +6,8 @@
 
 #include "dc_level_select.h"
 
+#include "dc_bench.h"
+
 #include <dc/biosfont.h>
 #include <dc/maple.h>
 #include <dc/maple/controller.h>
@@ -39,7 +41,12 @@ static const char *const m_NamesTR2[] = {
     "Floating Islands",
     "The Dragon's Lair",
     "Home Sweet Home",
+    // The title's demos, in the gameflow's order.
+    "Demo: Venice",
+    "Demo: Wreck of the Maria Doria",
+    "Demo: Tibetan Foothills",
 };
+#define M_DEMOS_TR2 3
 static const char *const m_NamesTR3[] = {
     "Title screen",
     "Lara's Home",
@@ -63,7 +70,13 @@ static const char *const m_NamesTR3[] = {
     "Lost City of Tinnos",
     "Meteorite Cavern",
     "All Hallows",
+    "Demo: Aldwych",
+    "Demo: The River Ganges",
+    "Demo: Nevada Desert",
+    // The Aldwych demo, measured (dc_bench.h).
+    "Benchmark (London demo)",
 };
+#define M_DEMOS_TR3 3
 #define M_LEN(a) ((int32_t)(sizeof(a) / sizeof(a[0])))
 static const char *const *m_Names = m_NamesTR2;
 static int32_t m_Count = M_LEN(m_NamesTR2);
@@ -108,9 +121,14 @@ static uint32_t M_Buttons(void)
 
 int32_t DC_LevelSelect_Run(const int32_t engine)
 {
+    // The entries past the levels: the demos, then (TR3) the benchmark.
+    int32_t demos = M_DEMOS_TR2;
+    int32_t extras = M_DEMOS_TR2;
     if (engine == 3) {
         m_Names = m_NamesTR3;
         m_Count = M_LEN(m_NamesTR3);
+        demos = M_DEMOS_TR3;
+        extras = M_DEMOS_TR3 + 1;
     }
     int32_t selected = 0;
     M_Draw(selected);
@@ -133,6 +151,13 @@ int32_t DC_LevelSelect_Run(const int32_t engine)
         }
     }
     vid_clear(0, 0, 0);
+    const int32_t first_extra = M_COUNT - extras;
+    if (selected >= first_extra) {
+        const int32_t extra = selected - first_extra;
+        g_DC_BenchRequested = extra >= demos;
+        g_DC_StartDemo = extra >= demos ? 0 : extra;
+        return -1;
+    }
     // Entry 0 is the title; the rest are levels 0 and on.
     return selected - 1;
 }

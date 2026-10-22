@@ -187,13 +187,16 @@ static void *M_Carve(uint8_t *block, size_t need, const bool level)
     return block + M_TAG;
 }
 
-// From the first bin that fits, its lowest block for the level's data and
-// its highest for the rest, so that each keeps to its own end of the region.
+// The level's data: from the first bin that fits, its lowest block. The
+// rest: the highest block of every bin that fits, so that what outlives a
+// level never lands in a hole the level left in the middle, where it would
+// split the next level's span in two (DC build 283: 6.7 MB free became
+// 1.6 MB at most in four loads, and Jungle's 1.6 MB of frames no longer fit).
 static void *M_Take(const size_t size, const bool level)
 {
     const size_t need = M_Need(size);
+    uint8_t *best = nullptr;
     for (int32_t bin = M_Bin(need); bin < M_BINS; bin++) {
-        uint8_t *best = nullptr;
         for (M_FREE *node = m_Heap.bins[bin]; node != nullptr;
              node = node->next) {
             uint8_t *const block = (uint8_t *)node - M_TAG;
@@ -202,12 +205,15 @@ static void *M_Take(const size_t size, const bool level)
                 best = block;
             }
         }
-        if (best != nullptr) {
-            M_BinRemove(best);
-            return M_Carve(best, need, level);
+        if (best != nullptr && level) {
+            break;
         }
     }
-    return nullptr;
+    if (best == nullptr) {
+        return nullptr;
+    }
+    M_BinRemove(best);
+    return M_Carve(best, need, level);
 }
 
 // Lets a free stretch go, joined with the free ones either side.

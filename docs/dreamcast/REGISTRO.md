@@ -280,3 +280,82 @@ Origen: log de TR3 en Flycast (escenas de 1100–1400 polígonos, 23–31 fps):
 - **No hecho — descarte de caras de espaldas por plano**: ahorra lecturas de
   `M_XVERT` (caché), que Flycast no emula, así que no se vería aquí, y
   costaría ~8–16 B por cara de sala. Reabrir solo con hardware real.
+
+## Atajo de fin de nivel y efectos de sonido (22/10/2026, sin build de disco)
+
+- **L + R + X + Y** a la vez terminan el nivel, como el baile del truco
+  (`Lara_Cheat_CheckKeys`, misma opción `flow.cheat_keys`). El mando lo
+  detecta al pulsarse (`DC_Input_TakeEndLevelCombo`, sdl_compat.c).
+- **Efectos de sonido** (`src/platform/dreamcast/audio.c`): cada muestra WAV
+  pasa a ADPCM Yamaha de 4 bits en la RAM del AICA (un cuarto de su tamaño
+  en 16 bits); las de más de 65534 muestras bajan a la mitad de frecuencia
+  hasta caber. 50 canales propios (`snd_sfx_chn_alloc`), uno por sonido.
+  Volumen y pan con la fórmula del mezclador de PC, cambiados en vivo con
+  `AICA_CH_CMD_UPDATE`. Atajos: una pausa vuelve a empezar los bucles y
+  deja caer los cortos; sin reverb. La música (streams) sigue en stub.
+- **Compilado, sin probar.** Mirar en el log el ERR `Unexpected sample
+  header` (ya existía) y si alguna muestra no cabe en la RAM de sonido.
+
+## Música, pausa de efectos y MAIN.SFX del remaster (22/10/2026, DC builds 269–275)
+
+- **MAIN.SFX**: el del remaster (TR2 y TR3) empieza con una tabla de 740
+  bytes antes de la primera WAV; el lector compartido abortaba en la
+  primera muestra y no cargaba ningún efecto (el viejo ERR `Unexpected
+  sample header`). `M_InitialiseSamplesFromFile` salta hasta el primer
+  RIFF en DC. Carga: ~1,7 s (paso a ADPCM incluido).
+- **MS-ADPCM** (formato 2, la inyección `lara_rifle_sfx.bin`) se decodifica
+  en `audio.c`.
+- **Pausa**: las muestras van a la RAM de sonido por `snd_mem_malloc` y los
+  canales se arrancan a mano (`AICA_CH_CMD_START`), así que una pausa
+  guarda la posición (`snd_get_pos`) y sigue desde ahí; los bucles vuelven
+  a empezar.
+- **Música**: `make_disc.sh` convierte `TRACKS/*.OGG` a WAV ADPCM Yamaha
+  estéreo 44,1 kHz (`build/<dir>/music-<juego>`, ~2,6 MB/min; TR2 43
+  pistas, TR3 73; discos de 264 y 362 MB). `audio.c` las reproduce con los
+  streams de KOS desde un hilo (`trx-music`, 20 ms), con fundidos, bucle,
+  inicio/fin y callback de fin. Atajos: sin filtro paso bajo bajo el agua
+  y sin cambio de velocidad.
+- Probado en Flycast (sin oír): el nivel 1 de TR3 carga todas las
+  muestras, `Playing track 34` sin errores, 30 fps. El arreglo de señales
+  bajó `UI_PAINT` de ~2,5 a 0,33 ms y `M_XformOwn` deja `tgen` en 0,38 ms.
+- **Reverb**: no hecha; necesita un programa propio para el DSP del AICA.
+
+## Música que no sonaba y atajo en casa de Lara (22/10/2026, DC builds 276–284)
+
+- **Música muda** (build 274): KallistiOS arranca los dos canales de un
+  stream a la vez con una máscara de 32 bits (`cmd_id`), y los streams
+  caían en los canales 50–51 porque los 50 de efectos se reservaban antes:
+  nunca arrancaban. Ahora `Audio_Init` deja libres los canales 0–7 para la
+  música (efectos en 8–57).
+- **Ritmo**: cada sondeo pide medio búfer por canal ya intercalado (32704
+  bytes); el búfer intermedio daba la mitad y la lectura iba 5 veces más
+  rápida que el sonido. Ahora 32 K; medido ~43 KB/s (44,1 kHz estéreo).
+- Pila del hilo `trx-music` 8 → 32 K (las lecturas del disco bajo
+  `snd_stream_poll`); la build 274 se cerró con "SH4 exception when
+  blocked" en Lara's Home; 100 s seguidos en la 282 sin fallo.
+- **Atajo L+R+X+Y**: no se miraba en Lara's Home (el gym salta todo el
+  truco de las teclas). Ahora se mira antes. En el teclado de Flycast por
+  defecto: F + V + S + D.
+
+## Sonido sin retraso, cinemáticas, demos y benchmark (22/10/2026, DC builds 285–292)
+
+- **Heap del juego**: lo que no es del nivel toma el bloque libre más alto de
+  todos los cajones (no solo del primero que cabe); en la 283 el mayor hueco
+  bajaba de 6,7 a 1,6 MB en cuatro cargas y Jungle abortaba. Ahora 8 cargas
+  de partida seguidas (TR3, '1 8'): el mayor hueco se queda en 5,2–6,5 MB.
+- **Sonido**: el AICA deja el canal en key-on al acabar una muestra sin
+  bucle, así que `snd_is_playing` decía que todo seguía sonando: los huecos
+  se agotaban (pisadas que faltaban) y el juego mandaba cada frame volumen
+  y pan a sonidos muertos (la cola del AICA se atascaba: retraso). Ahora
+  cada sonido lleva su hora de fin y solo se envían los cambios.
+- **Cinemáticas**: el hilo que guarda pulsaciones entre lecturas seguía
+  sumando durante la carga lo que estaba apretado (X e Y del atajo), y la
+  primera lectura de la cinemática lo veía como pulsado: se saltaba en el
+  cuadro 0. Lo guardado se tira si la lectura anterior tiene más de 250 ms.
+- **Demos** al final del selector (TR2: Venice, Maria Doria, Tibetan
+  Foothills; TR3: Aldwych, River Ganges, Nevada) y, en TR3, **Benchmark
+  (London demo)**: la demo de Aldwych medida entera (`dc_bench.h`,
+  `output_common.c`), resultado 10 s en pantalla y en el log:
+  `[bench] 2487 frames avg 26.3 fps min 5.1 slow 50% | logic 5.0 stage 9.6
+  pass 15.2 map 1.2 pvr 7.5 ms` (build 290, Flycast).
+- Atajo de fin de nivel en el teclado de Flycast: F + V + S + D.

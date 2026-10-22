@@ -59,6 +59,20 @@ static void M_InitialiseSamplesFromFile(
     }
     File_SetSoftFailure(fp, true);
     LOG_DEBUG("Loading samples from %s", file_name);
+#if defined(__DREAMCAST__)
+    {
+        // The remaster's main.sfx starts with a table of its own (740 bytes
+        // in TR2 and TR3) before the first WAV: skipped to the first RIFF.
+        uint8_t head[4096];
+        File_ReadData(fp, head, sizeof(head));
+        int32_t skip = 0;
+        while (skip + 4 <= (int32_t)sizeof(head)
+               && memcmp(head + skip, "RIFF", 4) != 0) {
+            skip += 2;
+        }
+        File_Seek(fp, skip + 4 <= (int32_t)sizeof(head) ? skip : 0, FILE_SEEK_SET);
+    }
+#endif
 
     const int32_t sample_count = info->samples.offset_count;
     entries = Memory_Alloc(sizeof(M_SAMPLE_ENTRY) * sample_count);
