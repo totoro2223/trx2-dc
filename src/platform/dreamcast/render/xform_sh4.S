@@ -23,7 +23,7 @@
 ! Struct layout, DC_XFORM_ROOM (batcher.c):
 !    0 c  4 xverts  8 vertices  12 vref  16 slot  20 gen  24 ranges
 !   28 nranges  32 min_shade  36 flicker  40 white (0: not) | 44 hits
-!   48 tint a  52 tint r  56 tint g  60 tint b (8.8)
+!   48 tint a  52 tint r  56 tint g  60 tint b (8.8)  64 tr3 k (0: not TR3)
 !
 ! M_XFORM: 0 left 4 right 8 top 12 bottom 48 ortho 49 sides 50 near 51 fog
 !   52 proj_x 56 proj_y 60 near_z 64 fog_start 68 fog_start_sq 72 fog_scale
@@ -33,9 +33,9 @@
 !   26 light_table_idx
 
 ! One channel of a vertex colour times its factor, as M_Colour: the byte of
-! the colour (in r4) at \shift, times the tint at 	int (times k, in r3, but
+! the colour (in r4) at \shift, times the tint at run + \off (times k, in r3, but
 ! for alpha), in 8.8, saturated; stored at \dst from r2.
-    .macro CHANNEL shift, tint, dst, scale
+    .macro CHANNEL shift, off, dst, scale
     mov     r4,r0
     .if \shift == 24
     shlr16  r0
@@ -47,7 +47,7 @@
     .endif
     extu.b  r0,r0
     mov.l   @(0,r15),r1
-    add     #	int,r1
+    add     #\off,r1
     mov.l   @r1,r1
     .if \scale
     mul.l   r3,r1
@@ -84,8 +84,12 @@ _dc_xform_room:
     fmov.s  fr9,@-r15
     fmov.s  fr10,@-r15
     fmov.s  fr11,@-r15
-    add     #-32,r15
+    add     #-36,r15
     mov.l   r4,@(0,r15)
+    mov     r4,r1
+    add     #64,r1
+    mov.l   @r1,r1
+    mov.l   r1,@(32,r15)            ! TR3's k (0: not TR3)
     mov     r4,r5
     mov.l   @r5+,r13
     mov.l   @r5+,r8
@@ -160,11 +164,17 @@ vert_loop:
     shll    r3
     add     r8,r3
     mov     r14,r4
-    .rept 8
-    mov.l   @r3+,r0
-    mov.l   r0,@r4
-    add     #4,r4
-    .endr
+    add     #32,r4
+    fschg                           ! 64-bit moves: the xvert is 32 aligned
+    fmov.d  @r3+,dr0
+    fmov.d  @r3+,dr2
+    fmov.d  @r3+,dr4
+    fmov.d  @r3+,dr6
+    fmov.d  dr6,@-r4
+    fmov.d  dr4,@-r4
+    fmov.d  dr2,@-r4
+    fmov.d  dr0,@-r4
+    fschg
     mov.l   @(12,r15),r0
     add     #1,r0
     mov.l   r0,@(12,r15)
@@ -202,7 +212,13 @@ miss:
     fldi1   fr3
     ftrv    xmtrx,fv0
     add     #10,r2
-    mov.w   @r2+,r3                 ! the shade
+    mov.l   @(32,r15),r1
+    tst     r1,r1
+    bt      1f
+    mov     r1,r3                   ! TR3: the doubled curve, no shade
+    bra     kdone
+    nop
+1:  mov.w   @r2+,r3                 ! the shade
     mov.b   @r2,r0
     and     #31,r0
     add     #-16,r0
@@ -224,6 +240,7 @@ miss:
     shll8   r1
     sub     r3,r1
     mov     r1,r3                   ! k = 512 - shade / 16
+kdone:
 
     mov     r14,r4
     add     #12,r4
@@ -347,10 +364,8 @@ shaded:
     add     #1,r7
     bra     vert_loop
     nop
-! WIP (TAREAS.md): the tinted colour, not assembling yet and never reached:
-! the C gate sends only white rooms here.
+! The tinted colour, as M_Colour.
 tinted:
-    .if 0
     mov.l   @(28,r15),r4
     mov     r14,r2
     add     #24,r2
@@ -360,7 +375,6 @@ tinted:
     CHANNEL 24, 48, 3, 0
     add     #4,r2
     mov.b   r5,@r2
-    .endif
     add     #1,r7
     bra     vert_loop
     nop
@@ -372,7 +386,7 @@ finish:
     mov.l   @(0,r15),r4
     mov.l   @(12,r15),r1
     mov.l   r1,@(44,r4)
-    add     #32,r15
+    add     #36,r15
     fmov.s  @r15+,fr11
     fmov.s  @r15+,fr10
     fmov.s  @r15+,fr9

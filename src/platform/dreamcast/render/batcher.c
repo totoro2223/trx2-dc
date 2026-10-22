@@ -1411,7 +1411,9 @@ typedef struct {
     const uint32_t *white; // nullptr: not white, the tints below apply
     uint32_t hits;
     uint32_t tint[4]; // a, r, g, b in 8.8
+    uint32_t tr3_k; // TR3's factor in place of the shade; 0 for TR1/TR2
 } M_XROOM;
+_Static_assert(offsetof(M_XROOM, tr3_k) == 64, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, white) == 40, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, hits) == 44, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, tint) == 48, "xform_sh4.S reads these");
@@ -1489,7 +1491,7 @@ static void M_XformRoom(
         g_DC_ProbeUs[DC_PROBE_R_FOG] += fog_on ? total : 0; // TEMP
     }
     const bool fast =
-        vref != nullptr && !tr3 && lighting && !dyn && white && !vary
+        vref != nullptr && lighting && (tr3 ? !rgb_dyn : !dyn) && !vary
         && !c->ortho;
     M_XROOM run = {
         .c = c,
@@ -1504,6 +1506,7 @@ static void M_XformRoom(
         .flicker = flicker,
         .white = white ? m_WhiteARGB : nullptr,
         .tint = { ta, tr, tg, tb },
+        .tr3_k = tr3 ? tr3_k : 0,
     };
 #if !defined(DC_EMIT_VERIFY)
     if (fast) {
@@ -1621,6 +1624,35 @@ static void M_XformRoom(
 #endif
 }
 
+// What xform_obj_sh4.S takes: the plain object (see dc_xform_object).
+typedef struct {
+    M_XFORM *c;
+    M_XVERT *xverts;
+    const OUTPUT_MESH_VERTEX *vertices;
+    const uint16_t *vref;
+    const uint16_t *twin;
+    int32_t count;
+    int32_t min_shade;
+    const uint32_t *white;
+    uint32_t *sargb; // nullptr: no cel colour
+    float adder;
+    float l[3]; // zero when the object has no direction
+    float cel_scale;
+    uint32_t dark;
+    uint32_t tint[4]; // a, r, g, b in 8.8
+    const M_INSTANCE_LIGHT *il; // TR3's object light; nullptr for TR1/TR2
+} M_XOBJ;
+_Static_assert(offsetof(M_XOBJ, il) == 76, "xform_obj_sh4.S reads these");
+_Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_double) == 20, "xform_obj_sh4.S");
+_Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_ambient) == 24, "xform_obj_sh4.S");
+_Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_count) == 36, "xform_obj_sh4.S");
+_Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_dir) == 40, "xform_obj_sh4.S");
+_Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_color) == 76, "xform_obj_sh4.S");
+_Static_assert(offsetof(M_XOBJ, sargb) == 32, "xform_obj_sh4.S reads these");
+_Static_assert(offsetof(M_XOBJ, dark) == 56, "xform_obj_sh4.S reads these");
+_Static_assert(offsetof(M_XOBJ, tint) == 60, "xform_obj_sh4.S reads these");
+extern void dc_xform_object(M_XOBJ *run);
+
 // Lara, enemies, pickups: the object's light on each vertex, with n.l found
 // once for the light and the cel shading both. Colours in integers as the
 // rooms'.
@@ -1653,6 +1685,31 @@ static void M_XformObject(
     const bool white =
         bind->white && ta == 256 && tr == 256 && tg == 256 && tb == 256;
     const uint16_t *const twin = bind->twin;
+    const bool fast = !env && !vary && !c->ortho
+        && (bind->vref == nullptr || count <= 0xFFFF);
+    M_XOBJ run = {
+        .c = c,
+        .xverts = xverts,
+        .vertices = vertices,
+        .vref = bind->vref,
+        .twin = twin,
+        .count = count,
+        .min_shade = min_shade,
+        .white = white ? m_WhiteARGB : nullptr,
+        .sargb = cel ? sargb : nullptr,
+        .adder = adder,
+        .l = { dir ? l0 : 0.0f, dir ? l1 : 0.0f, dir ? l2 : 0.0f },
+        .cel_scale = cel_scale,
+        .dark = dark,
+        .tint = { ta, tr, tg, tb },
+        .il = tr3 ? il : nullptr,
+    };
+#if !defined(DC_EMIT_VERIFY)
+    if (fast) {
+        dc_xform_object(&run);
+        return;
+    }
+#endif
     for (int32_t i = 0; i < count; i++) {
         if (twin != nullptr && twin[i] != i) {
             const int32_t j = twin[i];
@@ -1734,6 +1791,40 @@ static void M_XformObject(
             M_EnvVertex(batcher, i, vertex, mv, x, y, z, keep, lit);
         }
     }
+#if defined(DC_EMIT_VERIFY)
+    if (fast) {
+        // The assembly places them all again and the two are compared; the
+        // cel alpha may differ by one (the edge is rounded another way).
+        static M_XVERT *saved = nullptr;
+        static uint32_t *saved_s = nullptr;
+        static int32_t saved_cap = 0;
+        if (count > saved_cap) {
+            Memory_Free(saved);
+            Memory_Free(saved_s);
+            saved_cap = count;
+            saved = Memory_Alloc(sizeof(M_XVERT) * saved_cap);
+            saved_s = Memory_Alloc(sizeof(uint32_t) * saved_cap);
+        }
+        memcpy(saved, xverts, sizeof(M_XVERT) * count);
+        memcpy(saved_s, sargb, sizeof(uint32_t) * count);
+        dc_xform_object(&run);
+        const int32_t whole[1][2] = { { 0, count } };
+        M_VerifyXform(saved, xverts, whole, 1);
+        for (int32_t i = 0; cel && i < count; i++) {
+            const uint32_t a = sargb[i];
+            const uint32_t b = saved_s[i];
+            const int32_t da = (int32_t)(a >> 24) - (int32_t)(b >> 24);
+            if ((a & 0xFFFFFFu) != (b & 0xFFFFFFu) || da > 1 || da < -1) {
+                m_XVerifyBad++;
+                if (m_XVerifyBad <= 12) {
+                    LOG_WARNING(
+                        "[xform-verify] MISMATCH cel %d: asm %08x | C %08x",
+                        (int)i, (unsigned)a, (unsigned)b);
+                }
+            }
+        }
+    }
+#endif
 }
 
 // Statics and sprites: meshes lit by their own light or not at all, with no
