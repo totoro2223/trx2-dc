@@ -373,3 +373,98 @@ Origen: log de TR3 en Flycast (escenas de 1100–1400 polígonos, 23–31 fps):
   `tools/dreamcast/bench_archive.ps1` los guarda en
   `docs/dreamcast/benchmarks/<fecha>_build<N>_tr<n>.txt`; `run_flycast.ps1`
   lo ejecuta al cerrar Flycast (con `-KeepRunning`, a mano sobre el log).
+
+## Nueva medida de Venecia (22/10/2026, disco "DC build 256" del contador local)
+
+- **Ojo con el número**: el disco salió como "DC build 256" porque el
+  contador `build/dc-build-number` de esta máquina (D:\trx) va por detrás del
+  de este registro; no es la build 256 de la sombra suave. El código es
+  `a996c8ba7` más los cambios sin commit del selector por páginas y los
+  informes de benchmark (builds 293–294).
+- Datos TR2 clásicos de Steam, disco de prueba en el nivel 3, Lara quieta,
+  75 s en Flycast oculto; media de 11 ventanas `[frame]` (la primera, con la
+  carga, fuera). Log: `build/dc-venice-b256.txt`. 30 fps estables.
+
+| Parte (ms) | Build 200 | `dc-venice-final.txt` (21/10) | Hoy |
+|---|---|---|---|
+| `logic` | 3,9 | 2,57 | 2,41 |
+| `stage` | 5,0 | 5,14 | 5,49 |
+| `pass` | 17,0 | 14,55 | 11,64 |
+| `map` | 1,4 | 1,10 | 1,20 |
+| `submit` | 0,3 | 0,30 | 0,30 |
+| **Total** | ~27,6 | ~23,7 | **~21,0** |
+| **Margen** (33,3) | ~5,7 | ~9,6 | **~12,3** |
+
+- `pvr` 7,5 ms en paralelo; `wait` 0: la CPU nunca espera al PVR.
+- Polígonos 889 por frame (939 en el log del 21/10): parte de la bajada de
+  `pass` puede venir de ahí. `stage` es ya la mitad de `pass`.
+- 60 fps (16,6 ms) quedan a ~4,4 ms.
+- Segunda pasada con sondas nuevas (`src*`, `p*`, `u*` en `dc_probe.h`; disco
+  "DC build 259" del contador local, log `build/dc-venice-probes2.txt`):
+  `UI_Draw` 0,07 ms (5 operaciones); el batcher es 11,47 de los 11,8 ms del
+  pass y `M_DrawInstance` 11,42; caras transparentes 0,70 ms (216 por
+  frame). Candidatos y reparto completo en TAREAS.md §5.
+
+## Hacia 16,6 ms: candidatos aplicados (22/10/2026, DC builds 260–262 del contador local)
+
+Venecia, Lara quieta, Flycast oculto, media de 11 ventanas; logs
+`build/dc-venice-opt1.txt` (260) y `build/dc-venice-opt2.txt` (261).
+**21,0 → 19,7 ms** (logic 2,4 · stage 4,8 · pass 11,6 · map 0,6 · submit 0,3).
+La Muralla (build 262, `build/dc-wall-opt2.txt`): logic 2,1 · stage 3,0 ·
+pass 7,1 · map 0,6 = 12,8 ms (sin medida previa con el mismo código).
+Captura `build/shot-venice-261.png`: el canal, la barca y las paredes se ven
+como antes.
+
+| Cambio | Dónde | Medido |
+|---|---|---|
+| Reservas de regiones de la UI guardadas entre escenas (`root._reserve`, se olvida con `Widget:wake` o al cambiar una señal leída) | `lua/trx/ui/regions.lua`, `widgets/base.lua` (compartido, mismo comportamiento) | `sui` 1,53 → 0,79 ms; Lua 2,3 → 1,6 |
+| Mapa de sombra suave cada 2 frames (`M_SOFT_MAP_EVERY`), con las luces y rodajas con que se dibujó | `batcher.c` `DC_Shadow_RenderMaps` | `map` 1,2 → 0,6 ms |
+| Trozos de sala también por orientación (`M_FaceSide`, `M_CHUNK_SIDES`): un trozo de espaldas se descarta antes de transformar | `batcher.c` `M_BuildChunks`, `M_CullChunks` | 196 caras/frame descartadas (`eside`), pero `eback` sigue en 979: **las caras de espaldas son de los objetos** (Lara, ítems), no de las salas. Sin ganancia medible |
+| Cada trozo de sala se emite nada más transformarlo (`M_EmitChunk`), con sus vértices aún en caché | `batcher.c` `M_TransformInstance` | Sin cambio en Flycast, que no modela la caché; comprobar en consola |
+| Caras transparentes en una sola tanda (`bind->transp`) | `batcher.c` | `ptransp` 0,70 → 0,69: el coste es la emisión, no la llamada por cara |
+| Coleta: la soldadura de un puente se guarda mientras sus anclajes no se muevan (`m_LastWeld`) | `lara/hair.c` (bajo `__DREAMCAST__`) | 0 soldaduras/frame quieta (`lweld`); `lhair` 0,38 → 0,33 |
+| `exp2f` → `M_Exp2` (exponentes enteros sin libm) | `batcher.c` `M_PrepareRoomLights` | dentro del ruido |
+
+No aplicado:
+
+- **Caché de luz por ítem**: medido primero (`ilight`): 0,14 ms por frame en
+  total. No compensa.
+- **`TICK` en Lua** (0,9 ms): el reparto entre listeners no se conoce; agrupar
+  las lecturas de roles era una suposición. Pendiente de medir en Lua.
+- **`M_GetBinding` por instancia**: ~50 µs por frame. No compensa.
+
+Para 16,6 ms faltan ~3 ms, y están en `xform` (4,0) y `emit` (4,5): en
+Flycast son coste de instrucciones, no de caché. Lo siguiente sería descartar
+las caras de espaldas de los objetos por grupos de normales antes de emitir
+(~980 caras/frame), o menos vértices.
+
+## `xform` y `emit`: trozos por orientación, probados y descartados (22/10/2026, DC builds 263–266)
+
+Venecia, Lara quieta, Flycast oculto (`build/dc-venice-opt3..6.txt`).
+
+- **Salas por celda y lado** (`M_FaceSide`, 7 lados por celda) y **objetos
+  por cono de normales** (26 direcciones, `M_CullChunks` con la prueba
+  |d|·cos(φ+θ) ≥ r): con el signo correcto (build 264–265) se descartan 212
+  caras de espaldas de Lara y los ítems por frame (`eback` 979 → 767) y 564
+  esquinas menos se transforman (`vobj` 2749 → 2185), pero `tplain` no baja
+  (1,78 → 1,75) y `emit` sube (4,58 → 4,70): las esquinas ahorradas eran
+  casi todas copias de gemelas (baratas), y el coste por trozo (prueba del
+  cono, un `M_EmitIndices` y un cambio de estado por trozo y pasada, los
+  sellos de gemelas) se come la ganancia. Pass 11,6 → 11,9 ms. **Deshecho**
+  (`git checkout` de `batcher.c` y reaplicado lo que sí vale); la versión con
+  conos quedó en la sesión, no en el árbol.
+- Dato que costó dos builds: el batcher **dibuja** una cara donde
+  n · (ojo − a) > 0 con n = (b − a) × (c − a) en el espacio del objeto (la
+  deducción desde `M_IsBackFacing` sale con el signo contrario; `proj_y` lo
+  invierte). Con el signo al revés (build 263) `polys` bajó 888 → 763.
+- Lo que queda en el árbol de esta ronda: emisión de cada trozo de sala nada
+  más transformarlo (`M_EmitChunk`; sin efecto en Flycast, que no modela la
+  caché), transparentes en una tanda, `M_Exp2`, sombra a mitad de frecuencia.
+- Estado final (build 266): logic 2,5 · stage 4,8 · pass 11,6 · map 0,6 ·
+  submit 0,3 = **19,7 ms**, `polys` 889 como al principio.
+- Reparto del perfilador dentro de `emit` (muestras útiles de la build 257):
+  bucle y despacho por cara (`M_EmitIndices` + `M_TryEmitQuad` +
+  `M_EmitTriangle` + `M_EmitFront`) 59 %, trabajo por esquina (`M_Colours`,
+  `M_GetFaceUVs`, `M_Project`, `M_Depth`, `M_Reserve`) 31 %, descarte de
+  espaldas 4 %. No hay un bloque gordo que recortar: lo que queda es
+  trabajo por instrucción repartido, o menos caras.

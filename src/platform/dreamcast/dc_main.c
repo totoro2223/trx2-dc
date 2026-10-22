@@ -9,6 +9,7 @@
 // The link wraps main (-Wl,--wrap=main), so this runs once KOS is up and
 // before the engine's own main.
 
+#include "dc_bench.h"
 #include "dc_level_select.h"
 #include "dc_watchdog.h"
 #include "vmu.h"
@@ -103,6 +104,17 @@ int __wrap_main(int argc, char *argv[])
         }
         fclose(game);
     }
+    // A test disc that starts in one of the title's demos (make_disc.sh's
+    // TRX_DC_DEMO).
+    FILE *const demo = fopen("/cd/DEMO.TXT", "r");
+    if (demo != nullptr) {
+        int number = -1;
+        while (g_DC_DemoQueueCount < DC_DEMO_QUEUE_MAX
+               && fscanf(demo, "%d", &number) == 1) {
+            g_DC_DemoQueue[g_DC_DemoQueueCount++] = number;
+        }
+        fclose(demo);
+    }
     // Test discs name their level (make_disc.sh's fourth argument).
     int level = -1;
     FILE *const start = fopen("/cd/START.TXT", "r");
@@ -116,7 +128,7 @@ int __wrap_main(int argc, char *argv[])
             DC_Watchdog_SetTestLoads(loads);
         }
         fclose(start);
-    } else {
+    } else if (g_DC_DemoQueueCount == 0) {
         level = DC_LevelSelect_Run(engine);
     }
     static char engine_arg[12];

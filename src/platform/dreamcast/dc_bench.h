@@ -10,6 +10,13 @@
 // (the level select).
 extern int32_t g_DC_StartDemo;
 extern int32_t g_DC_StartCutscene;
+// Demos a test disc runs one after the other (make_disc.sh's
+// TRX_DC_DEMO); each is taken off the front when the one before it
+// has ended.
+#define DC_DEMO_QUEUE_MAX 8
+extern int32_t g_DC_DemoQueue[DC_DEMO_QUEUE_MAX];
+extern int32_t g_DC_DemoQueueCount;
+extern int32_t g_DC_DemoQueueNext;
 // That demo is the benchmark.
 extern bool g_DC_BenchRequested;
 

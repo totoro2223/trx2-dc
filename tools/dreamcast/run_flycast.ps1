@@ -17,7 +17,12 @@ param(
     [switch]$Hidden,
     # The display to show the game on, by monitor name; empty leaves it
     # where Flycast puts it.
-    [string]$Monitor = 'JMGO'
+    [string]$Monitor = 'JMGO',
+    # Extra Flycast options, e.g. '-config config:rend.vsync=no'.
+    [string]$FlycastArgs = '',
+    # Stops as soon as the serial log matches this regular expression (an
+    # error, say), instead of waiting out -Seconds.
+    [string]$StopOn = ''
 )
 
 # Runs in a separate process: attaching to another console is only possible
@@ -113,7 +118,7 @@ public static class HiddenDesk {
   }
 }
 '@
-    $procId = [HiddenDesk]::Start('TRX-DC', $Flycast, "`"$cdiPath`"", (Split-Path $Flycast))
+    $procId = [HiddenDesk]::Start('TRX-DC', $Flycast, "$FlycastArgs `"$cdiPath`"", (Split-Path $Flycast))
     $proc = Get-Process -Id $procId
 } else {
     $proc = Start-Process $Flycast -ArgumentList "`"$cdiPath`"" `
@@ -143,6 +148,14 @@ if (-not $Hidden) {
 $deadline = $logStart.AddSeconds($Seconds)
 while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 500
+    if ($StopOn -ne '' -and (Test-Path $outPath)) {
+        $text = try { [IO.File]::ReadAllText($outPath) } catch { '' }
+        if ($text -match $StopOn) {
+            "Stopped: the log matches '$StopOn'"
+            Start-Sleep -Milliseconds 700
+            break
+        }
+    }
 }
 if ($proc.HasExited) {
     "Flycast exited (code $($proc.ExitCode))"

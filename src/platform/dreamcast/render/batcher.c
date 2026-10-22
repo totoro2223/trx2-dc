@@ -33,6 +33,7 @@
 #include <trx/game/output/lights/priv.h>
 #include <trx/game/output/mesh_batcher/batcher.h>
 #include <trx/game/output/shaders/mesh.h>
+#include <trx/game/output/sources/objects.h> // g_DC_FrameCount
 #include <trx/game/output/textures.h>
 #include <trx/game/output/utils.h>
 #include <trx/game/output/vertex_range.h>
@@ -140,6 +141,10 @@ typedef struct M_BINDING {
     int32_t chunk_count;
     int32_t always_start;
     int32_t always_count;
+    // The transparent faces' indices end to end, as M_PairQuads leaves them:
+    // one run to emit instead of a call per face.
+    OUTPUT_MESH_INDEX *transp;
+    int32_t transp_count;
     UT_hash_handle hh;
 } M_BINDING;
 
@@ -357,6 +362,13 @@ typedef struct MESH_BATCHER {
     // or -1 ranges for all of them.
     int32_t vranges[M_MAX_CHUNKS + 1][2];
     int32_t vrange_count;
+    // Per vertex range, the chunk it is (-1 for the faces outside them): a
+    // room's chunks are each drawn as soon as they are transformed, while
+    // their vertices are still in the cache (M_EmitChunk), and then the
+    // opaque faces are done with (emitted) before M_DrawInstance's own pass.
+    int16_t vrange_chunk[M_MAX_CHUNKS + 1];
+    bool emitted;
+    uint32_t chunk_emit_us;
 } MESH_BATCHER;
 
 // What a pass needs that holds for every instance in it.
@@ -737,6 +749,17 @@ static void M_WorldMatrix(const MATRIX *const m, float out[3][4])
     }
 }
 
+// 2^e: the lights carry whole exponents, which need no libm (exp2f takes a
+// few hundred cycles, three times a light for every room instance).
+M_HOT float M_Exp2(const float e)
+{
+    const int32_t i = (int32_t)e;
+    if ((float)i == e && i >= -30 && i <= 30) {
+        return i >= 0 ? (float)(1u << i) : 1.0f / (float)(1u << -i);
+    }
+    return exp2f(e);
+}
+
 static void M_PrepareRoomLights(
     const MESH_INSTANCE *const inst, const M_BINDING *const bind,
     M_INSTANCE_LIGHT *const out)
@@ -795,7 +818,7 @@ static void M_PrepareRoomLights(
         if (light->kind != OUTPUT_DYNAMIC_LIGHT_LUM) {
             continue;
         }
-        const float radius = exp2f(light->falloff);
+        const float radius = M_Exp2(light->falloff);
         const float dx = light->pos[0] - center[0];
         const float dy = light->pos[1] - center[1];
         const float dz = light->pos[2] - center[2];
@@ -808,8 +831,8 @@ static void M_PrepareRoomLights(
         pl->pos[1] = light->pos[1];
         pl->pos[2] = light->pos[2];
         pl->radius_sq = radius * radius;
-        pl->max_shade = exp2f(light->shade);
-        pl->inv_div = 1.0f / exp2f(2.0f * light->falloff - light->shade);
+        pl->max_shade = M_Exp2(light->shade);
+        pl->inv_div = 1.0f / M_Exp2(2.0f * light->falloff - light->shade);
     }
     const int32_t index =
         M_FlickerIndex(lights->room_light_mode, m_Frame.time_in_game);
@@ -1840,22 +1863,22 @@ static int32_t M_CullChunks(
         z_near[k] = eye[2] - radius;
         shown += shows[k] ? 1 : 0;
     }
-    if (shown == bind->chunk_count) {
-        return -1;
-    }
 
+    // Chunk by chunk even when all show: each is drawn as it is transformed.
     int32_t nvr = 0;
     for (int32_t k = 0; k < bind->chunk_count; k++) {
         const M_CHUNK *const chunk = &bind->chunks[k];
         if (shows[k] && chunk->vert_count > 0) {
             batcher->vranges[nvr][0] = chunk->vert_start;
             batcher->vranges[nvr][1] = chunk->vert_count;
+            batcher->vrange_chunk[nvr] = (int16_t)k;
             nvr++;
         }
     }
     if (bind->always_count > 0) {
         batcher->vranges[nvr][0] = bind->always_start;
         batcher->vranges[nvr][1] = bind->always_count;
+        batcher->vrange_chunk[nvr] = -1;
         nvr++;
     }
 
@@ -1875,6 +1898,33 @@ static int32_t M_CullChunks(
     }
     batcher->range_count = n;
     return nvr;
+}
+
+static void M_EmitIndices(
+    MESH_BATCHER *batcher, const M_BINDING *bind,
+    const OUTPUT_MESH_INDEX *indices, int32_t count, DC_BLEND blend,
+    int32_t *page);
+
+// A room chunk's opaque runs, as M_DrawInstance emits the ranges of a whole
+// instance.
+static void M_EmitChunk(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const M_CHUNK *const chunk, const bool faded)
+{
+    const OUTPUT_MESH_INDEX *const opaque =
+        Vector_GetData(bind->mesh->opaque_vertex_indices);
+    for (int32_t run = 0; run < 2; run++) {
+        if (chunk->count[run] == 0) {
+            continue;
+        }
+        int32_t page = INT32_MIN;
+        M_EmitIndices(
+            batcher, bind, opaque + chunk->start[run], chunk->count[run],
+            faded          ? DC_BLEND_ALPHA
+                : run == 0 ? DC_BLEND_OPAQUE
+                           : DC_BLEND_PUNCH,
+            &page);
+    }
 }
 
 static bool M_TransformInstance(
@@ -2032,15 +2082,36 @@ static bool M_TransformInstance(
             : -1;
         batcher->vrange_count = nvr;
         if (nvr >= 0) {
+            // Each chunk drawn as soon as it is transformed: a room's vertices
+            // are many times the data cache, and emitted after them all, every
+            // corner missed it. (Flycast models no cache: nothing to measure
+            // there; for the console.)
             transformed = 0;
+            const bool faded = inst->tint.a < 1.0f;
+            batcher->cel_emit = batcher->cel && !faded;
             for (int32_t r = 0; r < nvr; r++) {
                 transformed += batcher->vranges[r][1];
+                DC_PROBE(
+                    DC_PROBE_XT_ROOM,
+                    M_XformRoom(
+                        batcher, bind, inst, &il, &c, &batcher->vranges[r], 1));
+                const int32_t k = batcher->vrange_chunk[r];
+                if (k < 0) {
+                    continue;
+                }
+                const uint64_t emit_start = timer_us_gettime64();
+                M_EmitChunk(batcher, bind, &bind->chunks[k], faded);
+                batcher->chunk_emit_us +=
+                    (uint32_t)(timer_us_gettime64() - emit_start);
             }
+            batcher->emitted = true;
+        } else {
+            DC_PROBE(
+                DC_PROBE_XT_ROOM,
+                M_XformRoom(
+                    batcher, bind, inst, &il, &c, batcher->vranges, nvr));
         }
         g_DC_ProbeUs[DC_PROBE_XF_LIT] += transformed; // TEMP
-        DC_PROBE(
-            DC_PROBE_XT_ROOM,
-            M_XformRoom(batcher, bind, inst, &il, &c, batcher->vranges, nvr));
     } else if (
         bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho) {
         g_DC_ProbeUs[DC_PROBE_XF_PLAIN] += bind->vertex_count; // TEMP
@@ -3073,10 +3144,15 @@ static void M_DrawInstance(
         M_RefillTextures(bind);
     }
     m_Frame.lara_instance = caster != -1;
+    batcher->emitted = false;
+    batcher->chunk_emit_us = 0;
 #if defined(TRX_DC_WATCHDOG)
     const uint64_t xform_start = timer_us_gettime64();
     const bool transformed = M_TransformInstance(batcher, inst, bind);
-    g_DC_BatcherXformUs += (uint32_t)(timer_us_gettime64() - xform_start);
+    // The chunks drawn on the way count as emission, not transformation.
+    g_DC_BatcherXformUs += (uint32_t)(timer_us_gettime64() - xform_start)
+        - batcher->chunk_emit_us;
+    g_DC_ProbeUs[DC_PROBE_EMIT] += batcher->chunk_emit_us; // TEMP
     if (!transformed) {
         return;
     }
@@ -3122,7 +3198,7 @@ static void M_DrawInstance(
     batcher->cel_emit = batcher->cel && !faded;
     DC_PROBE_START(probe_emit);
     int32_t last_run = -1;
-    for (int32_t i = 0; i < batcher->range_count; i++) {
+    for (int32_t i = 0; !batcher->emitted && i < batcher->range_count; i++) {
         const M_RANGE *const range = &batcher->ranges[i];
         // The header carries the blend too: a new run means a new one.
         if (range->run != last_run) {
@@ -3157,13 +3233,12 @@ static void M_DrawInstance(
         m_Frame.emit = M_EMIT_PLAIN;
     }
     page = INT32_MIN;
-    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
-        const OUTPUT_MESH_FACE *const face =
-            Vector_Get(mesh->transparent_faces, i);
-        M_EmitIndices(
-            batcher, bind, (const OUTPUT_MESH_INDEX *)face->vertex_indices,
-            face->vertex_count, DC_BLEND_ALPHA, &page);
-    }
+    DC_PROBE_START(probe_transp); // TEMP
+    g_DC_ProbeUs[DC_PROBE_P_NTRANSP] += mesh->transparent_faces->count; // TEMP
+    // The PowerVR sorts the translucent list itself: the faces go as one run.
+    M_EmitIndices(
+        batcher, bind, bind->transp, bind->transp_count, DC_BLEND_ALPHA, &page);
+    DC_PROBE_STOP(DC_PROBE_P_TRANSP, probe_transp); // TEMP
 }
 
 static void M_PrepareFrame(void)
@@ -3303,7 +3378,7 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     }
     M_PrepareFrame();
     if (pass == SCENE_PASS_OPAQUE) {
-        M_PrepareSoft();
+        DC_PROBE(DC_PROBE_P_PSOFT, M_PrepareSoft()); // TEMP
     } else {
         m_Soft.active = false;
     }
@@ -3324,7 +3399,9 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     VECTOR *const staged = batcher->staged[pass];
     const int16_t *const casters = Vector_GetData(batcher->casters[pass]);
     for (int32_t i = 0; i < staged->count; i++) {
-        M_DrawInstance(batcher, Vector_Get(staged, i), pass, casters[i]);
+        DC_PROBE(
+            DC_PROBE_P_DRAWI,
+            M_DrawInstance(batcher, Vector_Get(staged, i), pass, casters[i]));
     }
     DC_PVR_SetShadowReceiver(false);
 }
@@ -3971,6 +4048,25 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
     M_FindReflections(bind);
     M_ShareVertices(bind);
     M_FindTwins(bind);
+    // The transparent faces end to end, their indices final by now.
+    bind->transp_count = 0;
+    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
+        const OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, i);
+        bind->transp_count += face->vertex_count;
+    }
+    if (bind->transp_count > 0) {
+        bind->transp =
+            Memory_Alloc(sizeof(OUTPUT_MESH_INDEX) * bind->transp_count);
+        int32_t at = 0;
+        for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
+            const OUTPUT_MESH_FACE *const face =
+                Vector_Get(mesh->transparent_faces, i);
+            memcpy(
+                &bind->transp[at], face->vertex_indices,
+                sizeof(OUTPUT_MESH_INDEX) * face->vertex_count);
+            at += face->vertex_count;
+        }
+    }
     mesh->sealed = 2;
     g_DC_BatcherMeshCount++;
     g_DC_BatcherVertexCount += bind->vertex_count;
@@ -3999,6 +4095,7 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     Memory_Free(bind->twin);
     Memory_Free(bind->env);
     Memory_Free(bind->chunks);
+    Memory_Free(bind->transp);
     Vector_Remove(batcher->bindings, &bind);
     HASH_DEL(batcher->map, bind);
     Memory_Free(bind);
@@ -4589,14 +4686,45 @@ static void M_UpdateBumpLoad(void)
     m_FrameVertices = 0;
 }
 
+// ponytail: the map is drawn every other frame and kept in between (1 draws
+// it every frame): the casters move little in 33 ms and the shadow is soft,
+// and each map costs the silhouettes (~1.1 ms in Venice) and a scene of its
+// own on the PowerVR. What it was drawn for is kept with it.
+#define M_SOFT_MAP_EVERY 2
+static struct {
+    bool valid;
+    int32_t light_count;
+    M_SOFT_LIGHT lights[M_SOFT_MAX_LIGHTS];
+    int32_t self_count;
+    int8_t slice[M_MAX_CASTERS];
+} m_SoftDrawn = {};
+
 void DC_Shadow_RenderMaps(void)
 {
     M_UpdateBumpLoad();
     const int32_t lights = m_Soft.caster_count > 0 ? m_Soft.light_count : 0;
     m_Soft.map_count = 0;
     m_Soft.self = false;
-    if (lights == 0 || !DC_PVR_BeginShadowMapFrame()) {
+    if (lights == 0) {
         m_Soft.caster_count = 0;
+        m_SoftDrawn.valid = false;
+        return;
+    }
+    if (M_SOFT_MAP_EVERY > 1 && m_SoftDrawn.valid
+        && g_DC_FrameCount % M_SOFT_MAP_EVERY != 0) {
+        // The last map, with the lights and slices it was drawn for.
+        m_Soft.light_count = m_SoftDrawn.light_count;
+        memcpy(m_Soft.lights, m_SoftDrawn.lights, sizeof(m_Soft.lights));
+        memcpy(m_Soft.slice, m_SoftDrawn.slice, sizeof(m_Soft.slice));
+        m_Soft.map_count = m_SoftDrawn.light_count;
+        m_Soft.self = M_SelfShadowOn();
+        m_Soft.self_count = m_SoftDrawn.self_count;
+        m_Soft.caster_count = 0;
+        return;
+    }
+    if (!DC_PVR_BeginShadowMapFrame()) {
+        m_Soft.caster_count = 0;
+        m_SoftDrawn.valid = false;
         return;
     }
     // Lit everywhere but under the silhouettes.
@@ -4621,6 +4749,11 @@ void DC_Shadow_RenderMaps(void)
     m_Soft.self = M_SelfShadowOn();
     m_Soft.self_count = m_Soft.caster_count;
     m_Soft.caster_count = 0;
+    m_SoftDrawn.valid = true;
+    m_SoftDrawn.light_count = lights;
+    memcpy(m_SoftDrawn.lights, m_Soft.lights, sizeof(m_SoftDrawn.lights));
+    memcpy(m_SoftDrawn.slice, m_Soft.slice, sizeof(m_SoftDrawn.slice));
+    m_SoftDrawn.self_count = m_Soft.self_count;
 }
 
 void DC_Shadow_DrawVolumes(void)

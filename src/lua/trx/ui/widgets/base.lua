@@ -101,6 +101,7 @@ end
 ---@field private _spun? number
 ---@field private _spun_at? number
 ---@field private _boxes? table
+---@field private _reserve? table
 ---@field private _held? table<any, trx.signal.Listener>
 ---@field private on_measure fun(self: trx.ui.Widget): number?, number?
 ---@field private on_paint fun(self: trx.ui.Widget, x: number, y: number, w: number, h: number)
@@ -129,6 +130,7 @@ end
 function Widget:wake()
   self._size = nil
   self._boxes = nil
+  self._reserve = nil
   local holder = self._holder
   if type(holder) == "table" and holder.wake ~= nil then
     holder:wake()
@@ -306,4 +308,5 @@ return {
   set_unplace = set_unplace,
   forget = forget,
   listen = listen,
+  follow = follow,
 }

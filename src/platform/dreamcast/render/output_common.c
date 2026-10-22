@@ -225,6 +225,9 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "sscene", "spre", "sbounds", "ssky", "sroom", "sstat", "sitem", "slara",
     "sfx", "spaint", "sgflush", "sui", "soflush", "nrooms",
     "llight", "lshadow", "lmesh", "lwater", "ljoint", "lhair", "lequip", "troom", "tplain", "tgen", "gown", "genv", "gfog", "gbill", "goth", "equad", "etri", "eclip", "eout", "eback", "msil", "mend",
+    "src0", "src1", "src2", "src3", "src4", "src5", "src6", "src7", "src8", "src9",
+    "plprep", "pvol", "ppsoft", "pdrawi", "ptransp", "pntransp", "udraw", "uops",
+    "ilight", "lweld",
 };
 uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
 uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};
@@ -501,7 +504,7 @@ static void M_StatsEndScene(void)
             (unsigned long)(m_Stats.max[i] / div));
     }
     // TEMP: see dc_probe.h. Its own line, in microseconds, timed itself.
-    char probes[1024];
+    char probes[2048];
     len = snprintf(probes, sizeof(probes), "[probe]");
     for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
         len += snprintf(
@@ -548,6 +551,9 @@ void DC_Bench_End(void)
 
 int32_t g_DC_StartDemo = -1;
 int32_t g_DC_StartCutscene = -1;
+int32_t g_DC_DemoQueue[DC_DEMO_QUEUE_MAX] = {};
+int32_t g_DC_DemoQueueCount = 0;
+int32_t g_DC_DemoQueueNext = 0;
 bool g_DC_BenchRequested = false;
 
 void Output_EndScene(void)

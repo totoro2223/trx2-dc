@@ -159,22 +159,35 @@ static size_t M_DiskFill(
 {
     M_DISK_STATE *const disk = state;
     const size_t start = offset - offset % M_DISK_SECTOR;
+    // Straight from the descriptor: newlib's fread of a stream with no
+    // buffer first walks every open stream to flush it, taking each one's
+    // lock, and a level load hung there for good (TR3, the Ganges demo).
+    const int fd = fileno(disk->fp);
     if (disk->os_pos != start) {
-        if (fseek(disk->fp, (long)start, SEEK_SET) != 0) {
+        if (lseek(fd, (off_t)start, SEEK_SET) != (off_t)start) {
             *out_data = nullptr;
             return 0;
         }
         disk->os_pos = start;
     }
-    const size_t read = fread(disk->window, 1, M_DISK_WINDOW, disk->fp);
-    disk->os_pos += read;
+    // A read may stop short of the window, as fread would not.
+    size_t filled = 0;
+    while (filled < M_DISK_WINDOW) {
+        const ssize_t got =
+            read(fd, disk->window + filled, M_DISK_WINDOW - filled);
+        if (got <= 0) {
+            break;
+        }
+        filled += (size_t)got;
+    }
+    disk->os_pos += filled;
     const size_t skip = offset - start;
-    if (read <= skip) {
+    if (filled <= skip) {
         *out_data = nullptr;
         return 0;
     }
     *out_data = disk->window + skip;
-    return read - skip;
+    return filled - skip;
 }
 #else
 static size_t M_DiskFill(
@@ -247,7 +260,9 @@ static bool M_ZlibRestart(M_ZLIB_STATE *const zs)
         .next_in = (Bytef *)zs->compressed,
         .avail_in = (uInt)zs->compressed_size,
     };
-    if (inflateInit(&zs->stream) != Z_OK) {
+    const int rc = inflateInit(&zs->stream);
+    if (rc != Z_OK) {
+        LOG_ERROR("inflateInit failed (%d)", rc);
         return false;
     }
     zs->stream_open = true;
@@ -277,6 +292,12 @@ static size_t M_ZlibFill(
         const int rc = inflate(&zs->stream, Z_NO_FLUSH);
         zs->window_len = M_ZLIB_WINDOW - zs->stream.avail_out;
         if (rc != Z_OK) {
+            if (rc != Z_STREAM_END) {
+                LOG_ERROR(
+                    "inflate failed (%d) at %zu of %zu", rc,
+                    zs->window_pos + zs->window_len,
+                    (size_t)zs->stream.total_out);
+            }
             // The end, or a broken stream: either way no more output comes,
             // and the inflater's memory can go.
             inflateEnd(&zs->stream);

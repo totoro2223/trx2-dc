@@ -15,6 +15,10 @@
 #include <trx/game/output/uniforms.h>
 #include <trx/game/shell.h>
 
+#include <platform/dreamcast/dc_probe.h> // TEMP
+#include <trx/core/log.h> // TEMP
+#include <stdint.h>
+
 typedef struct {
     VECTOR *sources;
     int32_t capture_depth;
@@ -47,12 +51,28 @@ static bool M_IsSourceDirty(const M_PRIV *const p, const SCENE_PASS pass)
 
 static void M_RenderSourcePass(const M_PRIV *const p, const SCENE_PASS pass)
 {
+    // TEMP: see dc_probe.h; which source each index is, once.
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        for (int32_t i = 0; i < p->sources->count; i++) {
+            const SCENE_SOURCE *const source =
+                *(SCENE_SOURCE **)Vector_Get(p->sources, i);
+            LOG_INFO(
+                "[probe] src%d render_pass=%08x", (int)i,
+                (unsigned)(uintptr_t)source->render_pass);
+        }
+    }
     for (int32_t i = 0; i < p->sources->count; i++) {
         const SCENE_SOURCE *const source =
             *(SCENE_SOURCE **)Vector_Get(p->sources, i);
         if (source->is_dirty != nullptr && source->is_dirty(source, pass)) {
             ASSERT(source->render_pass != nullptr);
-            source->render_pass(source, pass);
+            if (i < 10) {
+                DC_PROBE(DC_PROBE_SRC0 + i, source->render_pass(source, pass));
+            } else {
+                source->render_pass(source, pass);
+            }
         }
     }
 }
@@ -79,8 +99,10 @@ static void M_RenderScenePasses(const M_PRIV *const p)
 
 static void M_RenderScenePassesTimed(const M_PRIV *const p)
 {
+    DC_PROBE_START(probe_lprep); // TEMP
     Output_Uniforms_UploadViewMatrix(Output_GetUniforms(), &g_ViewMatrix);
     Output_Lights_PrepareScene();
+    DC_PROBE_STOP(DC_PROBE_P_LPREP, probe_lprep); // TEMP
 
     // The background lies behind everything the world draws: it leaves the
     // depth buffer alone.
@@ -95,7 +117,7 @@ static void M_RenderScenePassesTimed(const M_PRIV *const p)
             M_RenderSourcePass(p, pass);
         }
     }
-    DC_Shadow_DrawVolumes();
+    DC_PROBE(DC_PROBE_P_VOL, DC_Shadow_DrawVolumes()); // TEMP
     if (M_IsSourceDirty(p, SCENE_PASS_OVERLAY)) {
         DC_PVR_NextDepthLayer();
         M_RenderSourcePass(p, SCENE_PASS_OVERLAY);

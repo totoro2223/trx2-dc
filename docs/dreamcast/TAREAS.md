@@ -18,17 +18,21 @@ batcher en 17,0 ms.
 
 ### Contexto
 
-En Venecia (`venice.tr2`, nivel 3 del selector), DC build 200, Lara quieta al
-empezar, 30 fps estables en Flycast. Reparto de un fotograma (línea
-`[frame]`, en 0,1 ms):
+En Venecia (`venice.tr2`, nivel 3 del selector), Lara quieta al empezar, 30
+fps estables en Flycast. Reparto de un fotograma (línea `[frame]`, en 0,1
+ms), medido el 22/10/2026 con el código de `a996c8ba7` más los cambios de las
+builds 293–294 (ver "Nueva medida de Venecia" en REGISTRO.md; entre
+paréntesis, la build 200):
 
 | Parte | ms | Qué es |
 |---|---|---|
-| `logic` | ~3,9 | Desde el final de un fotograma al inicio del siguiente, menos el tiempo dormido: lógica de TR (ítems, Lara, colisiones, cámara), eventos y scripts Lua, interpolación |
-| `stage` | ~5,0 | Dentro del dibujo, todo lo que no son las pasadas del batcher: recorrer salas por portales, decidir objetos visibles, matrices de Lara y objetos (`Matrix_*`, `Output_CheckBoundsClip`), preparar instancias (`M_Stage`, `MeshBatcher_Stage`), sprites, HUD/UI |
-| `pass` | ~17,0 | El batcher (ya trabajado a fondo; ver REGISTRO.md) |
+| `logic` | ~2,4 (3,9) | Desde el final de un fotograma al inicio del siguiente, menos el tiempo dormido: lógica de TR (ítems, Lara, colisiones, cámara), eventos y scripts Lua, interpolación |
+| `stage` | ~5,5 (5,0) | Dentro del dibujo, todo lo que no son las pasadas del batcher: recorrer salas por portales, decidir objetos visibles, matrices de Lara y objetos (`Matrix_*`, `Output_CheckBoundsClip`), preparar instancias (`M_Stage`, `MeshBatcher_Stage`), sprites, HUD/UI |
+| `pass` | ~11,6 (17,0) | El batcher (ya trabajado a fondo; ver REGISTRO.md) |
+| `map` + `submit` | ~1,5 (1,7) | Mapa de la sombra suave y envío de las listas |
 
-Margen actual: ~5,7 ms sobre 33,3. El objetivo es ganar margen para zonas más
+Margen actual: ~12,3 ms sobre 33,3 (antes ~5,7). `stage` es ya la mitad de
+`pass`. El objetivo es ganar margen para zonas más
 cargadas y para el audio que vendrá, sin cambiar el aspecto ni el
 comportamiento del juego.
 
@@ -374,3 +378,100 @@ builds 216–218 (ver REGISTRO.md); queda:
   de sombra (`lighting_contrast`) ni el parpadeo por `light_table_idx`.
 - Memoria: Jungle usa 11,1 MB (~2 MB libres) tras builds 220–222. Siguientes: datos crudos de sala (shadows.c), animaciones, cadenas.
 - Guardados: en TR3 la VMU restaura `save_tr2_*.dat`; comprobar el nombre.
+
+## 5. Hacia 16,6 ms por frame: candidatos medidos el 22/10/2026
+
+**Estado**: puntos 2–6, 8 y parte del 9 aplicados el 22/10/2026 (DC builds
+260–262 del contador local; ver "Hacia 16,6 ms: candidatos aplicados" en
+REGISTRO.md): 21,0 → 19,7 ms. El descarte de caras de espaldas por grupos de
+normales (salas por lado, objetos por cono) se probó y se deshizo: sin
+ganancia en Flycast (builds 263–266, REGISTRO.md). Queda el 7 (`TICK`, sin
+medir por listener). Para seguir bajando: `logic`/`stage` (Lua 1,6, Lara
+1,1, ítems 1,1) o medir en consola real, donde la caché cuenta. ·
+**Origen**: sesión del 22/10/2026, medición con las
+sondas `TEMP` (`dc_probe.h`) sobre `a996c8ba7` + los cambios de las builds
+293–294 (ver "Nueva medida de Venecia" en REGISTRO.md). Venecia, Lara quieta,
+30 fps: **21,0 ms de trabajo por frame; faltan 4,4 ms para 60 fps**.
+
+### Reparto medido (ms, media de 11 ventanas; log `build/dc-venice-b256.txt`)
+
+| Bloque | ms | Detalle |
+|---|---|---|
+| Lua | 2,0 | `TICK` 0,90 · `UI_RESERVE_ALL` 0,84 · `UI_PAINT` 0,30 · capas de pintado 0,14 |
+| UI en C (`sui` menos Lua) | 0,25 | `UI_Draw` 0,07 ms con 5 operaciones (medido, build 259): la UI cuesta en Lua, no en C |
+| Preparar escena | 3,3 | Lara 1,15 (coleta 0,38 · mallas 0,29 · agua 0,20) · ítems 1,08 · estáticos 0,59 · pre 0,35 · portales 0,16 |
+| Mapa de sombra suave | 1,2 | siluetas 1,10 (`M_DrawSilhouettes`) |
+| Pass: transformación | 4,0 | salas 1,57 (2378 v) · objetos 1,75 (2749 v) · genérico 0,22 |
+| Pass: emisión | 4,7 | 2364 caras: 41 % de espaldas, 24 % fuera, 34 % dibujadas |
+| Pass: extras | 1,0 | cel 0,36 · relieve 0,49 · sombra 0,19 |
+| Pass: caras transparentes | 0,70 | 216 caras, 3,2 µs/cara: una llamada a `M_EmitIndices` por cara (medido, build 259) |
+| Pass: resto | ~0,9 | `M_DrawInstance` 11,42 de 11,8: `M_GetBinding`, estado, salidas tempranas y las propias sondas (~40 lecturas de reloj por instancia) |
+
+El perfilador de muestreo (`build/dc-venice-prof-b256.txt`, `build/TRX-prof.elf`)
+pone el 64 % de las muestras en `arch_irq_restore` y `genwait_wake_thd_cnt`
+(lo que corre con IRQ deshabilitadas se apunta al restaurarlas): fiarse de las
+sondas. Entre las funciones del batcher, `M_XformRoom` es la más caliente
+(515 muestras, ~27 % de las útiles). `mutex_unlock` tiene 165 (3 %): puede
+haber un `malloc`/`free` por frame; localizarlo con el modo `pr`.
+
+### Qué hacer, por ganancia/esfuerzo
+
+1. **Sondas para las dos bolsas sin medir**: hecho el 22/10/2026 (DC build
+   259 del contador local, log `build/dc-venice-probes2.txt`, sondas `src*`,
+   `p*` y `u*` de `dc_probe.h`). Resultado: la UI en C es 0,07 ms (5
+   operaciones por frame); del pass, `src0` (el batcher) son 11,47 de 11,8
+   ms, la fuente de la UI 0,02, luces 0,04, `M_PrepareSoft` 0,03,
+   `DC_Shadow_DrawVolumes` 0,1–0,25; dentro de `M_DrawInstance` (11,42) lo
+   que no cubrían las sondas es el bucle de caras transparentes (0,70) y
+   ~0,9 de resto por instancia. No hay más bolsas: lo que falta está en
+   `xform` y `emit`. Las sondas nuevas siguen en el árbol como las demás;
+   cuestan ~0,5 ms por frame entre todas y se retiran en bloque al acabar.
+2. **Caché de reservas de regiones de la UI** (Lua, −0,8 ms).
+   `src/lua/trx/ui/regions.lua:248` recorre los 9 roots cada frame
+   (`is_visible`, `measure`, `primitive.reserve`) aunque nada cambie. Un
+   contador de generación que `Widget:wake()` y la señal `layout`
+   incrementen; si no cambió desde el último frame, `LUA_UI_ReserveRegions`
+   (`lua/events/ui.c`) no limpia los slots ni dispara el evento. Ojo:
+   `Widget:is_visible` lee `visible` por `value_of` sin `follow`; un cambio
+   de esa señal también tiene que despertar al widget.
+3. **Descarte de trozos de sala por cono de normales** (batcher, −0,8 ms).
+   `M_CullChunks` solo prueba el frustum; el 41 % de las caras se descarta de
+   espaldas (`M_IsBackFacing`) después de transformar e iluminar sus vértices.
+   Un cono de normales por trozo, precalculado al construir la malla,
+   descartaría paredes enteras vistas por detrás antes de `M_XformRoom`.
+4. **Siluetas de la sombra suave a mitad de frecuencia** (−0,55 ms).
+   `DC_Shadow_RenderMaps` redibuja la silueta de Lara cada frame; a 15 Hz un
+   borrón suave no se nota. Alternativa: reutilizar el mapa mientras las
+   matrices de los casters y la luz no cambien.
+5. **Caché de iluminación por ítem** (−0,3 ms). `Output_CalculateObjectLighting`
+   → `M_CalculateLight` (`output/lights/tr12.c`) recorre las luces de la sala
+   y hace `Math_GetVectorAngles` por ítem y frame; recordar el resultado
+   mientras pos/rot/sala y luces dinámicas no cambien, como el traje de Lara.
+6. **Coleta** (−0,2 ms). `M_WeldBridge` (`lara/hair.c:716`) resincroniza la
+   geometría de 3 mallas cada frame (`Output_DispatchObjectMeshGeometry` →
+   `M_ResyncGeometry`). Soldar solo cuando los anclajes se muevan más de un
+   umbral.
+7. **`TICK` en Lua** (−0,3 ms). `tick:set` (`signal.lua:475`) propaga a ~10
+   señales `polled` más el bucle de roles de `input.lua:812` (una llamada a C
+   por rol seguido). Agrupar las lecturas de roles en una sola llamada a C.
+8. **Caras transparentes en tandas** (−0,3 ms). `M_DrawInstance` llama a
+   `M_EmitIndices` una vez por cara transparente (216 por frame, 3,2 µs cada
+   una frente a ~2 de las opacas); juntar las caras consecutivas de la misma
+   página en una llamada, o guardarlas ya concatenadas al construir la malla.
+9. **Pequeños**: `exp2f` ×3 por luz y por instancia de sala en
+   `M_PrepareRoomLights` (precalcular al subir las luces); `M_GetBinding` por
+   uthash en cada instancia (guardar el binding en la instancia al preparar);
+   retirar las sondas (~0,5 ms).
+
+Suma de 2–9: ~3,8 ms → ~17,2 ms. Y esto es con Lara quieta: en juego la
+lógica y los ítems suben. Para 16,6 estables hace falta además recortar
+`xform` (4,0) o `emit` (4,7) de forma estructural: el cono de normales por
+trozo (punto 3) es lo que ataca los dos a la vez.
+
+### Reglas y "hecho cuando"
+
+Las de la tarea 1: medir antes y después en Venecia y La Muralla, captura
+para ver que nada cambia, código compartido bajo `__DREAMCAST__` salvo
+equivalentes exactos, sondas `TEMP` retiradas, cifras en REGISTRO.md y commit
+en `dreamcast`. Al regenerar el disco de medida, recordar que
+`build/dc-build-number` de esta máquina (257) no es el del registro.

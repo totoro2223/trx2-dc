@@ -78,6 +78,32 @@ enum {
     // Inside DC_Shadow_RenderMaps: the silhouettes, and the frame ended.
     DC_PROBE_M_SIL,
     DC_PROBE_M_END,
+    // The pass outside the batcher's probes (TAREAS.md §5.1): each scene
+    // source's render_pass by its index (the order is logged once), the
+    // lights' setup, the shadow volumes, M_PrepareSoft, M_DrawInstance whole,
+    // and its transparent faces (time, and count).
+    DC_PROBE_SRC0,
+    DC_PROBE_SRC1,
+    DC_PROBE_SRC2,
+    DC_PROBE_SRC3,
+    DC_PROBE_SRC4,
+    DC_PROBE_SRC5,
+    DC_PROBE_SRC6,
+    DC_PROBE_SRC7,
+    DC_PROBE_SRC8,
+    DC_PROBE_SRC9,
+    DC_PROBE_P_LPREP,
+    DC_PROBE_P_VOL,
+    DC_PROBE_P_PSOFT,
+    DC_PROBE_P_DRAWI,
+    DC_PROBE_P_TRANSP,
+    DC_PROBE_P_NTRANSP,
+    // UI_Draw alone, and how many operations it replays (count).
+    DC_PROBE_U_DRAW,
+    DC_PROBE_U_OPS,
+    // The item lights worked out (time) and the hair welds done (count).
+    DC_PROBE_I_LIGHT,
+    DC_PROBE_L_WELD,
     DC_PROBE_COUNT,
 };
 

@@ -11,6 +11,10 @@
 #include <trx/game/ui/common.h>
 #include <trx/game/ui/draw.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_bench.h>
+#endif
+
 typedef enum {
     STATE_RUN,
     STATE_FADE_OUT,
@@ -22,6 +26,7 @@ typedef struct {
     int32_t level_num;
     FADER fader;
     GF_COMMAND exit_gf_cmd;
+    int32_t dc_frames;
 } M_PRIV;
 
 static PHASE_CONTROL M_Start(PHASE *const phase)
@@ -75,6 +80,14 @@ static PHASE_CONTROL M_Control(PHASE *const phase)
 
     switch (p->state) {
     case STATE_RUN:
+#if defined(__DREAMCAST__)
+        if (g_DC_DemoQueueCount > 0 && ++p->dc_frames > 90) {
+            p->state = STATE_FADE_OUT;
+            p->exit_gf_cmd = (GF_COMMAND) { .action = GF_EXIT_TO_TITLE };
+            Fader_InitToHold(&p->fader, 0.0f, 1.0f, 0.5f, 0.1f);
+            return (PHASE_CONTROL) { .action = PHASE_ACTION_NO_WAIT };
+        }
+#endif
         const GF_COMMAND gf_cmd = Demo_Control();
         if (gf_cmd.action != GF_NOOP) {
             p->state = STATE_FADE_OUT;

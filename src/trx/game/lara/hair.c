@@ -22,6 +22,11 @@
 #include <trx/game/sparks.h>
 
 #include <math.h>
+#include <string.h>
+
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h> // TEMP
+#endif
 
 #define M_MAX_BRAIDS 2
 #define M_HAIR_SEGMENTS 6
@@ -499,6 +504,36 @@ static void M_SeedFromMesh(const OBJECT_MESH *const mesh)
     }
 }
 
+#if defined(__DREAMCAST__)
+// The frames a bridge was last welded in: its own and its two anchors'.
+// While none has moved past these (a degree or so of turn, a few units of
+// travel), the weld is kept: rebuilding one costs the Dreamcast a resync of
+// the mesh each frame, and a seam this far off does not show.
+#define M_WELD_ROT_TOLERANCE (1 << (W2V_SHIFT - 6))
+#define M_WELD_POS_TOLERANCE 8
+static struct {
+    bool done;
+    MATRIX frame;
+    MATRIX upper;
+    MATRIX lower;
+} m_LastWeld[M_MAX_BRAIDS][M_HAIR_SEGMENTS] = {};
+
+static bool M_MatrixNear(const MATRIX *const a, const MATRIX *const b)
+{
+    const int32_t *const pa = (const int32_t *)a;
+    const int32_t *const pb = (const int32_t *)b;
+    // Rows of _00 _01 _02 _03: the last of each is the translation.
+    for (int32_t i = 0; i < 12; i++) {
+        const int32_t tolerance =
+            i % 4 == 3 ? M_WELD_POS_TOLERANCE : M_WELD_ROT_TOLERANCE;
+        if (ABS(pa[i] - pb[i]) > tolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+#endif
+
 static void M_RestoreMesh(const int32_t mesh_idx)
 {
     const OBJECT_MESH *const mesh = Object_GetMesh(mesh_idx);
@@ -522,6 +557,9 @@ static void M_ResetJoints(void)
     }
     m_Joints.welded_count = 0;
     m_Joints.enabled = false;
+#if defined(__DREAMCAST__)
+    memset(m_LastWeld, 0, sizeof(m_LastWeld));
+#endif
     for (int32_t j = 0; j < M_HAIR_SEGMENTS; j++) {
         m_Joints.upper[j].count = 0;
         m_Joints.lower[j].count = 0;
@@ -719,8 +757,6 @@ static void M_WeldBridge(
 {
     const int32_t mesh_idx = seg_base + j;
     const OBJECT_MESH *const mesh = Object_GetMesh(mesh_idx);
-    M_EnsureScratch(mesh->num_vertices);
-    M_SeedFromMesh(mesh);
 
     const M_SEGMENT_SEAM *upper;
     const OBJECT_MESH *upper_mesh;
@@ -738,6 +774,28 @@ static void M_WeldBridge(
         upper_mesh = Object_GetMesh(seg_base + j - 1);
         upper_matrix = &anchor_matrices[j - 1];
     }
+
+#if defined(__DREAMCAST__)
+    {
+        const MATRIX *const lower_matrix =
+            j + 1 < M_HAIR_SEGMENTS ? &anchor_matrices[j + 1] : upper_matrix;
+        // The weld reads the anchors against the bridge's own frame
+        // (g_WMatrixPtr), so that one counts too.
+        if (m_LastWeld[braid_idx][j].done
+            && M_MatrixNear(&m_LastWeld[braid_idx][j].frame, g_WMatrixPtr)
+            && M_MatrixNear(&m_LastWeld[braid_idx][j].upper, upper_matrix)
+            && M_MatrixNear(&m_LastWeld[braid_idx][j].lower, lower_matrix)) {
+            return;
+        }
+        m_LastWeld[braid_idx][j].done = true;
+        m_LastWeld[braid_idx][j].frame = *g_WMatrixPtr;
+        m_LastWeld[braid_idx][j].upper = *upper_matrix;
+        m_LastWeld[braid_idx][j].lower = *lower_matrix;
+        g_DC_ProbeUs[DC_PROBE_L_WELD]++; // TEMP
+    }
+#endif
+    M_EnsureScratch(mesh->num_vertices);
+    M_SeedFromMesh(mesh);
 
     XYZ_F targets[SEAM_MAX_VERTEX_PAIRS];
     float upper_roll = 0.0f;

@@ -146,6 +146,15 @@ RESULT GF_DoFrontendSequence(GF_COMMAND *const out_cmd)
     const SHELL_ARGS *const args = Shell_GetArgs();
 #if defined(__DREAMCAST__)
     // A demo or a cutscene picked from the level select, once.
+    if (g_DC_DemoQueueNext < g_DC_DemoQueueCount) {
+        // A test disc (TRX_DC_DEMO): the next of its demos; -1 is the one
+        // the attract mode would show.
+        *out_cmd = (GF_COMMAND) {
+            .action = GF_START_DEMO,
+            .param = g_DC_DemoQueue[g_DC_DemoQueueNext++],
+        };
+        return OK;
+    }
     if (g_DC_StartDemo >= 0) {
         *out_cmd = (GF_COMMAND) {
             .action = GF_START_DEMO,

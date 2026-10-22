@@ -7,6 +7,7 @@ local at_level_end = require("trx.events").at_level_end
 
 local ui = trx.ui
 local base = require("trx.ui.widgets.base")
+local track = require("trx.signal").track
 
 local primitive = trx.ui.primitive
 
@@ -213,16 +214,12 @@ for region in pairs(ALIGN_OF) do
 end
 table.sort(REGION_ORDER)
 
--- Reserve room for each region while the scene is being built. Signal changes
--- have already invalidated any stale widget measurements by this point.
-local function reserve(region)
-  local root = roots[region]
-  if root == nil then
-    return
-  end
-  slots[root] = nil
-  -- A widget placed to show alone shows while no other child of the region
-  -- takes room.
+local Tween = h.class_of("ui.Tween")
+
+-- The room a root takes, and whether a child placed to show alone shows: a
+-- widget placed to show alone shows while no other child of the region takes
+-- room.
+local function measure_root(root)
   local children = root.children --[[@as trx.ui.Widget[] ]]
   local taken = false
   for _, child in ipairs(children) do
@@ -237,10 +234,40 @@ local function reserve(region)
     end
   end
   if root:is_visible() then
-    local w, h = root:measure()
-    if w > 0 and h > 0 then
-      slots[root] = primitive.reserve(region, w, h)
+    return root:measure()
+  end
+  return 0, 0
+end
+
+-- Reserve room for each region while the scene is being built. What a root
+-- takes is kept from one scene to the next until a signal read working it out
+-- changes or a widget under the root wakes (Widget:wake forgets it): walking
+-- the nine regions every frame cost the Dreamcast 0.8 ms.
+local function reserve(region)
+  local root = roots[region]
+  if root == nil then
+    return
+  end
+  slots[root] = nil
+  local kept = root._reserve
+  if kept == nil then
+    local volatile = false
+    local w, h = track(function(read)
+      -- A tween moves between ticks: a root read by one is worked out
+      -- every scene.
+      if getmetatable(read) == Tween then
+        volatile = true
+      else
+        base.follow(root, read)
+      end
+    end, measure_root, root)
+    kept = { w = w, h = h }
+    if not volatile then
+      root._reserve = kept
     end
+  end
+  if kept.w > 0 and kept.h > 0 then
+    slots[root] = primitive.reserve(region, kept.w, kept.h)
   end
 end
 

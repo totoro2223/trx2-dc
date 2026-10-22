@@ -9,6 +9,15 @@
 # <data-dir> is the original DATA directory (*.TR2 and MAIN.SFX); TR3's
 # cutscenes are taken from the cuts directory beside it. TRX_DC_GAME picks
 # the game, tr2 (the default) or tr3.
+# TRX_DC_SOURCE says what copy the data comes from, for the music and the
+# loading pictures beside it (the levels are the same in all):
+#   remastered  Tomb Raider I-III Remastered (GOG or Steam): <n>/DATA, with
+#               TRACKS/*.OGG and PIX/OG/*.DDS beside it
+#   classic     the original games (Steam or GOG): music/*.mp3 or audio/*.ogg
+#               (TR2), audio/cdaudio.wad and pix/*.BMP (TR3)
+#   auto        (the default) remastered if TRACKS or PIX/OG is there
+# Converting the music and pictures takes ffmpeg; without it the disc has
+# neither.
 # [level] starts the disc straight in that level, past the level select
 # (test discs); "1 8" also loads saved games 0 and 1 in turn, 8 times (see
 # DC_Watchdog_TakeTestLoad).
@@ -22,6 +31,18 @@ case "$GAME" in
   tr2) ENGINE=2 ;;
   tr3) ENGINE=3 ;;
   *) echo "TRX_DC_GAME must be tr2 or tr3" >&2; exit 1 ;;
+esac
+SOURCE="${TRX_DC_SOURCE:-auto}"
+if [ "$SOURCE" = auto ]; then
+  if [ -d "$GAME_DATA/../TRACKS" ] || [ -d "$GAME_DATA/../PIX/OG" ]; then
+    SOURCE=remastered
+  else
+    SOURCE=classic
+  fi
+fi
+case "$SOURCE" in
+  remastered | classic) ;;
+  *) echo "TRX_DC_SOURCE must be auto, remastered or classic" >&2; exit 1 ;;
 esac
 OUT="${3:-$BUILD_DIR/TRX.cdi}"
 START_LEVEL="${4:-}"
@@ -48,7 +69,12 @@ echo "$BUILD_NUM" > "$COUNTER"
 echo "DC build $BUILD_NUM" > "$STAGE/VERSION.TXT"
 cat "$STAGE/VERSION.TXT"
 echo "$ENGINE" > "$STAGE/GAME.TXT"
-echo "game $GAME"
+echo "game $GAME, $SOURCE data"
+if [ -n "${TRX_DC_DEMO:-}" ]; then
+  # The disc starts straight in that demo of the title (test discs).
+  echo "$TRX_DC_DEMO" > "$STAGE/DEMO.TXT"
+  echo "starts in demo $TRX_DC_DEMO"
+fi
 if [ -n "$START_LEVEL" ]; then
   echo "$START_LEVEL" > "$STAGE/START.TXT"
   echo "starts in level $START_LEVEL"
@@ -73,6 +99,10 @@ done
 # Optional extras that cost memory in every level.
 #   scripts/bignasty  the BFG9000 easter egg (its script and models)
 rm -rf "$STAGE/scripts/bignasty"
+if [ -n "${TRX_DC_DEMO:-}" ]; then
+  # A test disc: the title shows its next demo after a second, not thirty.
+  sed -i 's|(delay_ok and delay or 0) \* trx.game.LOGIC_FPS|1 * trx.game.LOGIC_FPS|'     "$STAGE/modules/ui/ring/screen.lua"
+fi
 
 echo "== $GAME data"
 mkdir -p "$STAGE/games/$GAME/levels"
@@ -104,18 +134,27 @@ cp "$VQ" "$STAGE/textures.vq"
 
 echo "== loading pictures"
 # The game's original 640x480 pictures (the middle of the remaster's 856x480
-# ones), shown behind the loading screen: 512x512 RGB565 as the PowerVR reads
-# them, stretched back over the screen. Kept between discs; without ffmpeg
-# the loading screen stays black.
-PIX_CACHE="$BUILD_DIR/pix-$GAME"
+# ones; the classic TR3's pix as they are), shown behind the loading screen:
+# 512x512 RGB565 as the PowerVR reads them, stretched back over the screen.
+# Kept between discs; without ffmpeg the loading screen stays black. The
+# classic TR2 has none.
+PIX_CACHE="$BUILD_DIR/pix-$GAME-$SOURCE"
 mkdir -p "$PIX_CACHE" "$STAGE/pix"
-for f in "$GAME_DATA"/../PIX/OG/*.DDS; do
+if [ "$SOURCE" = remastered ]; then
+  PIX_FILES=("$GAME_DATA"/../PIX/OG/*.DDS)
+  PIX_CROP="crop=640:480:(in_w-640)/2:0,"
+else
+  PIX_FILES=("$GAME_DATA"/../pix/*.BMP "$GAME_DATA"/../pix/*.bmp)
+  PIX_CROP=""
+fi
+for f in "${PIX_FILES[@]}"; do
   [ -f "$f" ] || continue
-  lower="$(basename "$f" .DDS | tr '[:upper:]' '[:lower:]')"
+  name="$(basename "$f")"
+  lower="$(echo "${name%.*}" | tr '[:upper:]' '[:lower:]')"
   out="$PIX_CACHE/$lower.565"
   if [ ! -f "$out" ] && command -v ffmpeg > /dev/null; then
     ffmpeg -hide_banner -loglevel error -y -i "$f" -frames:v 1 \
-      -vf "crop=640:480:(in_w-640)/2:0,scale=512:512:flags=lanczos" \
+      -vf "${PIX_CROP}scale=512:512:flags=lanczos" \
       -f rawvideo -pix_fmt rgb565le "$out"
   fi
   [ -f "$out" ] && cp "$out" "$STAGE/pix/$lower.565"
@@ -131,11 +170,49 @@ echo "== music"
 # The game's tracks as WAV files of stereo Yamaha ADPCM at 44.1 kHz, which the
 # AICA plays itself (src/platform/dreamcast/audio.c): ~2.6 MB a minute. Kept
 # between discs; without ffmpeg the game has no music.
-MUSIC_CACHE="$BUILD_DIR/music-$GAME"
+# The files are named by their track number, as the game looks them up.
+MUSIC_CACHE="$BUILD_DIR/music-$GAME-$SOURCE"
 mkdir -p "$MUSIC_CACHE" "$STAGE/games/$GAME/music"
-for f in "$GAME_DATA"/../TRACKS/*.OGG; do
+if [ "${TRX_DC_MUSIC:-1}" = 0 ]; then
+  # TRX_DC_MUSIC=0: a disc without music.
+  MUSIC_FILES=()
+elif [ "$SOURCE" = remastered ]; then
+  MUSIC_FILES=("$GAME_DATA"/../TRACKS/*.OGG)
+else
+  MUSIC_FILES=("$GAME_DATA"/../music/*.mp3 "$GAME_DATA"/../music/*.ogg
+    "$GAME_DATA"/../audio/*.ogg "$GAME_DATA"/../audio/*.mp3)
+  WAD="$GAME_DATA/../audio/cdaudio.wad"
+  if [ -f "$WAD" ] && command -v ffmpeg > /dev/null; then
+    # TR3's tracks, each a whole WAV file inside the WAD: a table of 130
+    # entries (name[260], size, offset) where entry n is track n, and the
+    # file is a 90-byte header and size bytes from offset on.
+    WAD_DIR="$MUSIC_CACHE/wad"
+    mkdir -p "$WAD_DIR"
+    python3 - "$(cygpath -w "$WAD")" "$(cygpath -w "$WAD_DIR")" << 'EOF'
+import os, struct, sys
+wad, out = sys.argv[1:3]
+with open(wad, 'rb') as f:
+    table = f.read(268 * 130)
+    for n in range(1, 130):
+        name, size, offset = struct.unpack_from('<260sII', table, n * 268)
+        path = os.path.join(out, '%d.wav' % n)
+        if size == 0 or not name.split(b'\0')[0].lower().endswith(b'.wav') \
+                or os.path.exists(path):
+            continue
+        f.seek(offset)
+        with open(path, 'wb') as o:
+            o.write(f.read(90 + size))
+EOF
+    MUSIC_FILES+=("$WAD_DIR"/*.wav)
+  fi
+fi
+for f in "${MUSIC_FILES[@]}"; do
   [ -f "$f" ] || continue
-  out="$MUSIC_CACHE/$(basename "$f" .OGG).wav"
+  name="$(basename "$f")"
+  # Only numbered tracks: the classic TR2's audio/cdaudio.mp3 is every
+  # track in one, which the game cannot use.
+  [[ "${name%.*}" =~ ^[0-9]+$ ]] || continue
+  out="$MUSIC_CACHE/${name%.*}.wav"
   if [ ! -f "$out" ] && command -v ffmpeg > /dev/null; then
     ffmpeg -hide_banner -loglevel error -y -i "$f" -ac 2 -ar 44100 \
       -c:a adpcm_yamaha "$out"

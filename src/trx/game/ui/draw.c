@@ -19,6 +19,10 @@
 #include <trx/game/viewport.h>
 #include <trx/gl/context.h>
 #include <trx/gl/renderer.h>
+
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h> // TEMP
+#endif
 #include <trx/version.h>
 
 #include <math.h>
@@ -908,6 +912,9 @@ void UI_Draw(void)
         "a draw was staged outside the interface layers");
     for (int32_t layer = 0; layer < UI_LAYER_NUMBER_OF; layer++) {
         const VECTOR *const ops = m_Priv.ops[layer];
+#if defined(__DREAMCAST__)
+        g_DC_ProbeUs[DC_PROBE_U_OPS] += ops->count; // TEMP
+#endif
         for (int32_t i = 0; i < ops->count; i++) {
             const M_DRAW_OP *const op = *(M_DRAW_OP **)Vector_Get(ops, i);
             op->draw(op);

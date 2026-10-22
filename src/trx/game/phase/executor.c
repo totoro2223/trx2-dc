@@ -339,7 +339,7 @@ static void M_Draw(PHASE *const phase)
     DC_PROBE_STOP(DC_PROBE_S_UI, probe_ui);
 
     DC_PROBE(DC_PROBE_S_SCENE, Output_SwitchViewport(VIEWPORT_UI));
-    DC_PROBE(DC_PROBE_S_UI, UI_Draw());
+    DC_PROBE(DC_PROBE_S_UI, DC_PROBE(DC_PROBE_U_DRAW, UI_Draw()));
 
     DC_PROBE(DC_PROBE_S_OFLUSH, Output_Flush());
     DC_PROBE(DC_PROBE_S_SCENE, Output_EndScene());

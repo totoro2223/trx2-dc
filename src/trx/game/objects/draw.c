@@ -15,6 +15,13 @@
 #include <trx/game/output/vars.h>
 #include <trx/version.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+#endif
+
 static BOUNDS_16 M_GetBoundingBox(
     const OBJECT *const obj, const XYZ_16 *const mesh_rots,
     const uint32_t mesh_bits)
@@ -253,8 +260,10 @@ bool Object_DrawAnimatingItemWithSwap(
         return false;
     }
 
-    Output_CalculateObjectLighting(
-        item, frames[0] != nullptr ? &frames[0]->bounds : bounds);
+    DC_PROBE(
+        DC_PROBE_I_LIGHT,
+        Output_CalculateObjectLighting(
+            item, frames[0] != nullptr ? &frames[0]->bounds : bounds));
 
     const int16_t *extra_rotation = item->extra_rotations;
 
