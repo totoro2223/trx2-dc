@@ -76,6 +76,8 @@ static Sint16 m_AxisValue[SDL_CONTROLLER_AXIS_MAX] = {};
 #define DC_LATCH_STALE_MS 250
 static uint32_t m_LatchedButtons = 0;
 static bool m_LatchStarted = false;
+static volatile bool m_LatchRun = false;
+static kthread_t *m_LatchThread = nullptr;
 // L, R, X and Y: held together last poll, and pressed together since the
 // last DC_Input_TakeEndLevelCombo.
 static bool m_ComboHeld = false;
@@ -191,7 +193,7 @@ static Sint16 M_TriggerToAxis(const int value)
 
 static void *M_LatchButtons(void *const param)
 {
-    while (true) {
+    while (m_LatchRun) {
         maple_device_t *const device =
             maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
         const cont_state_t *const state = device != nullptr
@@ -212,12 +214,22 @@ static void M_StartLatch(void)
         return;
     }
     m_LatchStarted = true;
+    m_LatchRun = true;
     const kthread_attr_t attr = {
-        .create_detached = true,
         .stack_size = 8 * 1024,
         .label = "trx-input",
     };
-    thd_create_ex(&attr, M_LatchButtons, nullptr);
+    m_LatchThread = thd_create_ex(&attr, M_LatchButtons, nullptr);
+}
+
+// Before the program ends: KallistiOS shuts the maple bus down then.
+static void M_StopLatch(void)
+{
+    m_LatchRun = false;
+    if (m_LatchThread != nullptr) {
+        thd_join(m_LatchThread, nullptr);
+        m_LatchThread = nullptr;
+    }
 }
 
 static void M_PollController(void)
@@ -326,6 +338,7 @@ Uint32 SDL_WasInit(const Uint32 flags)
 
 void SDL_Quit(void)
 {
+    M_StopLatch();
     m_InitFlags = 0;
 }
 

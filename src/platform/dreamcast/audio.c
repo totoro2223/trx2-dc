@@ -102,6 +102,8 @@ static int32_t m_Channels[AUDIO_MAX_ACTIVE_SAMPLES] = {};
 
 static M_STREAM m_Streams[M_MAX_STREAMS] = {};
 static mutex_t m_StreamLock = MUTEX_INITIALIZER;
+static kthread_t *m_Thread = nullptr;
+static volatile bool m_ThreadRun = false;
 // What one poll asks for: half a channel's buffer, for both channels.
 static uint8_t m_StreamBuffer[M_STREAM_BUFFER] __attribute__((aligned(32)));
 
@@ -764,7 +766,7 @@ static void M_StreamRelease(
 static void *M_StreamThread(void *const arg)
 {
     (void)arg;
-    for (;;) {
+    while (m_ThreadRun) {
         void (*finished[M_MAX_STREAMS])(int32_t, void *) = {};
         void *finished_data[M_MAX_STREAMS] = {};
         mutex_lock(&m_StreamLock);
@@ -1083,14 +1085,13 @@ RESULT Audio_Init(void)
         m_Streams[i] = (M_STREAM) { .hnd = SND_STREAM_INVALID, .fd = -1 };
     }
     const kthread_attr_t attr = {
-        .create_detached = true,
         // The disc reads under snd_stream_poll go deep: 8 K was too little.
         .stack_size = 32 * 1024,
         .label = "trx-music",
     };
-    FAIL_IF(
-        thd_create_ex(&attr, M_StreamThread, nullptr) == nullptr,
-        "the music thread did not start");
+    m_ThreadRun = true;
+    m_Thread = thd_create_ex(&attr, M_StreamThread, nullptr);
+    FAIL_IF(m_Thread == nullptr, "the music thread did not start");
     m_Ready = true;
     return OK;
 }
@@ -1100,6 +1101,15 @@ RESULT Audio_Shutdown(void)
     if (!m_Ready) {
         return OK;
     }
+    // The thread stops before anything it touches does: KallistiOS shuts
+    // the AICA down as the program ends, and a poll after that faulted
+    // (Flycast: "SH4 exception when blocked" on leaving the game).
+    m_ThreadRun = false;
+    if (m_Thread != nullptr) {
+        thd_join(m_Thread, nullptr);
+        m_Thread = nullptr;
+    }
+    m_Ready = false;
     IGNORE(Audio_Sample_UnloadAll());
     mutex_lock(&m_StreamLock);
     for (int32_t i = 0; i < M_MAX_STREAMS; i++) {
