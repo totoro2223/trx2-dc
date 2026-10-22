@@ -35,6 +35,7 @@
 
 // TEMP: see platform/dreamcast/dc_probe.h
 #if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_mode.h>
     #include <platform/dreamcast/dc_probe.h>
 #else
     #define DC_PROBE(i, stmt) stmt
@@ -150,6 +151,21 @@ static void M_LogTickRate(const int32_t ticks)
         frame_count = 0;
     }
 }
+#endif
+
+#if defined(__DREAMCAST__)
+// Feeds the time a frame took to the mode, which drops from 60 to 30 fps in
+// scenes too heavy for 60; the clock starts afresh at the change.
+static void M_ReportWork(const Uint64 start)
+{
+    const double seconds = (double)(SDL_GetPerformanceCounter() - start)
+        / (double)SDL_GetPerformanceFrequency();
+    if (DC_Mode_ReportFrame(seconds)) {
+        Clock_SyncTick();
+    }
+}
+#else
+    #define M_ReportWork(start) ((void)0)
 #endif
 
 static void M_DrawHeldScreen(void)
@@ -432,6 +448,9 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
 #else
         int32_t nframes = Clock_WaitTick();
 #endif
+#if defined(__DREAMCAST__)
+        const Uint64 work_start = SDL_GetPerformanceCounter();
+#endif
         int32_t frame = 0;
         while (frame < nframes) {
             PHASE_CONTROL control;
@@ -464,6 +483,7 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
             M_Draw(phase);
             Output_SetControlFrame(false);
             Interpolation_SetRate(1.0);
+            M_ReportWork(work_start);
             continue;
         }
 #endif
@@ -480,6 +500,7 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
         Output_SetControlFrame(true);
         M_Draw(phase);
         Output_SetControlFrame(false);
+        M_ReportWork(work_start);
     }
 
 finish:

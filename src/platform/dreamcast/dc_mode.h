@@ -28,5 +28,13 @@ typedef struct {
 
 const DC_MODE_PARAMS *DC_Mode_Get(void);
 
+// The rate the game runs at: the mode's, except that a 60 fps mode falls back
+// to 30 while the scene is too heavy to draw even that.
+int32_t DC_Mode_GetFPS(void);
+
+// Tells how long a frame took to run and draw, excluding its wait. Returns
+// true when that moved the game between 30 and 60.
+bool DC_Mode_ReportFrame(double seconds);
+
 // How many lights cast Lara's shadow: the mode's, and a single one in TR3.
 int32_t DC_Mode_GetShadowLights(void);

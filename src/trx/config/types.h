@@ -304,6 +304,7 @@ typedef struct {
         ASPECT_MODE aspect_mode;
         DC_MODE dc_mode;
         bool dc_cel_shading;
+        bool dc_adaptive_fps;
         int32_t fps;
         bool enable_trapezoid_filter;
         bool enable_affine_mapping;

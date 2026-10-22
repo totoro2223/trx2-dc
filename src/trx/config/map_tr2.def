@@ -32,7 +32,7 @@ X_CFG_ENUM(visuals.breeze_mode,                      BREEZE_MODE_TR2, BREEZE_MOD
 X_CFG_ENUM(visuals.camera_mode,                      CAMERA_MODE_TR2, CAMERA_MODE)
 X_CFG_ENUM_RANGE(gameplay.loading_screens,           LOADING_SCREENS_DISABLED, LOADING_SCREENS_MODE, 0, LOADING_SCREENS_NEW_GAMES)
 #if defined(__DREAMCAST__)
-X_CFG_ENUM_RANGE(visuals.shadow_type,                SHADOW_TYPE_SOFT, SHADOW_TYPE, 0, SHADOW_TYPE_NUMBER_OF - 1)
+X_CFG_ENUM_RANGE(visuals.shadow_type,                SHADOW_TYPE_SOFT_HIGH, SHADOW_TYPE, 0, SHADOW_TYPE_NUMBER_OF - 1)
 #else
 X_CFG_ENUM_RANGE(visuals.shadow_type,                SHADOW_TYPE_CIRCLE, SHADOW_TYPE, 0, SHADOW_TYPE_NUMBER_OF - 1)
 #endif

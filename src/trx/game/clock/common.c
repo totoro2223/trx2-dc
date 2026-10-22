@@ -139,7 +139,7 @@ size_t Clock_GetDateTime(char *const buffer, const size_t size)
 int32_t Clock_GetCurrentFPS(void)
 {
 #if defined(__DREAMCAST__)
-    return DC_Mode_Get()->fps;
+    return DC_Mode_GetFPS();
 #else
     return g_Config.rendering.fps;
 #endif

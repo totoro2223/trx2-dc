@@ -19,6 +19,9 @@
 #include <trx/gl/renderer.h>
 
 #include <SDL2/SDL_timer.h>
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_mode.h>
+#endif
 
 static Uint64 m_UpdateDebounce = 0;
 static bool m_IgnoreConfigChanges = false;
@@ -176,6 +179,14 @@ void Shell_HandleConfigChange(const CONFIG_CHANGE *const change)
         }
         Shell_RefreshRendererViewport();
     }
+
+#if defined(__DREAMCAST__)
+    if (L_CHANGED(rendering.dc_mode)) {
+        // The adaptive rate belongs to the 60 FPS mode.
+        CONFIG_SET(
+            g_Config.rendering.dc_adaptive_fps, DC_Mode_Get()->fps == 60);
+    }
+#endif
 
     if (L_CHANGED(visuals.fog_start) || L_CHANGED(visuals.fog_end)
 #if defined(__DREAMCAST__)

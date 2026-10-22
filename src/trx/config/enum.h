@@ -181,6 +181,9 @@ typedef enum {
     // three lights.
     SHADOW_TYPE_VOLUME,
     SHADOW_TYPE_SOFT,
+    // The same, with the shadows magnified by the light's distance and
+    // fading along it.
+    SHADOW_TYPE_SOFT_HIGH,
 #endif
     SHADOW_TYPE_NUMBER_OF,
 } SHADOW_TYPE;

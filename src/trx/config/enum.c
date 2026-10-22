@@ -125,6 +125,7 @@ static __attribute__((constructor)) void M_Init(void)
 #if defined(__DREAMCAST__)
     ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_VOLUME, "volume");
     ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_SOFT, "soft");
+    ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_SOFT_HIGH, "soft-high");
 #endif
 
     ENUM_MAP(BLOOD_EFFECTS, BLOOD_EFFECTS_DISABLED, "disabled");

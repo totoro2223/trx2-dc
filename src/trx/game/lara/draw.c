@@ -505,7 +505,9 @@ bool Lara_Draw(const ITEM *const item)
     const bool is_lara = item == Lara_GetItem();
     DC_Shadow_SetLara(is_lara);
     DC_Shadow_SetCasting(
-        is_lara && (type == SHADOW_TYPE_VOLUME || type == SHADOW_TYPE_SOFT));
+        is_lara
+        && (type == SHADOW_TYPE_VOLUME || type == SHADOW_TYPE_SOFT
+            || type == SHADOW_TYPE_SOFT_HIGH));
     const bool drawn = M_Draw(item);
     DC_Shadow_SetCasting(false);
     DC_Shadow_SetLara(false);

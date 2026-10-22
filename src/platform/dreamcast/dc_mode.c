@@ -49,6 +49,43 @@ const DC_MODE_PARAMS *DC_Mode_Get(void)
     return &m_Modes[mode >= 0 && mode < DC_MODE_NUMBER_OF ? mode : 0];
 }
 
+// Below about 30 frames a second there is no frame between two ticks to
+// interpolate, and the interpolation only adds to the cost of each one.
+#define M_SLOW_SECONDS 0.033
+#define M_FAST_SECONDS 0.020
+#define M_HOLD_FRAMES 240
+
+static bool m_Slow = false;
+static double m_Average = 0.0;
+static int32_t m_Hold = 0;
+
+int32_t DC_Mode_GetFPS(void)
+{
+    const int32_t fps = DC_Mode_Get()->fps;
+    return fps == 60 && m_Slow ? 30 : fps;
+}
+
+bool DC_Mode_ReportFrame(const double seconds)
+{
+    if (DC_Mode_Get()->fps != 60 || !g_Config.rendering.dc_adaptive_fps) {
+        m_Slow = false;
+        return false;
+    }
+    m_Average += (seconds - m_Average) * 0.1;
+    if (m_Hold > 0) {
+        m_Hold--;
+        return false;
+    }
+    const bool slow = m_Slow ? m_Average > M_FAST_SECONDS
+                             : m_Average > M_SLOW_SECONDS;
+    if (slow == m_Slow) {
+        return false;
+    }
+    m_Slow = slow;
+    m_Hold = M_HOLD_FRAMES;
+    return true;
+}
+
 int32_t DC_Mode_GetShadowLights(void)
 {
     // TR3's levels are busier and its look has one shadow under Lara.

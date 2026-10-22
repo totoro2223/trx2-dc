@@ -213,6 +213,15 @@ _Static_assert(
 // under the first, all of it from the second on.
 #define M_SOFT_GRAZE_MIN 0.25f
 #define M_SOFT_GRAZE_FULL 0.6f
+// The high soft shadows and the volumes spread from the light as from a
+// point: a shadow grows with its distance from the light. This is the least
+// distance the light is taken to be at, so that one close up does not blow the
+// shadow up.
+#define M_PERSP_MIN_DIST WALL_L
+// The least a shadow is let reach before it fades out.
+#define M_PERSP_MIN_FADE 256.0f
+// The distance of a light that is taken to shine in parallel.
+#define M_PARALLEL_DIST 1.0e6f
 // Caster meshes with more vertices than this are left out of the map.
 #define M_SOFT_MAX_VERTICES 512
 
@@ -470,6 +479,10 @@ typedef struct {
     float right[3];
     float up[3];
     float strength;
+    // How far the light is from the casters' middle (M_PARALLEL_DIST when its
+    // shadow does not grow), and how far past it the shadow fades out.
+    float dist;
+    float fade;
 } M_SOFT_LIGHT;
 
 static struct {
@@ -499,10 +512,13 @@ static float m_SoftXY[M_SOFT_MAX_VERTICES][2];
 // The shadows drawn: the player's choice, with soft ones drawn as volumes
 // where the mode asks, or while Lara is under water: the soft map
 // would cast on the surface and the pool floor seen through it.
+#define M_IS_SOFT(type)                                                        \
+    ((type) == SHADOW_TYPE_SOFT || (type) == SHADOW_TYPE_SOFT_HIGH)
+
 static SHADOW_TYPE M_ShadowType(void)
 {
     const SHADOW_TYPE type = g_Config.visuals.shadow_type;
-    return type == SHADOW_TYPE_SOFT && (DC_Mode_Get()->volume_shadows
+    return M_IS_SOFT(type) && (DC_Mode_Get()->volume_shadows
                || Lara_GetLaraInfo()->water_status == LWS_UNDERWATER)
         ? SHADOW_TYPE_VOLUME
         : type;
@@ -2981,6 +2997,17 @@ M_HOT float M_Dot3(const float a[3], const float b[3])
 // what is there by 1 where lit and by 1 - strength in the shadow:
 // texture * strength + (1 - strength), the vertex colour and the offset
 // colour.
+// How much nearer the middle of the shadow map a point z past the casters'
+// middle lies than in parallel, for a light dist away: the shadow of the
+// casters grows with the distance from the light (z in world units).
+static float M_PerspScale(const float dist, const float z)
+{
+    const float depth = dist + z;
+    const float least = dist * 0.25f;
+    const float r = M_InvSqrt(depth > least ? depth : least);
+    return dist * r * r;
+}
+
 static void M_EmitShadowFaces(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const int32_t l, const int32_t slot, const bool world)
@@ -2997,6 +3024,7 @@ static void M_EmitShadowFaces(
     // All three at once through the SH-4's matrix unit (ftrv), laid out by
     // columns as XMTRX takes them.
     const float inv_span = 1.0f / M_SOFT_SPAN;
+    const float inv_fade = 1.0f / m_Soft.lights[l].fade;
     matrix_t m = {
         { axes[1][0] * inv_span, axes[2][0] * inv_span, axes[0][0], 0.0f },
         { axes[1][1] * inv_span, axes[2][1] * inv_span, axes[0][1], 0.0f },
@@ -3010,6 +3038,8 @@ static void M_EmitShadowFaces(
     };
     // First the corners of the instance's box, which hold all of it: most
     // instances lie off the cell, and are left before their vertices are.
+    const M_SOFT_LIGHT *const light = &m_Soft.lights[l];
+    const bool persp = light->dist < M_PARALLEL_DIST;
     mat_load(&m);
     mat_apply(&batcher->mv);
     float lo[3];
@@ -3020,6 +3050,11 @@ static void M_EmitShadowFaces(
         float z = bind->bounds[(i >> 2) & 1][2];
         float w = 1.0f;
         mat_trans_nodiv(x, y, z, w);
+        if (persp) {
+            const float f = M_PerspScale(light->dist, z);
+            x = 0.5f + (x - 0.5f) * f;
+            y = 0.5f + (y - 0.5f) * f;
+        }
         const float p[3] = { x, y, z };
         for (int32_t k = 0; k < 3; k++) {
             lo[k] = i == 0 || p[k] < lo[k] ? p[k] : lo[k];
@@ -3060,6 +3095,11 @@ static void M_EmitShadowFaces(
             float z = xv->z;
             float w = 1.0f;
             mat_trans_nodiv(x, y, z, w);
+            if (persp) {
+                const float f = M_PerspScale(light->dist, z);
+                x = 0.5f + (x - 0.5f) * f;
+                y = 0.5f + (y - 0.5f) * f;
+            }
             soft[i][0] = x;
             soft[i][1] = y;
             soft[i][2] = z;
@@ -3149,7 +3189,7 @@ static void M_EmitShadowFaces(
             }
             for (int32_t k = 0; k < 3; k++) {
                 const float t = face_strength
-                    * M_Clamp(1.0f - s[k][2] * (1.0f / M_SOFT_REACH), 0.0f, 1.0f);
+                    * M_Clamp(1.0f - s[k][2] * inv_fade, 0.0f, 1.0f);
                 M_Project(
                     xv[k], (slot + s[k][0]) * (1.0f / DC_PVR_SHADOW_MAP_SLOTS),
                     s[k][1], M_PackARGB(1.0f, t, t, t),
@@ -3730,7 +3770,7 @@ static void M_CastersCenter(
 // follows them this way as they move.
 static void M_PrepareSoft(void)
 {
-    m_Soft.active = M_ShadowType() == SHADOW_TYPE_SOFT
+    m_Soft.active = M_IS_SOFT(M_ShadowType())
         && !m_Frame.ortho && m_CasterCount > 0 && m_Soft.map_count > 0;
     if (!m_Soft.active) {
         return;
@@ -4571,6 +4611,9 @@ typedef struct {
     float dist_sq;
     // 1 at the light, 0 at the end of its reach.
     float weight;
+    // How far the light is, and how far it reaches (0 for none).
+    float dist;
+    float reach;
 } M_SHADOW_LIGHT;
 
 // The cel shading's shade by the nearest light's weight (M_SHADOW_LIGHT).
@@ -4614,6 +4657,8 @@ static void M_ConsiderLight(
         .dir = { d[0] / dist, d[1] / dist, d[2] / dist },
         .dist_sq = dist_sq,
         .weight = M_Clamp((reach - dist) / (reach - near), 0.0f, 1.0f),
+        .dist = dist,
+        .reach = reach,
     };
 }
 
@@ -4700,8 +4745,8 @@ static const int8_t m_BoxFaces[6][4] = {
 // ones away from it pushed along the shadow, and the box's outline joining
 // the two, which closes it.
 static int32_t M_BuildVolume(
-    const M_CASTER *const caster, const float dir[3],
-    DC_PVR_TRIANGLE *const out)
+    const M_CASTER *const caster, const float dir[3], const float origin[3],
+    const float length_max, DC_PVR_TRIANGLE *const out)
 {
     float near[8][3];
     float far[8][3];
@@ -4722,18 +4767,34 @@ static int32_t M_BuildVolume(
     // A shadow falling towards the camera is cut short of the near plane: a
     // volume crossing it would not be closed.
     const float(*const v)[4] = m_Frame.view;
-    const float dir_z = v[0][2] * dir[0] + v[1][2] * dir[1] + v[2][2] * dir[2];
-    float length = M_SHADOW_LENGTH;
+    // The shadow spreads from the light: each corner is pushed along the line
+    // from the light through it, so that the volume widens away from it.
+    float push[8][3];
+    float length = length_max;
     for (int32_t i = 0; i < 8; i++) {
         const float *const p = corners[i];
+        if (origin != nullptr) {
+            for (int32_t k = 0; k < 3; k++) {
+                push[i][k] = p[k] - origin[k];
+            }
+            const float len_sq = M_Dot3(push[i], push[i]);
+            const float inv = len_sq > 1.0f ? M_InvSqrt(len_sq) : 1.0f;
+            for (int32_t k = 0; k < 3; k++) {
+                push[i][k] = len_sq > 1.0f ? push[i][k] * inv : dir[k];
+            }
+        } else {
+            memcpy(push[i], dir, sizeof(push[i]));
+        }
         const float z =
             v[0][2] * p[0] + v[1][2] * p[1] + v[2][2] * p[2] + v[3][2];
+        const float push_z =
+            v[0][2] * push[i][0] + v[1][2] * push[i][1] + v[2][2] * push[i][2];
         const float margin = m_Frame.near_z * 1.5f;
         if (z < margin) {
             return 0;
         }
-        if (dir_z < 0.0f && z + dir_z * length < margin) {
-            length = (margin - z) / dir_z;
+        if (push_z < 0.0f && z + push_z * length < margin) {
+            length = (margin - z) / push_z;
         }
     }
     if (length < 32.0f) {
@@ -4742,7 +4803,7 @@ static int32_t M_BuildVolume(
     for (int32_t i = 0; i < 8; i++) {
         float pushed[3];
         for (int32_t k = 0; k < 3; k++) {
-            pushed[k] = corners[i][k] + dir[k] * length;
+            pushed[k] = corners[i][k] + push[i][k] * length;
         }
         if (!M_ProjectWorld(corners[i], near[i])
             || !M_ProjectWorld(pushed, far[i])) {
@@ -4767,9 +4828,17 @@ static int32_t M_BuildVolume(
                 face_center[k] += world[j][k] / 4.0f;
             }
         }
-        const float n_dot_d = (face_center[0] - center[0]) * dir[0]
-            + (face_center[1] - center[1]) * dir[1]
-            + (face_center[2] - center[2]) * dir[2];
+        // The face is towards the light when it lies on that side of the
+        // box's middle: the line from the light to the face points inwards.
+        const float *const along = origin == nullptr ? nullptr : origin;
+        const float ray[3] = {
+            along == nullptr ? dir[0] : face_center[0] - along[0],
+            along == nullptr ? dir[1] : face_center[1] - along[1],
+            along == nullptr ? dir[2] : face_center[2] - along[2],
+        };
+        const float n_dot_d = (face_center[0] - center[0]) * ray[0]
+            + (face_center[1] - center[1]) * ray[1]
+            + (face_center[2] - center[2]) * ray[2];
         lit[f] = n_dot_d < 0.0f;
     }
 
@@ -4828,6 +4897,7 @@ static void M_KeepSoftCasters(const float center[3])
     memcpy(m_Soft.center, center, sizeof(m_Soft.center));
 
     M_SHADOW_LIGHT lights[M_SOFT_MAX_LIGHTS];
+    const bool high = M_ShadowType() == SHADOW_TYPE_SOFT_HIGH;
     // As many lights as the mode allows.
     const int32_t max = MIN(DC_Mode_GetShadowLights(), M_SOFT_MAX_LIGHTS);
     int32_t count = M_GatherShadowLights(m_Casters, center, lights, max);
@@ -4866,6 +4936,14 @@ static void M_KeepSoftCasters(const float center[3])
         out->up[2] = d[0] * r[1] - d[1] * r[0];
         out->strength = M_SOFT_STRENGTH_MIN
             + (M_SOFT_STRENGTH_MAX - M_SOFT_STRENGTH_MIN) * lights[l].weight;
+        out->dist = M_PARALLEL_DIST;
+        out->fade = M_SOFT_REACH;
+        if (high && lights[l].reach > 0.0f) {
+            out->dist = MAX(lights[l].dist, M_PERSP_MIN_DIST);
+            out->fade = M_Clamp(
+                lights[l].reach - lights[l].dist, M_PERSP_MIN_FADE,
+                M_SOFT_REACH);
+        }
     }
 
     // The slices for self-shadowing, by the order of the casters' middles
@@ -4975,6 +5053,17 @@ static void M_DrawSilhouettes(const int32_t l)
                    + (w[2][3] - c[2]) * v[2])
                     * (1.0f / M_SOFT_SPAN);
         }
+        // And how far past the casters' middle along the light, for a light
+        // whose shadow grows with the distance from it.
+        const bool persp = light->dist < M_PARALLEL_DIST;
+        float to_depth[4];
+        for (int32_t k = 0; k < 3; k++) {
+            to_depth[k] = w[0][k] * light->dir[0] + w[1][k] * light->dir[1]
+                + w[2][k] * light->dir[2];
+        }
+        to_depth[3] = (w[0][3] - c[0]) * light->dir[0]
+            + (w[1][3] - c[1]) * light->dir[1]
+            + (w[2][3] - c[2]) * light->dir[2];
         const OUTPUT_MESH_VERTEX *const vertices =
             Vector_GetData(bind->mesh->vertices);
         const uint16_t *const twin = bind->twin;
@@ -4987,10 +5076,17 @@ static void M_DrawSilhouettes(const int32_t l)
             const float px = M_Corner(bind, vertices, j)->pos.x;
             const float py = M_Corner(bind, vertices, j)->pos.y;
             const float pz = M_Corner(bind, vertices, j)->pos.z;
-            const float x = to_cell[0][0] * px + to_cell[0][1] * py
+            float x = to_cell[0][0] * px + to_cell[0][1] * py
                 + to_cell[0][2] * pz + to_cell[0][3];
-            const float y = to_cell[1][0] * px + to_cell[1][1] * py
+            float y = to_cell[1][0] * px + to_cell[1][1] * py
                 + to_cell[1][2] * pz + to_cell[1][3];
+            if (persp) {
+                const float z = to_depth[0] * px + to_depth[1] * py
+                    + to_depth[2] * pz + to_depth[3];
+                const float f = M_PerspScale(light->dist, z);
+                x = 0.5f + (x - 0.5f) * f;
+                y = 0.5f + (y - 0.5f) * f;
+            }
             // Kept inside the cell, so as not to spill into the next.
             m_SoftXY[j][0] = M_Clamp(x, 0.0f, 1.0f) * size;
             m_SoftXY[j][1] = M_Clamp(y, 0.0f, 1.0f) * size;
@@ -5153,7 +5249,7 @@ void DC_Shadow_DrawVolumes(void)
     }
     float center[3];
     M_CastersCenter(m_Casters, m_CasterCount, center);
-    if (M_ShadowType() == SHADOW_TYPE_SOFT) {
+    if (M_IS_SOFT(M_ShadowType())) {
         M_KeepSoftCasters(center);
         m_CasterCount = 0;
         return;
@@ -5180,8 +5276,20 @@ void DC_Shadow_DrawVolumes(void)
     int32_t volumes = 0;
     for (int32_t l = 0; l < light_count; l++) {
         for (int32_t i = 0; i < m_CasterCount; i++) {
-            const int32_t count =
-                M_BuildVolume(&m_Casters[i], lights[l].dir, tris);
+            // Where the light is, taken along the (tilted) direction it
+            // shines in; a light with none shines in parallel.
+            float origin[3];
+            for (int32_t k = 0; k < 3; k++) {
+                origin[k] = center[k] - lights[l].dir[k] * lights[l].dist;
+            }
+            const bool point = lights[l].reach > 0.0f;
+            const int32_t count = M_BuildVolume(
+                &m_Casters[i], lights[l].dir, point ? origin : nullptr,
+                point ? M_Clamp(
+                            lights[l].reach - lights[l].dist, M_PERSP_MIN_FADE,
+                            M_SHADOW_LENGTH)
+                      : M_SHADOW_LENGTH,
+                tris);
             DC_PVR_ShadowVolume(tris, count);
             volumes += count > 0;
         }
