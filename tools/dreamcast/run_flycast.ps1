@@ -151,6 +151,8 @@ if ($proc.HasExited) {
 }
 $readerProc.WaitForExit(5000) | Out-Null
 "Serial output written to $Out"
+# The benchmarks run in it, kept dated.
+& (Join-Path $PSScriptRoot 'bench_archive.ps1') -Log $outPath
 
 $log = Join-Path (Split-Path $Flycast) 'flycast.log'
 if ((Test-Path $log) -and (Get-Item $log).LastWriteTime -ge $logStart) {

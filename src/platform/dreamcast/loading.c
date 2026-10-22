@@ -43,6 +43,11 @@ static const char *M_GetVersion(void)
     return version;
 }
 
+const char *DC_Loading_GetVersion(void)
+{
+    return M_GetVersion();
+}
+
 static int32_t M_GetPercent(void)
 {
     if (m_Priv.total == 0) {

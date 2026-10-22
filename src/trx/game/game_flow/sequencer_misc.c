@@ -145,13 +145,21 @@ RESULT GF_DoFrontendSequence(GF_COMMAND *const out_cmd)
 {
     const SHELL_ARGS *const args = Shell_GetArgs();
 #if defined(__DREAMCAST__)
-    // A demo picked from the level select, once.
+    // A demo or a cutscene picked from the level select, once.
     if (g_DC_StartDemo >= 0) {
         *out_cmd = (GF_COMMAND) {
             .action = GF_START_DEMO,
             .param = g_DC_StartDemo,
         };
         g_DC_StartDemo = -1;
+        return OK;
+    }
+    if (g_DC_StartCutscene >= 0) {
+        *out_cmd = (GF_COMMAND) {
+            .action = GF_START_CINE,
+            .param = g_DC_StartCutscene,
+        };
+        g_DC_StartCutscene = -1;
         return OK;
     }
 #endif
@@ -254,7 +262,7 @@ RESULT GF_DoDemoSequence(int32_t demo_num, GF_COMMAND *const out_cmd)
 #if defined(__DREAMCAST__)
     if (g_DC_BenchRequested) {
         g_DC_BenchRequested = false;
-        DC_Bench_Begin();
+        DC_Bench_Begin(demo_num);
         const RESULT result =
             GF_InterpretSequence(level, GFSC_NORMAL, nullptr, out_cmd);
         DC_Bench_End();

@@ -12,3 +12,5 @@ void DC_Loading_Begin(uint64_t total_bytes, const char *picture);
 // Shows a step that reads nothing, in place of a file's name.
 void DC_Loading_SetStep(const char *step);
 void DC_Loading_End(void);
+// The disc's "DC build N" (make_disc.sh's VERSION.TXT).
+const char *DC_Loading_GetVersion(void);

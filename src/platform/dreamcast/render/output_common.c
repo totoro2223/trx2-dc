@@ -8,6 +8,7 @@
 
 #include <platform/dreamcast/dc_bench.h>
 #include <platform/dreamcast/dc_mode.h>
+#include <platform/dreamcast/loading.h>
 #include <platform/dreamcast/dc_probe.h> // TEMP
 #include <platform/dreamcast/dc_watchdog.h>
 
@@ -41,12 +42,15 @@
 #include <trx/game/output/state.h>
 #include <trx/game/output/textures.h>
 #include <trx/game/shell.h>
+#include <trx/version.h>
 
 #include <arch/timer.h>
 #include <kos/thread.h>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static MESH_BATCHER *m_Batcher = nullptr;
 static OUTPUT_UNIFORMS *m_Uniforms = nullptr;
@@ -232,14 +236,21 @@ static void M_StatsBeginScene(void)
 
 // The benchmark (dc_bench.h): every frame of a demo, from its first drawn
 // to its last.
+#define M_BENCH_HIST_MS 200
 static struct {
     bool active;
+    int32_t demo_num;
     uint64_t last_us;
     int32_t frames;
     uint64_t time_us;
     uint32_t worst_us;
+    uint32_t best_us;
     int32_t slow;
     uint64_t sum[M_STAT_COUNT];
+    uint32_t max[M_STAT_COUNT];
+    uint64_t probe_sum[DC_PROBE_COUNT];
+    // Frames by their length in whole milliseconds, the last for longer.
+    int32_t hist[M_BENCH_HIST_MS + 1];
 } m_Bench = {};
 
 static void M_BenchFrame(const uint64_t now, const uint32_t value[])
@@ -255,20 +266,57 @@ static void M_BenchFrame(const uint64_t now, const uint32_t value[])
         if (dt > m_Bench.worst_us) {
             m_Bench.worst_us = dt;
         }
+        if (m_Bench.best_us == 0 || dt < m_Bench.best_us) {
+            m_Bench.best_us = dt;
+        }
         // Slower than 30 fps, with a little room for the timer.
         if (dt > 35000) {
             m_Bench.slow++;
         }
+        const uint32_t ms = dt / 1000;
+        m_Bench.hist[ms < M_BENCH_HIST_MS ? ms : M_BENCH_HIST_MS]++;
         for (int32_t i = 0; i < M_STAT_COUNT; i++) {
             m_Bench.sum[i] += value[i];
+            if (value[i] > m_Bench.max[i]) {
+                m_Bench.max[i] = value[i];
+            }
+        }
+        for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
+            m_Bench.probe_sum[i] += g_DC_ProbeUs[i];
         }
     }
     m_Bench.last_us = now;
 }
 
-void DC_Bench_Begin(void)
+void DC_Bench_Begin(const int32_t demo_num)
 {
-    m_Bench = (typeof(m_Bench)) { .active = true };
+    m_Bench = (typeof(m_Bench)) { .active = true, .demo_num = demo_num };
+}
+
+// The frame length (ms) that the given share of frames (in thousandths) is
+// no longer than.
+static int32_t M_BenchPercentile(const int32_t per_mille)
+{
+    const int32_t want = (m_Bench.frames * per_mille + 999) / 1000;
+    int32_t seen = 0;
+    for (int32_t ms = 0; ms <= M_BENCH_HIST_MS; ms++) {
+        seen += m_Bench.hist[ms];
+        if (seen >= want) {
+            return ms + 1;
+        }
+    }
+    return M_BENCH_HIST_MS + 1;
+}
+
+static void M_BenchPrint(const char *const fmt, ...)
+{
+    char line[128] = "[bench] ";
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(line + 8, sizeof(line) - 9, fmt, args);
+    va_end(args);
+    strcat(line, "\n");
+    DC_Watchdog_Print(line);
 }
 
 void DC_Bench_End(void)
@@ -280,25 +328,106 @@ void DC_Bench_End(void)
         : 0;
     const uint32_t min10 =
         m_Bench.worst_us > 0 ? 10000000 / m_Bench.worst_us : 0;
+    const int32_t p50 = M_BenchPercentile(500);
+    const int32_t p99 = M_BenchPercentile(990);
     // Averages in tenths of a millisecond.
 #define M_AVG(i) ((unsigned)(m_Bench.sum[i] / n / 100))
+#define M_TENTHS(v) (unsigned)(v) / 10, (unsigned)(v) % 10
     char line1[96];
     char line2[96];
     snprintf(
-        line1, sizeof(line1), "BENCH %d frames  avg %u.%u fps  min %u.%u  slow %d%%",
-        m_Bench.frames, fps10 / 10, fps10 % 10, min10 / 10, min10 % 10,
-        m_Bench.slow * 100 / n);
+        line1, sizeof(line1),
+        "BENCH %d frames  avg %u.%u fps  min %u.%u  slow %d%%", m_Bench.frames,
+        M_TENTHS(fps10), M_TENTHS(min10), m_Bench.slow * 100 / n);
     snprintf(
         line2, sizeof(line2),
         "logic %u.%u stage %u.%u pass %u.%u map %u.%u pvr %u.%u ms",
-        M_AVG(M_LOGIC) / 10, M_AVG(M_LOGIC) % 10, M_AVG(M_DRAW) / 10,
-        M_AVG(M_DRAW) % 10, M_AVG(M_PASS) / 10, M_AVG(M_PASS) % 10,
-        M_AVG(M_MAP) / 10, M_AVG(M_MAP) % 10, M_AVG(M_RENDER) / 10,
-        M_AVG(M_RENDER) % 10);
+        M_TENTHS(M_AVG(M_LOGIC)), M_TENTHS(M_AVG(M_DRAW)),
+        M_TENTHS(M_AVG(M_PASS)), M_TENTHS(M_AVG(M_MAP)),
+        M_TENTHS(M_AVG(M_RENDER)));
+
+    // The report: when, what, and where the time went.
+    const time_t now = time(nullptr);
+    struct tm tm;
+    gmtime_r(&now, &tm);
+    M_BenchPrint("=== report");
+    M_BenchPrint(
+        "date %04d-%02d-%02d %02d:%02d:%02d", tm.tm_year + 1900,
+        tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    M_BenchPrint("build %s", DC_Loading_GetVersion());
+    M_BenchPrint("game tr%d", (int)g_TRVersion);
+    M_BenchPrint("demo %d", (int)m_Bench.demo_num);
+    M_BenchPrint(
+        "mode %s, shadows %d, bump %d", DC_PVR_IsLowRes() ? "320x240" : "640x480",
+        (int)g_Config.visuals.shadow_type, (int)DC_Mode_Get()->bump_mapping);
+    M_BenchPrint("frames %d in %u ms", m_Bench.frames,
+        (unsigned)(m_Bench.time_us / 1000));
+    M_BenchPrint(
+        "fps avg %u.%u, min %u.%u, best frame %u.%u ms", M_TENTHS(fps10),
+        M_TENTHS(min10), M_TENTHS(m_Bench.best_us / 100));
+    M_BenchPrint(
+        "frame ms: median %d, 99%% under %d, worst %u.%u", p50, p99,
+        M_TENTHS(m_Bench.worst_us / 100));
+    M_BenchPrint(
+        "frames over 35 ms: %d (%d%%)", m_Bench.slow, m_Bench.slow * 100 / n);
+    M_BenchPrint("per frame, average / worst (ms, or counts and KiB):");
+    for (int32_t i = 0; i < M_STAT_COUNT; i++) {
+        const bool time = i < M_POLYS || i == M_XFORM;
+        const bool count = !time && i <= M_VERTICES;
+        if (time) {
+            M_BenchPrint(
+                "  %-6s %u.%u / %u.%u", m_StatNames[i], M_TENTHS(M_AVG(i)),
+                M_TENTHS(m_Bench.max[i] / 100));
+        } else if (count) {
+            M_BenchPrint(
+                "  %-6s %u / %u", m_StatNames[i],
+                (unsigned)(m_Bench.sum[i] / n), (unsigned)m_Bench.max[i]);
+        } else {
+            M_BenchPrint(
+                "  %-6s %u / %u KiB", m_StatNames[i],
+                (unsigned)(m_Bench.sum[i] / n / 1024),
+                (unsigned)(m_Bench.max[i] / 1024));
+        }
+    }
+    M_BenchPrint("probes, average per frame (us or counts):");
+    char row[100] = "";
+    for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
+        char item[24];
+        snprintf(
+            item, sizeof(item), " %s=%u", m_ProbeNames[i],
+            (unsigned)(m_Bench.probe_sum[i] / n));
+        if (strlen(row) + strlen(item) > 90) {
+            M_BenchPrint(" %s", row);
+            row[0] = '\0';
+        }
+        strcat(row, item);
+    }
+    if (row[0] != '\0') {
+        M_BenchPrint(" %s", row);
+    }
+    M_BenchPrint("frame length histogram (ms: frames):");
+    row[0] = '\0';
+    for (int32_t ms = 0; ms <= M_BENCH_HIST_MS; ms++) {
+        if (m_Bench.hist[ms] == 0) {
+            continue;
+        }
+        char item[24];
+        snprintf(
+            item, sizeof(item), " %s%d:%d", ms == M_BENCH_HIST_MS ? ">" : "",
+            ms, (int)m_Bench.hist[ms]);
+        if (strlen(row) + strlen(item) > 90) {
+            M_BenchPrint(" %s", row);
+            row[0] = '\0';
+        }
+        strcat(row, item);
+    }
+    if (row[0] != '\0') {
+        M_BenchPrint(" %s", row);
+    }
+    M_BenchPrint("summary: %s | %s", line1, line2);
+    M_BenchPrint("=== end");
 #undef M_AVG
-    char log[200];
-    snprintf(log, sizeof(log), "[bench] %s | %s\n", line1, line2);
-    DC_Watchdog_Print(log);
+#undef M_TENTHS
     // Shown until read: ten seconds.
     for (int32_t i = 0; i < 100; i++) {
         DC_PVR_DrawLoadingScreen(line1, line2, 100);
@@ -408,7 +537,7 @@ static void M_StatsEndScene(void)
 #else
 // shortcut: without the watchdog's frame stats there is nothing to measure;
 // the demo just runs.
-void DC_Bench_Begin(void)
+void DC_Bench_Begin(const int32_t demo_num)
 {
 }
 
@@ -418,6 +547,7 @@ void DC_Bench_End(void)
 #endif
 
 int32_t g_DC_StartDemo = -1;
+int32_t g_DC_StartCutscene = -1;
 bool g_DC_BenchRequested = false;
 
 void Output_EndScene(void)

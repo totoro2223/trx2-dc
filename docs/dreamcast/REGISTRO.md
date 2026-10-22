@@ -359,3 +359,17 @@ Origen: log de TR3 en Flycast (escenas de 1100–1400 polígonos, 23–31 fps):
   `[bench] 2487 frames avg 26.3 fps min 5.1 slow 50% | logic 5.0 stage 9.6
   pass 15.2 map 1.2 pvr 7.5 ms` (build 290, Flycast).
 - Atajo de fin de nivel en el teclado de Flycast: F + V + S + D.
+
+## Selector por páginas e informes de benchmark (22/10/2026, DC builds 293–294, sin probar)
+
+- Selector de niveles en tres páginas (derecha/izquierda): niveles,
+  cinemáticas en el orden de la historia (TR2 4, TR3 11; `GF_START_CINE`
+  vía `g_DC_StartCutscene`) y demos con benchmarks (TR3: Londres/Aldwych;
+  TR2: Venice).
+- Informe detallado del benchmark por serie, líneas `[bench] ` entre
+  `=== report` y `=== end`: fecha, build, juego, demo, modo, fps
+  medio/mínimo, mediana y 99 % de la duración del frame, frames lentos,
+  cada stat (media/peor), todas las sondas e histograma por ms.
+  `tools/dreamcast/bench_archive.ps1` los guarda en
+  `docs/dreamcast/benchmarks/<fecha>_build<N>_tr<n>.txt`; `run_flycast.ps1`
+  lo ejecuta al cerrar Flycast (con `-KeepRunning`, a mano sobre el log).
