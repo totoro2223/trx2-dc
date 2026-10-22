@@ -338,7 +338,13 @@ bool Input_IsBackendEnabled(const INPUT_BACKEND backend)
     if (backend == INPUT_BACKEND_CONTROLLER) {
         return g_Config.input.enable_controller;
     }
+#if defined(__DREAMCAST__)
+    // No keyboard or touch events ever come (sdl_compat.c makes none): every
+    // role asked of them each tick would only say no.
+    return false;
+#else
     return true;
+#endif
 }
 
 bool Input_IsRoleRebindable(const INPUT_ROLE role)

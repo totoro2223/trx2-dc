@@ -64,6 +64,8 @@ typedef struct {
 // map, sampled at its middle by a normal facing the camera and at its rim by
 // one at right angles to it, top at the top.
 #define DC_PVR_ENV_MAP (-5)
+// The picture behind the loading screen and the menu (DC_PVR_SetPicture).
+#define DC_PVR_PICTURE (-6)
 
 void DC_PVR_Init(void);
 void DC_PVR_Shutdown(void);
@@ -145,6 +147,12 @@ void DC_PVR_DrawScreenCapture(float brightness);
 // font and a bar filled to percent. Does nothing inside another frame.
 void DC_PVR_DrawLoadingScreen(
     const char *line1, const char *line2, int32_t percent);
+// The picture behind the loading screen and the title menu, by its gameflow
+// name ("india.webp"), read from the disc into video memory once
+// (make_disc.sh makes them); nullptr lets it go.
+void DC_PVR_SetPicture(const char *name);
+// Draws it over the whole screen, behind all else, inside a frame.
+void DC_PVR_DrawPicture(float brightness);
 
 void DC_PVR_SetFilter(bool bilinear);
 // Pages drawn from here on sample a copy at half their size, made for them

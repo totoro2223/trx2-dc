@@ -102,6 +102,31 @@ if [ ! -f "$VQ" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
 fi
 cp "$VQ" "$STAGE/textures.vq"
 
+echo "== loading pictures"
+# The game's original 640x480 pictures (the middle of the remaster's 856x480
+# ones), shown behind the loading screen: 512x512 RGB565 as the PowerVR reads
+# them, stretched back over the screen. Kept between discs; without ffmpeg
+# the loading screen stays black.
+PIX_CACHE="$BUILD_DIR/pix-$GAME"
+mkdir -p "$PIX_CACHE" "$STAGE/pix"
+for f in "$GAME_DATA"/../PIX/OG/*.DDS; do
+  [ -f "$f" ] || continue
+  lower="$(basename "$f" .DDS | tr '[:upper:]' '[:lower:]')"
+  out="$PIX_CACHE/$lower.565"
+  if [ ! -f "$out" ] && command -v ffmpeg > /dev/null; then
+    ffmpeg -hide_banner -loglevel error -y -i "$f" -frames:v 1 \
+      -vf "crop=640:480:(in_w-640)/2:0,scale=512:512:flags=lanczos" \
+      -f rawvideo -pix_fmt rgb565le "$out"
+  fi
+  [ -f "$out" ] && cp "$out" "$STAGE/pix/$lower.565"
+done
+# The gameflow names each level's picture as india.webp and keeps the name
+# only if such a file is installed: an empty one stands in for it.
+mkdir -p "$STAGE/games/$GAME/images"
+for f in "$STAGE"/pix/*.565; do
+  [ -f "$f" ] && : > "$STAGE/games/$GAME/images/$(basename "$f" .565).webp"
+done
+
 echo "== image"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
   -o "$TMP/TRX.iso" "$STAGE"

@@ -14,6 +14,10 @@
 #include <trx/game/output/water.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_level_heap.h>
+#endif
+
 // Maximum number of policies stored for one mesh. Extra policies are ignored.
 #define M_MAX_MESH_POLICIES 16
 
@@ -271,6 +275,48 @@ static void M_BuildMesh(
 {
     const OBJECT_MESH *const obj_mesh = Object_GetMesh(mesh_idx);
 
+#if defined(__DREAMCAST__)
+    // TEMP: a face of no corners took the game down as the inventory opened
+    // (build 250); say which mesh, and leave it out rather than abort.
+    for (int32_t pass = 0; pass < 2; pass++) {
+        const int32_t count =
+            pass == 0 ? obj_mesh->tex_faces.count : obj_mesh->flat_faces.count;
+        const FACE *const faces =
+            pass == 0 ? obj_mesh->tex_faces.data : obj_mesh->flat_faces.data;
+        for (int32_t j = 0; j < count; j++) {
+            const FACE *const face = &faces[j];
+            bool bad = face->vertex_count < 3 || face->vertex_count > 4;
+            for (int32_t k = 0; !bad && k < face->vertex_count; k++) {
+                bad = face->vertices[k] >= obj_mesh->num_vertices;
+            }
+            if (bad) {
+                for (int32_t id = 0; id < Object_GetCount(); id++) {
+                    const OBJECT *const obj = Object_Get(id);
+                    if (obj->loaded && mesh_idx >= obj->mesh_idx
+                        && mesh_idx < obj->mesh_idx + obj->mesh_count) {
+                        LOG_ERROR(
+                            "bad mesh %d is mesh %d of object %d", mesh_idx,
+                            mesh_idx - obj->mesh_idx, id);
+                    }
+                }
+                LOG_ERROR(
+                    "bad mesh %d (%p): %s face %d of %d has %d corners "
+                    "(%d %d %d %d), %d vertices, %d lights, faces at %p, "
+                    "tex %d flat %d",
+                    mesh_idx, (const void *)obj_mesh,
+                    pass == 0 ? "textured" : "flat", j, count,
+                    face->vertex_count, face->vertices[0], face->vertices[1],
+                    face->vertices[2], face->vertices[3],
+                    obj_mesh->num_vertices, obj_mesh->num_lights,
+                    (const void *)faces, obj_mesh->tex_faces.count,
+                    obj_mesh->flat_faces.count);
+                *out = nullptr;
+                return;
+            }
+        }
+    }
+#endif
+
     uint16_t flags = 0;
     if (obj_mesh->enable_reflections && !obj_mesh->suppress_reflections) {
         flags |= VERT_REFLECTIVE;
@@ -375,6 +421,45 @@ int32_t OutputSource_Objects_EvictUnused(const uint32_t max_age)
             count++;
         }
         batch->is_built = false;
+    }
+    return count;
+}
+
+int32_t OutputSource_Objects_EvictToBudget(const int32_t max_vertices)
+{
+    M_PRIV *const p = &m_Priv;
+    if (p->meshes == nullptr) {
+        return 0;
+    }
+    int32_t total = 0;
+    for (size_t i = 0; i < p->mesh_count; i++) {
+        if (p->meshes[i].mesh_batch != nullptr) {
+            total += p->meshes[i].mesh_batch->vertices->count;
+        }
+    }
+    int32_t count = 0;
+    while (total > max_vertices) {
+        M_MESH *oldest = nullptr;
+        for (size_t i = 0; i < p->mesh_count; i++) {
+            M_MESH *const batch = &p->meshes[i];
+            // The frame just drawn keeps its meshes.
+            if (batch->mesh_batch == nullptr
+                || g_DC_FrameCount - batch->last_used <= 1) {
+                continue;
+            }
+            if (oldest == nullptr || batch->last_used < oldest->last_used) {
+                oldest = batch;
+            }
+        }
+        if (oldest == nullptr) {
+            break;
+        }
+        total -= oldest->mesh_batch->vertices->count;
+        MeshBatcher_RemoveMesh(p->batcher, oldest->mesh_batch);
+        Output_Mesh_Destroy(oldest->mesh_batch);
+        oldest->mesh_batch = nullptr;
+        oldest->is_built = false;
+        count++;
     }
     return count;
 }
@@ -492,6 +577,8 @@ static void M_Stage(const OBJECT_MESH *const mesh)
     batch->last_used = g_DC_FrameCount;
     if (!batch->is_built) {
         batch->is_built = true;
+        // In the level's memory, which it is (dc_level_heap.c).
+        DC_LevelHeap_Enter();
         MESH_BUILDER *const builder = MeshBuilder_Create();
         OUTPUT_MESH *result = nullptr;
         M_BuildMesh(builder, Object_GetMeshIndex(mesh), &result);
@@ -500,6 +587,7 @@ static void M_Stage(const OBJECT_MESH *const mesh)
             MeshBatcher_AddMesh(p->batcher, result);
             batch->mesh_batch = result;
         }
+        DC_LevelHeap_Leave();
     }
 #endif
     if (batch->mesh_batch == nullptr) {

@@ -23,6 +23,7 @@
 
 #if defined(__DREAMCAST__)
 #include <platform/dreamcast/dc_alloc_trace.h>
+#include <platform/dreamcast/dc_level_heap.h>
 #include <platform/dreamcast/loading.h>
 #include <trx/core/filesystem.h>
 #endif
@@ -244,13 +245,37 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
     // Lua's garbage is spread over what the previous level held; letting it
     // go leaves room for the next level's big blocks.
     LUA_DC_CollectGarbage();
+    {
+        // The room the level loads into: the largest free span is what
+        // counts, and should stay near the whole of what is free.
+        DC_LEVEL_HEAP_STATS heap;
+        DC_LevelHeap_GetStats(&heap);
+        LOG_INFO(
+            "game heap: %dK, %dK in %d blocks, largest free %dK, "
+            "peak %dK, %d spilled",
+            heap.size_kb, heap.used_kb, heap.blocks, heap.largest_free_kb,
+            heap.peak_kb, heap.spilled);
+    }
     #if defined(TRX_DC_WATCHDOG)
     DC_AllocTrace_DumpKept(level->path);
     DC_AllocTrace_DumpHeapMap(level->path);
     // From here on: what the loads leave is listed at the next.
     DC_AllocTrace_StartKeeping();
     #endif
-    DC_Loading_Begin(M_GetLoadSize(level));
+    // The picture the level's loading screen would show, behind the bar.
+    const char *picture = nullptr;
+    for (int32_t i = 0; i < level->sequence.length; i++) {
+        const GF_SEQUENCE_EVENT *const event = &level->sequence.events[i];
+        if (event->type == GFS_LOADING_SCREEN) {
+            picture = ((const GF_DISPLAY_PICTURE_DATA *)event->data)->path;
+            break;
+        }
+    }
+    if (picture == nullptr && level->type == GFL_TITLE) {
+        // Back to the menu: its own picture.
+        picture = g_GameFlow.main_menu_background_path;
+    }
+    DC_Loading_Begin(M_GetLoadSize(level), picture);
 #endif
 
     Inject_InitLevel(level, INJECTION_MODE_FULL);

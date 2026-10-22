@@ -167,6 +167,12 @@ static struct {
 #define M_LOADING_TEXT_WIDTH 512
 #define M_LOADING_TEXT_HEIGHT 64
 static pvr_ptr_t m_LoadingText = nullptr;
+// The picture behind it and the title menu, 512x512 RGB565, stretched over
+// the screen.
+#define M_PICTURE_SIZE 512
+#define M_PICTURE_BYTES                                                \
+    (M_PICTURE_SIZE * M_PICTURE_SIZE * sizeof(uint16_t))
+static pvr_ptr_t m_Picture = nullptr;
 
 static void M_ResetFrame(void);
 static void M_InitHardware(void);
@@ -253,6 +259,7 @@ static void M_SetLowRes(const bool low_res)
     m_HeaderGen++;
     vid_set_mode(low_res ? DM_320x240 : DM_640x480, PM_RGB565);
     m_LoadingText = nullptr;
+    m_Picture = nullptr;
     M_InitHardware();
     m_LowRes = low_res;
     LOG_INFO("Screen now %s", low_res ? "320x240" : "640x480");
@@ -444,9 +451,33 @@ void DC_PVR_DrawLoadingScreen(
 
     DC_PVR_SetBackgroundColor(0.0f, 0.0f, 0.0f);
     DC_PVR_BeginFrame();
+    const bool picture = m_Picture != nullptr;
     const float x0 = (640 - M_LOADING_TEXT_WIDTH) / 2.0f + 32.0f;
-    const float y0 = 190.0f;
+    // Under the picture, the text and bar sit at its foot on a dark band.
+    const float y0 = picture ? 368.0f : 190.0f;
     const float z = DC_PVR_Depth2D(0.5f);
+    if (picture) {
+        const uint32_t white = 0xFFFFFFFF;
+        const float zp = DC_PVR_Depth2D(0.1f);
+        DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_PICTURE, false);
+        const DC_PVR_VERTEX p[4] = {
+            { .x = 0, .y = 0, .z = zp, .u = 0, .v = 0, .argb = white },
+            { .x = 640, .y = 0, .z = zp, .u = 1, .v = 0, .argb = white },
+            { .x = 0, .y = 480, .z = zp, .u = 0, .v = 1, .argb = white },
+            { .x = 640, .y = 480, .z = zp, .u = 1, .v = 1, .argb = white },
+        };
+        DC_PVR_Quad(&p[0], &p[1], &p[2], &p[3]);
+        const uint32_t shade = 0xA0000000;
+        const float zs = DC_PVR_Depth2D(0.3f);
+        DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_NO_TEXTURE, false);
+        const DC_PVR_VERTEX s[4] = {
+            { .x = 0, .y = y0 - 8, .z = zs, .argb = shade },
+            { .x = 640, .y = y0 - 8, .z = zs, .argb = shade },
+            { .x = 0, .y = 472, .z = zs, .argb = shade },
+            { .x = 640, .y = 472, .z = zs, .argb = shade },
+        };
+        DC_PVR_Quad(&s[0], &s[1], &s[2], &s[3]);
+    }
     DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_LOADING_TEXT, false);
     const uint32_t white = 0xFFFFFFFF;
     const DC_PVR_VERTEX t[4] = {
@@ -575,6 +606,80 @@ static void M_WriteTexels(
     for (size_t i = 0; i < count / 2; i++) {
         dst32[i] = src32[i];
     }
+}
+
+void DC_PVR_SetPicture(const char *const name)
+{
+    // The gameflow's "india.webp" (or a path ending so) is the disc's
+    // "/cd/pix/india.565" (make_disc.sh).
+    static char loaded[64] = "";
+    char path[64] = "";
+    if (name != nullptr) {
+        const char *base = strrchr(name, '/');
+        base = base != nullptr ? base + 1 : name;
+        snprintf(
+            path, sizeof(path), "/cd/pix/%.*s.565", (int)strcspn(base, "."),
+            base);
+    }
+    if (m_Picture != nullptr && strcmp(path, loaded) == 0) {
+        return;
+    }
+    if (m_Picture != nullptr) {
+        // The last frame may still be drawing from it.
+        pvr_wait_ready();
+        pvr_mem_free(m_Picture);
+        m_Picture = nullptr;
+        m_HeaderGen++;
+    }
+    strcpy(loaded, path);
+    if (name == nullptr) {
+        return;
+    }
+    FILE *const fp = fopen(path, "rb");
+    if (fp == nullptr) {
+        return;
+    }
+    // Read a piece at a time straight into video memory: a level may be
+    // about to need all the main memory there is.
+    enum { M_CHUNK = 16384 };
+    uint16_t *const chunk = malloc(M_CHUNK);
+    m_Picture = chunk != nullptr ? pvr_mem_malloc(M_PICTURE_BYTES) : nullptr;
+    size_t done = 0;
+    while (m_Picture != nullptr && done < M_PICTURE_BYTES
+           && fread(chunk, 1, M_CHUNK, fp) == M_CHUNK) {
+        M_WriteTexels((uint16_t *)m_Picture + done / 2, chunk, M_CHUNK / 2);
+        done += M_CHUNK;
+    }
+    if (m_Picture != nullptr && done < M_PICTURE_BYTES) {
+        LOG_WARNING("%s: a short picture", path);
+        pvr_mem_free(m_Picture);
+        m_Picture = nullptr;
+    }
+    m_HeaderGen++;
+    free(chunk);
+    fclose(fp);
+}
+
+void DC_PVR_DrawPicture(const float brightness)
+{
+    if (m_Picture == nullptr) {
+        return;
+    }
+    const float b = brightness < 0.0f ? 0.0f : (brightness > 1.0f ? 1.0f : brightness);
+    const uint32_t c = (uint32_t)(b * 255.0f);
+    const uint32_t argb = 0xFF000000 | (c << 16) | (c << 8) | c;
+    const bool was_background = m_Depth.background;
+    DC_PVR_SetBackgroundMode(true);
+    DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_PICTURE, true);
+    const float z = DC_PVR_Depth2D(0.0f);
+    const DC_PVR_VERTEX v[4] = {
+        { .x = 0, .y = 0, .z = z, .u = 0, .v = 0, .argb = argb },
+        { .x = 640, .y = 0, .z = z, .u = 1, .v = 0, .argb = argb },
+        { .x = 0, .y = 480, .z = z, .u = 0, .v = 1, .argb = argb },
+        { .x = 640, .y = 480, .z = z, .u = 1, .v = 1, .argb = argb },
+    };
+    DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
+    DC_PVR_SetBackgroundMode(was_background);
 }
 
 // FNV-1a over the page a 32-bit word at a time, as texvq.c keys them.
@@ -1127,6 +1232,8 @@ void DC_PVR_SetState(
         m_Page = m_Capture.valid ? page : DC_PVR_NO_TEXTURE;
     } else if (page == DC_PVR_LOADING_TEXT) {
         m_Page = m_LoadingText != nullptr ? page : DC_PVR_NO_TEXTURE;
+    } else if (page == DC_PVR_PICTURE) {
+        m_Page = m_Picture != nullptr ? page : DC_PVR_NO_TEXTURE;
     } else if (page == DC_PVR_SHADOW_MAP) {
         m_Page = m_ShadowMap != nullptr ? page : DC_PVR_NO_TEXTURE;
     } else if (page == DC_PVR_ENV_MAP) {
@@ -1192,6 +1299,13 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
             M_LOADING_TEXT_WIDTH, M_LOADING_TEXT_HEIGHT, m_LoadingText,
             PVR_FILTER_NEAREST);
         cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
+    } else if (m_Page == DC_PVR_PICTURE) {
+        pvr_poly_cxt_txr(
+            &cxt, list, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED,
+            M_PICTURE_SIZE, M_PICTURE_SIZE, m_Picture,
+            PVR_FILTER_BILINEAR);
+        cxt.txr.env = PVR_TXRENV_MODULATE;
+        cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
     } else if (m_Page == DC_PVR_SHADOW_MAP) {
         pvr_poly_cxt_txr(
             &cxt, list, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED,

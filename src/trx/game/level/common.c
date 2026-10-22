@@ -28,6 +28,10 @@
 #include <trx/game/stats.h>
 #include <trx/game/ui.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_level_heap.h>
+#endif
+
 static bool m_WorldLoaded = false;
 
 void Level_Unload(void)
@@ -92,6 +96,12 @@ RESULT Level_Initialise(
     // Before the incoming level takes over as the current one, so a script
     // hearing the unload still finds the level it was written for.
     Level_Unload();
+#if defined(__DREAMCAST__)
+    // What the level loads and builds goes in its own memory, empty again
+    // now (dc_level_heap.c).
+    // shortcut: a failed load leaves it entered, the game exits on one.
+    DC_LevelHeap_Enter();
+#endif
 
     Game_SetIsLevelComplete(false);
     if (level->type != GFL_TITLE && level->type != GFL_DEMO) {
@@ -159,6 +169,9 @@ RESULT Level_Initialise(
         Game_SetIsSettingUpItems(false);
     }
 
+#if defined(__DREAMCAST__)
+    DC_LevelHeap_Leave();
+#endif
     Benchmark_End(&benchmark, nullptr);
     return OK;
 }

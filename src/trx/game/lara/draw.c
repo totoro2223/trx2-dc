@@ -502,11 +502,13 @@ bool Lara_Draw(const ITEM *const item)
     // Lara's body casts a shadow volume or soft shadows in place of the
     // round shadow, when one of those is chosen.
     const SHADOW_TYPE type = g_Config.visuals.shadow_type;
+    const bool is_lara = item == Lara_GetItem();
+    DC_Shadow_SetLara(is_lara);
     DC_Shadow_SetCasting(
-        item == Lara_GetItem()
-        && (type == SHADOW_TYPE_VOLUME || type == SHADOW_TYPE_SOFT));
+        is_lara && (type == SHADOW_TYPE_VOLUME || type == SHADOW_TYPE_SOFT));
     const bool drawn = M_Draw(item);
     DC_Shadow_SetCasting(false);
+    DC_Shadow_SetLara(false);
     return drawn;
 #else
     return M_Draw(item);

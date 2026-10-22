@@ -28,6 +28,7 @@
 #include <trx/core/vector.h>
 #include <trx/debug.h>
 #include <trx/game/const.h>
+#include <trx/game/lara/common.h>
 #include <trx/game/output.h>
 #include <trx/game/output/lights/priv.h>
 #include <trx/game/output/mesh_batcher/batcher.h>
@@ -36,6 +37,7 @@
 #include <trx/game/output/utils.h>
 #include <trx/game/output/vertex_range.h>
 #include <trx/game/viewport.h>
+#include <trx/version.h>
 
 #include <arch/timer.h>
 #include <dc/fmath.h>
@@ -60,7 +62,7 @@
 // camera are neither transformed nor drawn. Cells of this size, doubled until
 // a room has no more chunks than this; rooms with fewer vertices stay whole.
 #define M_CHUNK_CELL 2048
-#define M_MAX_CHUNKS 64
+#define M_MAX_CHUNKS 128
 #define M_CHUNK_MIN_VERTICES 256
 
 typedef struct {
@@ -94,6 +96,16 @@ typedef struct M_BINDING {
     // (As fractions of the page in 16 bits, 0 to M_UV_ONE.)
     uint16_t *uv;
     int8_t *page;
+    // A room's corners share its vertices (M_ShareVertices): per corner, the
+    // vertex it reads and its texture index. Null for other meshes, whose
+    // vertices are their corners.
+    uint16_t *vref;
+    int16_t *uvw;
+    // An object's corners: per corner, the first one just like it (itself
+    // if none), which it copies once transformed (M_FindTwins). Null when
+    // there are none, or once the mesh has been reshaped (deforms).
+    uint16_t *twin;
+    bool deforms;
     bool needs_room_lights;
     bool needs_object_light;
     bool needs_own_light;
@@ -131,6 +143,14 @@ typedef struct M_BINDING {
     UT_hash_handle hh;
 } M_BINDING;
 
+// The vertex a corner of the binding reads.
+static inline const OUTPUT_MESH_VERTEX *M_Corner(
+    const M_BINDING *const bind, const OUTPUT_MESH_VERTEX *const vertices,
+    const int32_t i)
+{
+    return &vertices[bind->vref != nullptr ? bind->vref[i] : i];
+}
+
 // A mesh instance that casts a shadow this frame.
 typedef struct {
     const struct M_BINDING *bind;
@@ -147,6 +167,8 @@ typedef struct {
 #define M_SHADOW_MIN_DROP 0.6f
 // How far a light may be from the casters and still turn their shadow.
 #define M_SHADOW_LIGHT_RANGE (3.0f * WALL_L)
+// Within this of a light its shadow is as dark as it gets.
+#define M_SHADOW_NEAR (1.0f * WALL_L)
 
 // The soft shadows (see shadow.h): one cell of the shadow map per light.
 #define M_SOFT_MAX_LIGHTS 3
@@ -174,14 +196,18 @@ _Static_assert(
 // How much of a face's colour the shadow takes away, from a light at the end
 // of its reach to one up close: the nearer the light, the darker.
 #define M_SOFT_STRENGTH_MIN 0.5f
-#define M_SOFT_STRENGTH_MAX 0.95f
+#define M_SOFT_STRENGTH_MAX 0.9f
 // How strong a shadow is without a light near, as a light's weight.
 #define M_SOFT_NO_LIGHT_WEIGHT 0.3f
 // The same for the shadow volumes, which the PowerVR darkens all as much.
 #define M_VOLUME_STRENGTH_MIN 0.2f
-#define M_VOLUME_STRENGTH_MAX 0.95f
+#define M_VOLUME_STRENGTH_MAX 0.8f
 // How much of Lara's colour her own shadow takes away.
 #define M_SOFT_SELF_STRENGTH 0.7f
+// A world face takes no shadow when the cosine between it and the light is
+// under the first, all of it from the second on.
+#define M_SOFT_GRAZE_MIN 0.25f
+#define M_SOFT_GRAZE_FULL 0.6f
 // Caster meshes with more vertices than this are left out of the map.
 #define M_SOFT_MAX_VERTICES 512
 
@@ -208,7 +234,7 @@ _Static_assert(
 #define M_BUMP_RANGE (2.5f * WALL_L)
 #define M_BUMP_FADE (1.0f * WALL_L)
 // How deep the relief's shade runs, of the whole colour.
-#define M_BUMP_DEPTH 0.9f
+#define M_BUMP_DEPTH 0.45f
 // The lowest a light stands over a face, in radians: one level with it or
 // behind it would shade every slope.
 #define M_BUMP_MIN_ELEVATION 0.35f
@@ -298,6 +324,12 @@ typedef struct MESH_BATCHER {
     float (*soft)[3];
     uint8_t *soft_off;
     int32_t xverts_capacity;
+    // Per shared room vertex (M_ShareVertices): the corner it was
+    // transformed at this instance, as share_gen << 16 | corner; the other
+    // corners of it copy that one.
+    uint32_t *share_slot;
+    int32_t share_capacity;
+    uint32_t share_gen;
     // The model-view matrix of the instance just transformed.
     matrix_t mv;
     // Whether the instance just transformed is cel shaded, and whether the
@@ -366,7 +398,13 @@ typedef struct {
     bool bump;
     // The cel shading is on: the player's setting, where the mode allows it.
     bool cel;
+    // The instance being drawn is one of Lara's meshes, the only ones the
+    // cel shading takes (M_DrawInstance).
+    bool lara_instance;
     const DC_UNIFORM_LIGHTS *lights;
+    // The light mode of the room whose lights are uploaded, or -1: the passing
+    // lights are the same for every room, and only that mode differs.
+    int32_t lights_mode;
 } M_FRAME;
 
 static M_FRAME m_Frame = {};
@@ -406,6 +444,10 @@ static bool M_SelfShadowOn(void)
 static float m_CelShade = M_CEL_SHADE_FAR;
 
 static bool m_Casting = false;
+// Lara's meshes are being staged (DC_Shadow_SetLara): only she takes the cel
+// shading. Her meshes that cast no shadow are staged with this caster index.
+static bool m_StagingLara = false;
+#define M_LARA_NOT_CASTER (-2)
 static int32_t m_CasterCount = 0;
 static M_CASTER m_Casters[M_MAX_CASTERS];
 
@@ -443,11 +485,13 @@ static struct {
 static float m_SoftXY[M_SOFT_MAX_VERTICES][2];
 
 // The shadows drawn: the player's choice, with soft ones drawn as volumes
-// where the mode asks.
+// where the mode asks, or while Lara is under water: the soft map
+// would cast on the surface and the pool floor seen through it.
 static SHADOW_TYPE M_ShadowType(void)
 {
     const SHADOW_TYPE type = g_Config.visuals.shadow_type;
-    return type == SHADOW_TYPE_SOFT && DC_Mode_Get()->volume_shadows
+    return type == SHADOW_TYPE_SOFT && (DC_Mode_Get()->volume_shadows
+               || Lara_GetLaraInfo()->water_status == LWS_UNDERWATER)
         ? SHADOW_TYPE_VOLUME
         : type;
 }
@@ -516,15 +560,15 @@ static inline uint16_t M_PackUV(const float x)
 
 static void M_FillTexture(
     M_BINDING *const bind, const OUTPUT_MESH_VERTEX *const vertex,
-    const int32_t idx)
+    const int32_t uvw_idx, const int32_t idx)
 {
-    if (vertex->uvw_idx < 0 || (vertex->flags & VERT_FLAT_SHADED) != 0) {
+    if (uvw_idx < 0 || (vertex->flags & VERT_FLAT_SHADED) != 0) {
         bind->uv[idx * 2 + 0] = 0;
         bind->uv[idx * 2 + 1] = 0;
         bind->page[idx] = M_NO_PAGE;
         return;
     }
-    const OUTPUT_UVW uvw = Output_Textures_GetUVW(vertex->uvw_idx);
+    const OUTPUT_UVW uvw = Output_Textures_GetUVW(uvw_idx);
     bind->uv[idx * 2 + 0] = M_PackUV(uvw.u);
     bind->uv[idx * 2 + 1] = M_PackUV(uvw.v);
     bind->page[idx] = (int8_t)uvw.w;
@@ -581,10 +625,31 @@ typedef struct {
 
 #define M_MAX_POINT_LIGHTS 32
 
+// A TR3 dynamic light (a flare, a gun's flash): it adds its colour, fading
+// to nothing at its radius (lights_tr3.glsl's lightDynamicTR3).
+typedef struct {
+    float pos[3];
+    float radius;
+    float inv_radius;
+    float color[3];
+} M_RGB_LIGHT;
+
 typedef struct {
     float l[3]; // object space light direction, for object lighting
     float adder;
     bool has_direction;
+    // TR3's object light: an ambient colour and three directional colours
+    // (sun, brightest bulb, brightest dynamic), the directions in object
+    // space over the normals' 1 << 14 (lights_tr3.glsl's lightObjectsTR3).
+    // tr3_double is the 128-neutral doubling of the lighting curve.
+    bool tr3;
+    float tr3_double;
+    float tr3_ambient[3];
+    int32_t tr3_count;
+    float tr3_dir[3][3];
+    float tr3_color[3][3];
+    int32_t num_rgb;
+    M_RGB_LIGHT rgb[M_MAX_POINT_LIGHTS];
     // For vertices lit by the room's lights: the instance's world matrix in
     // world units, the lights, and the flicker the room's light mode adds
     // (times each vertex's light table offset).
@@ -610,6 +675,50 @@ M_HOT float M_DynamicLum(
         shade -= light->max_shade - dist_sq * light->inv_div;
     }
     return shade < 0.0f ? 0.0f : shade;
+}
+
+// TR3's object light on a normal, per channel (0 to 1).
+M_HOT void M_TR3ObjectRGB(
+    const M_INSTANCE_LIGHT *const il, const float nx, const float ny,
+    const float nz, float rgb[3])
+{
+    rgb[0] = il->tr3_ambient[0];
+    rgb[1] = il->tr3_ambient[1];
+    rgb[2] = il->tr3_ambient[2];
+    for (int32_t i = 0; i < il->tr3_count; i++) {
+        const float *const d = il->tr3_dir[i];
+        const float n_dot_l = fipr(d[0], d[1], d[2], 0.0f, nx, ny, nz, 0.0f);
+        if (n_dot_l > 0.0f) {
+            rgb[0] += il->tr3_color[i][0] * n_dot_l;
+            rgb[1] += il->tr3_color[i][1] * n_dot_l;
+            rgb[2] += il->tr3_color[i][2] * n_dot_l;
+        }
+    }
+    for (int32_t c = 0; c < 3; c++) {
+        rgb[c] = M_Clamp(rgb[c], 0.0f, 1.0f);
+    }
+}
+
+// TR3's dynamic lights at a point of the world: the colour they add.
+M_HOT void M_TR3DynamicRGB(
+    const M_INSTANCE_LIGHT *const il, const float world[3], float add[3])
+{
+    add[0] = add[1] = add[2] = 0.0f;
+    for (int32_t i = 0; i < il->num_rgb; i++) {
+        const M_RGB_LIGHT *const light = &il->rgb[i];
+        const float dx = light->pos[0] - world[0];
+        const float dy = light->pos[1] - world[1];
+        const float dz = light->pos[2] - world[2];
+        const float dist_sq = dx * dx + dy * dy + dz * dz;
+        if (dist_sq >= light->radius * light->radius) {
+            continue;
+        }
+        const float dist = dist_sq > 0.0f ? dist_sq * M_InvSqrt(dist_sq) : 0.0f;
+        const float f = (light->radius - dist) * light->inv_radius;
+        add[0] += f * light->color[0];
+        add[1] += f * light->color[1];
+        add[2] += f * light->color[2];
+    }
 }
 
 // An instance's world matrix (fixed point in TR) in world units, by rows.
@@ -662,7 +771,28 @@ static void M_PrepareRoomLights(
     for (int32_t i = 0;
          i < lights->num_lights && out->num_lights < M_MAX_POINT_LIGHTS; i++) {
         const DC_UNIFORM_LIGHT *const light = &lights->lights[i];
-        if (light->kind != 0.0f) {
+        if (light->kind == OUTPUT_DYNAMIC_LIGHT_RGB) {
+            // Encoded as a radius << OUTPUT_DYNAMIC_FALLOFF_SHIFT, halved
+            // as the desktop shader does.
+            const float radius = light->falloff * 0.5f;
+            const float dx = light->pos[0] - center[0];
+            const float dy = light->pos[1] - center[1];
+            const float dz = light->pos[2] - center[2];
+            const float reach = radius + inst_radius;
+            if (radius < 1.0f || out->num_rgb >= M_MAX_POINT_LIGHTS
+                || dx * dx + dy * dy + dz * dz > reach * reach) {
+                continue;
+            }
+            M_RGB_LIGHT *const rl = &out->rgb[out->num_rgb++];
+            for (int32_t k = 0; k < 3; k++) {
+                rl->pos[k] = light->pos[k];
+                rl->color[k] = light->color[k];
+            }
+            rl->radius = radius;
+            rl->inv_radius = 1.0f / radius;
+            continue;
+        }
+        if (light->kind != OUTPUT_DYNAMIC_LIGHT_LUM) {
             continue;
         }
         const float radius = exp2f(light->falloff);
@@ -686,6 +816,82 @@ static void M_PrepareRoomLights(
     out->flicker = index * 512.0f / 31.0f;
 }
 
+// The object's or own light of TR1-3 from the instance's light info, as
+// Output_Lights_UploadCPULight and Output_Lights_UploadOwnLight would put it in
+// the uniform block and M_PrepareInstanceLight read it back, without the trip:
+// no compare, copy or upload per instance, and the TR3 directions normalised
+// with the SH-4's own reciprocal root.
+static void M_ReadInstanceLight(
+    const OUTPUT_LIGHT_INFO *const info, const M_BINDING *const bind,
+    const float mv[4][4], M_INSTANCE_LIGHT *const out)
+{
+    if (out->tr3) {
+        out->tr3_ambient[0] = info->tr3_ambient.r;
+        out->tr3_ambient[1] = info->tr3_ambient.g;
+        out->tr3_ambient[2] = info->tr3_ambient.b;
+        if (!bind->needs_object_light) {
+            return; // its own light takes the ambient alone
+        }
+        // The brightest light also leads the cel shading.
+        float best = 0.0f;
+        for (int32_t i = 0; i < 3; i++) {
+            const RGB_F col = info->tr3_light_color[i];
+            const float sum = col.r + col.g + col.b;
+            if (sum <= 0.0f) {
+                continue;
+            }
+            float v[3] = {
+                (float)info->tr3_light_dir_view[i].x,
+                (float)info->tr3_light_dir_view[i].y,
+                (float)info->tr3_light_dir_view[i].z,
+            };
+            const float len_sq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+            if (len_sq > 0.0f) {
+                const float inv_len = M_InvSqrt(len_sq);
+                v[0] *= inv_len;
+                v[1] *= inv_len;
+                v[2] *= inv_len;
+            }
+            float *const d = out->tr3_dir[out->tr3_count];
+            for (int32_t c = 0; c < 3; c++) {
+                d[c] = (mv[c][0] * v[0] + mv[c][1] * v[1] + mv[c][2] * v[2])
+                    * (1.0f / (float)(1 << 14));
+            }
+            out->tr3_color[out->tr3_count][0] = col.r;
+            out->tr3_color[out->tr3_count][1] = col.g;
+            out->tr3_color[out->tr3_count][2] = col.b;
+            if (sum > best) {
+                best = sum;
+                // As the TR1-2 vector, which points the way the shade grows
+                // (away from the light); cel_scale divides its length out.
+                for (int32_t c = 0; c < 3; c++) {
+                    out->l[c] = -d[c] * (float)(1 << 14);
+                }
+                out->has_direction = true;
+            }
+            out->tr3_count++;
+        }
+        return;
+    }
+    out->adder = (float)info->ls_adder;
+    if (bind->needs_object_light && info->ls_divider != 0) {
+        // The view-space light vector, taken into object space by the
+        // transpose of the model-view rotation.
+        const float inv_div =
+            (float)(1 << W2V_SHIFT) / (float)info->ls_divider;
+        const float v[3] = {
+            (float)info->ls_vector_view.x,
+            (float)info->ls_vector_view.y,
+            (float)info->ls_vector_view.z,
+        };
+        for (int32_t c = 0; c < 3; c++) {
+            out->l[c] =
+                (mv[c][0] * v[0] + mv[c][1] * v[1] + mv[c][2] * v[2]) * inv_div;
+        }
+        out->has_direction = true;
+    }
+}
+
 static void M_PrepareInstanceLight(
     const MESH_INSTANCE *const inst, const M_BINDING *const bind,
     const float mv[4][4], M_INSTANCE_LIGHT *const out)
@@ -693,17 +899,71 @@ static void M_PrepareInstanceLight(
     out->has_direction = false;
     out->has_room_lights = false;
     out->adder = 0.0f;
+    out->num_rgb = 0;
+    out->tr3 = g_TRVersion == 3;
+    out->tr3_count = 0;
+    out->tr3_double =
+        g_Config.rendering.lighting_curve == LIGHTING_CURVE_FLAT ? 1.0f : 2.0f;
     if (bind->needs_room_lights) {
-        Output_Uniforms_UploadRoomLights(Output_GetUniforms(), inst->room);
-        m_Frame.lights =
-            DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
+        const int32_t mode =
+            inst->room == nullptr ? RLM_SUNSET : inst->room->light_mode;
+        if (mode != m_Frame.lights_mode) {
+            Output_Uniforms_UploadRoomLights(Output_GetUniforms(), inst->room);
+            m_Frame.lights =
+                DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
+            m_Frame.lights_mode = mode;
+        }
         M_PrepareRoomLights(inst, bind, out);
+    }
+    if (g_TRVersion <= 3 && (bind->needs_object_light || bind->needs_own_light)) {
+        M_ReadInstanceLight(&inst->light_info, bind, mv, out);
+        return;
     }
     if (bind->needs_object_light) {
         Output_Lights_UploadCPULight(&inst->light_info);
     } else if (bind->needs_own_light) {
         Output_Lights_UploadOwnLight(&inst->light_info);
     } else {
+        return;
+    }
+    if (out->tr3) {
+        const OUTPUT_UNIFORM_LS_TR3 *const ls3 =
+            DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHT_SOURCE, nullptr);
+        if (ls3 == nullptr) {
+            return;
+        }
+        for (int32_t c = 0; c < 3; c++) {
+            out->tr3_ambient[c] = ls3->ambient[c];
+        }
+        if (!bind->needs_object_light) {
+            return; // its own light takes the ambient alone
+        }
+        // The brightest light also leads the cel shading.
+        float best = 0.0f;
+        for (int32_t i = 0; i < 3; i++) {
+            const float *const col = ls3->color[i];
+            const float sum = col[0] + col[1] + col[2];
+            if (sum <= 0.0f) {
+                continue;
+            }
+            const float *const v = ls3->dir_view[i];
+            float *const d = out->tr3_dir[out->tr3_count];
+            for (int32_t c = 0; c < 3; c++) {
+                d[c] = (mv[c][0] * v[0] + mv[c][1] * v[1] + mv[c][2] * v[2])
+                    * (1.0f / (float)(1 << 14));
+                out->tr3_color[out->tr3_count][c] = col[c];
+            }
+            if (sum > best) {
+                best = sum;
+                // As the TR1-2 vector, which points the way the shade grows
+                // (away from the light); cel_scale divides its length out.
+                for (int32_t c = 0; c < 3; c++) {
+                    out->l[c] = -d[c] * (float)(1 << 14);
+                }
+                out->has_direction = true;
+            }
+            out->tr3_count++;
+        }
         return;
     }
     const OUTPUT_UNIFORM_LS_TR12 *const ls =
@@ -731,6 +991,54 @@ M_HOT void M_LightVertex(
     float *const out_shade_mul)
 {
     const uint16_t flags = vertex->flags;
+    if (il->tr3) {
+        // meshes.glsl's TR3 branch: (colour + dynamic) times the object's
+        // or its own light, doubled by the 128-neutral curve.
+        float mul_rgb[3] = { 1.0f, 1.0f, 1.0f };
+        float add[3] = { 0.0f, 0.0f, 0.0f };
+        float dbl = 1.0f;
+        if (m_Frame.lighting) {
+            dbl = il->tr3_double;
+        }
+        if (m_Frame.lighting && (flags & VERT_NO_LIGHTING) == 0) {
+            if ((flags & VERT_USE_DYNAMIC_LIGHT) != 0 && il->num_rgb > 0
+                && il->has_room_lights) {
+                const float x = vertex->pos.x;
+                const float y = vertex->pos.y;
+                const float z = vertex->pos.z;
+                const float(*const w)[4] = il->world;
+                const float world[3] = {
+                    w[0][0] * x + w[0][1] * y + w[0][2] * z + w[0][3],
+                    w[1][0] * x + w[1][1] * y + w[1][2] * z + w[1][3],
+                    w[2][0] * x + w[2][1] * y + w[2][2] * z + w[2][3],
+                };
+                M_TR3DynamicRGB(il, world, add);
+            }
+            if ((flags & VERT_USE_OBJECT_LIGHT) != 0) {
+                M_TR3ObjectRGB(
+                    il, vertex->normal.x, vertex->normal.y, vertex->normal.z,
+                    mul_rgb);
+            } else if ((flags & VERT_USE_OWN_LIGHT) != 0) {
+                float shade8 = floorf((M_SHADE_MAX - vertex->shade) / 32.0f);
+                shade8 = shade8 <= 0.0f ? 255.0f : shade8;
+                for (int32_t c = 0; c < 3; c++) {
+                    mul_rgb[c] =
+                        M_Clamp(il->tr3_ambient[c] * shade8 / 255.0f, 0.0f, 1.0f);
+                }
+            }
+        }
+        *out_shade_mul = dbl;
+        const float tints[3] = { tint.r, tint.g, tint.b };
+        const uint8_t cols[3] = {
+            vertex->color.r, vertex->color.g, vertex->color.b,
+        };
+        for (int32_t c = 0; c < 3; c++) {
+            out_rgba[c] = (cols[c] * (1.0f / 255.0f) + add[c]) * mul_rgb[c]
+                * dbl * tints[c];
+        }
+        out_rgba[3] = vertex->color.a * (1.0f / 255.0f) * tint.a;
+        return;
+    }
     float shade = M_SHADE_NEUTRAL;
     if (m_Frame.lighting && (flags & VERT_NO_LIGHTING) == 0) {
         if ((flags & VERT_USE_OWN_LIGHT) != 0) {
@@ -934,6 +1242,73 @@ static void M_InitWhite(void)
 // room's flicker, in the room's tint, faded into black fog. All in integers:
 // no float colour, no clamps, no float to int conversions per channel. Only
 // the vertices of the list, when there is one (the chunks that show).
+// A reflective vertex's place on the sphere map and its colour there, from
+// its eye space position, the fog it keeps and its lit colour (0 to 1).
+M_HOT void M_EnvVertex(
+    MESH_BATCHER *const batcher, const int32_t i,
+    const OUTPUT_MESH_VERTEX *const vertex, const float mv[4][4],
+    const float x, const float y, const float z, const float keep,
+    const float lit[3])
+{
+    // The normal in eye space (the camera at the origin, looking down z),
+    // turned to face the camera, mirrors the way to the vertex; the sphere
+    // map holds what lies that way.
+    const float nx = vertex->normal.x;
+    const float ny = vertex->normal.y;
+    const float nz = vertex->normal.z;
+    float n[3] = {
+        mv[0][0] * nx + mv[1][0] * ny + mv[2][0] * nz,
+        mv[0][1] * nx + mv[1][1] * ny + mv[2][1] * nz,
+        mv[0][2] * nx + mv[1][2] * ny + mv[2][2] * nz,
+    };
+    const float d_len_sq = x * x + y * y + z * z;
+    const float n_len_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+    float eu = 0.5f;
+    float ev = 0.5f;
+    if (d_len_sq > 0.0f && n_len_sq > 0.0f) {
+        const float inv_d = M_InvSqrt(d_len_sq);
+        const float d[3] = { x * inv_d, y * inv_d, z * inv_d };
+        const float inv_n = M_InvSqrt(n_len_sq);
+        float d_n = 0.0f;
+        for (int32_t k = 0; k < 3; k++) {
+            n[k] *= inv_n;
+            d_n += d[k] * n[k];
+        }
+        if (d_n > 0.0f) {
+            for (int32_t k = 0; k < 3; k++) {
+                n[k] = -n[k];
+            }
+            d_n = -d_n;
+        }
+        const float r[3] = {
+            d[0] - 2.0f * d_n * n[0],
+            d[1] - 2.0f * d_n * n[1],
+            d[2] - 2.0f * d_n * n[2],
+        };
+        // Straight back at the camera is the map's middle, away from it its
+        // rim; right and down on the screen, in eye space, by the
+        // projection's signs.
+        const float m2 =
+            r[0] * r[0] + r[1] * r[1] + (r[2] - 1.0f) * (r[2] - 1.0f);
+        if (m2 > 0.0f) {
+            const float inv_m = 0.5f * M_InvSqrt(m2);
+            const float env_x = m_Frame.proj_x < 0.0f ? -1.0f : 1.0f;
+            const float env_y = m_Frame.proj_y < 0.0f ? -1.0f : 1.0f;
+            eu = 0.5f + env_x * r[0] * inv_m;
+            ev = 0.5f + env_y * r[1] * inv_m;
+        }
+    }
+    batcher->env_uv[i][0] = eu;
+    batcher->env_uv[i][1] = ev;
+    // Half its own, half the light on it: metal shows its surroundings even
+    // in the shade, if less.
+    float e[3];
+    for (int32_t k = 0; k < 3; k++) {
+        e[k] = keep * M_ENV_STRENGTH * (0.5f + 0.5f * lit[k]);
+    }
+    batcher->eargb[i] = M_PackARGB(1.0f, e[0], e[1], e[2]);
+}
+
 static void M_XformRoom(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
@@ -945,6 +1320,9 @@ static void M_XformRoom(
     const bool lighting = m_Frame.lighting;
     const int32_t min_shade = M_ShadeLow();
     const bool dyn = il->num_lights > 0;
+    const bool tr3 = il->tr3;
+    const bool rgb_dyn = tr3 && lighting && il->num_rgb > 0;
+    const uint32_t tr3_k = lighting ? (uint32_t)(256.0f * il->tr3_double) : 256;
     const int32_t flicker = (int32_t)il->flicker;
     const bool fog_on = c->fog;
     // Most rooms' vertices all carry the same flags: then they are not read.
@@ -961,10 +1339,42 @@ static void M_XformRoom(
     const int32_t whole[1][2] = { { 0, bind->vertex_count } };
     const int32_t(*const ranges)[2] = nvr < 0 ? whole : vranges;
     const int32_t nranges = nvr < 0 ? 1 : nvr;
+    // Shared vertices are lit once per instance, not once per corner.
+    const uint16_t *const vref =
+        bind->vertex_count <= 0xFFFF ? bind->vref : nullptr;
+    uint32_t *slot = nullptr;
+    uint32_t gen = 0;
+    if (vref != nullptr) {
+        const int32_t kept = bind->mesh->vertices->count;
+        if (kept > batcher->share_capacity) {
+            batcher->share_capacity = kept + 256;
+            Memory_Free(batcher->share_slot);
+            batcher->share_slot =
+                Memory_Alloc(sizeof(uint32_t) * batcher->share_capacity);
+            batcher->share_gen = 0xFFFF; // cleared just below
+
+        }
+        if (++batcher->share_gen > 0xFFFF) {
+            memset(
+                batcher->share_slot, 0,
+                sizeof(uint32_t) * batcher->share_capacity);
+            batcher->share_gen = 1;
+        }
+        slot = batcher->share_slot;
+        gen = batcher->share_gen << 16;
+    }
     for (int32_t r = 0; r < nranges; r++) {
         const int32_t end = ranges[r][0] + ranges[r][1];
         for (int32_t i = ranges[r][0]; i < end; i++) {
-            const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
+            if (vref != nullptr) {
+                uint32_t *const s = &slot[vref[i]];
+                if ((*s & 0xFFFF0000u) == gen) {
+                    xverts[i] = xverts[*s & 0xFFFFu];
+                    continue;
+                }
+                *s = gen | (uint32_t)i;
+            }
+            const OUTPUT_MESH_VERTEX *const vertex = M_Corner(bind, vertices, i);
             // The SH-4 does not wait for a line it was told to fetch ahead.
             __builtin_prefetch(vertex + 2);
             const uint16_t flags =
@@ -978,7 +1388,28 @@ static void M_XformRoom(
             uint8_t clip = M_Place(out, x, y, z, c);
 
             uint32_t k = 256;
-            if ((flags & VERT_NO_LIGHTING) == 0) {
+            RGBA_8888 color = vertex->color;
+            if (tr3) {
+                // Prelit colours, doubled by the curve, plus the colour
+                // of the dynamic lights passing.
+                k = tr3_k;
+                if (rgb_dyn && (flags & VERT_NO_LIGHTING) == 0
+                    && (flags & VERT_USE_DYNAMIC_LIGHT) != 0) {
+                    const float px = vertex->pos.x;
+                    const float py = vertex->pos.y;
+                    const float pz = vertex->pos.z;
+                    const float world[3] = {
+                        w[0][0] * px + w[0][1] * py + w[0][2] * pz + w[0][3],
+                        w[1][0] * px + w[1][1] * py + w[1][2] * pz + w[1][3],
+                        w[2][0] * px + w[2][1] * py + w[2][2] * pz + w[2][3],
+                    };
+                    float add[3];
+                    M_TR3DynamicRGB(il, world, add);
+                    color.r = (uint8_t)MIN(255.0f, color.r + add[0] * 255.0f);
+                    color.g = (uint8_t)MIN(255.0f, color.g + add[1] * 255.0f);
+                    color.b = (uint8_t)MIN(255.0f, color.b + add[2] * 255.0f);
+                }
+            } else if ((flags & VERT_NO_LIGHTING) == 0) {
                 int32_t s = M_SHADE_NEUTRAL;
                 if (lighting) {
                     s = vertex->shade;
@@ -1008,10 +1439,10 @@ static void M_XformRoom(
             if (fog_on && (flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
                 k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
             }
-            out->argb = white ? m_WhiteARGB[k]
-                              : M_Colour(
-                                    vertex->color, ta, k * tr >> 8,
-                                    k * tg >> 8, k * tb >> 8);
+            out->argb = white && !rgb_dyn ? m_WhiteARGB[k]
+                                          : M_Colour(
+                                                color, ta, k * tr >> 8,
+                                                k * tg >> 8, k * tb >> 8);
             out->clip = clip;
         }
     }
@@ -1023,13 +1454,14 @@ static void M_XformRoom(
 static void M_XformObject(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
-    M_XFORM *const c, const float cel_scale)
+    M_XFORM *const c, const float mv[4][4], const float cel_scale)
 {
     const OUTPUT_MESH_VERTEX *const vertices =
         Vector_GetData(bind->mesh->vertices);
     M_XVERT *const xverts = batcher->xverts;
     const int32_t count = bind->vertex_count;
     const int32_t min_shade = M_ShadeLow();
+    const bool env = batcher->env;
     const bool fog_on = c->fog;
     const bool vary = (bind->flags_or & VERT_NO_FOG) != 0;
     const bool dir = il->has_direction;
@@ -1037,6 +1469,7 @@ static void M_XformObject(
     const float l1 = il->l[1];
     const float l2 = il->l[2];
     const float adder = il->adder;
+    const bool tr3 = il->tr3;
     const bool cel = batcher->cel;
     const uint32_t dark = (uint32_t)(m_CelShade * 256.0f);
     uint32_t *const sargb = batcher->sargb;
@@ -1046,8 +1479,20 @@ static void M_XformObject(
     const uint32_t tb = M_TintK(inst->tint.b);
     const bool white =
         bind->white && ta == 256 && tr == 256 && tg == 256 && tb == 256;
+    const uint16_t *const twin = bind->twin;
     for (int32_t i = 0; i < count; i++) {
-        const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
+        if (twin != nullptr && twin[i] != i) {
+            const int32_t j = twin[i];
+            xverts[i] = xverts[j];
+            sargb[i] = sargb[j];
+            if (env) {
+                batcher->env_uv[i][0] = batcher->env_uv[j][0];
+                batcher->env_uv[i][1] = batcher->env_uv[j][1];
+                batcher->eargb[i] = batcher->eargb[j];
+            }
+            continue;
+        }
+        const OUTPUT_MESH_VERTEX *const vertex = M_Corner(bind, vertices, i);
         __builtin_prefetch(vertex + 2);
         float x = vertex->pos.x;
         float y = vertex->pos.y;
@@ -1066,14 +1511,29 @@ static void M_XformObject(
                 vertex->normal.z, 0.0f);
             shade += n_dot_l * (1.0f / (float)(1 << 16));
         }
-        uint32_t k = M_ShadeK((int32_t)shade, min_shade);
+        uint32_t fk = 256;
+        uint32_t k = tr3 ? 256 : M_ShadeK((int32_t)shade, min_shade);
         if (fog_on && (!vary || (vertex->flags & VERT_NO_FOG) == 0)) {
-            k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
+            fk = M_FogKeep(M_Fog(x, y, z, c), &clip);
+            k = k * fk >> 8;
         }
-        const uint32_t argb = white ? m_WhiteARGB[k]
-                                    : M_Colour(
-                                          vertex->color, ta, k * tr >> 8,
-                                          k * tg >> 8, k * tb >> 8);
+        uint32_t argb;
+        if (tr3) {
+            // Coloured: a factor per channel.
+            float rgb[3];
+            M_TR3ObjectRGB(
+                il, vertex->normal.x, vertex->normal.y, vertex->normal.z, rgb);
+            const float kk = (float)k * il->tr3_double;
+            argb = M_Colour(
+                vertex->color, ta, (uint32_t)(rgb[0] * kk) * tr >> 8,
+                (uint32_t)(rgb[1] * kk) * tg >> 8,
+                (uint32_t)(rgb[2] * kk) * tb >> 8);
+        } else {
+            argb = white ? m_WhiteARGB[k]
+                         : M_Colour(
+                               vertex->color, ta, k * tr >> 8, k * tg >> 8,
+                               k * tb >> 8);
+        }
         out->argb = argb;
         out->clip = clip;
         if (cel) {
@@ -1082,11 +1542,113 @@ static void M_XformObject(
             const float edge = 0.5f + 0.5f * (n_dot_l * cel_scale - M_CEL_EDGE);
             const uint32_t a = (uint32_t)(M_Clamp(edge, 0.0f, 1.0f) * 255.0f);
             // White: one grey, scaled once for the three channels.
-            const uint32_t rgb = white
+            const uint32_t rgb = white && !tr3
                 ? ((argb & 0xFFu) * dark >> 8) * 0x010101u
                 : M_ScaleRGB8(argb, dark) & 0x00FFFFFFu;
             sargb[i] = (a << 24) | rgb;
         }
+        if (env && (vertex->flags & VERT_REFLECTIVE) != 0) {
+            // shortcut: the lit colour is read back from the fogged one, so
+            // a light brighter than white loses some of its reflection in
+            // fog; keep the unfogged colour if that ever shows.
+            const float keep = (float)fk * (1.0f / 256.0f);
+            const float inv = keep > 0.0f ? 1.0f / (255.0f * keep) : 0.0f;
+            const float lit[3] = {
+                MIN(1.0f, (float)((argb >> 16) & 0xFFu) * inv),
+                MIN(1.0f, (float)((argb >> 8) & 0xFFu) * inv),
+                MIN(1.0f, (float)(argb & 0xFFu) * inv),
+            };
+            M_EnvVertex(batcher, i, vertex, mv, x, y, z, keep, lit);
+        }
+    }
+}
+
+// Statics and sprites: meshes lit by their own light or not at all, with no
+// room light, object light, reflection or coloured fog to add. M_XformGeneric's
+// answer in integers, as the rooms' and objects'.
+static void M_XformOwn(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    M_XFORM *const c, const float scale)
+{
+    const OUTPUT_MESH_VERTEX *const vertices =
+        Vector_GetData(bind->mesh->vertices);
+    M_XVERT *const xverts = batcher->xverts;
+    const int32_t count = bind->vertex_count;
+    const bool lighting = m_Frame.lighting;
+    const int32_t min_shade = M_ShadeLow();
+    const bool fog_on = c->fog;
+    const bool tr3 = il->tr3;
+    const float adder = il->adder;
+    // TR3 doubles the lighting curve; the others take their factor from the
+    // shade.
+    const uint32_t dbl = tr3 && lighting ? (uint32_t)(256.0f * il->tr3_double)
+                                         : 256;
+    const uint32_t ta = M_TintK(inst->tint.a);
+    const uint32_t tr = M_TintK(inst->tint.r);
+    const uint32_t tg = M_TintK(inst->tint.g);
+    const uint32_t tb = M_TintK(inst->tint.b);
+    const bool white = bind->white && !bind->deforms && ta == 256 && tr == 256
+        && tg == 256 && tb == 256;
+    for (int32_t i = 0; i < count; i++) {
+        const OUTPUT_MESH_VERTEX *const vertex = M_Corner(bind, vertices, i);
+        __builtin_prefetch(vertex + 2);
+        const uint16_t flags = vertex->flags;
+        float x = vertex->pos.x;
+        float y = vertex->pos.y;
+        float z = vertex->pos.z;
+        float w1 = 1.0f;
+        mat_trans_nodiv(x, y, z, w1);
+        if ((flags & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0) {
+            x += vertex->normal.x * scale;
+            y += vertex->normal.y * scale;
+        }
+        M_XVERT *const out = &xverts[i];
+        uint8_t clip = M_Place(out, x, y, z, c);
+
+        uint32_t k = 256;
+        bool coloured = false;
+        float mul[3];
+        if (tr3) {
+            k = dbl;
+            if (lighting && (flags & (VERT_NO_LIGHTING | VERT_USE_OWN_LIGHT))
+                    == VERT_USE_OWN_LIGHT) {
+                // The ambient colour, dimmed by the vertex's shade.
+                const int32_t step =
+                    (int32_t)((M_SHADE_MAX - vertex->shade) * (1.0f / 32.0f));
+                const float f = (step <= 0 ? 255 : step) * (1.0f / 255.0f);
+                for (int32_t ch = 0; ch < 3; ch++) {
+                    mul[ch] = M_Clamp(il->tr3_ambient[ch] * f, 0.0f, 1.0f);
+                }
+                coloured = true;
+            }
+        } else if ((flags & VERT_NO_LIGHTING) == 0) {
+            int32_t s = M_SHADE_NEUTRAL;
+            if (lighting) {
+                s = (flags & VERT_USE_OWN_LIGHT) != 0
+                    ? (int32_t)(adder + vertex->shade)
+                    : (int32_t)vertex->shade;
+            }
+            k = M_ShadeK(s, min_shade);
+        }
+        uint32_t fk = 256;
+        if (fog_on && (flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
+            fk = M_FogKeep(M_Fog(x, y, z, c), &clip);
+        }
+        if (coloured) {
+            const float kk = (float)fk * il->tr3_double;
+            out->argb = M_Colour(
+                vertex->color, ta, (uint32_t)(mul[0] * kk) * tr >> 8,
+                (uint32_t)(mul[1] * kk) * tg >> 8,
+                (uint32_t)(mul[2] * kk) * tb >> 8);
+        } else {
+            k = k * fk >> 8;
+            out->argb = white ? m_WhiteARGB[k]
+                              : M_Colour(
+                                    vertex->color, ta, k * tr >> 8,
+                                    k * tg >> 8, k * tb >> 8);
+        }
+        out->clip = clip;
     }
 }
 
@@ -1103,12 +1665,9 @@ static void M_XformGeneric(
         Vector_GetData(bind->mesh->vertices);
     const bool cel = batcher->cel;
     const bool env = batcher->env;
-    // Which way is right and which is down on the screen, in eye space.
-    const float env_x = m_Frame.proj_x < 0.0f ? -1.0f : 1.0f;
-    const float env_y = m_Frame.proj_y < 0.0f ? -1.0f : 1.0f;
     batcher->oargb_used = !black_fog;
     for (int32_t i = 0; i < bind->vertex_count; i++) {
-        const OUTPUT_MESH_VERTEX *const vertex = &vertices[i];
+        const OUTPUT_MESH_VERTEX *const vertex = M_Corner(bind, vertices, i);
         float x = vertex->pos.x;
         float y = vertex->pos.y;
         float z = vertex->pos.z;
@@ -1163,61 +1722,12 @@ static void M_XformGeneric(
                 shade, rgba[0] * dark, rgba[1] * dark, rgba[2] * dark);
         }
         if (env && (vertex->flags & VERT_REFLECTIVE) != 0) {
-            // The normal in eye space (the camera at the origin, looking
-            // down z), turned to face the camera, mirrors the way to the
-            // vertex; the sphere map holds what lies that way.
-            const float nx = vertex->normal.x;
-            const float ny = vertex->normal.y;
-            const float nz = vertex->normal.z;
-            float n[3] = {
-                mv[0][0] * nx + mv[1][0] * ny + mv[2][0] * nz,
-                mv[0][1] * nx + mv[1][1] * ny + mv[2][1] * nz,
-                mv[0][2] * nx + mv[1][2] * ny + mv[2][2] * nz,
+            const float lit[3] = {
+                M_Clamp(rgba[0], 0.0f, 1.0f),
+                M_Clamp(rgba[1], 0.0f, 1.0f),
+                M_Clamp(rgba[2], 0.0f, 1.0f),
             };
-            const float d_len_sq = x * x + y * y + z * z;
-            const float n_len_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
-            float eu = 0.5f;
-            float ev = 0.5f;
-            if (d_len_sq > 0.0f && n_len_sq > 0.0f) {
-                const float inv_d = M_InvSqrt(d_len_sq);
-                const float d[3] = { x * inv_d, y * inv_d, z * inv_d };
-                const float inv_n = M_InvSqrt(n_len_sq);
-                float d_n = 0.0f;
-                for (int32_t k = 0; k < 3; k++) {
-                    n[k] *= inv_n;
-                    d_n += d[k] * n[k];
-                }
-                if (d_n > 0.0f) {
-                    for (int32_t k = 0; k < 3; k++) {
-                        n[k] = -n[k];
-                    }
-                    d_n = -d_n;
-                }
-                const float r[3] = {
-                    d[0] - 2.0f * d_n * n[0],
-                    d[1] - 2.0f * d_n * n[1],
-                    d[2] - 2.0f * d_n * n[2],
-                };
-                // Straight back at the camera is the map's middle, away
-                // from it its rim.
-                const float m2 =
-                    r[0] * r[0] + r[1] * r[1] + (r[2] - 1.0f) * (r[2] - 1.0f);
-                if (m2 > 0.0f) {
-                    const float inv_m = 0.5f * M_InvSqrt(m2);
-                    eu = 0.5f + env_x * r[0] * inv_m;
-                    ev = 0.5f + env_y * r[1] * inv_m;
-                }
-            }
-            batcher->env_uv[i][0] = eu;
-            batcher->env_uv[i][1] = ev;
-            // Half its own, half the light on it: metal shows its
-            // surroundings even in the shade, if less.
-            float e[3];
-            for (int32_t k = 0; k < 3; k++) {
-                e[k] = keep * M_ENV_STRENGTH
-                    * (0.5f + 0.5f * M_Clamp(rgba[k], 0.0f, 1.0f));
-            }
-            batcher->eargb[i] = M_PackARGB(1.0f, e[0], e[1], e[2]);
+            M_EnvVertex(batcher, i, vertex, mv, x, y, z, keep, lit);
         }
     }
 }
@@ -1476,7 +1986,8 @@ static bool M_TransformInstance(
     // cosine. The light runs across the lit side as before, so that it
     // keeps its roundness; only the shade is cut hard.
     batcher->cel = m_Frame.cel && m_Frame.lighting && !m_Frame.ortho
-        && bind->needs_object_light && il.has_direction
+        && m_Frame.lara_instance && bind->needs_object_light
+        && il.has_direction
         && eye_sq < M_CEL_RANGE * M_CEL_RANGE;
     float cel_scale = 0.0f;
     if (batcher->cel) {
@@ -1485,9 +1996,9 @@ static bool M_TransformInstance(
                 Vector_GetData(bind->mesh->vertices);
             float len_sq = 0.0f;
             for (int32_t i = 0; i < bind->vertex_count; i++) {
-                const float x = vs[i].normal.x;
-                const float y = vs[i].normal.y;
-                const float z = vs[i].normal.z;
+                const float x = M_Corner(bind, vs, i)->normal.x;
+                const float y = M_Corner(bind, vs, i)->normal.y;
+                const float z = M_Corner(bind, vs, i)->normal.z;
                 len_sq = MAX(len_sq, x * x + y * y + z * z);
             }
             bind->normal_len = len_sq > 0.0f ? sqrtf(len_sq) : -1.0f;
@@ -1527,16 +2038,32 @@ static bool M_TransformInstance(
             }
         }
         g_DC_ProbeUs[DC_PROBE_XF_LIT] += transformed; // TEMP
-        M_XformRoom(batcher, bind, inst, &il, &c, batcher->vranges, nvr);
+        DC_PROBE(
+            DC_PROBE_XT_ROOM,
+            M_XformRoom(batcher, bind, inst, &il, &c, batcher->vranges, nvr));
     } else if (
-        bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho
-        && !batcher->env) {
+        bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho) {
         g_DC_ProbeUs[DC_PROBE_XF_PLAIN] += bind->vertex_count; // TEMP
-        M_XformObject(batcher, bind, inst, &il, &c, cel_scale);
+        DC_PROBE(
+            DC_PROBE_XT_PLAIN,
+            M_XformObject(batcher, bind, inst, &il, &c, mv, cel_scale));
     } else {
         g_DC_ProbeUs[DC_PROBE_XF_GENERIC] += bind->vertex_count; // TEMP
-        M_XformGeneric(
-            batcher, bind, inst, &il, &c, mv, scale, cel_scale, black_fog);
+        g_DC_ProbeUs[bind->needs_own_light ? DC_PROBE_XG_OWN
+                     : batcher->env        ? DC_PROBE_XG_ENV
+                     : !black_fog          ? DC_PROBE_XG_FOG
+                     : bind->billboard     ? DC_PROBE_XG_BILL
+                                           : DC_PROBE_XG_OTHER] +=
+            bind->vertex_count; // TEMP
+        DC_PROBE_START(probe_gen);
+        if (!bind->needs_room_lights && !bind->needs_object_light && black_fog
+            && !m_Frame.ortho && !batcher->env && !batcher->cel) {
+            M_XformOwn(batcher, bind, inst, &il, &c, scale);
+        } else {
+            M_XformGeneric(
+                batcher, bind, inst, &il, &c, mv, scale, cel_scale, black_fog);
+        }
+        DC_PROBE_STOP(DC_PROBE_XT_GENERIC, probe_gen);
     }
     // The nearest vertex, once for the instance: the layers drawn over the
     // world start above it.
@@ -1788,12 +2315,15 @@ static void M_EmitTriangle(
     const OUTPUT_MESH_INDEX idx[3] = { i0, i1, i2 };
     const M_XVERT *const xv = batcher->xverts;
     if ((xv[i0].clip & xv[i1].clip & xv[i2].clip & M_CLIP_CULL) != 0) {
+        g_DC_ProbeUs[DC_PROBE_E_OUT]++; // TEMP
         return;
     }
     if (((xv[i0].clip | xv[i1].clip | xv[i2].clip) & M_CLIP_NEAR) == 0) {
         if (m_Frame.cull && M_IsBackFacing(&xv[i0], &xv[i1], &xv[i2])) {
+            g_DC_ProbeUs[DC_PROBE_E_BACK]++; // TEMP
             return;
         }
+        g_DC_ProbeUs[DC_PROBE_E_TRI]++; // TEMP
         M_EmitFront(batcher, bind, idx);
         return;
     }
@@ -1803,6 +2333,7 @@ static void M_EmitTriangle(
         && M_CelShows(sargb[i0] | sargb[i1] | sargb[i2]);
     float uv[3][2];
     const float near_z = m_Frame.near_z;
+    g_DC_ProbeUs[DC_PROBE_E_CLIP]++; // TEMP
 
     // Sutherland-Hodgman against the near plane: three corners in, at most
     // four out.
@@ -1899,6 +2430,7 @@ static bool M_TryEmitQuad(
     const uint8_t clip_and = xv[strip[0]].clip & xv[strip[1]].clip
         & xv[strip[2]].clip & xv[strip[3]].clip;
     if ((clip_and & M_CLIP_CULL) != 0) {
+        g_DC_ProbeUs[DC_PROBE_E_OUT] += 2; // TEMP
         return true;
     }
     const uint8_t clip_or = xv[strip[0]].clip | xv[strip[1]].clip
@@ -1910,6 +2442,7 @@ static bool M_TryEmitQuad(
         const bool back0 = M_IsBackFacing(&xv[t0[0]], &xv[t0[1]], &xv[t0[2]]);
         const bool back1 = M_IsBackFacing(&xv[t1[0]], &xv[t1[1]], &xv[t1[2]]);
         if (back0 && back1) {
+            g_DC_ProbeUs[DC_PROBE_E_BACK] += 2; // TEMP
             return true;
         }
         if (back0 || back1) {
@@ -1919,6 +2452,7 @@ static bool M_TryEmitQuad(
             return true;
         }
     }
+    g_DC_ProbeUs[DC_PROBE_E_QUAD]++; // TEMP
     float uv[4][2];
     M_GetFaceUVs(batcher, bind, strip, 4, uv);
     pvr_vertex_t *const out = DC_PVR_ReservePoly(4);
@@ -2125,8 +2659,26 @@ static void M_EmitShadowFaces(
                 e1[0] * e2[1] - e1[1] * e2[0],
             };
             const float p0[3] = { xv[0]->x, xv[0]->y, xv[0]->z };
-            if ((M_Dot3(n, p0) > 0.0f) == (M_Dot3(n, axes[0]) < 0.0f)) {
+            const float n_dot_l = M_Dot3(n, axes[0]);
+            if ((M_Dot3(n, p0) > 0.0f) == (n_dot_l < 0.0f)) {
                 continue;
+            }
+            // A face lying along the light (a wall under a light overhead)
+            // would take the silhouette smeared down all of its height: the
+            // more it turns that way, the less shadow it takes.
+            float face_strength = strength;
+            if (world) {
+                // The axes carry the view's scale: both lengths go.
+                const float len_sq = M_Dot3(n, n) * M_Dot3(axes[0], axes[0]);
+                const float cos_l =
+                    len_sq > 0.0f ? fabsf(n_dot_l) * M_InvSqrt(len_sq) : 0.0f;
+                face_strength *= M_Clamp(
+                    (cos_l - M_SOFT_GRAZE_MIN)
+                        * (1.0f / (M_SOFT_GRAZE_FULL - M_SOFT_GRAZE_MIN)),
+                    0.0f, 1.0f);
+                if (face_strength <= 0.0f) {
+                    continue;
+                }
             }
 
             DC_PVR_SetState(DC_BLEND_MUL, DC_PVR_SHADOW_MAP, true);
@@ -2135,7 +2687,7 @@ static void M_EmitShadowFaces(
                 return;
             }
             for (int32_t k = 0; k < 3; k++) {
-                const float t = strength
+                const float t = face_strength
                     * M_Clamp(1.0f - s[k][2] * (1.0f / M_SOFT_REACH), 0.0f, 1.0f);
                 M_Project(
                     xv[k], (slot + s[k][0]) * (1.0f / DC_PVR_SHADOW_MAP_SLOTS),
@@ -2475,7 +3027,11 @@ static void M_RefillTextures(M_BINDING *const bind)
     const OUTPUT_MESH_VERTEX *const vertices =
         Vector_GetData(bind->mesh->vertices);
     for (int32_t i = 0; i < bind->vertex_count; i++) {
-        M_FillTexture(bind, &vertices[i], i);
+        if (bind->vref != nullptr) {
+            M_FillTexture(bind, &vertices[bind->vref[i]], bind->uvw[i], i);
+        } else {
+            M_FillTexture(bind, &vertices[i], vertices[i].uvw_idx, i);
+        }
     }
     if (m_InsetUV) {
         const OUTPUT_MESH *const mesh = bind->mesh;
@@ -2516,6 +3072,7 @@ static void M_DrawInstance(
     if (bind->tex_dirty) {
         M_RefillTextures(bind);
     }
+    m_Frame.lara_instance = caster != -1;
 #if defined(TRX_DC_WATCHDOG)
     const uint64_t xform_start = timer_us_gettime64();
     const bool transformed = M_TransformInstance(batcher, inst, bind);
@@ -2529,14 +3086,20 @@ static void M_DrawInstance(
     }
 #endif
     const bool is_caster = caster >= 0;
-    // Boxes make a rough shadow; on the caster itself it would only look
-    // wrong.
+    // Lara's shadow falls on the rooms and on herself only, not on enemies
+    // or other objects. Boxes make a rough shadow; on the caster itself it
+    // would only look wrong.
+    // Nor on a room under water while she is above it: seen through the
+    // surface it looks cast on the water itself, which she wades through.
+    const bool is_room = bind->needs_room_lights
+        && (inst->room == nullptr || !inst->room->flags.underwater
+            || Lara_GetLaraInfo()->water_status == LWS_UNDERWATER);
     DC_PVR_SetShadowReceiver(
-        !is_caster && M_ShadowType() == SHADOW_TYPE_VOLUME);
+        is_room && M_ShadowType() == SHADOW_TYPE_VOLUME);
     if (m_Soft.active && pass == SCENE_PASS_OPAQUE) {
         if (is_caster) {
             DC_PROBE(DC_PROBE_SOFT, M_EmitSelfShadow(batcher, bind, caster));
-        } else {
+        } else if (is_room) {
             DC_PROBE(DC_PROBE_SOFT, M_EmitSoftShadows(batcher, bind));
         }
     }
@@ -2657,6 +3220,7 @@ static void M_PrepareFrame(void)
     m_Frame.fog_color[1] = general->fog_color[1];
     m_Frame.fog_color[2] = general->fog_color[2];
     m_Frame.lights = DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
+    m_Frame.lights_mode = -1;
     DC_PVR_GetDepth3D(&m_Frame.depth);
     m_Frame.emit = 0; // M_EMIT_PLAIN
 }
@@ -2836,6 +3400,7 @@ void MeshBatcher_Destroy(MESH_BATCHER *const batcher)
         Vector_Free(batcher->casters[pass]);
     }
     Memory_Free(batcher->xverts);
+    Memory_Free(batcher->share_slot);
     Memory_Free(batcher->soft);
     Memory_Free(batcher->soft_off);
     Memory_Free(batcher->oargb);
@@ -3227,6 +3792,118 @@ static void M_FindReflections(M_BINDING *const bind)
     }
 }
 
+static bool M_SameVertex(
+    const OUTPUT_MESH_VERTEX *const a, const OUTPUT_MESH_VERTEX *const b)
+{
+    return a->pos.x == b->pos.x && a->pos.y == b->pos.y && a->pos.z == b->pos.z
+        && a->pos.w == b->pos.w && a->normal.x == b->normal.x
+        && a->normal.y == b->normal.y && a->normal.z == b->normal.z
+        && a->flags == b->flags && a->shade == b->shade
+        && a->light_table_idx == b->light_table_idx
+        && memcmp(&a->color, &b->color, sizeof(a->color)) == 0;
+}
+
+static uint32_t M_HashVertex(const OUTPUT_MESH_VERTEX *const v)
+{
+    uint32_t h = 2166136261u;
+    const int32_t parts[] = {
+        v->pos.x, v->pos.y, v->pos.z, v->normal.x, v->flags, v->shade,
+        (int32_t)(v->color.r | v->color.g << 8 | v->color.b << 16),
+    };
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        h = (h ^ (uint32_t)parts[i]) * 16777619u;
+    }
+    return h;
+}
+
+// A room's faces each hold their own corners, which repeat a vertex of the
+// room but for the texture: about three corners to a vertex. Each distinct
+// vertex is kept once, and each corner its index and texture index (some 20
+// bytes a corner less). Rooms only: an object's corners are rewritten in
+// place as it moves (objects.c, M_ForEachFaceVertex).
+static void M_ShareVertices(M_BINDING *const bind)
+{
+    const int32_t n = bind->vertex_count;
+    if (n == 0 || !bind->needs_room_lights || bind->needs_object_light
+        || bind->needs_own_light) {
+        return;
+    }
+    OUTPUT_MESH *const mesh = bind->mesh;
+    OUTPUT_MESH_VERTEX *const vs = Vector_GetData(mesh->vertices);
+    for (int32_t i = 0; i < n; i++) {
+        if (vs[i].uvw_idx < INT16_MIN || vs[i].uvw_idx > INT16_MAX) {
+            return;
+        }
+    }
+    int32_t size = 1;
+    while (size < n * 2) {
+        size <<= 1;
+    }
+    int32_t *const table = Memory_Alloc(sizeof(int32_t) * size);
+    memset(table, 0xFF, sizeof(int32_t) * size);
+    uint16_t *const vref = Memory_Alloc(sizeof(uint16_t) * n);
+    int16_t *const uvw = Memory_Alloc(sizeof(int16_t) * n);
+    int32_t kept = 0;
+    for (int32_t i = 0; i < n; i++) {
+        OUTPUT_MESH_VERTEX v = vs[i];
+        uvw[i] = (int16_t)v.uvw_idx;
+        v.uvw_idx = 0;
+        uint32_t h = M_HashVertex(&v) & (size - 1);
+        while (table[h] >= 0 && !M_SameVertex(&vs[table[h]], &v)) {
+            h = (h + 1) & (size - 1);
+        }
+        if (table[h] < 0) {
+            // Never past i: the kept vertices fill the front in order.
+            vs[kept] = v;
+            table[h] = kept++;
+        }
+        vref[i] = (uint16_t)table[h];
+    }
+    Memory_Free(table);
+    mesh->vertices->count = kept;
+    Vector_ShrinkToFit(mesh->vertices);
+    bind->vref = vref;
+    bind->uvw = uvw;
+}
+
+// An object keeps a vertex per corner (objects.c rewrites them as it
+// moves), but the corners of a vertex light and project the same: each is
+// pointed at the first like it, for the object loop to copy.
+static void M_FindTwins(M_BINDING *const bind)
+{
+    const int32_t n = bind->vertex_count;
+    if (n < 8 || n > 0xFFFF || !bind->plain_object || bind->deforms) {
+        return;
+    }
+    const OUTPUT_MESH_VERTEX *const vs = Vector_GetData(bind->mesh->vertices);
+    int32_t size = 1;
+    while (size < n * 2) {
+        size <<= 1;
+    }
+    int32_t *const table = Memory_Alloc(sizeof(int32_t) * size);
+    memset(table, 0xFF, sizeof(int32_t) * size);
+    uint16_t *const twin = Memory_Alloc(sizeof(uint16_t) * n);
+    int32_t twins = 0;
+    for (int32_t i = 0; i < n; i++) {
+        uint32_t h = M_HashVertex(&vs[i]) & (size - 1);
+        while (table[h] >= 0 && !M_SameVertex(&vs[table[h]], &vs[i])) {
+            h = (h + 1) & (size - 1);
+        }
+        if (table[h] < 0) {
+            table[h] = i;
+        } else {
+            twins++;
+        }
+        twin[i] = (uint16_t)table[h];
+    }
+    Memory_Free(table);
+    if (twins == 0) {
+        Memory_Free(twin);
+        return;
+    }
+    bind->twin = twin;
+}
+
 void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
 {
     ASSERT(mesh->sealed == 1);
@@ -3292,6 +3969,8 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
         bind, Vector_GetData(mesh->blend_add_vertex_indices),
         mesh->blend_add_vertex_indices->count);
     M_FindReflections(bind);
+    M_ShareVertices(bind);
+    M_FindTwins(bind);
     mesh->sealed = 2;
     g_DC_BatcherMeshCount++;
     g_DC_BatcherVertexCount += bind->vertex_count;
@@ -3315,6 +3994,9 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     g_DC_BatcherVertexCount -= bind->vertex_count;
     Memory_Free(bind->uv);
     Memory_Free(bind->page);
+    Memory_Free(bind->vref);
+    Memory_Free(bind->uvw);
+    Memory_Free(bind->twin);
     Memory_Free(bind->env);
     Memory_Free(bind->chunks);
     Vector_Remove(batcher->bindings, &bind);
@@ -3337,7 +4019,14 @@ void MeshBatcher_Seal(MESH_BATCHER *const batcher)
 void MeshBatcher_UpdateMeshGeometry(
     const MESH_BATCHER *const batcher, const OUTPUT_MESH *const mesh)
 {
-    // The vertices are read from the mesh as each frame is drawn.
+    // The vertices are read from the mesh as each frame is drawn; corners
+    // alike so far may part from now on.
+    M_BINDING *const bind = M_GetBinding(batcher, mesh);
+    if (bind != nullptr) {
+        Memory_Free(bind->twin);
+        bind->twin = nullptr;
+        bind->deforms = true;
+    }
 }
 
 void MeshBatcher_Stage(
@@ -3356,7 +4045,7 @@ void MeshBatcher_Stage(
         || (blended && inst->mesh->blend_add_vertex_indices->count == 0)) {
         return;
     }
-    int16_t caster_index = -1;
+    int16_t caster_index = m_StagingLara ? M_LARA_NOT_CASTER : -1;
     if (m_Casting && pass == SCENE_PASS_OPAQUE
         && m_CasterCount < M_MAX_CASTERS) {
         const M_BINDING *const bind = M_GetBinding(batcher, inst->mesh);
@@ -3376,6 +4065,11 @@ void MeshBatcher_Stage(
 void DC_Shadow_SetCasting(const bool casting)
 {
     m_Casting = casting;
+}
+
+void DC_Shadow_SetLara(const bool lara)
+{
+    m_StagingLara = lara;
 }
 
 bool DC_Shadow_IsCasting(void)
@@ -3426,10 +4120,13 @@ static void M_ConsiderLight(
         list[i] = list[i - 1];
     }
     const float dist = sqrtf(dist_sq);
+    // Full within M_SHADOW_NEAR of the light (or half its reach, for a
+    // short one), none at the end of its reach.
+    const float near = MIN(M_SHADOW_NEAR, reach * 0.5f);
     list[i] = (M_SHADOW_LIGHT) {
         .dir = { d[0] / dist, d[1] / dist, d[2] / dist },
         .dist_sq = dist_sq,
-        .weight = 1.0f - dist / reach,
+        .weight = M_Clamp((reach - dist) / (reach - near), 0.0f, 1.0f),
     };
 }
 
@@ -3463,6 +4160,8 @@ static int32_t M_GatherShadowLights(
     const DC_UNIFORM_LIGHTS *const lights =
         DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
     m_Frame.lights = lights;
+    // Another room's mode is in the block now.
+    m_Frame.lights_mode = -1;
     for (int32_t i = 0; lights != nullptr && i < lights->num_lights; i++) {
         const DC_UNIFORM_LIGHT *const light = &lights->lights[i];
         const float reach = light->kind == 0.0f
@@ -3643,7 +4342,7 @@ static void M_KeepSoftCasters(const float center[3])
 
     M_SHADOW_LIGHT lights[M_SOFT_MAX_LIGHTS];
     // As many lights as the mode allows.
-    const int32_t max = MIN(DC_Mode_Get()->shadow_lights, M_SOFT_MAX_LIGHTS);
+    const int32_t max = MIN(DC_Mode_GetShadowLights(), M_SOFT_MAX_LIGHTS);
     int32_t count = M_GatherShadowLights(m_Casters, center, lights, max);
     if (count == 0) {
         // No light near: a faint shadow straight down.
@@ -3724,6 +4423,30 @@ static void M_KeepSoftCasters(const float center[3])
 // Draws light l's silhouettes into the shadow map, over the white it starts
 // as: every caster in the light's own cell and, for the nearest light, in
 // the cells of the slices past its own.
+// Whether a caster's face, laid on its cell (m_SoftXY), faces the way that
+// draws it.
+M_HOT bool M_SilFront(
+    const OUTPUT_MESH_INDEX ia, const OUTPUT_MESH_INDEX ib,
+    const OUTPUT_MESH_INDEX ie)
+{
+    const float *const a = m_SoftXY[ia];
+    const float *const b = m_SoftXY[ib];
+    const float *const e = m_SoftXY[ie];
+    return (b[0] - a[0]) * (e[1] - a[1]) - (e[0] - a[0]) * (b[1] - a[1]) < 0.0f;
+}
+
+// A corner of a silhouette in the cell whose left edge is at left.
+M_HOT DC_PVR_VERTEX M_SilVertex(
+    const float left, const OUTPUT_MESH_INDEX i, const float z)
+{
+    return (DC_PVR_VERTEX) {
+        .x = left + m_SoftXY[i][0],
+        .y = m_SoftXY[i][1],
+        .z = z,
+        .argb = 0xFF000000,
+    };
+}
+
 static void M_DrawSilhouettes(const int32_t l)
 {
     const M_SOFT_LIGHT *const light = &m_Soft.lights[l];
@@ -3767,10 +4490,16 @@ static void M_DrawSilhouettes(const int32_t l)
         }
         const OUTPUT_MESH_VERTEX *const vertices =
             Vector_GetData(bind->mesh->vertices);
+        const uint16_t *const twin = bind->twin;
         for (int32_t j = 0; j < bind->vertex_count; j++) {
-            const float px = vertices[j].pos.x;
-            const float py = vertices[j].pos.y;
-            const float pz = vertices[j].pos.z;
+            if (twin != nullptr && twin[j] != j) {
+                m_SoftXY[j][0] = m_SoftXY[twin[j]][0];
+                m_SoftXY[j][1] = m_SoftXY[twin[j]][1];
+                continue;
+            }
+            const float px = M_Corner(bind, vertices, j)->pos.x;
+            const float py = M_Corner(bind, vertices, j)->pos.y;
+            const float pz = M_Corner(bind, vertices, j)->pos.z;
             const float x = to_cell[0][0] * px + to_cell[0][1] * py
                 + to_cell[0][2] * pz + to_cell[0][3];
             const float y = to_cell[1][0] * px + to_cell[1][1] * py
@@ -3782,30 +4511,44 @@ static void M_DrawSilhouettes(const int32_t l)
         const OUTPUT_MESH *const mesh = bind->mesh;
         const OUTPUT_MESH_INDEX *const indices =
             Vector_GetData(mesh->opaque_vertex_indices);
-        for (int32_t j = 0; j + 2 < mesh->opaque_vertex_indices->count;
-             j += 3) {
-            const float *const a = m_SoftXY[indices[j]];
-            const float *const b = m_SoftXY[indices[j + 1]];
-            const float *const e = m_SoftXY[indices[j + 2]];
+        const int32_t count = mesh->opaque_vertex_indices->count;
+        int32_t j = 0;
+        while (j + 2 < count) {
+            const OUTPUT_MESH_INDEX *const t = &indices[j];
+            // A quad's halves (M_PairQuads) go as one strip of four when
+            // both are drawn, as in M_TryEmitQuad.
+            const bool quad = j + 5 < count && M_IsQuad(t);
             // A closed mesh's faces turned one way cover its whole
             // silhouette, at half the cost of all of them.
             // shortcut: holes show where a mesh is open; draw both ways
             // round for such meshes if it shows.
-            if ((b[0] - a[0]) * (e[1] - a[1]) - (e[0] - a[0]) * (b[1] - a[1])
-                >= 0.0f) {
-                continue;
-            }
+            const bool front0 = M_SilFront(t[0], t[1], t[2]);
+            const bool front1 = quad && M_SilFront(t[3], t[4], t[5]);
             for (int32_t k = 0; k < cells; k++) {
-                const DC_PVR_VERTEX tri[3] = {
-                    { .x = lefts[k] + a[0], .y = a[1], .z = z_near,
-                      .argb = 0xFF000000 },
-                    { .x = lefts[k] + b[0], .y = b[1], .z = z_near,
-                      .argb = 0xFF000000 },
-                    { .x = lefts[k] + e[0], .y = e[1], .z = z_near,
-                      .argb = 0xFF000000 },
-                };
-                DC_PVR_Triangle(&tri[0], &tri[1], &tri[2]);
+                if (front0 && front1) {
+                    const DC_PVR_VERTEX v[4] = {
+                        M_SilVertex(lefts[k], t[0], z_near),
+                        M_SilVertex(lefts[k], t[1], z_near),
+                        M_SilVertex(lefts[k], t[2], z_near),
+                        M_SilVertex(lefts[k], t[5], z_near),
+                    };
+                    DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
+                    continue;
+                }
+                for (int32_t h = 0; h < (quad ? 2 : 1); h++) {
+                    if (!(h == 0 ? front0 : front1)) {
+                        continue;
+                    }
+                    const OUTPUT_MESH_INDEX *const f = &t[h * 3];
+                    const DC_PVR_VERTEX v[3] = {
+                        M_SilVertex(lefts[k], f[0], z_near),
+                        M_SilVertex(lefts[k], f[1], z_near),
+                        M_SilVertex(lefts[k], f[2], z_near),
+                    };
+                    DC_PVR_Triangle(&v[0], &v[1], &v[2]);
+                }
             }
+            j += quad ? 6 : 3;
         }
     }
 }
@@ -3868,10 +4611,12 @@ void DC_Shadow_RenderMaps(void)
         { .x = w, .y = h, .z = z, .argb = 0xFFFFFFFF },
     };
     DC_PVR_Quad(&lit[0], &lit[1], &lit[2], &lit[3]);
+    DC_PROBE_START(probe_sil); // TEMP
     for (int32_t l = 0; l < lights; l++) {
         M_DrawSilhouettes(l);
     }
-    DC_PVR_EndFrame();
+    DC_PROBE_STOP(DC_PROBE_M_SIL, probe_sil); // TEMP
+    DC_PROBE(DC_PROBE_M_END, DC_PVR_EndFrame()); // TEMP
     m_Soft.map_count = lights;
     m_Soft.self = M_SelfShadowOn();
     m_Soft.self_count = m_Soft.caster_count;
@@ -3891,7 +4636,7 @@ void DC_Shadow_DrawVolumes(void)
         return;
     }
     M_SHADOW_LIGHT lights[M_SOFT_MAX_LIGHTS];
-    const int32_t max = MIN(DC_Mode_Get()->shadow_lights, M_SOFT_MAX_LIGHTS);
+    const int32_t max = MIN(DC_Mode_GetShadowLights(), M_SOFT_MAX_LIGHTS);
     int32_t light_count = M_GatherShadowLights(m_Casters, center, lights, max);
     if (light_count == 0) {
         lights[0] = (M_SHADOW_LIGHT) {

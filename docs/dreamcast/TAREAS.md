@@ -357,3 +357,20 @@ falsea las medidas de `bump` (pasó en la build 211).
 
 Medido en las dos escenas, sin cambios visibles, sondas `TEMP` retiradas,
 cifras en REGISTRO.md y commit en `dreamcast`.
+
+## 4. TR3: lo que falta en el render de Dreamcast
+
+Un solo motor y un solo binario (`GAME.TXT` elige juego); las diferencias van
+por `g_TRVersion` al preparar la instancia, nunca por vértice. Hecho en las
+builds 216–218 (ver REGISTRO.md); queda:
+
+- **Chispas**: sin interpolación entre frames lógicos ni giro
+  (`SPARK_F_ROTATE`), y cuadradas (media de ancho y alto). Mirar el humo y el
+  fuego de cerca, y a 60 fps.
+- **Sangre**: no probada con un enemigo (Jungle empieza sin ninguno a tiro).
+- **Luz dinámica de color** (fogonazo, bengala): escrita, no vista en
+  captura. Probar con una bengala en un sitio oscuro.
+- **Salas TR3**: ahora doblan su color (curva de 128 neutro) sin el mínimo
+  de sombra (`lighting_contrast`) ni el parpadeo por `light_table_idx`.
+- Memoria: Jungle usa 11,1 MB (~2 MB libres) tras builds 220–222. Siguientes: datos crudos de sala (shadows.c), animaciones, cadenas.
+- Guardados: en TR3 la VMU restaura `save_tr2_*.dat`; comprobar el nombre.

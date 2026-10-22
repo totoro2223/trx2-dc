@@ -175,6 +175,37 @@ static int32_t M_GetNoHolsterMeshIdx(
     return obj->mesh_idx + offset;
 }
 
+static bool M_IsDressed(void);
+
+// Without an outfit (the Dreamcast leaves lara_outfits.bin out) the braid is
+// the level's own, as the original TR2 and TR3 drew it: the hair object, one
+// braid from its first mesh, hung where the game's classic outfit says. TR1
+// modes swap her head and torso for the outfit's, so they are left out.
+static bool M_UsesLevelBraid(const LARA_SKIN_OUTFIT *const outfit)
+{
+    return !M_IsDressed() && outfit->braid.count > 0
+        && outfit->braid.mode == BRAID_MODE_NONE
+        && Object_Get(O_LARA_HAIR)->loaded;
+}
+
+// The outfit whose braid she wears: her own, or undressed the game's classic
+// one (as M_SetUndressedGunMesh takes it), looked up once per game.
+static const LARA_SKIN_OUTFIT *M_GetBraidSetupOutfit(void)
+{
+    static int32_t version = -1;
+    static LARA_SKIN_TYPE classic = M_NO_OUTFIT;
+    if (M_IsDressed()) {
+        return M_GetCurrentOutfit();
+    }
+    if (version != g_TRVersion) {
+        char name[32];
+        snprintf(name, sizeof(name), "tr%d_classic", (int)g_TRVersion);
+        classic = Lara_Skin_FindOutfitByName(name);
+        version = g_TRVersion;
+    }
+    return classic >= 0 ? Lara_Skin_GetOutfit(classic) : M_GetCurrentOutfit();
+}
+
 static inline const LARA_SKIN_OUTFIT *M_GetBraidOutfit(void)
 {
     const LARA_SKIN_OUTFIT *const outfit = M_GetCurrentOutfit();
@@ -188,7 +219,7 @@ static inline const LARA_SKIN_OUTFIT *M_GetBraidOutfit(void)
 
 static inline int32_t M_GetRelativeBraidOffset(const int32_t braid_idx)
 {
-    const LARA_SKIN_OUTFIT *const outfit = M_GetCurrentOutfit();
+    const LARA_SKIN_OUTFIT *const outfit = M_GetBraidSetupOutfit();
     if (outfit->braid.count == 0) {
         return M_NO_MESH;
     }
@@ -197,6 +228,9 @@ static inline int32_t M_GetRelativeBraidOffset(const int32_t braid_idx)
         return M_NO_MESH;
     }
 
+    if (M_UsesLevelBraid(outfit)) {
+        return braid_idx == 0 ? 0 : M_NO_MESH;
+    }
     return outfit->braid.setup[braid_idx].mesh_offset;
 }
 
@@ -208,8 +242,9 @@ static bool M_IsBraidEnabled(const LARA_SKIN_OUTFIT *const outfit)
     }
     // The braid's meshes come with the outfit's extra object; an injection
     // left out can leave it unloaded.
-    if (outfit->extra_obj_id == NO_OBJECT
-        || !Object_Get(outfit->extra_obj_id)->loaded) {
+    if (!M_UsesLevelBraid(outfit)
+        && (outfit->extra_obj_id == NO_OBJECT
+            || !Object_Get(outfit->extra_obj_id)->loaded)) {
         return false;
     }
 
@@ -234,8 +269,6 @@ static inline int32_t M_GetMeshIdx(
     }
     return offset;
 }
-
-static bool M_IsDressed(void);
 
 static inline void M_ApplyMeshIfValid(
     const LARA_MESH mesh, const LARA_SKIN_OUTFIT *const outfit)
@@ -631,7 +664,10 @@ void Lara_Skin_Initialise(void)
             LOG_WARNING("No skin swap objects here; no outfit applied");
         }
         // Use the Lara meshes from the level when no outfit can be applied.
-        Lara_Mesh_SwapAll(O_LARA);
+        // TR3 keeps them in the skin object (O_LARA holds placeholders), and
+        // Lara_Mesh_Initialise only points O_LARA at it after this runs.
+        Lara_Mesh_SwapAll(
+            Object_Get(O_LARA_SKIN)->loaded ? O_LARA_SKIN : O_LARA);
         return;
     }
 
@@ -748,6 +784,12 @@ bool Lara_Skin_IsDefaultType(void)
 
 void Lara_Skin_SetType(const LARA_SKIN_TYPE skin_type)
 {
+    // A level that cannot dress her keeps her undressed (Lara_Skin_Initialise):
+    // a saved game of such a level names no outfit, and the fallback one would
+    // take her braid and holstered guns from meshes that are not loaded.
+    if (!M_CanDress()) {
+        return;
+    }
     LARA_SKIN_TYPE new_skin_type = skin_type;
     if (!Lara_Skin_IsOutfitAvailable(new_skin_type)) {
         new_skin_type = M_GetFallbackOutfitType();
@@ -858,14 +900,14 @@ const ANIM_BONE *Lara_Skin_GetBoneBase(void)
 
 bool Lara_Skin_IsBraidSupported(void)
 {
-    const LARA_SKIN_OUTFIT *const outfit = M_GetCurrentOutfit();
+    const LARA_SKIN_OUTFIT *const outfit = M_GetBraidSetupOutfit();
     return M_IsBraidEnabled(outfit)
         && Lara_Skin_GetBraidMeshIdx(0) != M_NO_MESH;
 }
 
 const LARA_SKIN_BRAID *Lara_Skin_GetBraid(void)
 {
-    const LARA_SKIN_OUTFIT *const outfit = M_GetCurrentOutfit();
+    const LARA_SKIN_OUTFIT *const outfit = M_GetBraidSetupOutfit();
     return &outfit->braid;
 }
 
@@ -876,7 +918,10 @@ int32_t Lara_Skin_GetBraidMeshIdx(const int32_t braid_idx)
         return offset;
     }
 
-    const OBJECT *const obj = Object_Get(M_GetBraidOutfit()->extra_obj_id);
+    const OBJECT *const obj = Object_Get(
+        M_UsesLevelBraid(M_GetBraidSetupOutfit())
+            ? O_LARA_HAIR
+            : M_GetBraidOutfit()->extra_obj_id);
     return obj->mesh_idx + offset;
 }
 
@@ -890,7 +935,10 @@ const ANIM_BONE *Lara_Skin_GetBraidBoneBase(const int32_t braid_idx)
     // The worn outfit, not the gilded one: a twin carries the bones of the
     // object it was minted from, and this is asked while a level is still
     // loading, before there is anything to mint from.
-    const OBJECT *const obj = Object_Get(M_GetWornOutfit()->extra_obj_id);
+    const OBJECT *const obj = Object_Get(
+        M_UsesLevelBraid(M_GetBraidSetupOutfit())
+            ? O_LARA_HAIR
+            : M_GetWornOutfit()->extra_obj_id);
     return Object_TryGetBone(obj, offset);
 }
 

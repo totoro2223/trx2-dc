@@ -93,6 +93,47 @@ typedef struct {
     const ITEM *subject;
 } ROOM_HEIGHT_CTX;
 
+#if defined(__DREAMCAST__)
+// A level holds some ten thousand sectors (TR3's jungles twice TR2's), so the
+// Dreamcast keeps them narrow, ordered to leave no padding: 100 bytes a
+// sector down to 56. A split rises 15 clicks at most (M_DecodeSplit) and a
+// tilt 15, and every enum here is under 256 (kept in a byte).
+typedef struct {
+    int16_t h1;
+    int16_t h2;
+    int8_t tilts[4];
+    uint8_t type; // SPLIT_TYPE
+} SPLIT;
+
+typedef struct {
+    int32_t height;
+    union {
+        XZ_16 tilt;
+        SPLIT split;
+    };
+    uint8_t type; // SURFACE_TYPE
+    bool is_split;
+} SURFACE;
+
+typedef struct {
+    TRIGGER *trigger;
+    WALKABLE *walkable;
+    SURFACE floor;
+    SURFACE ceiling;
+    uint16_t idx;
+    int16_t box;
+    struct {
+        int16_t pit;
+        int16_t sky;
+        int16_t wall;
+    } portal_room;
+    uint8_t ladder; // LADDER_DIRECTION
+    uint8_t mine_cart_type; // MINE_CART_TYPE
+    uint8_t fx;
+    bool is_death_sector;
+    bool stopper;
+} SECTOR;
+#else
 typedef struct {
     SPLIT_TYPE type;
     int16_t tilts[4];
@@ -128,6 +169,7 @@ typedef struct {
     uint8_t fx;
     bool stopper;
 } SECTOR;
+#endif
 
 typedef struct {
     SHADE shade;

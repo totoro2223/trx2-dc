@@ -59,6 +59,9 @@ uint32_t g_DC_FrameCount = 0;
 // again when next drawn), checked every so many frames.
 #define M_MESH_MAX_AGE 300
 #define M_MESH_EVICT_INTERVAL 30
+// And past this many vertices (~0.8 MB with what the batcher keeps per
+// vertex), the ones drawn longest ago go: TR3's jungles keep twice TR2's.
+#define M_MESH_MAX_VERTICES 24000
 
 int32_t LUA_DC_CollectGarbage(void);
 
@@ -215,7 +218,7 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "vroom", "vobj", "vgen", "soft", "emit", "cel", "bump", "envp",
     "sscene", "spre", "sbounds", "ssky", "sroom", "sstat", "sitem", "slara",
     "sfx", "spaint", "sgflush", "sui", "soflush", "nrooms",
-    "llight", "lshadow", "lmesh", "lwater", "ljoint", "lhair", "lequip",
+    "llight", "lshadow", "lmesh", "lwater", "ljoint", "lhair", "lequip", "troom", "tplain", "tgen", "gown", "genv", "gfog", "gbill", "goth", "equad", "etri", "eclip", "eout", "eback", "msil", "mend",
 };
 uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
 uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};
@@ -340,6 +343,7 @@ void Output_EndScene(void)
     g_DC_FrameCount++;
     if (g_DC_FrameCount % M_MESH_EVICT_INTERVAL == 0) {
         OutputSource_Objects_EvictUnused(M_MESH_MAX_AGE);
+        OutputSource_Objects_EvictToBudget(M_MESH_MAX_VERTICES);
     }
     if (ClockTimer_CheckElapsedAndTake(&m_FPSTimer, 1.0)) {
         m_FPS = m_DrawnFrames;

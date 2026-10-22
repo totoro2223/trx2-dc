@@ -6,6 +6,10 @@
 
 #include <stdio.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_level_heap.h>
+#endif
+
 static MEMORY_ARENA_ALLOCATOR m_Allocator[GBUF_NUM_MALLOC_TYPES] = {};
 
 static void M_Init(void)
@@ -53,7 +57,15 @@ void GameBuf_ResetSingle(const GAME_BUFFER buffer)
 void *GameBuf_Alloc(const size_t alloc_size, const GAME_BUFFER buffer)
 {
     const size_t aligned_size = Memory_Align(alloc_size);
+#if defined(__DREAMCAST__)
+    // The level's, even when an item is made in play.
+    DC_LevelHeap_Enter();
+    void *const result = Memory_ArenaAlloc(&m_Allocator[buffer], aligned_size);
+    DC_LevelHeap_Leave();
+    return result;
+#else
     return Memory_ArenaAlloc(&m_Allocator[buffer], aligned_size);
+#endif
 }
 
 REGISTER_BASE_SUBSYSTEM(.init = M_Init, .shutdown = M_Shutdown)

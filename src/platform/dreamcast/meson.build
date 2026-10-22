@@ -49,6 +49,7 @@ dc_excluded_sources = [
 
 dc_sources = files(
   'av_stub.c',
+  'dc_level_heap.c',
   'dc_level_select.c',
   'dc_lua_alloc.c',
   'dc_main.c',

@@ -57,6 +57,27 @@ enum {
     DC_PROBE_L_JOINTS, // Lara_Joints_StashMatrix + Lara_Joints_Draw
     DC_PROBE_L_HAIR, // Lara_Hair_Draw
     DC_PROBE_L_EQUIP, // M_DrawEquipment
+    // Time in each M_Xform* path.
+    DC_PROBE_XT_ROOM,
+    DC_PROBE_XT_PLAIN,
+    DC_PROBE_XT_GENERIC,
+    // Vertices of the generic path by why (counts): own light, reflections,
+    // coloured fog, billboards, the rest.
+    DC_PROBE_XG_OWN,
+    DC_PROBE_XG_ENV,
+    DC_PROBE_XG_FOG,
+    DC_PROBE_XG_BILL,
+    DC_PROBE_XG_OTHER,
+    // Faces through M_EmitIndices (counts): quads out whole, triangles out,
+    // clipped at the near plane, all outside one side, facing away.
+    DC_PROBE_E_QUAD,
+    DC_PROBE_E_TRI,
+    DC_PROBE_E_CLIP,
+    DC_PROBE_E_OUT,
+    DC_PROBE_E_BACK,
+    // Inside DC_Shadow_RenderMaps: the silhouettes, and the frame ended.
+    DC_PROBE_M_SIL,
+    DC_PROBE_M_END,
     DC_PROBE_COUNT,
 };
 

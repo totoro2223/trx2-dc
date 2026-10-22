@@ -25,6 +25,12 @@ size_t Memory_Align(const size_t size)
 }
 
 #if defined(__DREAMCAST__)
+// The game's memory (platform/dreamcast/dc_level_heap.c).
+void *DC_LevelHeap_Alloc(size_t size);
+bool DC_LevelHeap_Owns(const void *ptr);
+void *DC_LevelHeap_Realloc(void *ptr, size_t size);
+void DC_LevelHeap_Free(void *ptr);
+
 // The Dreamcast runs close to the end of its memory: before an allocation
 // gives up, whatever can be built again later is let go and it is tried once
 // more.
@@ -50,11 +56,21 @@ bool Memory_HandleLowMemory(void)
 
 void *Memory_Alloc(const size_t size)
 {
-    void *result = malloc(size);
 #if defined(__DREAMCAST__)
-    if (result == nullptr && Memory_HandleLowMemory()) {
+    // From the game's region once there is one (dc_level_heap.c), else or
+    // when it is full from the heap.
+    void *result = DC_LevelHeap_Alloc(size);
+    if (result == nullptr) {
         result = malloc(size);
     }
+    if (result == nullptr && Memory_HandleLowMemory()) {
+        result = DC_LevelHeap_Alloc(size);
+        if (result == nullptr) {
+            result = malloc(size);
+        }
+    }
+#else
+    void *result = malloc(size);
 #endif
     ASSERT(result != nullptr);
     memset(result, 0, size);
@@ -63,6 +79,16 @@ void *Memory_Alloc(const size_t size)
 
 void *Memory_Realloc(void *const memory, const size_t size)
 {
+#if defined(__DREAMCAST__)
+    if (memory == nullptr) {
+        return Memory_Alloc(size);
+    }
+    if (DC_LevelHeap_Owns(memory)) {
+        void *const result = DC_LevelHeap_Realloc(memory, size);
+        ASSERT(result != nullptr);
+        return result;
+    }
+#endif
     void *result = realloc(memory, size);
 #if defined(__DREAMCAST__)
     if (result == nullptr && size > 0 && Memory_HandleLowMemory()) {
@@ -75,6 +101,12 @@ void *Memory_Realloc(void *const memory, const size_t size)
 
 void Memory_Free(void *const memory)
 {
+#if defined(__DREAMCAST__)
+    if (DC_LevelHeap_Owns(memory)) {
+        DC_LevelHeap_Free(memory);
+        return;
+    }
+#endif
     if (memory != nullptr) {
         free(memory);
     }

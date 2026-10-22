@@ -27,3 +27,6 @@ typedef struct {
 } DC_MODE_PARAMS;
 
 const DC_MODE_PARAMS *DC_Mode_Get(void);
+
+// How many lights cast Lara's shadow: the mode's, and a single one in TR3.
+int32_t DC_Mode_GetShadowLights(void);

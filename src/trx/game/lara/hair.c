@@ -973,7 +973,6 @@ void Lara_Hair_Draw(void)
             continue;
         }
         const int32_t seg_base = Lara_Skin_GetBraidMeshIdx(i);
-
         int16_t rolls[M_HAIR_SEGMENTS];
         M_CalculateRenderRolls(i, rolls);
 

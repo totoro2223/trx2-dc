@@ -18,6 +18,9 @@
 #include <stdbool.h>
 
 void DC_Shadow_SetCasting(bool casting);
+// Lara's own meshes are being drawn: only she takes the cel shading and her
+// own shadow.
+void DC_Shadow_SetLara(bool lara);
 bool DC_Shadow_IsCasting(void);
 
 // Ends the casters of this frame: sends their volumes, or keeps them for the

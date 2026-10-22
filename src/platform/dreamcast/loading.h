@@ -6,8 +6,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Starts the screen for a load that reads about total_bytes from the disc.
-void DC_Loading_Begin(uint64_t total_bytes);
+// Starts the screen for a load that reads about total_bytes from the disc,
+// over the level's picture (its gameflow's loading screen, or nullptr).
+void DC_Loading_Begin(uint64_t total_bytes, const char *picture);
 // Shows a step that reads nothing, in place of a file's name.
 void DC_Loading_SetStep(const char *step);
 void DC_Loading_End(void);

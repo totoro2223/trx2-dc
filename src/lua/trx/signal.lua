@@ -72,6 +72,9 @@ local mark_stale
 ---@field private _dormant boolean?
 ---@field private _count integer?
 ---@field private _read_at integer?
+---@field private _ver integer
+---@field private _sources trx.signal.Signal[]?
+---@field private _seen integer[]?
 ---@field private _stale boolean?
 ---@field private _dependents table<integer, trx.signal.Signal>?
 ---@field private _pull fun(): any
@@ -115,6 +118,7 @@ local function new_signal(value)
     _value = value,
     _listeners = {},
     _next_id = 1,
+    _ver = 0,
   }, Signal)
 end
 
@@ -180,6 +184,8 @@ local function attach(signal, fn, keeps, dependent)
       signal._dormant = nil
       signal._read_at = nil
       signal._value = signal._pull()
+      -- Whatever followed it dormant must work its own value out again.
+      signal._ver = signal._ver + 1
       signal._attach()
     end
     if keeps then
@@ -208,6 +214,7 @@ derive = function(sources, fn)
   -- so one that is never read costs nothing.
   local derived = new_signal(nil)
   derived._dormant = true
+  derived._sources = sources
   local listeners = {}
   -- The sources reach the signal through a weak reference alone, and not
   -- through the function that works its value out, so a source that outlives
@@ -265,6 +272,59 @@ mark_stale = function(signal)
   end
 end
 
+local refresh
+
+-- Whether the sources of a dormant derived signal are as its value was worked
+-- out from them. A source that is itself dormant is brought up to date first,
+-- without being reported as read. A signal whose sources are in the middle of
+-- changing, or that has none, is never taken as unchanged.
+local function unchanged(self)
+  local seen = self._seen
+  local sources = self._sources
+  if seen == nil or #sources == 0 then
+    return false
+  end
+  for i = 1, #sources do
+    local source = sources[i]
+    if source._stale then
+      return false
+    end
+    if source._dormant then
+      refresh(source)
+    end
+    if source._ver ~= seen[i] then
+      return false
+    end
+  end
+  return true
+end
+
+-- Brings the value of a dormant derived signal up to date. Something changing
+-- anywhere moves the epoch, which is nearly every tick, so the value is
+-- worked out again only when a signal it follows has changed.
+refresh = function(self)
+  if self._read_at == epoch then
+    return
+  end
+  if not unchanged(self) then
+    local value = self._pull()
+    local sources = self._sources
+    local seen = self._seen
+    if seen == nil then
+      seen = {}
+      self._seen = seen
+    end
+    for i = 1, #sources do
+      seen[i] = sources[i]._ver
+    end
+    if value ~= self._value then
+      self._value = value
+      self._ver = self._ver + 1
+    end
+  end
+  self._read_at = epoch
+end
+
 ---The value the signal holds now.
 ---@return any # What it holds.
 function Signal:get()
@@ -274,9 +334,8 @@ function Signal:get()
   if self._stale then
     return self._pull()
   end
-  if self._dormant and self._read_at ~= epoch then
-    self._value = self._pull()
-    self._read_at = epoch
+  if self._dormant then
+    refresh(self)
   end
   return self._value
 end
@@ -290,6 +349,7 @@ function Signal:set(value)
     return false
   end
   self._value = value
+  self._ver = self._ver + 1
   epoch = epoch + 1
   mark_stale(self)
   -- Copy listeners before running them, so detaching during a callback
@@ -391,6 +451,7 @@ function Listener:detach()
     end
     signal._dormant = true
     signal._stale = nil
+    signal._seen = nil
     signal._read_at = epoch
   end
   return true

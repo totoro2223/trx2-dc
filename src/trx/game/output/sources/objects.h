@@ -63,4 +63,7 @@ extern uint32_t g_DC_FrameCount;
 // Lets go of the object meshes not drawn for max_age frames; they are built
 // again when next drawn. Returns how many went.
 int32_t OutputSource_Objects_EvictUnused(uint32_t max_age);
+// Lets go of the meshes drawn longest ago (never the last frame's) until the
+// kept ones hold at most max_vertices. Returns how many went.
+int32_t OutputSource_Objects_EvictToBudget(int32_t max_vertices);
 #endif

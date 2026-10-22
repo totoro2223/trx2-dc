@@ -93,36 +93,6 @@ void OutputSource_PolyFX_StageQuadExtDepth(int32_t sprite_idx, const XYZ_32 worl
     DC_STUB();
 }
 
-void OutputSource_PolyFX_StageSpark(const SPARK *spark)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageSpriteQuadWorld(int32_t sprite_idx, const XYZ_32 world_pos[4], const RGBA_8888 color[4], DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageSpriteQuadWorldDepth(int32_t sprite_idx, const XYZ_32 world_pos[4], const RGBA_8888 color[4], float z_depth_adjust, DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageSpriteTriWorld(int32_t sprite_idx, const XYZ_32 world_pos[3], const RGBA_8888 color[3], DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageSpriteTriWorldDepth(int32_t sprite_idx, const XYZ_32 world_pos[3], const RGBA_8888 color[3], float z_depth_adjust, DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageSpriteTriWorldLight(int32_t sprite_idx, const XYZ_32 world_pos[3], const RGBA_8888 color[3], OUTPUT_LIGHT_INFO light_info, DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
 void OutputSource_PolyFX_StageTriExtUV(const XYZ_32 world_pos[3], const OUTPUT_UVW uvw[3], const OUTPUT_TEXTURE_SIZE texture_size[3], const float disp[3][2], const RGBA_8888 color[3], uint16_t flags, DRAW_TYPE draw_type)
 {
     DC_STUB();
@@ -227,9 +197,11 @@ void Output_Overlay_DrawBlackRectangle(float opacity)
     DC_STUB();
 }
 
+// The title menu's picture (the gameflow's main_menu_picture).
 void Output_Overlay_DrawImage(const char *file_name)
 {
-    DC_STUB();
+    DC_PVR_SetPicture(file_name);
+    DC_PVR_DrawPicture(1.0f);
 }
 
 void Output_Overlay_DrawImageInBox(const char *file_name, OUTPUT_OVERLAY_BOX box, float opacity)
@@ -237,9 +209,11 @@ void Output_Overlay_DrawImageInBox(const char *file_name, OUTPUT_OVERLAY_BOX box
     DC_STUB();
 }
 
+// shortcut: in colour, only dimmed; desaturate if a mono picture shows up.
 void Output_Overlay_DrawImageMono(const char *file_name, float intensity)
 {
-    DC_STUB();
+    DC_PVR_SetPicture(file_name);
+    DC_PVR_DrawPicture(intensity);
 }
 
 void Output_Overlay_DrawLetterbox(void)

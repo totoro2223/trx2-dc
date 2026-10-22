@@ -77,3 +77,206 @@ fuera.
   (así se encontraron las copias de instancias y las conversiones de 64 bits).
 - Temporizadores temporales por fuente del compositor y por parte de
   `M_DrawInstance` (ya retirados).
+
+## TR3 en marcha (21/10/2026, DC builds 215–216)
+
+Primer arranque de TR3 (Jungle, `TRX_DC_GAME=tr3`): carga y corre a 30 fps
+(~850 polígonos, heap 12,3 MB casi lleno). Lara salía hecha solo de muslos con
+pistolera: sin `lara_outfits.bin`, `Lara_Skin_Initialise` copiaba las mallas
+de `O_LARA` (en TR3, comodines) antes de que `Lara_Mesh_Initialise` lo apunte
+a `O_LARA_SKIN`. Ahora el camino sin traje toma `O_LARA_SKIN` si está cargado
+(build 216: Lara completa). Revisado sin cambiar: niebla negra, como el TR3
+original. Pendiente en TAREAS.md §4: luz TR3, partículas, una sombra.
+
+## TR3: luz de color, chispas y una sombra (21/10/2026, DC builds 217–218)
+
+- **Una sombra**: `DC_Mode_GetShadowLights` (dc_mode.c) da 1 luz en TR3, la
+  del modo en TR2.
+- **Luz de objetos TR3** (batcher.c): `M_PrepareInstanceLight` lee el bloque
+  como `OUTPUT_UNIFORM_LS_TR3` (ambiente + 3 luces RGB, direcciones al
+  espacio del objeto); `M_TR3ObjectRGB` por vértice en `M_XformObject` y
+  `M_LightVertex`, doblado por la curva (`tr3_double`, 1 en "flat"). La luz
+  más fuerte guía el cel. Luz propia: ambiente × shade8 como
+  `lightOwnTR3`.
+- **Luz dinámica TR3**: las luces `OUTPUT_DYNAMIC_LIGHT_RGB` (antes
+  descartadas) suman color en salas (`M_XformRoom`, solo si alguna toca la
+  sala) y en el camino genérico (`M_TR3DynamicRGB`).
+- **Chispas**: `OutputSource_PolyFX_StageSpark` deja de ser stub: en
+  sprites.c (bloque DC) cada chispa es un cuadrado en billboard escalado a su
+  tamaño, con textura de sprite o plano, tinte = su color; mallas creadas al
+  primer uso y liberadas con las de los sprites. Humo de pistola visible.
+- Jungle, Flycast: 30 fps; stage ~6, pass ~12 ms (con armas fuera). TR2 sin
+  cambios de camino (todo bajo `il->tr3` o `g_TRVersion`), no re-medido.
+
+## Memoria: salas compartidas, sectores estrechos (21/10/2026, DC builds 220–222)
+
+Jungle tenía 2,4 MB más que Great Wall: 165 salas contra 84 (56.000 esquinas
+de sala contra 24.000) y 11.854 sectores contra 6.556. La caché de mallas de
+objetos era pequeña (el `meshes=` del watchdog cuenta sobre todo salas).
+
+- **Salas compartidas** (batcher.c, `M_ShareVertices`): al registrar una
+  malla de sala, cada vértice distinto se guarda una vez; cada esquina guarda
+  su índice (`bind->vref`, 2 B) y su textura (`bind->uvw`, 2 B) en vez de 28
+  B. Lectores vía `M_Corner`. Solo salas: los objetos reescriben sus esquinas
+  al moverse (objects.c, `M_ForEachFaceVertex`). Jungle −813K.
+- **SECTOR estrecho en DC** (rooms/types.h): enums en un byte, splits en
+  int16/int8 (15 clicks máx.), campos sin relleno: 100 → 56 bytes, SURFACE
+  32 → 16. Jungle −488K; Great Wall en total −618K.
+- **Tope de la caché de objetos**: `OutputSource_Objects_EvictToBudget`
+  (24.000 vértices, cada 30 frames, nunca las del último frame). No actúa en
+  Jungle ni Great Wall; red de seguridad.
+- Resultado: Jungle 12.368K → 11.067K usados (brk 0x8cdf2000, ~2 MB al
+  límite); Great Wall 9.988K → 9.370K. 30 fps, Lara pisa bien las rampas.
+- Descartado: liberar vértices/caras crudos de sala (shadows.c los lee en
+  juego); `-fshort-enums` (la config escribe enums por `int32_t *`).
+
+## Coleta de Lara en TR2 y TR3 (21/10/2026, DC builds 225–232)
+
+Sin `lara_outfits.bin` no había coleta: TRX la saca del objeto extra del
+traje. Ahora, sin traje, se usa la del propio nivel, como los juegos
+originales: el objeto `O_LARA_HAIR` (id 2 en TR2 y TR3), una trenza desde su
+malla 0, colgada donde dice el traje clásico del juego (`tr2_classic` /
+`tr3_classic`, buscado una vez por juego). En lara/skin/common.c:
+`M_UsesLevelBraid`, `M_GetBraidSetupOutfit`; vestida no cambia nada. Los
+modos TR1 (cambian cabeza y torso) quedan fuera.
+Verificado: Great Wall cuelga por la espalda; Jungle ondea con el viento.
+Memoria ~+30K, 30 fps. CDIs: TRX.cdi = build 231, TRX-tr3.cdi = build 232.
+
+## Salas: un vértice compartido se transforma una vez (21/10/2026, DC builds 233–236)
+
+Desde el reparto de vértices de sala (`M_ShareVertices`) la memoria era
+compartida, pero `M_XformRoom` seguía transformando, iluminando y
+nieblinizando cada esquina. Ahora cada vértice único se hace en la primera
+esquina que lo pide en la instancia y las demás copian su `M_XVERT`
+(`batcher->share_slot`: generación << 16 | esquina, ~4 B por vértice único
+de la sala más grande). Vale con los trozos de sala recortados.
+Sondas nuevas (TEMP, `[probe]`): `troom`, `tplain`, `tgen` = tiempo en cada
+ruta de `M_Xform*`.
+Medido oculto y sin teclas: Great Wall salas 1,81 → 0,95–1,04 ms, sgflush
+8,4–9,1 → 7,4–8,0 ms; Jungle (715 polígonos) pass 14,3–14,6 → 13,1–13,3 ms.
+Sin comprobar a la vista (escritorio oculto, sin capturas).
+Pendiente aparte: la ruta genérica cuesta 3,2 µs/vértice frente a 0,9–1,1
+de las otras (360 vértices, 1,16 ms en Great Wall).
+
+## Objetos: esquinas gemelas y reflejos por la ruta rápida (21/10/2026, DC builds 237–241)
+
+- **Gemelas** (`M_FindTwins`, batcher.c): un objeto guarda un vértice por
+  esquina (objects.c los reescribe), pero las esquinas de un mismo vértice
+  dan lo mismo. Al añadir la malla, cada esquina apunta a la primera igual
+  (`bind->twin`, 2 B por esquina, solo si hay alguna); `M_XformObject` la
+  copia en vez de calcularla. Si la malla se reforma
+  (`MeshBatcher_UpdateMeshGeometry`: uniones, flags) el mapa se suelta y no
+  se vuelve a hacer (`bind->deforms`).
+- **Reflejos en la ruta de objetos**: `M_EnvVertex` sale de
+  `M_XformGeneric` y la usan las dos; las mallas con reflejos (pistolas y
+  muslos de Lara) ya no caen en la genérica. Atajo: el color iluminado se
+  recupera del ya nieblinizado (anotado en el código).
+- Sondas TEMP nuevas: `gown genv gfog gbill goth` = vértices de la ruta
+  genérica por motivo (en Great Wall eran todos reflejos).
+- Medido oculto: Great Wall objetos 2,21 → 1,03 ms, sgflush 8,4 → 7,2 ms;
+  Jungle objetos 4,14 → 1,71 ms, sgflush 12,3 → 9,9 ms, pass 13,1 → 10,5
+  ms. Memoria +4–5K. Sin comprobar a la vista.
+- Probado y descartado: `movca.l` al escribir cada vértice en la lista
+  (evita leer la línea de caché). Flycast no emula la caché: no se puede
+  medir aquí; candidato para hardware real.
+
+## sgflush y sui en TR2: lo que se midió sin ganancia (21/10/2026, DC builds 242–249)
+
+Todo oculto en Great Wall; nada de esto queda en el código salvo las sondas.
+- **Emit** (2,8 ms): contadores TEMP `equad etri eclip eout eback` por
+  frame: 172 quads y 165 triángulos emitidos, 93 recortados en el plano
+  cercano, 595 fuera de un lado y 441 de espaldas. Lo descartado es barato;
+  lo emitido, trabajo necesario. Sin despilfarro claro.
+- **Bump** (0,8 ms): descartar las caras de espaldas antes de su luz no
+  cambia nada (dentro de una sala casi ninguna lo está).
+- **sui** (1,4 ms): casi todo es Lua: `ui_reserve_all` (e48) ~0,84 ms y
+  `ui_paint` (e27) ~0,31 ms. Las medidas de widget salen de la caché (0,04
+  por frame, 26 widgets); el coste está en leer las visibilidades: señales
+  derivadas sin oyentes, que se recalculan en cada lectura porque `tick`
+  cambia la época global cada frame. Probado sin ganancia: que el widget
+  escuche su `visible` (peor, 0,39 → 0,84 ms), `derive` sin tabla para 1–2
+  fuentes, GC generacional (Lua 2,17 → 2,05 ms, picos 4,7 → 2,9 ms; no
+  adoptado sin probar Venecia).
+- **movca.l**: no medible en Flycast (no emula la caché).
+
+## Entrada y sombra suave en TR2 (21/10/2026, DC builds 251–253)
+
+- **Entrada**: en DC, `Input_IsBackendEnabled` (input/common.c) apaga el
+  teclado y el táctil: sdl_compat.c nunca genera sus eventos, y cada tick
+  se preguntaba por los ~60 roles en ellos para nada. `inp` 0,50 → 0,17
+  ms; logic 2,4 → 2,1 ms.
+- **Sombra suave** (`map`, 1,3 ms, que también va dentro de `sscene`):
+  sondas TEMP `msil` (siluetas) y `mend` (cerrar el frame del mapa): 1,22 y
+  0,12 ms. Las siluetas mandan los quads como tira de cuatro
+  (`M_SilFront`, `M_SilVertex`) y las esquinas gemelas copian su
+  proyección (`bind->twin`): 1,22 → 1,10 ms. El resto es un triángulo por
+  celda (la de la luz y las de la auto-sombra).
+- Mirado sin cambio: `lwater` (0,41 ms) es sobre todo la interpolación de
+  la matriz entre fotogramas de la animación, que ya va en floats en DC.
+- Total TR2 en Great Wall: logic 2,1 + stage 3,6 + pass 7,2 + map 1,2 ≈
+  14,3 ms por frame (antes ~15).
+
+## Partida cargada sin pistolas ni coleta (21/10/2026, DC build 255)
+
+Sin `lara_outfits.bin` Lara va sin traje (`m_SkinType = M_NO_OUTFIT`). Al
+guardar, `skin_is_default` sale falso; al cargar, `Lara_Skin_SetType` no
+encontraba ese tipo y la vestía con el de reserva: desde entonces se creía
+vestida, y la coleta y las pistolas de las fundas se buscaban en mallas de
+traje que el nivel no tiene. Ahora `Lara_Skin_SetType` no hace nada en un
+nivel que no puede vestirla (`M_CanDress`), como ya hacía
+`Lara_Skin_Initialise`. Las partidas guardadas no cambian.
+Posible misma causa: el crash al abrir el inventario tras cargar (build 250,
+`MeshBuilder_AddVertices: vertex_count > 0`). Queda un diagnóstico TEMP en
+`M_BuildMesh` (objects.c) que nombra la malla y el objeto si vuelve.
+Partidas en la VMU: 14–15 bloques cada una.
+
+## Sombra suave de TR2: 2 luces, más oscura cerca, sin estirarse en paredes (21/10/2026, DC builds 256–257)
+
+- `shadow_lights` 3 → 2 en Gráficos y Rendimiento (dc_mode.c).
+- Intensidad: el peso de cada luz (`M_ConsiderLight`) es 1 a un bloque o
+  menos de la luz (`M_SHADOW_NEAR`, o media distancia de alcance si es
+  corta) y baja a 0 al final de su alcance; antes era lineal y solo daba
+  0,95 pegada a la fuente. Mínimo y máximo, los de siempre (0,5–0,95; sin
+  luz cerca, ~0,63).
+- Paredes: con la luz encima, una pared es paralela a la luz y la silueta
+  se alargaba por toda su altura. Cada cara del mundo recibe la sombra por
+  el coseno entre ella y la luz: nada por debajo de 0,25, entera desde 0,6
+  (`M_SOFT_GRAZE_MIN/FULL`, en `M_EmitShadowFaces`).
+- Coste, mismo punto de Great Wall: suave map 1,2 + pass 7,3 ≈ 8,5 ms;
+  volúmenes map 0 + pass 8,3 ≈ 8,3 ms (construirlos sube sgflush 1 ms).
+  Los volúmenes cargan además al PowerVR (32 KB de lista de volúmenes), y
+  eso Flycast no lo mide bien.
+- Agua: en la poza de Great Wall la sombra caía en el fondo, bajo el agua,
+  y a través de ella parecía estar en la superficie. Las salas bajo el agua
+  (`room->flags.underwater`) ya no reciben la sombra de Lara, ni suave ni
+  de volúmenes (`M_DrawInstance`).
+- Sin comprobar a la vista. Pendiente: vidrio rompible (sitio por ver).
+
+## Rendimiento en TR3: Lua de la interfaz, ruta de luz propia, luz por instancia (22/10/2026, sin build de disco)
+
+Origen: log de TR3 en Flycast (escenas de 1100–1400 polígonos, 23–31 fps):
+`sui` 3–4 ms (`UI_PAINT` 1,6–2,6, `UI_RESERVE_ALL` 1,1), `tgen` 2,2–2,9 ms para
+~1000 vértices (2,35 µs cada uno, el triple que las otras rutas), `emit`
+5,8–6,7 ms. **Compilado, sin probar ni medir.**
+
+- **Señales** (`src/lua/trx/signal.lua`): una señal derivada sin oyentes se
+  recalculaba entera en cada lectura tras cualquier cambio en cualquier señal,
+  y `tick` cambia cada frame. Ahora cada señal lleva una versión (`_ver`,
+  sube al cambiar) y la derivada recuerda las de sus fuentes (`_seen`): si
+  ninguna cambió, devuelve el valor guardado sin llamar a la función.
+  Atajo: una función derivada que lea estado ajeno a sus fuentes ya no se
+  refresca cada frame (las del juego leen solo sus fuentes).
+  Queda sin tocar `TICK` (1,2 ms, oyentes de señales sondeadas).
+- **`M_XformOwn`** (batcher.c): luz propia, billboards y mallas sin luz, en
+  enteros, para el caso con niebla negra, sin luz de sala/objeto ni
+  reflejos. Cubre `gown`, `gbill` y `goth` de las sondas; TR1/2 y TR3.
+  Esperado: `tgen` 2,4 → ~1 ms. Comparar `tgen` con la línea `[probe]`.
+- **Luz por instancia**: `M_ReadInstanceLight` lee `inst->light_info` directo
+  (sin memcmp/copia/subida al búfer GL ni `1/sqrtf` por dirección) en TR1–3;
+  TR4 sigue por el camino de antes. Las luces de paso de las salas se suben
+  una vez por modo de luz y pasada, no por instancia.
+- **Trozos de sala**: `M_MAX_CHUNKS` 64 → 128 (celdas más finas en salas
+  grandes; se recorta más `xform`/`emit` fuera de pantalla).
+- **No hecho — descarte de caras de espaldas por plano**: ahorra lecturas de
+  `M_XVERT` (caché), que Flycast no emula, así que no se vería aquí, y
+  costaría ~8–16 B por cara de sala. Reabrir solo con hardware real.

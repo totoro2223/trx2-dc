@@ -85,10 +85,11 @@ static void M_OnRead(const char *const name, const size_t bytes)
     M_Draw(false);
 }
 
-void DC_Loading_Begin(const uint64_t total_bytes)
+void DC_Loading_Begin(const uint64_t total_bytes, const char *const picture)
 {
     // Read before the disc reads are watched: reading it would draw again.
     M_GetVersion();
+    DC_PVR_SetPicture(picture);
     m_Priv = (typeof(m_Priv)) {
         .active = true,
         .total = total_bytes,
@@ -118,5 +119,8 @@ void DC_Loading_End(void)
     char line1[96];
     snprintf(line1, sizeof(line1), "LOADING  100%%   %s", M_GetVersion());
     DC_PVR_DrawLoadingScreen(line1, m_Priv.name, 100);
+    // Its video memory goes back to the level (the title menu reads its
+    // picture again).
+    DC_PVR_SetPicture(nullptr);
     m_Priv.active = false;
 }
