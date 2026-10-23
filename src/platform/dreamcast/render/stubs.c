@@ -3,6 +3,8 @@
 
 #include "pvr.h"
 
+#include <stdlib.h>
+
 #include <platform/dreamcast/stub.h>
 
 #include <trx/game/game/draw.h>
@@ -22,9 +24,7 @@
 #include <trx/gl/context.h>
 #include <trx/gl/gpu_timer.h>
 #include <trx/gl/renderer.h>
-#include <trx/core/result.h>
 #include <trx/core/utils.h>
-#include <stdlib.h>
 #include <trx/game/output/draw.h>
 #include <trx/game/viewport.h>
 
@@ -299,77 +299,63 @@ void Output_Overlay_UpdateLetterbox(void)
     }
 }
 
-// The FMV's frame (fmv.c): it takes the picture's place in video memory, so
-// only one is up at a time. Shortcut: the filter is the PowerVR's own; a
-// frame is stretched, or boxed to the source's shape.
+// The quad renderer, for the film (fmv.c): a surface the film player fills
+// with a frame in the disc's own format (video.c), which goes to the
+// PowerVR as it is; the quad draws it fitted to the screen.
 struct OUTPUT_QUAD {
-    OUTPUT_QUAD_FIT_MODE fit;
     float src_w;
     float src_h;
-    bool has_frame;
+    OUTPUT_QUAD_FIT_MODE fit;
 };
 
 RESULT Output_Quad_Create(OUTPUT_QUAD **out_quad)
 {
-    OUTPUT_QUAD *const quad = calloc(1, sizeof(OUTPUT_QUAD));
-    FAIL_IF(quad == nullptr, "no memory for the video quad");
-    quad->fit = OUTPUT_QUAD_FIT_STRETCH;
-    *out_quad = quad;
-    return OK;
+    *out_quad = calloc(1, sizeof(OUTPUT_QUAD));
+    return *out_quad != nullptr ? OK : FAIL("no memory for the quad");
 }
 
-void Output_Quad_Destroy(OUTPUT_QUAD *const renderer)
+void Output_Quad_Destroy(OUTPUT_QUAD *renderer)
 {
-    if (renderer != nullptr && renderer->has_frame) {
-        DC_PVR_SetPicture(nullptr);
-    }
+    DC_PVR_FreeVideo();
     free(renderer);
 }
 
-void Output_Quad_Render(OUTPUT_QUAD *const renderer)
+void Output_Quad_Upload(OUTPUT_QUAD *renderer, const OUTPUT_QUAD_SURFACE_DESC *desc, const uint8_t *data)
 {
-    if (renderer == nullptr || !renderer->has_frame) {
-        return;
-    }
-    // Pictured at 4:3 on the 640x480 screen; a wider source leaves bars.
-    float x0 = 0.0f;
-    float y0 = 0.0f;
-    if (renderer->fit != OUTPUT_QUAD_FIT_STRETCH && renderer->src_w > 0.0f
-        && renderer->src_h > 0.0f) {
-        const float aspect = (renderer->src_w / renderer->src_h) / (4.0f / 3.0f);
-        if (aspect > 1.0f) {
-            y0 = (1.0f - 1.0f / aspect) * 0.5f;
-        } else if (aspect < 1.0f) {
-            x0 = (1.0f - aspect) * 0.5f;
-        }
-    }
-    if (x0 == 0.0f && y0 == 0.0f) {
-        DC_PVR_DrawPicture(1.0f);
-    } else {
-        DC_PVR_DrawPictureBox(x0, y0, 1.0f - x0, 1.0f - y0, 1.0f);
-    }
+    DC_PVR_SetVideoFrame(data);
 }
 
 void Output_Quad_SetFilter(OUTPUT_QUAD *renderer, TEXTURE_FILTER filter_mode)
 {
 }
 
-void Output_Quad_SetFit(
-    OUTPUT_QUAD *const renderer, const OUTPUT_QUAD_FIT_MODE fit_mode,
-    const float src_w, const float src_h)
+void Output_Quad_SetFit(OUTPUT_QUAD *renderer, OUTPUT_QUAD_FIT_MODE fit_mode, float src_w, float src_h)
 {
     renderer->fit = fit_mode;
     renderer->src_w = src_w;
     renderer->src_h = src_h;
 }
 
-void Output_Quad_Upload(
-    OUTPUT_QUAD *const renderer, const OUTPUT_QUAD_SURFACE_DESC *const desc,
-    const uint8_t *const data)
+void Output_Quad_Render(OUTPUT_QUAD *renderer)
 {
-    // Only 32-bit frames (fmv.c asks for BGRA).
-    renderer->has_frame = desc->bit_count == 32
-        && DC_PVR_UploadPicture(data, desc->width, desc->height, desc->pitch);
+    // Letterboxed on the 640x480 screen, whatever the film's shape.
+    float x0 = 0.0f;
+    float y0 = 0.0f;
+    float x1 = 640.0f;
+    float y1 = 480.0f;
+    if (renderer->fit == OUTPUT_QUAD_FIT_LETTERBOX && renderer->src_w > 0.0f
+        && renderer->src_h > 0.0f) {
+        const float h = 640.0f * renderer->src_h / renderer->src_w;
+        if (h <= 480.0f) {
+            y0 = (480.0f - h) / 2.0f;
+            y1 = y0 + h;
+        } else {
+            const float w = 480.0f * renderer->src_w / renderer->src_h;
+            x0 = (640.0f - w) / 2.0f;
+            x1 = x0 + w;
+        }
+    }
+    DC_PVR_DrawVideo(x0, y0, x1, y1);
 }
 
 RESULT TRX_GL_Context_Attach(void *window_handle)

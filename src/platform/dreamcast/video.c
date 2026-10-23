@@ -1,134 +1,219 @@
-// Dreamcast video: plays the discs' films (tools/dreamcast/fmvenc.c makes
-// them, make_disc.sh puts them in /cd/fmv) for the game's FMV player
-// (trx/game/fmv.c), in the place of the desktop's FFmpeg reader.
+// Dreamcast film player: the engine's Video_* interface (trx/av/video.h) over
+// the discs' own format, made on the host from the games' films by
+// tools/dreamcast/fmvconv.c and make_disc.sh. A file is a header and frames,
+// each a VQ texture the PowerVR decodes itself and the sound of its time
+// (Yamaha ADPCM), so the disc is read in one pass: a few frames at a time into
+// a ring of pictures and a queue of sound. Reading the sound from a file of
+// its own made the drive seek between the two and the film crawl.
 //
-// A film is a run of frames, each a codebook of 256 blocks of 2x2 texels and a
-// byte per block. Unpacking one is a table look-up per block, into the BGRA
-// surface the game gave; the game draws it. Shortcuts: a film runs on the
-// clock of the console, not the sound's (the sound's position runs ahead of
-// what is heard by its buffers), and it drops frames when it falls behind.
+// The engine's surface is the frame's carrier: the frame is copied into the
+// surface's buffer and uploaded (Output_Quad_Upload sends it on to the
+// PowerVR). The sound goes to the AICA as a stream of the film's name, which
+// audio.c feeds from this queue (DC_Video_ReadAudio); the stream's place is
+// the film's clock.
+
+#include "dc_video.h"
+#include "stub.h"
 
 #include <trx/av/video.h>
 #include <trx/core/log.h>
 #include <trx/core/memory.h>
 
 #include <arch/timer.h>
-#include <kos/fs.h>
-
+#include <kos/mutex.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define M_CODES 256
-#define M_CODEBOOK_BYTES (M_CODES * 8)
-#define M_HEAD_BYTES 16
-
-typedef void (*M_SURFACE_FUNC)(void *surface, void *user_data);
-typedef void *(*M_LOCK_FUNC)(void *surface, void *user_data);
+#define M_FRAME_BYTES 18432
+#define M_HEADER_BYTES 24
+// Frames read at a time, and frames the ring keeps.
+#define M_BLOCK_FRAMES 4
+#define M_SLOTS 20
+// The sound is kept this far ahead (bytes), about a third of a second.
+#define M_SOUND_AHEAD 24000
+#define M_SOUND_QUEUE 40960
 
 typedef struct {
-    file_t fd;
-    int32_t width;
-    int32_t height;
-    int32_t fps;
-    int32_t frames;
-    size_t frame_bytes;
-    uint8_t *frame;
-    int32_t shown;
-    void *surface;
-    uint64_t start_us;
-    uint64_t paused_at_us;
-    bool paused;
+    FILE *fp;
+    uint32_t frames;
+    uint32_t fps;
+    uint16_t width;
+    uint16_t height;
+    uint32_t sound_per_frame;
 
+    // The ring of pictures: slot f % M_SLOTS holds frame f while f lies
+    // within M_SLOTS of the next one to read.
+    uint8_t *slots;
+    uint8_t *block;
+    uint32_t next;
+    bool eof;
+    int64_t shown;
+    uint32_t presented;
+    bool used_audio_clock;
+    uint64_t sound_start_us;
+
+    // The sound not yet handed to the AICA.
+    uint8_t *queue;
+    uint32_t queue_head;
+    uint32_t queue_count;
+    mutex_t queue_lock;
+
+    void *surface;
     VIDEO_SURFACE_ALLOCATOR_FUNC allocate;
     void *allocate_data;
-    M_SURFACE_FUNC deallocate;
+    void (*deallocate)(void *surface, void *user_data);
     void *deallocate_data;
-    M_SURFACE_FUNC clear;
-    void *clear_data;
-    M_LOCK_FUNC lock;
+    void *(*lock)(void *surface, void *user_data);
     void *lock_data;
-    M_SURFACE_FUNC unlock;
+    void (*unlock)(void *surface, void *user_data);
     void *unlock_data;
-    M_SURFACE_FUNC upload;
+    void (*upload)(void *surface, void *user_data);
     void *upload_data;
-    M_SURFACE_FUNC render_begin;
+    void (*render_begin)(void *surface, void *user_data);
     void *render_begin_data;
-    M_SURFACE_FUNC render_end;
+    void (*render_end)(void *surface, void *user_data);
     void *render_end_data;
-} M_PRIV;
 
-static uint32_t M_ReadLE(const uint8_t *const p, const int32_t bytes)
+    double audio_clock;
+    uint64_t start_us;
+    uint64_t paused_at_us;
+    uint64_t paused_us;
+    bool paused;
+} M_VIDEO;
+
+// The film being played, which the sound stream finds its queue in.
+static M_VIDEO *m_Film = nullptr;
+
+static M_VIDEO *M_Get(VIDEO *const video)
 {
-    uint32_t v = 0;
-    for (int32_t i = bytes - 1; i >= 0; i--) {
-        v = (v << 8) | p[i];
+    return video->priv;
+}
+
+bool DC_Video_GetAudio(
+    uint32_t *const rate, int32_t *const channels, uint32_t *const bytes)
+{
+    if (m_Film == nullptr || m_Film->sound_per_frame == 0) {
+        return false;
     }
-    return v;
+    *rate = 44100;
+    *channels = 2;
+    *bytes = m_Film->frames * m_Film->sound_per_frame;
+    return true;
 }
 
-// A texel of the codebook as the game's BGRA surface holds it.
-static uint32_t M_Texel(const uint16_t t)
+size_t DC_Video_ReadAudio(
+    uint8_t *const dst, const size_t size, bool *const finished)
 {
-    const uint32_t r = (t >> 11) & 31;
-    const uint32_t g = (t >> 5) & 63;
-    const uint32_t b = t & 31;
-    return 0xFF000000u | (((r << 3) | (r >> 2)) << 16)
-        | (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2));
+    M_VIDEO *const m = m_Film;
+    *finished = true;
+    if (m == nullptr) {
+        return 0;
+    }
+    // The AICA takes stereo sound in pieces of 32 bytes a channel.
+    mutex_lock(&m->queue_lock);
+    size_t n = size < m->queue_count ? size : m->queue_count;
+    n &= ~(size_t)63;
+    const size_t first =
+        n < M_SOUND_QUEUE - m->queue_head ? n : M_SOUND_QUEUE - m->queue_head;
+    memcpy(dst, m->queue + m->queue_head, first);
+    memcpy(dst + first, m->queue, n - first);
+    m->queue_head = (m->queue_head + n) % M_SOUND_QUEUE;
+    m->queue_count -= n;
+    *finished = m->eof && m->queue_count < 64;
+    mutex_unlock(&m->queue_lock);
+    return n;
 }
 
-static void M_Unpack(const M_PRIV *const p, uint32_t *const out, const int32_t pitch)
+// Reads the next frames of the file, as the clock needs them.
+static void M_Fill(M_VIDEO *const m)
 {
-    uint32_t colours[M_CODES][4];
-    for (int32_t c = 0; c < M_CODES; c++) {
-        for (int32_t t = 0; t < 4; t++) {
-            colours[c][t] = M_Texel(
-                (uint16_t)M_ReadLE(p->frame + c * 8 + t * 2, 2));
+    const uint32_t frame_bytes = M_FRAME_BYTES + m->sound_per_frame;
+    while (!m->eof) {
+        mutex_lock(&m->queue_lock);
+        const uint32_t queued = m->queue_count;
+        mutex_unlock(&m->queue_lock);
+        const bool need = m->sound_per_frame > 0 && m->used_audio_clock
+            ? queued < M_SOUND_AHEAD
+            : (int64_t)m->next < m->shown + 8 || m->shown < 0;
+        // The ring must keep what is yet to be shown.
+        if (!need || (int64_t)m->next + M_BLOCK_FRAMES > m->shown + M_SLOTS) {
+            return;
         }
-    }
-    const uint8_t *index = p->frame + M_CODEBOOK_BYTES;
-    const int32_t stride = pitch / 4;
-    for (int32_t by = 0; by < p->height / 2; by++) {
-        uint32_t *const top = out + by * 2 * stride;
-        uint32_t *const bottom = top + stride;
-        for (int32_t bx = 0; bx < p->width / 2; bx++) {
-            const uint32_t *const c = colours[*index++];
-            top[bx * 2] = c[0];
-            top[bx * 2 + 1] = c[1];
-            bottom[bx * 2] = c[2];
-            bottom[bx * 2 + 1] = c[3];
+        uint32_t count = m->frames - m->next;
+        if (count > M_BLOCK_FRAMES) {
+            count = M_BLOCK_FRAMES;
+        }
+        if (fread(m->block, frame_bytes, count, m->fp) != count) {
+            m->eof = true;
+            return;
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            const uint8_t *const at = m->block + i * frame_bytes;
+            memcpy(
+                m->slots + (size_t)((m->next + i) % M_SLOTS) * M_FRAME_BYTES,
+                at, M_FRAME_BYTES);
+            mutex_lock(&m->queue_lock);
+            uint32_t room = M_SOUND_QUEUE - m->queue_count;
+            if (room > m->sound_per_frame) {
+                room = m->sound_per_frame;
+            }
+            const uint32_t tail = (m->queue_head + m->queue_count) % M_SOUND_QUEUE;
+            const uint32_t run =
+                room < M_SOUND_QUEUE - tail ? room : M_SOUND_QUEUE - tail;
+            memcpy(m->queue + tail, at + M_FRAME_BYTES, run);
+            memcpy(m->queue, at + M_FRAME_BYTES + run, room - run);
+            m->queue_count += room;
+            mutex_unlock(&m->queue_lock);
+        }
+        m->next += count;
+        if (m->next >= m->frames) {
+            m->eof = true;
         }
     }
 }
 
 RESULT Video_Open(const char *const path, VIDEO **const out_video)
 {
-    const file_t fd = fs_open(path, O_RDONLY);
-    FAIL_IF(fd < 0, "cannot open %s", path);
-    uint8_t head[M_HEAD_BYTES];
-    if (fs_read(fd, head, sizeof(head)) != sizeof(head)
+    FILE *const fp = fopen(path, "rb");
+    FAIL_IF(fp == nullptr, "cannot open %s", path);
+    uint8_t head[M_HEADER_BYTES];
+    uint32_t version = 0;
+    M_VIDEO *const m = calloc(1, sizeof(M_VIDEO));
+    if (m == nullptr || fread(head, 1, sizeof(head), fp) != sizeof(head)
         || memcmp(head, "TRXV", 4) != 0) {
-        fs_close(fd);
-        return FAIL("%s is not a film this console plays", path);
+        fclose(fp);
+        free(m);
+        return FAIL("%s is not a film of this disc", path);
     }
-    M_PRIV *const p = Memory_Alloc(sizeof(M_PRIV));
-    p->fd = fd;
-    p->width = (int32_t)M_ReadLE(head + 4, 2);
-    p->height = (int32_t)M_ReadLE(head + 6, 2);
-    p->fps = (int32_t)M_ReadLE(head + 8, 2);
-    p->frames = (int32_t)M_ReadLE(head + 12, 4);
-    p->frame_bytes =
-        M_CODEBOOK_BYTES + (size_t)(p->width / 2) * (size_t)(p->height / 2);
-    p->shown = -1;
-    if (p->width <= 0 || p->height <= 0 || p->fps <= 0 || p->frames <= 0) {
-        fs_close(fd);
-        Memory_Free(p);
-        return FAIL("%s has a broken header", path);
+    memcpy(&version, head + 4, 4);
+    memcpy(&m->frames, head + 8, 4);
+    memcpy(&m->fps, head + 12, 4);
+    memcpy(&m->width, head + 16, 2);
+    memcpy(&m->height, head + 18, 2);
+    memcpy(&m->sound_per_frame, head + 20, 4);
+    m->slots = malloc((size_t)M_SLOTS * M_FRAME_BYTES);
+    m->block =
+        malloc((size_t)M_BLOCK_FRAMES * (M_FRAME_BYTES + m->sound_per_frame));
+    m->queue = malloc(M_SOUND_QUEUE);
+    VIDEO *const video = calloc(1, sizeof(VIDEO));
+    if (version != 2 || m->frames == 0 || m->fps == 0 || m->slots == nullptr
+        || m->block == nullptr || m->queue == nullptr || video == nullptr) {
+        fclose(fp);
+        free(m->slots);
+        free(m->block);
+        free(m->queue);
+        free(m);
+        free(video);
+        return FAIL("%s cannot be played", path);
     }
-    p->frame = Memory_Alloc(p->frame_bytes);
-
-    VIDEO *const video = Memory_Alloc(sizeof(VIDEO));
+    m->fp = fp;
+    m->shown = -1;
+    m->audio_clock = -1.0;
+    mutex_init(&m->queue_lock, MUTEX_TYPE_NORMAL);
     video->path = path;
-    video->priv = p;
+    video->priv = m;
+    m_Film = m;
     *out_video = video;
     return OK;
 }
@@ -138,27 +223,136 @@ void Video_Close(VIDEO *const video)
     if (video == nullptr) {
         return;
     }
-    M_PRIV *const p = video->priv;
-    if (p->surface != nullptr && p->deallocate != nullptr) {
-        p->deallocate(p->surface, p->deallocate_data);
+    M_VIDEO *const m = M_Get(video);
+    LOG_INFO(
+        "film %s: %u frames shown of %u in %.1f s, %s clock", video->path,
+        (unsigned)m->presented, (unsigned)m->frames,
+        (double)(timer_us_gettime64() - m->start_us - m->paused_us) / 1e6,
+        m->used_audio_clock ? "sound" : "wall");
+    if (m->surface != nullptr && m->deallocate != nullptr) {
+        m->deallocate(m->surface, m->deallocate_data);
     }
-    fs_close(p->fd);
-    Memory_Free(p->frame);
-    Memory_Free(p);
-    Memory_Free(video);
+    // The sound stream is closed before this (fmv.c), so nothing reads the
+    // queue any more.
+    m_Film = nullptr;
+    mutex_destroy(&m->queue_lock);
+    fclose(m->fp);
+    free(m->slots);
+    free(m->block);
+    free(m->queue);
+    free(m);
+    free(video);
+}
+
+void Video_SetAudioEnabled(VIDEO *video, bool enabled)
+{
+}
+
+void Video_SetVolume(VIDEO *video, double volume)
+{
+}
+
+void Video_SetSurfacePixelFormat(VIDEO *video, enum AVPixelFormat pixel_format)
+{
+}
+
+void Video_SetSurfaceStride(VIDEO *video, int32_t stride)
+{
+}
+
+void Video_SetSurfaceAllocatorFunc(
+    VIDEO *const video, const VIDEO_SURFACE_ALLOCATOR_FUNC func,
+    void *const user_data)
+{
+    M_Get(video)->allocate = func;
+    M_Get(video)->allocate_data = user_data;
+}
+
+void Video_SetSurfaceDeallocatorFunc(
+    VIDEO *const video, void (*const func)(void *surface, void *user_data),
+    void *const user_data)
+{
+    M_Get(video)->deallocate = func;
+    M_Get(video)->deallocate_data = user_data;
+}
+
+void Video_SetSurfaceClearFunc(
+    VIDEO *video, void (*func)(void *surface, void *user_data),
+    void *user_data)
+{
+}
+
+void Video_SetSurfaceLockFunc(
+    VIDEO *const video, void *(*const func)(void *surface, void *user_data),
+    void *const user_data)
+{
+    M_Get(video)->lock = func;
+    M_Get(video)->lock_data = user_data;
+}
+
+void Video_SetSurfaceUnlockFunc(
+    VIDEO *const video, void (*const func)(void *surface, void *user_data),
+    void *const user_data)
+{
+    M_Get(video)->unlock = func;
+    M_Get(video)->unlock_data = user_data;
+}
+
+void Video_SetSurfaceUploadFunc(
+    VIDEO *const video, void (*const func)(void *surface, void *user_data),
+    void *const user_data)
+{
+    M_Get(video)->upload = func;
+    M_Get(video)->upload_data = user_data;
+}
+
+void Video_SetRenderBeginFunc(
+    VIDEO *const video, void (*const func)(void *surface, void *user_data),
+    void *const user_data)
+{
+    M_Get(video)->render_begin = func;
+    M_Get(video)->render_begin_data = user_data;
+}
+
+void Video_SetRenderEndFunc(
+    VIDEO *const video, void (*const func)(void *surface, void *user_data),
+    void *const user_data)
+{
+    M_Get(video)->render_end = func;
+    M_Get(video)->render_end_data = user_data;
+}
+
+void Video_SetExternalAudioClock(VIDEO *const video, const double timestamp)
+{
+    M_Get(video)->audio_clock = timestamp;
+}
+
+void Video_SetPaused(VIDEO *const video, const bool paused)
+{
+    M_VIDEO *const m = M_Get(video);
+    if (paused == m->paused) {
+        return;
+    }
+    const uint64_t now = timer_us_gettime64();
+    if (paused) {
+        m->paused_at_us = now;
+    } else {
+        m->paused_us += now - m->paused_at_us;
+    }
+    m->paused = paused;
 }
 
 void Video_Start(VIDEO *const video)
 {
-    M_PRIV *const p = video->priv;
-    if (p->allocate != nullptr) {
-        p->surface = p->allocate(p->width, p->height, p->allocate_data);
+    M_VIDEO *const m = M_Get(video);
+    if (m->allocate != nullptr) {
+        m->surface = m->allocate(m->width, m->height, m->allocate_data);
     }
-    if (p->surface != nullptr && p->clear != nullptr) {
-        p->clear(p->surface, p->clear_data);
-    }
-    p->start_us = timer_us_gettime64();
-    video->is_playing = p->surface != nullptr;
+    // The sound's first moments are in the queue before the stream asks.
+    m->used_audio_clock = m->sound_per_frame > 0;
+    M_Fill(m);
+    m->start_us = timer_us_gettime64();
+    video->is_playing = true;
 }
 
 void Video_Stop(VIDEO *const video)
@@ -166,95 +360,65 @@ void Video_Stop(VIDEO *const video)
     video->is_playing = false;
 }
 
-void Video_SetPaused(VIDEO *const video, const bool paused)
-{
-    M_PRIV *const p = video->priv;
-    if (paused == p->paused) {
-        return;
-    }
-    const uint64_t now = timer_us_gettime64();
-    if (paused) {
-        p->paused_at_us = now;
-    } else {
-        // The film's clock stood still while it was paused.
-        p->start_us += now - p->paused_at_us;
-    }
-    p->paused = paused;
-}
-
 void Video_PumpEvents(VIDEO *const video)
 {
-    M_PRIV *const p = video->priv;
-    if (!video->is_playing || p->paused) {
+    M_VIDEO *const m = M_Get(video);
+    if (!video->is_playing || m->paused || m->surface == nullptr) {
         return;
     }
-    const uint64_t elapsed_us = timer_us_gettime64() - p->start_us;
-    const int32_t frame = (int32_t)(elapsed_us * (uint64_t)p->fps / 1000000u);
-    if (frame >= p->frames) {
+    // The film's own clock. The sound's place is known only in steps of what
+    // the AICA was last handed (half a second), too coarse to time frames
+    // by: the clock runs from the moment the sound begins instead, as the
+    // two hold the same pace.
+    const uint64_t now = timer_us_gettime64();
+    if (m->sound_per_frame > 0 && m->sound_start_us == 0) {
+        if (m->audio_clock > 0.0) {
+            m->sound_start_us = now;
+        }
+    }
+    double seconds = 0.0;
+    if (m->sound_per_frame == 0) {
+        seconds = (double)(now - m->start_us - m->paused_us) / 1e6;
+    } else if (m->sound_start_us != 0) {
+        seconds = (double)(now - m->sound_start_us - m->paused_us) / 1e6;
+    }
+    if (seconds < 0.0) {
+        seconds = 0.0;
+    }
+    int64_t frame = (int64_t)(seconds * m->fps);
+    if (frame >= (int64_t)m->frames) {
         video->is_playing = false;
         return;
     }
-    if (frame == p->shown) {
+    M_Fill(m);
+    // Not read yet (the disc is behind), or gone from the ring: the nearest.
+    if (frame >= (int64_t)m->next) {
+        frame = (int64_t)m->next - 1;
+    }
+    if (frame < (int64_t)m->next - M_SLOTS) {
+        frame = (int64_t)m->next - M_SLOTS;
+    }
+    if (frame < 0 || frame == m->shown) {
         return;
     }
-    if (fs_seek(
-            p->fd, M_HEAD_BYTES + (off_t)frame * (off_t)p->frame_bytes,
-            SEEK_SET)
-            < 0
-        || fs_read(p->fd, p->frame, p->frame_bytes) != (ssize_t)p->frame_bytes) {
-        LOG_WARNING("%s: frame %d cannot be read", video->path, frame);
-        video->is_playing = false;
-        return;
+    m->shown = frame;
+    m->presented++;
+    if (m->presented % 60 == 1) {
+        LOG_INFO(
+            "film: frame %d at %.1f s, %u shown, %.1f s since the start",
+            (int)frame, seconds, (unsigned)m->presented,
+            (double)(timer_us_gettime64() - m->start_us - m->paused_us) / 1e6);
     }
-    p->shown = frame;
-    uint32_t *const pixels =
-        p->lock != nullptr ? p->lock(p->surface, p->lock_data) : nullptr;
-    if (pixels == nullptr) {
-        return;
+    if (m->render_begin != nullptr) {
+        m->render_begin(m->surface, m->render_begin_data);
     }
-    M_Unpack(p, pixels, p->width * 4);
-    if (p->unlock != nullptr) {
-        p->unlock(p->surface, p->unlock_data);
-    }
-    if (p->render_begin != nullptr) {
-        p->render_begin(p->surface, p->render_begin_data);
-    }
-    if (p->upload != nullptr) {
-        p->upload(p->surface, p->upload_data);
-    }
-    if (p->render_end != nullptr) {
-        p->render_end(p->surface, p->render_end_data);
+    uint8_t *const dst = m->lock(m->surface, m->lock_data);
+    memcpy(
+        dst, m->slots + (size_t)(frame % M_SLOTS) * M_FRAME_BYTES,
+        M_FRAME_BYTES);
+    m->unlock(m->surface, m->unlock_data);
+    m->upload(m->surface, m->upload_data);
+    if (m->render_end != nullptr) {
+        m->render_end(m->surface, m->render_end_data);
     }
 }
-
-void Video_SetAudioEnabled(VIDEO *const video, const bool enabled)
-{
-}
-
-void Video_SetVolume(VIDEO *const video, const double volume)
-{
-}
-
-void Video_SetExternalAudioClock(VIDEO *const video, const double timestamp)
-{
-}
-
-void Video_SetSurfacePixelFormat(
-    VIDEO *const video, const enum AVPixelFormat pixel_format)
-{
-}
-
-void Video_SetSurfaceStride(VIDEO *const video, const int32_t stride)
-{
-}
-
-#define M_SETTER(name, field, type)                                                void name(VIDEO *const video, type func, void *const user_data)                {                                                                                  M_PRIV *const p = video->priv;                                                 p->field = func;                                                               p->field##_data = user_data;                                               }
-
-M_SETTER(Video_SetSurfaceAllocatorFunc, allocate, VIDEO_SURFACE_ALLOCATOR_FUNC)
-M_SETTER(Video_SetSurfaceDeallocatorFunc, deallocate, M_SURFACE_FUNC)
-M_SETTER(Video_SetSurfaceClearFunc, clear, M_SURFACE_FUNC)
-M_SETTER(Video_SetSurfaceLockFunc, lock, M_LOCK_FUNC)
-M_SETTER(Video_SetSurfaceUnlockFunc, unlock, M_SURFACE_FUNC)
-M_SETTER(Video_SetSurfaceUploadFunc, upload, M_SURFACE_FUNC)
-M_SETTER(Video_SetRenderBeginFunc, render_begin, M_SURFACE_FUNC)
-M_SETTER(Video_SetRenderEndFunc, render_end, M_SURFACE_FUNC)

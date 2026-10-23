@@ -106,7 +106,6 @@ cambia es la columna TR1; casi todos los efectos pesados no existen en TR1.
 
 | # | Stub (llamadores) | TR1 | TR2 | TR3 | Prioridad |
 |---|---|---|---|---|---|
-| 26 | **FMV** (`video.c`, `tools/dreamcast/fmvenc.c`, `make_disc.sh`): escrito y compilado el 23/10/2026, **sin probar**. Queda: ver y ajustar (calidad, ritmo, sincronía con el sonido), medir la carga de disco, y los FMV del remaster (otro formato de fichero, sin mirar). Detalle en PRUEBAS_PENDIENTES.md | FMV | FMV | FMV | Media |
 | 31 | **Depuración** (`Misc_Stage{Cuboid,Sphere}`, `RoomsDebug_*`): cajas de choque, ascensor, puertas de disparo, `lua/capi/scene.c` | sí | sí | sí | Baja: no son efectos del juego |
 
 **Cielo** (`OutputSource_Sky_StageLayer` y `StageFogGradient`): no aplica. Solo los llama el código de TR4 (`g_TRVersion == 4` en `output/sky.c`); el cielo de TR2 y TR3 es una malla normal y ya se dibuja. Los stubs se quedan vacíos.
@@ -127,6 +126,6 @@ agua (`Output_Water_*`). Comprobar en un nivel de TR3 con sol y con agua.
     textos frente a los clásicos; (b) ver qué entiende ya TRX (`GAME.TXT`,
     `make_disc.sh`, el selector de niveles) y qué habría que añadir;
     (c) cabida en el disco y en memoria (los mapas grandes ya van justos,
-    Jungle ~2 MB libres); (d) añadir las expansiones al selector. Decidir
-    antes con el usuario si TR1 entra en el port (hoy solo TR2 y TR3).
+    Jungle ~2 MB libres); (d) añadir las expansiones al selector. TR1 ya arranca
+    en el port (ver PRUEBAS_PENDIENTES.md).
     El `MAIN.SFX` del remaster ya se lee (builds 269–275).
