@@ -66,6 +66,11 @@ typedef struct {
 #define DC_PVR_ENV_MAP (-5)
 // The picture behind the loading screen and the menu (DC_PVR_SetPicture).
 #define DC_PVR_PICTURE (-6)
+// The film's frame (DC_PVR_SetVideoFrame).
+#define DC_PVR_VIDEO (-7)
+// One frame of a film in the disc's format (tools/dreamcast/fmvconv.c): a
+// 256x256 VQ texture, a codebook and an index per 2x2 block.
+#define DC_PVR_VIDEO_FRAME_BYTES 18432
 
 void DC_PVR_Init(void);
 void DC_PVR_Shutdown(void);
@@ -153,6 +158,11 @@ void DC_PVR_DrawLoadingScreen(
 void DC_PVR_SetPicture(const char *name);
 // Draws it over the whole screen, behind all else, inside a frame.
 void DC_PVR_DrawPicture(float brightness);
+// Puts a frame of a film in video memory, and lets it go when asked.
+void DC_PVR_SetVideoFrame(const uint8_t *frame);
+void DC_PVR_FreeVideo(void);
+// Draws it in a box of the 640x480 screen, over the interface.
+void DC_PVR_DrawVideo(float x0, float y0, float x1, float y1);
 // Whether a picture is in video memory (it is not if the disc lacks it).
 bool DC_PVR_HasPicture(void);
 // The same, inside a box given as fractions of the screen, fading in with

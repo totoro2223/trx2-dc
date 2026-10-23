@@ -21,7 +21,7 @@
 #include <stdio.h>
 
 // Each game's levels in the order of its gameflow (data/trx/ship/games/tr2
-// and tr3).
+// tr1, tr2 and tr3).
 static const char *const m_LevelsTR2[] = {
     "Title screen",
     "Lara's Home",
@@ -43,6 +43,25 @@ static const char *const m_LevelsTR2[] = {
     "Floating Islands",
     "The Dragon's Lair",
     "Home Sweet Home",
+};
+static const char *const m_LevelsTR1[] = {
+    "Title screen",
+    "Lara's Home",
+    "Caves",
+    "City of Vilcabamba",
+    "Lost Valley",
+    "Tomb of Qualopec",
+    "St. Francis' Folly",
+    "Colosseum",
+    "Palace Midas",
+    "The Cistern",
+    "Tomb of Tihocan",
+    "City of Khamoon",
+    "Obelisk of Khamoon",
+    "Sanctuary of the Scion",
+    "Natla's Mines",
+    "Atlantis",
+    "The Great Pyramid",
 };
 static const char *const m_LevelsTR3[] = {
     "Title screen",
@@ -71,6 +90,12 @@ static const char *const m_LevelsTR3[] = {
 
 // The gameflow's cutscenes, which its levels play in this order: the entry
 // is the cutscene's number, named by the level that plays it.
+static const char *const m_CutscenesTR1[] = {
+    "After Tomb of Qualopec (cut1)",
+    "After Tomb of Tihocan (cut2)",
+    "After Natla's Mines (cut3)",
+    "The Great Pyramid (cut4)",
+};
 static const char *const m_CutscenesTR2[] = {
     "After The Great Wall (cut1)",
     "After Opera House (cut2)",
@@ -93,6 +118,11 @@ static const char *const m_CutscenesTR3[] = {
 
 // The title's demos in the gameflow's order, then the benchmarks: a demo run
 // whole and measured (dc_bench.h), named by the demo it runs.
+static const char *const m_DemosTR1[] = {
+    "Demo: City of Vilcabamba",
+    "Demo: Lost Valley",
+    "Benchmark: Vilcabamba demo",
+};
 static const char *const m_DemosTR2[] = {
     "Demo: Venice",
     "Demo: Wreck of the Maria Doria",
@@ -107,7 +137,8 @@ static const char *const m_DemosTR3[] = {
 };
 // How many of the entries above are demos, and which demo each benchmark
 // after them runs.
-#define M_DEMO_COUNT 3
+#define M_DEMO_COUNT_TR23 3
+#define M_DEMO_COUNT_TR1 2
 static const int32_t m_BenchDemo[] = { 0 };
 
 #define M_LEN(a) ((int32_t)(sizeof(a) / sizeof(a[0])))
@@ -175,20 +206,28 @@ static uint32_t M_Buttons(void)
 int32_t DC_LevelSelect_Run(const int32_t engine)
 {
     const bool tr3 = engine == 3;
+    const bool tr1 = engine == 1;
+    const int32_t demo_count = tr1 ? M_DEMO_COUNT_TR1 : M_DEMO_COUNT_TR23;
     m_Pages[M_PAGE_LEVELS] = (M_PAGE) {
         .title = "Levels",
-        .names = tr3 ? m_LevelsTR3 : m_LevelsTR2,
-        .count = tr3 ? M_LEN(m_LevelsTR3) : M_LEN(m_LevelsTR2),
+        .names = tr1 ? m_LevelsTR1 : tr3 ? m_LevelsTR3 : m_LevelsTR2,
+        .count = tr1 ? M_LEN(m_LevelsTR1)
+            : tr3    ? M_LEN(m_LevelsTR3)
+                     : M_LEN(m_LevelsTR2),
     };
     m_Pages[M_PAGE_CUTSCENES] = (M_PAGE) {
         .title = "Cutscenes",
-        .names = tr3 ? m_CutscenesTR3 : m_CutscenesTR2,
-        .count = tr3 ? M_LEN(m_CutscenesTR3) : M_LEN(m_CutscenesTR2),
+        .names = tr1 ? m_CutscenesTR1 : tr3 ? m_CutscenesTR3 : m_CutscenesTR2,
+        .count = tr1 ? M_LEN(m_CutscenesTR1)
+            : tr3    ? M_LEN(m_CutscenesTR3)
+                     : M_LEN(m_CutscenesTR2),
     };
     m_Pages[M_PAGE_DEMOS] = (M_PAGE) {
         .title = "Demos and benchmarks",
-        .names = tr3 ? m_DemosTR3 : m_DemosTR2,
-        .count = tr3 ? M_LEN(m_DemosTR3) : M_LEN(m_DemosTR2),
+        .names = tr1 ? m_DemosTR1 : tr3 ? m_DemosTR3 : m_DemosTR2,
+        .count = tr1 ? M_LEN(m_DemosTR1)
+            : tr3    ? M_LEN(m_DemosTR3)
+                     : M_LEN(m_DemosTR2),
     };
     M_PAGE_ID page_id = M_PAGE_LEVELS;
     M_Draw(engine, page_id);
@@ -224,9 +263,9 @@ int32_t DC_LevelSelect_Run(const int32_t engine)
         g_DC_StartCutscene = selected;
         return -1;
     case M_PAGE_DEMOS:
-        g_DC_BenchRequested = selected >= M_DEMO_COUNT;
-        g_DC_StartDemo = selected >= M_DEMO_COUNT
-            ? m_BenchDemo[selected - M_DEMO_COUNT]
+        g_DC_BenchRequested = selected >= demo_count;
+        g_DC_StartDemo = selected >= demo_count
+            ? m_BenchDemo[selected - demo_count]
             : selected;
         return -1;
     default:

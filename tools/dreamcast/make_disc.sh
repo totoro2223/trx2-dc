@@ -31,7 +31,8 @@ GAME="${TRX_DC_GAME:-tr2}"
 case "$GAME" in
   tr2) ENGINE=2 ;;
   tr3) ENGINE=3 ;;
-  *) echo "TRX_DC_GAME must be tr2 or tr3" >&2; exit 1 ;;
+  tr1) ENGINE=1 ;;
+  *) echo "TRX_DC_GAME must be tr1, tr2 or tr3" >&2; exit 1 ;;
 esac
 SOURCE="${TRX_DC_SOURCE:-auto}"
 if [ "$SOURCE" = auto ]; then
@@ -128,12 +129,15 @@ for f in "$GAME_DATA"/* "$GAME_DATA"/../cuts/*; do
   name="$(basename "$f")"
   lower="$(echo "$name" | tr '[:upper:]' '[:lower:]')"
   case "$lower" in
-    *.tr2) cp "$f" "$STAGE/games/$GAME/levels/$lower" ;;
+    *.tr2 | *.phd) cp "$f" "$STAGE/games/$GAME/levels/$lower" ;;
     main.sfx) cp "$f" "$STAGE/games/$GAME/main.sfx" ;;
   esac
 done
 
 echo "== texture pages in VQ"
+# TR1 levels are 8-bit and have no pages in VQ yet: the game then loads them
+# as they are (textures.vq is optional).
+if [ "$GAME" != tr1 ]; then
 # Every page of every level and injection on the disc, which the game finds
 # by its contents (see tools/dreamcast/texvq.c); made again only when the
 # tool or the data change.
@@ -148,6 +152,7 @@ if [ ! -f "$VQ" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
   "$VQ_TOOL" "$VQ" "${VQ_INPUTS[@]}"
 fi
 cp "$VQ" "$STAGE/textures.vq"
+fi
 
 echo "== loading pictures"
 # The game's original 640x480 pictures (the middle of the remaster's 856x480
@@ -176,6 +181,41 @@ for f in "${PIX_FILES[@]}"; do
   fi
   [ -f "$out" ] && cp "$out" "$STAGE/pix/$lower.565"
 done
+# The copyright screen (the gameflow's legal_eu.webp) is not in the remaster's
+# pictures: it is the classic game's legal.PCX (TR2, in its data directory) or
+# pix/LEGAL.BMP (TR3). TRX_DC_LEGAL names one when the data comes from
+# somewhere that has neither beside it.
+if [ ! -f "$STAGE/pix/legal_eu.565" ]; then
+  for f in "${TRX_DC_LEGAL:-}" "$GAME_DATA"/legal.PCX "$GAME_DATA"/legal.pcx     "$GAME_DATA"/../pix/LEGAL.BMP "$GAME_DATA"/../pix/legal.bmp; do
+    [ -f "$f" ] || continue
+    out="$PIX_CACHE/legal_eu.565"
+    if [ ! -f "$out" ] && command -v ffmpeg > /dev/null; then
+      ffmpeg -hide_banner -loglevel error -y -i "$f" -frames:v 1         -vf "scale=512:512:flags=lanczos" -f rawvideo -pix_fmt rgb565le "$out"
+    fi
+    [ -f "$out" ] && cp "$out" "$STAGE/pix/legal_eu.565" && echo "copyright screen from $f"
+    break
+  done
+fi
+# TR1's gameflow calls some pictures by other names than the remaster's files
+# (peru is aztec.dds, greece greek.dds, atlantis atlan.dds), and its copyright
+# screen (eidos.webp) is the remaster's PIX/LEGAL_1.DDS.
+if [ "$GAME" = tr1 ]; then
+  for pair in peru:aztec greece:greek atlantis:atlan; do
+    [ -f "$STAGE/pix/${pair#*:}.565" ] && cp "$STAGE/pix/${pair#*:}.565" "$STAGE/pix/${pair%:*}.565"
+  done
+  # The original's EIDOSPC.PCX (TRX_DC_LEGAL) if given, else the remaster's.
+  LEGAL1="${TRX_DC_LEGAL:-$GAME_DATA/../PIX/LEGAL_1.DDS}"
+  if [ -f "$LEGAL1" ] && command -v ffmpeg > /dev/null; then
+    out="$PIX_CACHE/eidos.565"
+    LEGAL_CROP="$PIX_CROP"
+    if [ -n "${TRX_DC_LEGAL:-}" ]; then
+      LEGAL_CROP=""
+      rm -f "$out"
+    fi
+    [ -f "$out" ] || ffmpeg -hide_banner -loglevel error -y -i "$LEGAL1" -frames:v 1       -vf "${LEGAL_CROP}scale=512:512:flags=lanczos" -f rawvideo -pix_fmt rgb565le "$out"
+    [ -f "$out" ] && cp "$out" "$STAGE/pix/eidos.565"
+  fi
+fi
 # The gameflow names each level's picture as india.webp and keeps the name
 # only if such a file is installed: an empty one stands in for it.
 mkdir -p "$STAGE/games/$GAME/images"
@@ -237,6 +277,64 @@ for f in "${MUSIC_FILES[@]}"; do
   [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music/"
 done
 echo "$(ls "$STAGE/games/$GAME/music" | wc -l) tracks"
+
+echo "== films"
+# The game's films in the Dreamcast's own format (tools/dreamcast/fmvconv.c):
+# each frame a VQ texture of 256x256 the PowerVR decodes itself, and the sound
+# as the music is, Yamaha ADPCM at 44.1 kHz in a WAV beside it. Kept between
+# discs. TRX_DC_FMV=0 makes a disc with no films; TRX_DC_FMV="ancient ms"
+# only those (by name).
+FMV_CACHE="$BUILD_DIR/fmv-$GAME-$SOURCE"
+mkdir -p "$FMV_CACHE" "$STAGE/games/$GAME/fmv"
+if [ "${TRX_DC_FMV:-all}" = 0 ] || ! command -v ffmpeg > /dev/null; then
+  FMV_FILES=()
+elif [ "$SOURCE" = remastered ]; then
+  FMV_FILES=("$GAME_DATA"/../FMV/OG/*.FMV)
+else
+  FMV_FILES=("$GAME_DATA"/../fmv/*.rpl "$GAME_DATA"/../fmv/*.RPL)
+fi
+# Films the game's own folders lack (TR1's core and escape logos, TR2's logo)
+# come from the directory TRX_DC_FMV_EXTRA names: any file FFmpeg reads, whose
+# name (without extension) is the gameflow's. The game's own films win.
+if [ -n "${TRX_DC_FMV_EXTRA:-}" ] && [ -d "$TRX_DC_FMV_EXTRA" ] && [ "${TRX_DC_FMV:-all}" != 0 ]; then
+  FMV_FILES+=("$TRX_DC_FMV_EXTRA"/*)
+fi
+FMV_SEEN=" "
+FMV_TOOL="$BUILD_DIR/fmvconv.exe"
+if [ ${#FMV_FILES[@]} -gt 0 ] && { [ ! -f "$FMV_TOOL" ] || [ "$ROOT/tools/dreamcast/fmvconv.c" -nt "$FMV_TOOL" ]; }; then
+  gcc -O2 -fopenmp -o "$FMV_TOOL" "$ROOT/tools/dreamcast/fmvconv.c"
+fi
+for f in "${FMV_FILES[@]}"; do
+  [ -f "$f" ] || continue
+  name="$(basename "$f")"
+  lower="$(echo "${name%.*}" | tr '[:upper:]' '[:lower:]')"
+  [[ "$FMV_SEEN" == *" $lower "* ]] && continue
+  FMV_SEEN="$FMV_SEEN$lower "
+  if [ "${TRX_DC_FMV:-all}" != all ] && [[ " $TRX_DC_FMV " != *" $lower "* ]]; then
+    continue
+  fi
+  out="$FMV_CACHE/$lower.fmv"
+  if [ ! -f "$out" ] || [ "$FMV_TOOL" -nt "$out" ]; then
+    # width,height,frame rate of the film, which the player draws as it was.
+    IFS=',' read -r fw fh fr < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$f")
+    # Windows' ffprobe ends its lines with a carriage return.
+    fr="${fr//[!0-9\/]/}"
+    fps=$(( ${fr%/*} / ${fr#*/} ))
+    # The sound first (Yamaha ADPCM, as the music), then the picture with it.
+    SOUND=()
+    if ffmpeg -hide_banner -loglevel error -y -i "$f" -vn -ac 2 -ar 44100 \
+      -c:a adpcm_yamaha "$FMV_CACHE/$lower.wav"; then
+      SOUND=("$FMV_CACHE/$lower.wav")
+    fi
+    ffmpeg -hide_banner -loglevel error -y -i "$f" \
+      -vf "fps=$fps,scale=256:256:flags=lanczos" -f rawvideo -pix_fmt rgb24 - \
+      | "$FMV_TOOL" "$out.tmp" "$fps" "$fw" "$fh" "${SOUND[@]}" 2> /dev/null
+    mv "$out.tmp" "$out"
+    rm -f "$FMV_CACHE/$lower.wav"
+  fi
+  [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/fmv/$lower.fmv"
+done
+echo "$(ls "$STAGE/games/$GAME/fmv" | grep -c fmv) films"
 
 echo "== image"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \

@@ -3,6 +3,8 @@
 
 #include "pvr.h"
 
+#include <stdlib.h>
+
 #include <platform/dreamcast/stub.h>
 
 #include <trx/game/game/draw.h>
@@ -297,35 +299,63 @@ void Output_Overlay_UpdateLetterbox(void)
     }
 }
 
+// The quad renderer, for the film (fmv.c): a surface the film player fills
+// with a frame in the disc's own format (video.c), which goes to the
+// PowerVR as it is; the quad draws it fitted to the screen.
+struct OUTPUT_QUAD {
+    float src_w;
+    float src_h;
+    OUTPUT_QUAD_FIT_MODE fit;
+};
+
 RESULT Output_Quad_Create(OUTPUT_QUAD **out_quad)
 {
-    DC_STUB();
-    return OK;
+    *out_quad = calloc(1, sizeof(OUTPUT_QUAD));
+    return *out_quad != nullptr ? OK : FAIL("no memory for the quad");
 }
 
 void Output_Quad_Destroy(OUTPUT_QUAD *renderer)
 {
-    DC_STUB();
-}
-
-void Output_Quad_Render(OUTPUT_QUAD *renderer)
-{
-    DC_STUB();
-}
-
-void Output_Quad_SetFilter(OUTPUT_QUAD *renderer, TEXTURE_FILTER filter_mode)
-{
-    DC_STUB();
-}
-
-void Output_Quad_SetFit(OUTPUT_QUAD *renderer, OUTPUT_QUAD_FIT_MODE fit_mode, float src_w, float src_h)
-{
-    DC_STUB();
+    DC_PVR_FreeVideo();
+    free(renderer);
 }
 
 void Output_Quad_Upload(OUTPUT_QUAD *renderer, const OUTPUT_QUAD_SURFACE_DESC *desc, const uint8_t *data)
 {
-    DC_STUB();
+    DC_PVR_SetVideoFrame(data);
+}
+
+void Output_Quad_SetFilter(OUTPUT_QUAD *renderer, TEXTURE_FILTER filter_mode)
+{
+}
+
+void Output_Quad_SetFit(OUTPUT_QUAD *renderer, OUTPUT_QUAD_FIT_MODE fit_mode, float src_w, float src_h)
+{
+    renderer->fit = fit_mode;
+    renderer->src_w = src_w;
+    renderer->src_h = src_h;
+}
+
+void Output_Quad_Render(OUTPUT_QUAD *renderer)
+{
+    // Letterboxed on the 640x480 screen, whatever the film's shape.
+    float x0 = 0.0f;
+    float y0 = 0.0f;
+    float x1 = 640.0f;
+    float y1 = 480.0f;
+    if (renderer->fit == OUTPUT_QUAD_FIT_LETTERBOX && renderer->src_w > 0.0f
+        && renderer->src_h > 0.0f) {
+        const float h = 640.0f * renderer->src_h / renderer->src_w;
+        if (h <= 480.0f) {
+            y0 = (480.0f - h) / 2.0f;
+            y1 = y0 + h;
+        } else {
+            const float w = 480.0f * renderer->src_w / renderer->src_h;
+            x0 = (640.0f - w) / 2.0f;
+            x1 = x0 + w;
+        }
+    }
+    DC_PVR_DrawVideo(x0, y0, x1, y1);
 }
 
 RESULT TRX_GL_Context_Attach(void *window_handle)

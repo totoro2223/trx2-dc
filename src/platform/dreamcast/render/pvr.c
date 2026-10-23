@@ -173,6 +173,7 @@ static pvr_ptr_t m_LoadingText = nullptr;
 #define M_PICTURE_BYTES                                                \
     (M_PICTURE_SIZE * M_PICTURE_SIZE * sizeof(uint16_t))
 static pvr_ptr_t m_Picture = nullptr;
+static pvr_ptr_t m_Video = nullptr;
 
 static void M_ResetFrame(void);
 static void M_InitHardware(void);
@@ -260,6 +261,7 @@ static void M_SetLowRes(const bool low_res)
     vid_set_mode(low_res ? DM_320x240 : DM_640x480, PM_RGB565);
     m_LoadingText = nullptr;
     m_Picture = nullptr;
+    m_Video = nullptr;
     M_InitHardware();
     m_LowRes = low_res;
     LOG_INFO("Screen now %s", low_res ? "320x240" : "640x480");
@@ -680,6 +682,51 @@ void DC_PVR_DrawPicture(const float brightness)
     };
     DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
     DC_PVR_SetBackgroundMode(was_background);
+}
+
+void DC_PVR_SetVideoFrame(const uint8_t *const frame)
+{
+    if (m_Video == nullptr) {
+        m_Video = pvr_mem_malloc(DC_PVR_VIDEO_FRAME_BYTES);
+        if (m_Video == nullptr) {
+            return;
+        }
+        m_HeaderGen++;
+    } else {
+        // The last frame may still be drawing from it.
+        pvr_wait_ready();
+    }
+    M_WriteTexels(
+        (uint16_t *)m_Video, (const uint16_t *)frame,
+        DC_PVR_VIDEO_FRAME_BYTES / 2);
+}
+
+void DC_PVR_FreeVideo(void)
+{
+    if (m_Video != nullptr) {
+        pvr_wait_ready();
+        pvr_mem_free(m_Video);
+        m_Video = nullptr;
+        m_HeaderGen++;
+    }
+}
+
+void DC_PVR_DrawVideo(
+    const float x0, const float y0, const float x1, const float y1)
+{
+    if (m_Video == nullptr) {
+        return;
+    }
+    DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_VIDEO, false);
+    const float z = DC_PVR_Depth2D(0.4f);
+    const uint32_t white = 0xFFFFFFFF;
+    const DC_PVR_VERTEX v[4] = {
+        { .x = x0, .y = y0, .z = z, .u = 0, .v = 0, .argb = white },
+        { .x = x1, .y = y0, .z = z, .u = 1, .v = 0, .argb = white },
+        { .x = x0, .y = y1, .z = z, .u = 0, .v = 1, .argb = white },
+        { .x = x1, .y = y1, .z = z, .u = 1, .v = 1, .argb = white },
+    };
+    DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
 }
 
 bool DC_PVR_HasPicture(void)
@@ -1339,6 +1386,8 @@ void DC_PVR_SetState(
         m_Page = m_LoadingText != nullptr ? page : DC_PVR_NO_TEXTURE;
     } else if (page == DC_PVR_PICTURE) {
         m_Page = m_Picture != nullptr ? page : DC_PVR_NO_TEXTURE;
+    } else if (page == DC_PVR_VIDEO) {
+        m_Page = m_Video != nullptr ? page : DC_PVR_NO_TEXTURE;
     } else if (page == DC_PVR_SHADOW_MAP) {
         m_Page = m_ShadowMap != nullptr ? page : DC_PVR_NO_TEXTURE;
     } else if (page == DC_PVR_ENV_MAP) {
@@ -1409,6 +1458,13 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
             &cxt, list, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED,
             M_PICTURE_SIZE, M_PICTURE_SIZE, m_Picture,
             PVR_FILTER_BILINEAR);
+        cxt.txr.env = PVR_TXRENV_MODULATE;
+        cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
+    } else if (m_Page == DC_PVR_VIDEO) {
+        pvr_poly_cxt_txr(
+            &cxt, list,
+            PVR_TXRFMT_RGB565 | PVR_TXRFMT_VQ_ENABLE | PVR_TXRFMT_TWIDDLED, 256,
+            256, m_Video, PVR_FILTER_BILINEAR);
         cxt.txr.env = PVR_TXRENV_MODULATE;
         cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
     } else if (m_Page == DC_PVR_SHADOW_MAP) {

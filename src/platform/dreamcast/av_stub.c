@@ -24,88 +24,9 @@ double AudioDecoder_GetDuration(const AUDIO_DECODER *decoder)
     return (double) {};
 }
 
-void Video_Close(VIDEO *video)
-{
-    DC_STUB();
-}
 
-RESULT Video_Open(const char *path, VIDEO **out_video)
-{
-    DC_STUB();
-    return FAIL("%s: not available on the Dreamcast", __func__);
-}
 
-void Video_PumpEvents(VIDEO *video)
-{
-    DC_STUB();
-}
 
-void Video_SetAudioEnabled(VIDEO *video, bool enabled)
-{
-    DC_STUB();
-}
 
-void Video_SetExternalAudioClock(VIDEO *video, double timestamp)
-{
-    DC_STUB();
-}
 
-void Video_SetPaused(VIDEO *video, bool paused)
-{
-    DC_STUB();
-}
 
-void Video_SetRenderBeginFunc(VIDEO *video, void (*func)(void *surface, void *user_data), void *user_data)
-{
-    DC_STUB();
-}
-
-void Video_SetRenderEndFunc(VIDEO *video, void (*func)(void *surface, void *user_data), void *user_data)
-{
-    DC_STUB();
-}
-
-void Video_SetSurfaceAllocatorFunc(VIDEO *video, VIDEO_SURFACE_ALLOCATOR_FUNC func, void *user_data)
-{
-    DC_STUB();
-}
-
-void Video_SetSurfaceClearFunc(VIDEO *video, void (*func)(void *surface, void *user_data), void *user_data)
-{
-    DC_STUB();
-}
-
-void Video_SetSurfaceDeallocatorFunc(VIDEO *video, void (*func)(void *surface, void *user_data), void *user_data)
-{
-    DC_STUB();
-}
-
-void Video_SetSurfaceLockFunc(VIDEO *video, void *(*func)(void *surface, void *user_data), void *user_data)
-{
-    DC_STUB();
-}
-
-void Video_SetSurfacePixelFormat(VIDEO *video, enum AVPixelFormat pixel_format)
-{
-    DC_STUB();
-}
-
-void Video_SetSurfaceUnlockFunc(VIDEO *video, void (*func)(void *surface, void *user_data), void *user_data)
-{
-    DC_STUB();
-}
-
-void Video_SetSurfaceUploadFunc(VIDEO *video, void (*func)(void *surface, void *user_data), void *user_data)
-{
-    DC_STUB();
-}
-
-void Video_Start(VIDEO *video)
-{
-    DC_STUB();
-}
-
-void Video_Stop(VIDEO *video)
-{
-    DC_STUB();
-}

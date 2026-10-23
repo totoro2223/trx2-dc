@@ -32,6 +32,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dc_video.h"
+
 // The AICA counts a sample's position in 16 bits.
 #define M_MAX_LENGTH 65534
 #define M_MIN_FREQ 1000
@@ -73,6 +75,8 @@ typedef struct {
     bool looped;
     snd_stream_hnd_t hnd;
     file_t fd;
+    // The sound of a film, handed over by the film player (video.c).
+    bool film;
     int32_t channels;
     uint32_t rate;
     uint32_t data_start;
@@ -729,8 +733,32 @@ static void *M_StreamFeed(
         if (n > (uint32_t)(want - got)) {
             n = want - got;
         }
-        fs_seek(s->fd, s->data_start + s->pos, SEEK_SET);
-        const ssize_t read = fs_read(s->fd, m_StreamBuffer + got, n);
+        ssize_t read;
+        if (s->film) {
+            bool finished;
+            read = (ssize_t)DC_Video_ReadAudio(
+                m_StreamBuffer + got, n & ~63u, &finished);
+            if (read == 0) {
+                if (finished) {
+                    s->end = s->pos;
+                    continue;
+                }
+                // The player is behind: a moment of silence, which keeps
+                // the clock going, and what comes next on the next call.
+                read = (n & ~63u) < 1472 ? (n & ~63u) : 1472;
+                if (read == 0) {
+                    break;
+                }
+                memset(m_StreamBuffer + got, 0, read);
+            }
+            got += read;
+            s->pos += read;
+            // Whatever the player had: it hands over the rest later.
+            break;
+        } else {
+            fs_seek(s->fd, s->data_start + s->pos, SEEK_SET);
+            read = fs_read(s->fd, m_StreamBuffer + got, n);
+        }
         if (read <= 0) {
             s->end = s->pos; // the disc gave out: the track ends here
             continue;
@@ -738,7 +766,7 @@ static void *M_StreamFeed(
         got += read;
         s->pos += read;
     }
-    if (got < want && s->ends_at == 0) {
+    if (got < want && s->ends_at == 0 && (!s->film || s->pos >= s->end)) {
         s->ends_at = timer_ms_gettime64() + M_TAIL_MS;
     }
     *bytes_recv = got;
@@ -759,7 +787,9 @@ static void M_StreamRelease(
         snd_stream_stop(s->hnd);
     }
     snd_stream_destroy(s->hnd);
-    fs_close(s->fd);
+    if (s->fd >= 0) {
+        fs_close(s->fd);
+    }
     *s = (M_STREAM) { .hnd = SND_STREAM_INVALID, .fd = -1 };
 }
 
@@ -808,6 +838,49 @@ RESULT Audio_Stream_CreateFromFile(
     const char *const path, int32_t *const out_sound_id)
 {
     MUST(Audio_Init());
+    // A film's sound comes from the film player's queue (video.c), not from
+    // the disc: the film's file is read in one pass, picture and sound.
+    const size_t path_len = strlen(path);
+    if (path_len > 4 && strcasecmp(path + path_len - 4, ".fmv") == 0) {
+        uint32_t rate;
+        int32_t channels;
+        uint32_t bytes;
+        FAIL_IF(
+            !DC_Video_GetAudio(&rate, &channels, &bytes),
+            "%s has no sound", path);
+        mutex_lock(&m_StreamLock);
+        int32_t id = -1;
+        for (int32_t i = 0; i < M_MAX_STREAMS; i++) {
+            if (!m_Streams[i].used) {
+                id = i;
+                break;
+            }
+        }
+        const snd_stream_hnd_t hnd = id < 0
+            ? SND_STREAM_INVALID
+            : snd_stream_alloc(M_StreamFeed, M_STREAM_BUFFER);
+        if (hnd == SND_STREAM_INVALID) {
+            mutex_unlock(&m_StreamLock);
+            return FAIL("every stream is in use");
+        }
+        M_STREAM *const s = &m_Streams[id];
+        *s = (M_STREAM) {
+            .used = true,
+            .hnd = hnd,
+            .fd = -1,
+            .film = true,
+            .channels = channels,
+            .rate = rate,
+            .data_size = bytes,
+            .end = bytes,
+            .volume = 1.0f,
+            .fade = 1.0f,
+        };
+        snd_stream_set_userdata(hnd, s);
+        mutex_unlock(&m_StreamLock);
+        *out_sound_id = id;
+        return OK;
+    }
     const file_t fd = fs_open(path, O_RDONLY);
     FAIL_IF(fd < 0, "cannot open %s", path);
     uint8_t head[256];

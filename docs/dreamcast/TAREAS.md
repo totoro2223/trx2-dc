@@ -126,6 +126,6 @@ agua (`Output_Water_*`). Comprobar en un nivel de TR3 con sol y con agua.
     textos frente a los clásicos; (b) ver qué entiende ya TRX (`GAME.TXT`,
     `make_disc.sh`, el selector de niveles) y qué habría que añadir;
     (c) cabida en el disco y en memoria (los mapas grandes ya van justos,
-    Jungle ~2 MB libres); (d) añadir las expansiones al selector. Decidir
-    antes con el usuario si TR1 entra en el port (hoy solo TR2 y TR3).
+    Jungle ~2 MB libres); (d) añadir las expansiones al selector. TR1 ya arranca
+    en el port (ver PRUEBAS_PENDIENTES.md).
     El `MAIN.SFX` del remaster ya se lee (builds 269–275).
