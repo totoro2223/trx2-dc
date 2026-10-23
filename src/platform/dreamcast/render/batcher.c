@@ -1357,14 +1357,15 @@ static bool M_XNear(const float a, const float b)
     return fabsf(a - b) <= 1.0e-4f * MAX(fabsf(a), fabsf(b)) + 1.0e-6f;
 }
 
-// A colour within one level a channel: the assembly adds and multiplies the
-// floats apart where the compiler fuses them, so TR3's per-channel light can
-// land a level off at a truncation.
+// A colour within three levels a channel: the assembly adds and multiplies
+// the floats apart where the compiler fuses them (-O2 does), so TR3's
+// per-channel light, or the fog's share of a vertex at its edge, can land a
+// level or two off at a truncation.
 static bool M_ArgbNear(const uint32_t a, const uint32_t b)
 {
     for (int32_t s = 0; s < 32; s += 8) {
         const int32_t d = (int32_t)((a >> s) & 0xFF) - (int32_t)((b >> s) & 0xFF);
-        if (d > 1 || d < -1) {
+        if (d > 3 || d < -3) {
             return false;
         }
     }

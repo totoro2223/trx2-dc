@@ -72,6 +72,13 @@ if [ ! -f "$BUILD_DIR/build.ninja" ]; then
   meson setup "$BUILD_DIR" src --cross-file "$CROSS" --buildtype "$BUILD_TYPE" -Db_staticpic=false -Db_pie=false
 fi
 
+# minsize is -Os, which costs the game's logic and scripts' host code ~1 ms of
+# 28 in the London benchmark against -O2, for 0.2 MB of code more.
+if [ "$BUILD_TYPE" = minsize ] \
+  && [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk '$1 == "optimization" { print $2 }')" != 2 ]; then
+  meson configure "$BUILD_DIR" -Doptimization=2
+fi
+
 # The engine's scripts go in as bytecode when build_deps.sh made a luac.
 LUAC="$DEPS/../host/luac.exe"
 if [ -f "$LUAC" ]; then

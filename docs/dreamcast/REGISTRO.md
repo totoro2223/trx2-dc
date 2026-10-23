@@ -544,3 +544,37 @@ Hecho el 2026-10-22. Venecia, Lara quieta, Flycast oculto.
   (alguna raíz de la UI se recalcula casi cada frame: una señal sondeada que
   cambia cada tick, o un `Tween`), el bucle de roles de `input.lua` (una
   llamada a C por rol y tick) y los ~2400 vértices de estáticos con luz propia.
+
+## Otras siete pistas en la demo de Londres (23/10/2026, DC builds 351–374)
+
+Todo con la demo de Londres entera, Flycast oculto, en los tres modos.
+Informes: `docs/dreamcast/benchmarks/*_build372/373/374_tr3.txt` (después) y
+`…314/322/323…` (antes de todo).
+
+| Cambio | Efecto medido |
+|---|---|
+| **1. `-O2` en todo** (`build.sh` pone `optimization=2` en `minsize`; antes `-Os`, solo `batcher.c` iba a `-O2`) | texto 2,69 → 2,91 MB; lógica 4,8 → 4,2 ms, stage 7,7 → 7,0; graphics 27,3 → 28,0, experimental 60 39,8 → 41,7 |
+| **2. Lua con recolector generacional** (`lua_gc(L, LUA_GCGEN)`; antes incremental con pausa 100) | Lua −0,22 ms por frame, +0,12 MB de heap de Lua (pausa 130 daba lo mismo con más memoria) |
+| **3. Tirones** | ver abajo |
+| **4. Relieve adaptativo** | 3 pares apagado/encendido por demo (27, 26 y 25 fps → apaga; vuelve con la escena más ligera): no oscila, sin cambios |
+| **5. Efectos** (`Sparks_Draw`) | el staging de PolyFX es un stub en la Dreamcast (`render/stubs.c`): cada chispa pasaba por su posición y profundidad en 64 bits para tirarse al final. `Sparks_Draw` vuelve sin hacer nada en la Dreamcast: `sfx` 1,6 → 0,4 ms, stage −1,2, graphics +0,7 fps y frames lentos 44 → 33 % |
+| **6. Estáticos fuera de pantalla** | por llamada a sala: 7–15 estáticos vistos, 5–10 descartados, 2–4 dibujados; el descarte (`Output_CheckBoundsClip`, ~10 µs cada uno) cuesta ~0,5 ms por frame y la luz y el dibujo de los visibles ~0,3: una prueba previa con esfera lo recortaría ~0,3 ms (pendiente, riesgo de popping) |
+| **7. Reservas por frame** | `String_IsEmpty` compilaba una regex PCRE2 por llamada (la resolución de rutas la llama ~7 veces por frame, 20 KB de reserva cada una): ahora un bucle. 53 → 30 `malloc` por frame, pass −0,4 ms. Quedan 30 por frame desde `Memory_Alloc` (`Catalog_CreateKey`, `Memory_DupStr`, `String_Format`) |
+
+- **Tirones (3)**: el informe lleva ahora la duración de ~96 frames del medio,
+  qué gastó cada parte y los frames de 60 ms o más. Los frames de 29/29/39 ms
+  en ráfaga de tres son el limitador de frames con pasos de 10 ms (KOS
+  duerme en ticks de 10 ms), no trabajo: la CPU gasta ~23 ms de 33. Lo que sí
+  son tirones: cuatro frames de 105–150 ms en el `pass` (la creación de una
+  página de relieve: 16 384 texels con `asinf`/`atan2f` cada uno) y una
+  racha de ~30 frames de 60–70 ms con 13 500 vértices, `submit` de 16 ms
+  (la entrega de ~1600 polígonos a la TA, que Flycast modela) y lógica de 11.
+  Hecho: la página de relieve usa un polinomio de atan (error < 1 nivel de 255,
+  `[bump-verify]` con `dc_emit_verify`); un texel plano no tiene ángulo, la
+  librería le daba −π de un par de ceros negativos.
+
+| Modo | fps (base → ahora) | pass | frames > 35 ms |
+|---|---|---|---|
+| Graphics | 26,9 → 28,7 | 14,3 → 12,7 | 44 % → 34 % |
+| Performance | 27,5 → 29,3 | 14,0 → 12,4 | 44 % → 34 % |
+| Experimental 60 | 39,0 → 44,4 | 11,7 → 10,8 | 15 % → 5 % |

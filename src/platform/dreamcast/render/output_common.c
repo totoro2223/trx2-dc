@@ -255,6 +255,18 @@ static struct {
     uint64_t probe_sum[DC_PROBE_COUNT];
     // Frames by their length in whole milliseconds, the last for longer.
     int32_t hist[M_BENCH_HIST_MS + 1];
+    // Each frame's length in milliseconds (up to 255), in order, to tell a
+    // beat from a stretch of heavy scenes; and what the first slow ones
+    // (60 ms or more) spent their time on.
+    uint8_t series[4096];
+    // The same for logic, stage, pass and map, in quarters of a millisecond.
+    uint8_t parts[4][4096];
+    int32_t slow_count;
+    struct {
+        int32_t frame;
+        uint32_t dt;
+        uint32_t stat[M_STAT_COUNT];
+    } slow_frames[32];
 } m_Bench = {};
 
 static void M_BenchFrame(const uint64_t now, const uint32_t value[])
@@ -279,6 +291,22 @@ static void M_BenchFrame(const uint64_t now, const uint32_t value[])
         }
         const uint32_t ms = dt / 1000;
         m_Bench.hist[ms < M_BENCH_HIST_MS ? ms : M_BENCH_HIST_MS]++;
+        if (m_Bench.frames <= 4096) {
+            m_Bench.series[m_Bench.frames - 1] = ms < 255 ? ms : 255;
+            static const int32_t which[4] = { M_LOGIC, M_DRAW, M_PASS, M_MAP };
+            for (int32_t p = 0; p < 4; p++) {
+                const uint32_t q = value[which[p]] / 250;
+                m_Bench.parts[p][m_Bench.frames - 1] = q < 255 ? q : 255;
+            }
+        }
+        if (dt >= 60000 && m_Bench.slow_count < 32) {
+            m_Bench.slow_frames[m_Bench.slow_count].frame = m_Bench.frames;
+            m_Bench.slow_frames[m_Bench.slow_count].dt = dt;
+            memcpy(
+                m_Bench.slow_frames[m_Bench.slow_count].stat, value,
+                sizeof(uint32_t) * M_STAT_COUNT);
+            m_Bench.slow_count++;
+        }
         for (int32_t i = 0; i < M_STAT_COUNT; i++) {
             m_Bench.sum[i] += value[i];
             if (value[i] > m_Bench.max[i]) {
@@ -430,6 +458,55 @@ void DC_Bench_End(void)
     }
     if (row[0] != '\0') {
         M_BenchPrint(" %s", row);
+    }
+    M_BenchPrint("frame length by frame (ms), 24 a line, from the middle:");
+    for (int32_t i = m_Bench.frames / 2 - 48; i < m_Bench.frames / 2 + 48 && i < 4096;
+         i += 24) {
+        char text[110] = "";
+        for (int32_t j = i; j < i + 24 && j < m_Bench.frames && j < 4096; j++) {
+            char item[8];
+            snprintf(item, sizeof(item), " %d", (int)m_Bench.series[j]);
+            strcat(text, item);
+        }
+        M_BenchPrint(" %04d:%s", (int)i, text);
+    }
+    // Where the beat sits: for a stretch in the middle, what each part of
+    // the frame spent, in quarters of a millisecond.
+    {
+        static const char *const names[4] = { "logic", "stage", "pass", "map" };
+        const int32_t from = m_Bench.frames / 2;
+        for (int32_t p = 0; p < 4; p++) {
+            char text[110] = "";
+            for (int32_t j = from; j < from + 24 && j < m_Bench.frames && j < 4096;
+                 j++) {
+                char item[8];
+                snprintf(item, sizeof(item), " %d", (int)m_Bench.parts[p][j]);
+                strcat(text, item);
+            }
+            M_BenchPrint(" %s (1/4 ms) from frame %d:%s", names[p], (int)from, text);
+        }
+        char text[110] = "";
+        for (int32_t j = from; j < from + 24 && j < m_Bench.frames && j < 4096; j++) {
+            char item[8];
+            snprintf(item, sizeof(item), " %d", (int)m_Bench.series[j]);
+            strcat(text, item);
+        }
+        M_BenchPrint(" frame (ms) from frame %d:%s", (int)from, text);
+    }
+    M_BenchPrint("slow frames (60 ms or more), times in tenths of ms:");
+    for (int32_t i = 0; i < m_Bench.slow_count; i++) {
+        const uint32_t *const s = m_Bench.slow_frames[i].stat;
+        M_BenchPrint(
+            " #%d %ums logic %u stage %u pass %u submit %u map %u mwait %u "
+            "wait %u pvr %u polys %u inst %u verts %u",
+            (int)m_Bench.slow_frames[i].frame,
+            (unsigned)(m_Bench.slow_frames[i].dt / 1000),
+            (unsigned)(s[M_LOGIC] / 100), (unsigned)(s[M_DRAW] / 100),
+            (unsigned)(s[M_PASS] / 100), (unsigned)(s[M_SUBMIT] / 100),
+            (unsigned)(s[M_MAP] / 100), (unsigned)(s[M_MAP_WAIT] / 100),
+            (unsigned)(s[M_WAIT] / 100), (unsigned)(s[M_RENDER] / 100),
+            (unsigned)s[M_POLYS], (unsigned)s[M_INSTANCES],
+            (unsigned)s[M_VERTICES]);
     }
     M_BenchPrint("summary: %s | %s", line1, line2);
     M_BenchPrint("=== end");

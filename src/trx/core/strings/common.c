@@ -151,7 +151,26 @@ bool String_Match(const char *const subject, const char *const pattern)
 
 bool String_IsEmpty(const char *const value)
 {
-    return String_Match(value, "^\\s*$");
+    // What "^\\s*$" matches (a null string matches nothing), without compiling
+    // an expression and allocating its match data: path lookups ask this
+    // several times a frame.
+    if (value == nullptr) {
+        return false;
+    }
+    for (const char *c = value; *c != '\0'; c++) {
+        switch (*c) {
+        case ' ':
+        case '\t':
+        case '\n':
+        case '\v':
+        case '\f':
+        case '\r':
+            break;
+        default:
+            return false;
+        }
+    }
+    return true;
 }
 
 bool String_ParseBool(const char *const value, bool *const target)

@@ -636,11 +636,11 @@ RESULT LUA_Init(void)
     lua_setallocf(L, DC_LuaAlloc, nullptr);
     // The UI scripts leave garbage every frame. By default the collector lets
     // the heap reach well over twice what is live before it starts, which the
-    // Dreamcast's 16 MiB cannot carry; it starts again as soon as a cycle
-    // ends instead, and works fast enough to keep up with the menus.
-    lua_gc(L, LUA_GCINC);
-    lua_gc(L, LUA_GCPARAM, LUA_GCPPAUSE, 100);
-    lua_gc(L, LUA_GCPARAM, LUA_GCPSTEPMUL, 400);
+    // Dreamcast's 16 MiB cannot carry. The generational collector sweeps each
+    // frame's young garbage on its own: 0.2 ms a frame less than the
+    // incremental one run back to back (pause 100, step 400) in the London
+    // benchmark, for ~0.12 MB more of Lua heap (pause 130 cost more heap).
+    lua_gc(L, LUA_GCGEN);
 #endif
     LUA_OpenSafeLibs(L);
 #if defined(__DREAMCAST__)

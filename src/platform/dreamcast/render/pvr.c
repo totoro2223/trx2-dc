@@ -1118,6 +1118,41 @@ static int32_t M_HeightAt(
     return at != 0 ? at : h;
 }
 
+// atan on 0 to 1, to about 1e-5: the relief of a page (16384 texels) wants an
+// angle and an elevation of each, and the library's asinf and atan2f made a
+// page cost 100 ms, a hitch each time a room showed a new one.
+static float M_AtanUnit(const float x)
+{
+    const float x2 = x * x;
+    return x
+        * (0.9998660f
+           + x2 * (-0.3302995f + x2 * (0.1801410f + x2 * (-0.0851330f + x2 * 0.0208351f))));
+}
+
+static float M_AtanFast(const float x)
+{
+    return x > 1.0f ? (float)(M_PI * 0.5) - M_AtanUnit(1.0f / x) : M_AtanUnit(x);
+}
+
+// atan2 of (y, x) by turns: 0 to 2 pi.
+static float M_Atan2Turn(const float y, const float x)
+{
+    const float ax = fabsf(x);
+    const float ay = fabsf(y);
+    float a = 0.0f;
+    if (ax != 0.0f || ay != 0.0f) {
+        a = ay > ax ? (float)(M_PI * 0.5) - M_AtanUnit(ax / ay)
+                    : M_AtanUnit(ay / ax);
+    }
+    if (x < 0.0f) {
+        a = (float)M_PI - a;
+    }
+    if (y < 0.0f) {
+        a = (float)(2.0 * M_PI) - a;
+    }
+    return a;
+}
+
 static pvr_ptr_t M_GetBumpPage(const int32_t page)
 {
     if (m_Bump.ptr[page] != nullptr || m_Bump.failed[page]) {
@@ -1191,16 +1226,61 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
                     * (0.5f / 255.0f);
                 const float nx = -dx * M_BUMP_SLOPE;
                 const float ny = -dy * M_BUMP_SLOPE;
-                const float len = sqrtf(nx * nx + ny * ny + 1.0f);
-                const float s = asinf(1.0f / len);
-                float r = atan2f(ny, nx);
-                if (r < 0.0f) {
-                    r += 2.0f * (float)M_PI;
-                }
+                // The elevation: asin(1 / len) with len = sqrt(n^2 + 1) is
+                // atan(1 / n), a quarter turn less atan(n).
+                const float s =
+                    (float)(M_PI * 0.5) - M_AtanFast(sqrtf(nx * nx + ny * ny));
+                const float r = M_Atan2Turn(ny, nx);
                 const uint32_t sb =
                     (uint32_t)(s * (255.0f / ((float)M_PI * 0.5f)) + 0.5f);
                 const uint32_t rb =
                     (uint32_t)(r * (256.0f / (2.0f * (float)M_PI))) & 0xFF;
+#if defined(DC_EMIT_VERIFY)
+                {
+                    // Against the library's, for the relief made at all.
+                    const float ls = asinf(
+                        1.0f / sqrtf(nx * nx + ny * ny + 1.0f));
+                    float lr = atan2f(ny, nx);
+                    if (lr < 0.0f) {
+                        lr += 2.0f * (float)M_PI;
+                    }
+                    const int32_t lsb = (int32_t)MIN(
+                        (uint32_t)(ls * (255.0f / ((float)M_PI * 0.5f)) + 0.5f),
+                        255u);
+                    const int32_t lrb =
+                        (int32_t)((uint32_t)(lr * (256.0f / (2.0f * (float)M_PI)))
+                                  & 0xFF);
+                    int32_t drb = (int32_t)rb - lrb;
+                    if (drb > 128) {
+                        drb -= 256;
+                    }
+                    if (drb < -128) {
+                        drb += 256;
+                    }
+                    static uint32_t checked = 0;
+                    static uint32_t off_s = 0;
+                    static uint32_t off_r = 0;
+                    static int32_t worst_s = 0;
+                    static int32_t worst_r = 0;
+                    checked++;
+                    const int32_t ds = abs((int32_t)MIN(sb, 255u) - lsb);
+                    off_s += ds > 1;
+                    // A flat texel (straight up) has no angle to speak of: the
+                    // library gives it -pi from a pair of negative zeros.
+                    if (lsb < 255) {
+                        off_r += abs(drb) > 1;
+                        worst_r = MAX(worst_r, abs(drb));
+                    }
+                    worst_s = MAX(worst_s, ds);
+                    if (checked % 50000 == 0) {
+                        LOG_WARNING(
+                            "[bump-verify] %u texels, elevation off %u (worst "
+                            "%d), angle off %u (worst %d)",
+                            (unsigned)checked, (unsigned)off_s, (int)worst_s,
+                            (unsigned)off_r, (int)worst_r);
+                    }
+                }
+#endif
                 texel = (uint16_t)((MIN(sb, 255u) << 8) | rb);
             }
             ((volatile uint16_t *)bump)[M_Twiddle(x, y)] = texel;
