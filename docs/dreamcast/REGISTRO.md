@@ -86,7 +86,7 @@ pistolera: sin `lara_outfits.bin`, `Lara_Skin_Initialise` copiaba las mallas
 de `O_LARA` (en TR3, comodines) antes de que `Lara_Mesh_Initialise` lo apunte
 a `O_LARA_SKIN`. Ahora el camino sin traje toma `O_LARA_SKIN` si está cargado
 (build 216: Lara completa). Revisado sin cambiar: niebla negra, como el TR3
-original. Pendiente en TAREAS.md §4: luz TR3, partículas, una sombra.
+original. Lo que quedó, en PROBADO.md y TAREAS.md.
 
 ## TR3: luz de color, chispas y una sombra (21/10/2026, DC builds 217–218)
 
@@ -403,7 +403,7 @@ Origen: log de TR3 en Flycast (escenas de 1100–1400 polígonos, 23–31 fps):
   "DC build 259" del contador local, log `build/dc-venice-probes2.txt`):
   `UI_Draw` 0,07 ms (5 operaciones); el batcher es 11,47 de los 11,8 ms del
   pass y `M_DrawInstance` 11,42; caras transparentes 0,70 ms (216 por
-  frame). Candidatos y reparto completo en TAREAS.md §5.
+  frame). Resultado de los candidatos, más abajo y en PROBADO.md.
 
 ## Hacia 16,6 ms: candidatos aplicados (22/10/2026, DC builds 260–262 del contador local)
 

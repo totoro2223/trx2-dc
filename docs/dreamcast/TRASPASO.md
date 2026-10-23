@@ -1,11 +1,13 @@
 # Traspaso: cómo continuar el port de TRX a Dreamcast
 
-Estado a 21 de octubre de 2026, **DC build 202**. Este documento es para la
-persona (o el Claude) que retome el trabajo. Complementa
-[AVANCE.md](AVANCE.md), que es el resumen del 18 de octubre y ya se ha
-quedado corto en varias áreas. Lo hecho y medido, con builds y cifras, está en
-[REGISTRO.md](REGISTRO.md); los encargos listos para otra sesión, en
-[TAREAS.md](TAREAS.md).
+Estado a 23 de octubre de 2026. Este documento es para la persona (o el
+Claude) que retome el trabajo: entorno, ciclo, arquitectura y lecciones.
+Los demás documentos tienen un papel cada uno:
+
+- [PROBADO.md](PROBADO.md): qué se probó y su último resultado (OK, FALLIDO,
+  SIN VER). **Consúltalo antes de proponer nada.**
+- [TAREAS.md](TAREAS.md): solo lo pendiente.
+- [REGISTRO.md](REGISTRO.md): historia detallada, con builds y cifras.
 
 ## 1. Qué es esto
 
@@ -166,51 +168,13 @@ diálogos Lua (ver pendientes).
 
 ## 6. Rendimiento
 
-30 fps estables en La Muralla China y Venecia (Flycast). Venecia, build 200:
-xform 6,0 ms, pass 17,0 ms, ~5,7 ms de margen. 60 fps reales necesitarían
-~16,6 ms totales (ahora ~27,6): no es alcanzable sin recortar.
+Cifras actuales y todo lo descartado, en [PROBADO.md](PROBADO.md). Flycast no
+modela cachés ni bloqueos del pipeline: las optimizaciones de `pref`, ramas o
+caché solo se notarán en consola real.
 
-Probado y **descartado** (sin ganancia en Flycast): `-O2` por fichero o en
-una librería estática para `batcher.c`/`pvr.c`; `DC_PVR_Depth3D` inline;
-lógica a 15 Hz (los ticks de TR son de 1/30 s fijos, el usuario lo rechazó);
-fusionar el pase de cel shading con la emisión opaca (builds 201–202).
+## 7. Pendientes
 
-## 7. Pendientes, por prioridad aproximada
-
-1. **Cuelgue en cargas repetidas** (fragmentación). Arreglos en builds
-   77–93; 5+ cargas OK. Queda: un cuelgue dentro del recorrido del heap en la
-   carga 2 (build 91) — confirmar si es corrupción del heap (un assert
-   `vertex_count > 0` de la build 82 nunca se explicó). Luego 8+ cargas con
-   el disco `"1 8"`, cargas desde el pasaporte a mano y cambios de nivel.
-2. **Experimental 60**: franja negra arriba a 320×240; comprobar la vuelta a
-   640×480; medir Rendimiento; cambios de nivel; quitar el define temporal
-   `TRX_DC_MMU_NULL_TRAP` marcado `# DBG` en
-   `src/platform/dreamcast/meson.build`.
-3. **Rendimiento del inventario**: 9 → 22 fps; tras la arena de bloques
-   pequeños de Lua (build 74) no se ha vuelto a medir. Medir con `dc_profile`.
-4. **Probar en consola real (GDEMU)** y medir; Flycast no modela cachés.
-5. **Audio** (AICA, 2 MB propios; en RAM principal hace falta un buffer por
-   muestra y buffers de streaming de 64–256 K). El ERR
-   `Unexpected sample header` ya existía.
-6. Candidatos de memoria: datos crudos de las salas tras construir las
-   mallas (~1,7 MB, pero `shadows.c` compartido aún lee caras), tablas de
-   cadenas.
-7. Ideas de rendimiento: culling por trozos de sala (~1–1,5 ms como mucho),
-   lógica de juego/Lua (~4 ms).
-8. Aparcado por el usuario: pantalla Rendering mínima propia de DC en lugar
-   del diálogo Lua (~+50 K en vez de +430 K); mipmaps para el mundo;
-   subir `vertex_buf_size` de PVR (512 K) ahora que sobra VRAM.
-9. Resto de deseos del usuario: gatillo L como modificador (distribución por
-   acordar; bengala con L+Y), textura del cielo, efectos, FMV, trenza y armas
-   largas a la espalda (versión reducida de `lara_outfits`), Sonido/Controles
-   /Juego en el menú, resto de niveles de TR2 y luego TR3.
-
-### Cosas hechas que el usuario aún no ha visto en pantalla
-
-Conviene confirmarlas con él: reflejos de pistolas con la intensidad bajada
-(build 113), sombra del cel shading según la luz (116), relieve más intenso
-y desactivación automática por fps (124–140), culling por portal/borde de
-pantalla (73–76: buscar caras que falten en los bordes).
+Ver [TAREAS.md](TAREAS.md).
 
 ## 8. Lecciones que costaron caro
 
