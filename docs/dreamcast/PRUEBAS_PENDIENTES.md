@@ -175,6 +175,15 @@ Experimental 60 desde el arranque (disco de Venecia con `TRX_DC_MODE=experimenta
 | T35 | **Cambiar el modo mientras corre**, probado sin teclas con un disco de prueba (`TRX_DC_SWITCH="<modo> <frame>"` en `make_disc.sh`, `SWITCH.TXT`; modo 3 = los pasos de la fila del menú por Lua). Venecia, Flycast oculto: de Gráficos a Experimental 60 sube de 30 a 58–60 fps y la sombra pasa a Hard; por `trx.config.set` y por `rows.change` igual. La resolución 320×240 no cambia hasta reiniciar el nivel. **Error corregido**: `dc_adaptive_fps` nunca se ponía (el `CONFIG_SET` recibía un `int`, que no llega a un ajuste booleano): faltaba el paso a 30 fps en escenas pesadas. | El menú real con el mando: si ahí "no hace nada", falta saber qué pulsas y qué ves; la lógica de debajo funciona. |
 | T36 | **TR1 se cae al cargar el nivel 3A** (Lost Valley, `level3a.phd`, datos clásicos de Steam): sin memoria al reservar las muestras (1,4 MB del nivel + ~0,8 MB de inyecciones de sonido, con 12,1 MB ya usados). El nivel 1 sí carga (build 385 de la otra sesión). No es de los cambios de sombras. | Recortar memoria en TR1: inyecciones de sonido que no hacen falta, cargar las muestras antes, o liberar datos de sala. |
 
+## TR1: memoria, texturas VQ y menú (23/10/2026, DC builds 297–310)
+
+| # | Cambio | Qué comprobar |
+|---|---|---|
+| T37 | **Muestras de TR1 sin bloque en RAM** (`level/sections/audio.c`, DC): cada muestra va del `.phd` a la memoria de sonido al leer los offsets; ya no se reservan 1,4–2,2 MB (el gym) ni los ~0,8 MB de inyecciones que no se usaban. Con `TRX_DC_LEVELS` el gym (nivel 0) y el 3A cargan, y antes abortaban. | Que suenen los efectos de TR1 (no se ha oído). |
+| T38 | **Texturas de TR1 en VQ**: `texvq.c` lee los `.phd` (versión 32), pasa las páginas de 8 bits por la paleta como el motor y las añade a `textures.vq` (238 páginas); `make_disc.sh` lo hace también para TR1. Sin VQ la memoria de vídeo bajaba a ~1 MB libres y Flycast se cerraba en el nivel 4. | `texture pages ready (vvv…)` en el log: debe salir `v` en casi todas. |
+| T39 | **Menú de TR1**: el fondo `title.webp` sale de `TITLEH.PCX` (y `credits_N` de `CREDN.PCX`); se incluye la música `2.mp3` del título. Antes el disco no llevaba fondo (el gameflow lo llama `title.webp`) ni música (`0 tracks`). | Ver el menú con fondo y música. El TR1 de Steam solo trae las pistas 2 a 9: el resto (la 26, la 57...) sonará mudo hasta tener el juego completo. |
+| T40 | **Abierto: TR1 se queda sin memoria hacia el nivel 10 (8A)** al recorrer los niveles seguidos (`TRX_DC_LEVELS`): los bloques que un nivel deja en la región crecen (485 K en el nivel 6, 1,9 MB en el 8A) y parten el hueco libre. Los niveles 0–9 cargaron seguidos. Falta encontrar qué no se libera al descargar un nivel (la región no guarda quién reserva). | Reproducir con `TRX_DC_LEVELS='15 300'` desde el nivel 0. |
+
 ## No hecho (queda en TAREAS.md)
 
 Bloque C: 7, 8, 9, 10, 11, 12, 13 (piden medir o investigar). Bloque D: 15 y 16

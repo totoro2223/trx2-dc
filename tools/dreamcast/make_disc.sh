@@ -147,9 +147,6 @@ for f in "$GAME_DATA"/* "$GAME_DATA"/../cuts/*; do
 done
 
 echo "== texture pages in VQ"
-# TR1 levels are 8-bit and have no pages in VQ yet: the game then loads them
-# as they are (textures.vq is optional).
-if [ "$GAME" != tr1 ]; then
 # Every page of every level and injection on the disc, which the game finds
 # by its contents (see tools/dreamcast/texvq.c); made again only when the
 # tool or the data change.
@@ -158,13 +155,15 @@ VQ_TOOL="$BUILD_DIR/texvq.exe"
 if [ ! -f "$VQ_TOOL" ] || [ "$ROOT/tools/dreamcast/texvq.c" -nt "$VQ_TOOL" ]; then
   gcc -O2 -fopenmp -o "$VQ_TOOL" "$ROOT/tools/dreamcast/texvq.c" -lz
 fi
-VQ_INPUTS=("$STAGE"/games/$GAME/levels/*.tr2 "$STAGE"/games/$GAME/injections/*.bin)
+shopt -s nullglob
+VQ_INPUTS=("$STAGE"/games/$GAME/levels/*.tr2 "$STAGE"/games/$GAME/levels/*.phd
+  "$STAGE"/games/$GAME/injections/*.bin)
+shopt -u nullglob
 if [ ! -f "$VQ" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
   || [ -n "$(find "$GAME_DATA" "$SHIP/games/$GAME/injections" -newer "$VQ" -print -quit)" ]; then
   "$VQ_TOOL" "$VQ" "${VQ_INPUTS[@]}"
 fi
 cp "$VQ" "$STAGE/textures.vq"
-fi
 
 echo "== loading pictures"
 # The game's original 640x480 pictures (the middle of the remaster's 856x480
@@ -182,7 +181,8 @@ else
   # PCXs in the data itself.
   PIX_FILES=("$GAME_DATA"/../pix/*.BMP "$GAME_DATA"/../pix/*.bmp
     "$GAME_DATA"/title.PCX "$GAME_DATA"/TITLE.PCX "$GAME_DATA"/credit*.PCX
-    "$GAME_DATA"/end.PCX "$GAME_DATA"/END.PCX)
+    "$GAME_DATA"/end.PCX "$GAME_DATA"/END.PCX
+    "$GAME_DATA"/TITLEH.PCX "$GAME_DATA"/CRED?.PCX "$GAME_DATA"/INSTALL.PCX)
   PIX_CROP=""
 fi
 for f in "${PIX_FILES[@]}"; do
@@ -190,7 +190,12 @@ for f in "${PIX_FILES[@]}"; do
   name="$(basename "$f")"
   lower="$(echo "${name%.*}" | tr '[:upper:]' '[:lower:]')"
   # The gameflow's name for the title picture.
-  case "$lower" in title|titleuk) lower=title_eu ;; esac
+  case "$lower" in
+    title|titleuk) lower=title_eu ;;
+    # TR1's title, credits (cred1 is credits_1) and install picture.
+    titleh) lower=title ;;
+    cred[1-3]) lower="credits_${lower#cred}" ;;
+  esac
   out="$PIX_CACHE/$lower.565"
   if [ ! -f "$out" ] && command -v ffmpeg > /dev/null; then
     ffmpeg -hide_banner -loglevel error -y -i "$f" -frames:v 1 \

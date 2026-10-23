@@ -145,6 +145,116 @@ static void ReadLevel(const uint8_t *const data, const size_t size)
     }
 }
 
+// TR1: version 32, the 8-bit pages, and further on the palette, which the game
+// needs to make the pages 16-bit before it keys them (level/format/format_tr1.c
+// walks the same layout; sections/textures.c does the conversion).
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+    size_t at;
+    int bad;
+} CURSOR;
+
+static int32_t CursorS32(CURSOR *const c)
+{
+    if (c->at + 4 > c->size) {
+        c->bad = 1;
+        return 0;
+    }
+    const int32_t v = S32(c->data + c->at);
+    c->at += 4;
+    return v;
+}
+
+static int32_t CursorU16(CURSOR *const c)
+{
+    if (c->at + 2 > c->size) {
+        c->bad = 1;
+        return 0;
+    }
+    const int32_t v = c->data[c->at] | (c->data[c->at + 1] << 8);
+    c->at += 2;
+    return v;
+}
+
+static void CursorSkip(CURSOR *const c, const int64_t bytes)
+{
+    if (bytes < 0 || c->at + (uint64_t)bytes > c->size) {
+        c->bad = 1;
+        return;
+    }
+    c->at += (size_t)bytes;
+}
+
+// A count of s32, then that many items of the size.
+static void SkipArrS32(CURSOR *const c, const int64_t item)
+{
+    CursorSkip(c, (int64_t)CursorS32(c) * item);
+}
+
+static void SkipArrU16(CURSOR *const c, const int64_t item)
+{
+    CursorSkip(c, (int64_t)CursorU16(c) * item);
+}
+
+static void ReadLevelTR1(const uint8_t *const data, const size_t size)
+{
+    CURSOR c = { data, size, 4, 0 };
+    const int32_t count = CursorS32(&c);
+    const size_t tiles = c.at;
+    CursorSkip(&c, (int64_t)count * PAGE_SIZE);
+    CursorSkip(&c, 4);
+    const int32_t rooms = CursorU16(&c);
+    for (int32_t i = 0; i < rooms && !c.bad; i++) {
+        CursorSkip(&c, 16);
+        SkipArrS32(&c, 2);
+        SkipArrU16(&c, 32);
+        const int32_t size_z = (int16_t)CursorU16(&c);
+        const int32_t size_x = (int16_t)CursorU16(&c);
+        CursorSkip(&c, (int64_t)size_z * size_x * 8);
+        CursorSkip(&c, 2);
+        SkipArrU16(&c, 18);
+        SkipArrU16(&c, 18);
+        CursorSkip(&c, 4);
+    }
+    static const int items[] = { 2, 2, 4, 32, 6, 8, 2, 4, 2, 18, 32, 20, 16, 8,
+                                 16, 16 };
+    for (size_t i = 0; i < sizeof(items) / sizeof(items[0]) && !c.bad; i++) {
+        SkipArrS32(&c, items[i]);
+    }
+    const int32_t boxes = CursorS32(&c);
+    CursorSkip(&c, (int64_t)boxes * 20);
+    SkipArrS32(&c, 2); // overlaps
+    CursorSkip(&c, (int64_t)boxes * 12); // zones
+    SkipArrS32(&c, 2); // animated textures
+    SkipArrS32(&c, 22); // items
+    CursorSkip(&c, 32 * 256); // light table
+    const size_t palette = c.at;
+    CursorSkip(&c, 768);
+    if (c.bad || count <= 0) {
+        fprintf(stderr, "texvq: a TR1 level that does not add up\n");
+        return;
+    }
+    uint8_t rgb[256][3];
+    for (int i = 0; i < 256; i++) {
+        for (int k = 0; k < 3; k++) {
+            const uint8_t v = i == 0 ? 0 : data[palette + i * 3 + k];
+            rgb[i][k] = i == 0 ? 0 : (uint8_t)((v << 2) | (v >> 4));
+        }
+    }
+    for (int32_t i = 0; i < count; i++) {
+        uint16_t texels[PAGE_SIZE];
+        const uint8_t *const page = data + tiles + (size_t)i * PAGE_SIZE;
+        for (int j = 0; j < PAGE_SIZE; j++) {
+            const uint8_t index = page[j];
+            const uint8_t rgba[4] = { rgb[index][0], rgb[index][1],
+                                      rgb[index][2], index == 0 ? 0 : 255 };
+            texels[j] = ToARGB1555(rgba);
+        }
+        AddPage(texels, 0);
+    }
+}
+
 // The texture pages of an injection (see inject/common.c and
 // inject/data/textures.c for the layout).
 static void ReadInjection(const uint8_t *const data, const size_t size)
@@ -402,6 +512,8 @@ int main(const int argc, char **const argv)
             ReadInjection(data, size);
         } else if (S32(data) == 0x2D) {
             ReadLevel(data, size);
+        } else if (S32(data) == 32) {
+            ReadLevelTR1(data, size);
         }
         free(data);
     }

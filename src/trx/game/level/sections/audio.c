@@ -108,14 +108,25 @@ RESULT Level_Section_ReadSamples(LEVEL_CONTEXT *const ctx, TRX_FILE *const file)
     }
 
     LEVEL_CONTEXT_INFO *const info = &ctx->info;
+#if defined(__DREAMCAST__)
+    size_t dc_samples_pos = 0;
+#endif
     if (loader->game_version == 1) {
         const int32_t data_size = File_ReadS32(file);
         info->samples.data_size = data_size;
         LOG_INFO("%d sample data size", data_size);
 
+#if defined(__DREAMCAST__)
+        // The samples are not held: TR1's gym alone has 2.2 MiB of them, and
+        // the level's RAM is 6.7 MiB. They are let into the sound memory one
+        // at a time once the offsets after them are known (below).
+        dc_samples_pos = File_Pos(file);
+        File_Skip(file, data_size);
+#else
         info->samples.data = GameBuf_Alloc(
             data_size + Inject_GetDataCount(IDT_SAMPLE_DATA), GBUF_SAMPLES);
         File_ReadData(file, info->samples.data, sizeof(char) * data_size);
+#endif
     }
 
     const int32_t num_offsets = File_ReadCountS32(file);
@@ -126,6 +137,32 @@ RESULT Level_Section_ReadSamples(LEVEL_CONTEXT *const ctx, TRX_FILE *const file)
         sizeof(int32_t)
         * (num_offsets + Inject_GetDataCount(IDT_SAMPLE_INDICES)));
     File_ReadData(file, info->samples.offsets, sizeof(int32_t) * num_offsets);
+
+#if defined(__DREAMCAST__)
+    if (loader->game_version == 1) {
+        // Each sample goes from the file to the sound memory by itself.
+        const size_t after = File_Pos(file);
+        const int32_t *const offsets = info->samples.offsets;
+        for (int32_t i = 0; i < num_offsets; i++) {
+            const int32_t next = i + 1 >= num_offsets
+                ? info->samples.data_size
+                : offsets[i + 1];
+            const int32_t size = next - offsets[i];
+            if (size <= 0) {
+                continue;
+            }
+            char *const sample = Memory_Alloc(size);
+            File_Seek(file, dc_samples_pos + offsets[i], FILE_SEEK_SET);
+            File_ReadData(file, sample, size);
+            SHOULD(Sound_LoadSampleData(i, sample, size));
+            Memory_FreePointer(&sample);
+        }
+        File_Seek(file, after, FILE_SEEK_SET);
+        // Nothing is left for the level's setup to load.
+        info->samples.offset_count = 0;
+        Memory_FreePointer(&info->samples.offsets);
+    }
+#endif
 
     Memory_Free(sample_lut);
     Memory_Free(sample_lut_inv);
