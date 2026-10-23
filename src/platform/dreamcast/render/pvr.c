@@ -682,6 +682,31 @@ void DC_PVR_DrawPicture(const float brightness)
     DC_PVR_SetBackgroundMode(was_background);
 }
 
+bool DC_PVR_HasPicture(void)
+{
+    return m_Picture != nullptr;
+}
+
+void DC_PVR_DrawPictureBox(
+    const float x0, const float y0, const float x1, const float y1,
+    const float opacity)
+{
+    if (m_Picture == nullptr || opacity <= 0.0f) {
+        return;
+    }
+    const float a = opacity > 1.0f ? 1.0f : opacity;
+    const uint32_t argb = ((uint32_t)(a * 255.0f) << 24) | 0x00FFFFFF;
+    DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_PICTURE, false);
+    const float z = DC_PVR_Depth2D(0.5f);
+    const DC_PVR_VERTEX v[4] = {
+        { .x = x0 * 640, .y = y0 * 480, .z = z, .u = 0, .v = 0, .argb = argb },
+        { .x = x1 * 640, .y = y0 * 480, .z = z, .u = 1, .v = 0, .argb = argb },
+        { .x = x0 * 640, .y = y1 * 480, .z = z, .u = 0, .v = 1, .argb = argb },
+        { .x = x1 * 640, .y = y1 * 480, .z = z, .u = 1, .v = 1, .argb = argb },
+    };
+    DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
+}
+
 // FNV-1a over the page a 32-bit word at a time, as texvq.c keys them.
 static uint32_t M_HashPage(const uint16_t *const texels)
 {

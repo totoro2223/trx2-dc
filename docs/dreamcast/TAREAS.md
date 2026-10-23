@@ -5,6 +5,8 @@ Solo lo que falta. Lo hecho y lo descartado está en [PROBADO.md](PROBADO.md)
 para no repetir una idea que ya falló. Entorno, ciclo de compilación y reglas
 con Flycast: [TRASPASO.md](TRASPASO.md).
 
+Lo hecho el 23/10/2026 sin medir está en [PRUEBAS_PENDIENTES.md](PRUEBAS_PENDIENTES.md).
+
 Al terminar una tarea: anota la fila en PROBADO.md (OK o FALLIDO, con cifra y
 build), el detalle en REGISTRO.md, y **bórrala de aquí**. Retira las sondas
 `TEMP` (`dc_probe.h` y los `DC_PROBE(...)`) antes de dar un commit por bueno.
@@ -42,9 +44,6 @@ deshace y se anota como FALLIDO.
 Reparto de Londres (graphics, ms por frame): pass ~12,7 (estáticos y sprites
 3,2, emisión 3,0, objetos 1,6, salas 1,5), stage ~7, Lua ~2,6, lógica ~4,2.
 
-6. **Estáticos fuera de pantalla** (~0,3 ms): prueba previa con esfera antes de
-   `Output_CheckBoundsClip` (~10 µs cada uno, 5–10 descartados por sala).
-   Riesgo de *popping*.
 7. **`UI_RESERVE_ALL`** (0,07–1,0 ms por llamada): alguna raíz de la UI se
    recalcula casi cada frame (señal sondeada que cambia cada tick, o un
    `Tween`). Encontrar cuál.
@@ -60,9 +59,6 @@ Reparto de Londres (graphics, ms por frame): pass ~12,7 (estáticos y sprites
     exige saber qué relación guardan las dos pilas (vista y mundo) en DC.
 13. **Página de relieve**: el primer bucle (`M_HalfTexel`/`M_PageBlock`) sigue
     siendo por texel.
-14. **Retirar las sondas `TEMP`** en bloque (cuestan ~0,5 ms por frame):
-    `control.c`, `phase_game.c`, `executor.c`, `lua/events/manager.c`,
-    `output/state.c`, `render/output_common.c`, `render/batcher.c`.
 
 ## D. Memoria
 
@@ -110,16 +106,9 @@ cambia es la columna TR1; casi todos los efectos pesados no existen en TR1.
 
 | # | Stub (llamadores) | TR1 | TR2 | TR3 | Prioridad |
 |---|---|---|---|---|---|
-| 23 | **Letterbox y fundidos** (`Output_Overlay_*Letterbox`, `SetFade`, `DrawBlackRectangle`): `cutseq/playback.c`, `level/common.c`, `flyby_mode.c` | cinemáticas | cinemáticas | cinemáticas y flyby | **Alta**: afecta a las cinemáticas que ya están en el selector |
-| 24 | **Instantáneas** (`CaptureSnapshotSlot`, `DrawSnapshotSlot`, `FreeSnapshotSlot`): transiciones de `lua/capi/fade.c` y `ui/draw.c` | sí | sí | sí | Alta: ver si el fondo capturado del inventario ya cubre esto |
-| 25 | **Imágenes** (`Output_Overlay_LoadImage`, `DrawImageInBox`): `phase_picture.c`, `ui/draw.c` (pantallas con imagen, cargas) | sí | sí | sí | Media |
 | 26 | **Quad de vídeo** (`Output_Quad_*`): `fmv.c`. Va unido a `av_stub.c` (`Video_*`, `AudioDecoder_*`) | FMV | FMV | FMV | Media: es la tarea de FMV de E |
 | 27 | **Cielo** (`OutputSource_Sky_StageLayer`, `StageFogGradient`): `output/sky.c` | sin cielo | skybox (probable) | skybox, capa y degradado de niebla | Media: la textura del cielo es un deseo ya anotado en E |
-| 28 | **Líneas con efecto** (`PolyFX_StageLineSegment`): goteo (`fx/droplets.c`), láser (`fx/laser.c`), lluvia y nieve (`fx/weather.c`), electrocución de Lara (`lara/electric.c`), dardos (`traps/dart.c`) | dardos (probable) | dardos, nieve del Tíbet (probable), electrocución (probable) | todo lo anterior más láseres de seguridad del Área 51 (`security_laser.c`) y el jefe de la tribu (`tribe_boss.c`) | Media |
-| 29 | **Quads y triángulos con efecto** (`StageQuadExt*`, `StageTriExtUV*`): anillos (`fx/ring.c`), estela (`fx/wake.c`), restos (`fx/debris.c`), partículas de agua (`fx/water_particles.c`), murciélagos (`bat_emitter.c`), lluvia | — | estela de lancha (probable) | todos | Media. Las chispas están vacías a propósito (ganó 1,2 ms): si se implementan, volver a medir |
-| 30 | **Rayos** (`OutputSource_Lightnings_*`): `traps/lightning_emitter.c`, `output/draw.c` | martillo de Thor (probable) | — | tormentas (probable) | Baja |
 | 31 | **Depuración** (`Misc_Stage{Cuboid,Sphere}`, `RoomsDebug_*`): cajas de choque, ascensor, puertas de disparo, `lua/capi/scene.c` | sí | sí | sí | Baja: no son efectos del juego |
-| 32 | **Limpieza**: `src/platform/dreamcast/output_stub.c` (963 líneas) no está en `meson.build` y duplica funciones de `render/` | — | — | — | Hacer ya: borrarlo |
 
 Quedan fuera de la tabla los 12 stubs `TRX_GL_*` (contexto OpenGL, temporizador
 de GPU, capturas): no se dibujan en Dreamcast ni hacen falta.

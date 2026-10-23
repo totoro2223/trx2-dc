@@ -84,6 +84,9 @@ endif
 if get_option('dc_profile')
   add_project_arguments('-DTRX_DC_PROFILE', language: 'c')
 endif
+if get_option('dc_probes')
+  add_project_arguments('-DTRX_DC_PROBES', language: 'c')
+endif
 if get_option('dc_emit_verify')
   add_project_arguments('-DDC_EMIT_VERIFY', language: 'c')
 endif

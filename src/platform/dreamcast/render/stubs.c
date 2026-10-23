@@ -22,6 +22,17 @@
 #include <trx/gl/context.h>
 #include <trx/gl/gpu_timer.h>
 #include <trx/gl/renderer.h>
+#include <trx/core/utils.h>
+#include <trx/game/output/draw.h>
+#include <trx/game/viewport.h>
+
+// The letterbox bars and the fade to black, as the desktop keeps them
+// (trx/game/output/sources/overlay.c); the bars slide a pixel of 480 a tick.
+#define M_LETTERBOX_SPEED (1.0f / 480.0f)
+
+static float m_Letterbox = 0.0f;
+static float m_LetterboxTarget = 0.0f;
+static float m_Fade = 0.0f;
 
 void OutputSource_Lightnings_Init(void)
 {
@@ -29,11 +40,6 @@ void OutputSource_Lightnings_Init(void)
 }
 
 void OutputSource_Lightnings_Shutdown(void)
-{
-    DC_STUB();
-}
-
-void OutputSource_Lightnings_StageSegment(const LIGHTNING_SEGMENT *segment)
 {
     DC_STUB();
 }
@@ -74,31 +80,6 @@ void OutputSource_PolyFX_Init(void)
 }
 
 void OutputSource_PolyFX_Shutdown(void)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageLineSegment(XYZ_32 from, RGBA_8888 from_color, XYZ_32 to, RGBA_8888 to_color, float half_width, DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageQuadExt(int32_t sprite_idx, const XYZ_32 world_pos[4], const float disp[4][2], const RGBA_8888 color[4], uint16_t flags, DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageQuadExtDepth(int32_t sprite_idx, const XYZ_32 world_pos[4], const float disp[4][2], const RGBA_8888 color[4], uint16_t flags, float z_depth_adjust, DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageTriExtUV(const XYZ_32 world_pos[3], const OUTPUT_UVW uvw[3], const OUTPUT_TEXTURE_SIZE texture_size[3], const float disp[3][2], const RGBA_8888 color[3], uint16_t flags, DRAW_TYPE draw_type)
-{
-    DC_STUB();
-}
-
-void OutputSource_PolyFX_StageTriExtUVDepth(const XYZ_32 world_pos[3], const OUTPUT_UVW uvw[3], const OUTPUT_TEXTURE_SIZE texture_size[3], const float disp[3][2], const RGBA_8888 color[3], uint16_t flags, float z_depth_adjust, DRAW_TYPE draw_type)
 {
     DC_STUB();
 }
@@ -180,10 +161,18 @@ void Output_Overlay_CaptureSnapshot(void)
     Output_Overlay_CaptureGameSnapshot();
 }
 
+// shortcut: one slot only, the shared capture; a second capture while it is
+// held replaces it.
+static bool m_SlotTaken = false;
+
 int32_t Output_Overlay_CaptureSnapshotSlot(void)
 {
-    DC_STUB();
-    return (int32_t) {};
+    if (m_SlotTaken) {
+        return -1;
+    }
+    Output_Overlay_CaptureGameSnapshot();
+    m_SlotTaken = true;
+    return 0;
 }
 
 void Output_Overlay_DrawBackground(BACKGROUND_TYPE style, float opacity, const char *image_path)
@@ -192,9 +181,9 @@ void Output_Overlay_DrawBackground(BACKGROUND_TYPE style, float opacity, const c
     DC_PVR_DrawScreenCapture(1.0f - 0.6f * opacity);
 }
 
-void Output_Overlay_DrawBlackRectangle(float opacity)
+void Output_Overlay_DrawBlackRectangle(const float opacity)
 {
-    DC_STUB();
+    Output_DrawScreenBlack(opacity);
 }
 
 // The title menu's picture (the gameflow's main_menu_picture).
@@ -206,7 +195,8 @@ void Output_Overlay_DrawImage(const char *file_name)
 
 void Output_Overlay_DrawImageInBox(const char *file_name, OUTPUT_OVERLAY_BOX box, float opacity)
 {
-    DC_STUB();
+    DC_PVR_SetPicture(file_name);
+    DC_PVR_DrawPictureBox(box.x0, box.y0, box.x1, box.y1, opacity);
 }
 
 // shortcut: in colour, only dimmed; desaturate if a mono picture shows up.
@@ -218,7 +208,17 @@ void Output_Overlay_DrawImageMono(const char *file_name, float intensity)
 
 void Output_Overlay_DrawLetterbox(void)
 {
-    DC_STUB();
+    Output_DrawScreenBlack(m_Fade);
+    if (m_Letterbox <= 0.0f) {
+        return;
+    }
+    const int32_t height = Viewport_GetHeight(VIEWPORT_UI);
+    const int32_t width = Viewport_GetWidth(VIEWPORT_UI);
+    const int32_t bar_height = (int32_t)(height * m_Letterbox);
+    const RGBA_8888 black = { 0, 0, 0, 255 };
+    Output_DrawScreenFlatQuad(0, 0, 0, width, bar_height, black);
+    Output_DrawScreenFlatQuad(
+        0, height - bar_height, 0, width, bar_height, black);
 }
 
 void Output_Overlay_DrawSnapshot(float opacity)
@@ -228,62 +228,73 @@ void Output_Overlay_DrawSnapshot(float opacity)
 
 void Output_Overlay_DrawSnapshotSlot(int32_t slot, float opacity)
 {
-    DC_STUB();
+    if (slot == 0 && m_SlotTaken) {
+        DC_PVR_DrawScreenCapture(opacity);
+    }
 }
 
 void Output_Overlay_FreeSnapshotSlot(int32_t slot)
 {
-    DC_STUB();
+    if (slot == 0) {
+        m_SlotTaken = false;
+    }
 }
 
 float Output_Overlay_GetLetterbox(void)
 {
-    DC_STUB();
-    return (float) {};
+    return m_Letterbox;
 }
 
 float Output_Overlay_GetLetterboxTarget(void)
 {
-    DC_STUB();
-    return (float) {};
+    return m_LetterboxTarget;
 }
 
 bool Output_Overlay_HasLetterbox(void)
 {
-    DC_STUB();
-    return (bool) {};
+    return m_Letterbox > 0.0f;
 }
 
+// The overlay keeps no queue here: its draws go straight to the UI source.
 bool Output_Overlay_HasPending(void)
 {
-    DC_STUB();
-    return (bool) {};
+    return false;
 }
 
 bool Output_Overlay_LoadImage(const char *file_name)
 {
-    DC_STUB();
-    return (bool) {};
+    DC_PVR_SetPicture(file_name);
+    return DC_PVR_HasPicture();
 }
 
-void Output_Overlay_SetFade(float opacity)
+float Output_Overlay_GetFade(void)
 {
-    DC_STUB();
+    return m_Fade;
 }
 
-void Output_Overlay_SetLetterbox(float ratio)
+void Output_Overlay_SetFade(const float opacity)
 {
-    DC_STUB();
+    m_Fade = opacity;
 }
 
-void Output_Overlay_SlideLetterbox(float ratio)
+void Output_Overlay_SetLetterbox(const float ratio)
 {
-    DC_STUB();
+    m_Letterbox = ratio;
+    m_LetterboxTarget = ratio;
+}
+
+void Output_Overlay_SlideLetterbox(const float ratio)
+{
+    m_LetterboxTarget = ratio;
 }
 
 void Output_Overlay_UpdateLetterbox(void)
 {
-    DC_STUB();
+    if (m_Letterbox < m_LetterboxTarget) {
+        m_Letterbox = MIN(m_Letterbox + M_LETTERBOX_SPEED, m_LetterboxTarget);
+    } else if (m_Letterbox > m_LetterboxTarget) {
+        m_Letterbox = MAX(m_Letterbox - M_LETTERBOX_SPEED, m_LetterboxTarget);
+    }
 }
 
 RESULT Output_Quad_Create(OUTPUT_QUAD **out_quad)

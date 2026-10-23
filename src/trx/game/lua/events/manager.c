@@ -315,6 +315,7 @@ static bool M_FireEvent(
     if (m_L == nullptr || m_Listeners == nullptr || m_ListenerCount[ev] == 0) {
         return false;
     }
+#if defined(TRX_DC_PROBES)
     const uint64_t t0 = timer_us_gettime64();
     answered = M_FireEventInner(ev, key, args, arg_count);
     const uint32_t dt = (uint32_t)(timer_us_gettime64() - t0);
@@ -323,6 +324,9 @@ static bool M_FireEvent(
         g_DC_LuaEvUs[ev] += dt;
         g_DC_LuaEvN[ev]++;
     }
+#else
+    answered = M_FireEventInner(ev, key, args, arg_count);
+#endif
 #else
     answered = M_FireEventInner(ev, key, args, arg_count);
 #endif

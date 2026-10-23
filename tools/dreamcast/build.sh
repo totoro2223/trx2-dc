@@ -87,4 +87,10 @@ if [ -f "$LUAC" ]; then
     meson configure "$BUILD_DIR" -Dlua_compiler="$LUAC"
   fi
 fi
+# DC_PROBES=1 builds with the frame timers on (the benchmark reports need them).
+want=false
+[ "${DC_PROBES:-0}" = 1 ] && want=true
+if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk '$1 == "dc_probes" { print $2 }')" != "$want" ]; then
+  meson configure "$BUILD_DIR" -Ddc_probes="$want"
+fi
 ninja -C "$BUILD_DIR" "${@:3}"

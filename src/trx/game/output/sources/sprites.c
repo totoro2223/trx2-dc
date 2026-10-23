@@ -11,7 +11,10 @@
 
 #if defined(__DREAMCAST__)
     #include <trx/config.h>
+    #include <trx/game/camera.h>
+    #include <trx/game/interpolation.h>
     #include <trx/game/matrix.h>
+    #include <trx/game/output/sources/lightnings.h>
     #include <trx/game/output/sources/poly_fx.h>
     #include <trx/game/sparks/manager.h>
 #endif
@@ -29,7 +32,8 @@ typedef struct {
     // index + 1; 0 is the untextured quad of a flat spark.
     OUTPUT_MESH **spark_meshes;
     OUTPUT_MESH **spark_meshes_blended;
-    // The world triangles' (see M_StageTri), by sprite, corners and blend.
+    // The world triangles' (see M_StageTri), by sprite + 1 (0 is the flat
+    // one), corners and blend.
     OUTPUT_MESH **tri_meshes;
 #endif
     size_t mesh_count;
@@ -91,7 +95,8 @@ static void M_PrepareMeshes(M_PRIV *const p)
         Memory_Alloc(sizeof(*p->spark_meshes) * (p->mesh_count + 1));
     p->spark_meshes_blended =
         Memory_Alloc(sizeof(*p->spark_meshes_blended) * (p->mesh_count + 1));
-    p->tri_meshes = Memory_Alloc(sizeof(*p->tri_meshes) * p->mesh_count * 4);
+    p->tri_meshes =
+        Memory_Alloc(sizeof(*p->tri_meshes) * (p->mesh_count + 1) * 4);
     return;
 #endif
     MESH_BUILDER *const builder = MeshBuilder_Create();
@@ -149,7 +154,7 @@ static void M_FreeMeshes(M_PRIV *const p)
         Memory_FreePointer(&p->spark_meshes_blended);
     }
     if (p->tri_meshes != nullptr) {
-        for (size_t i = 0; i < p->mesh_count * 4; i++) {
+        for (size_t i = 0; i < (p->mesh_count + 1) * 4; i++) {
             if (p->tri_meshes[i] != nullptr) {
                 MeshBatcher_RemoveMesh(p->batcher, p->tri_meshes[i]);
                 Output_Mesh_Destroy(p->tri_meshes[i]);
@@ -255,7 +260,7 @@ static OUTPUT_MESH *M_GetSparkMesh(
 // The desktop's PolyFX renderer is not built on the Dreamcast: a spark (TR3's
 // blood, fire, smoke, splashes) is drawn as a sprite is, a quad facing the
 // camera, its colour the instance's tint.
-// shortcut: no interpolation between logic frames, no rotation, and a square
+// shortcut: no rotation, and a square
 // of the mean of the spark's width and height; upgrade if smoke looks wrong
 // or at 60 fps.
 void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
@@ -264,7 +269,20 @@ void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
     if (spark == nullptr || !spark->on || p->spark_meshes == nullptr) {
         return;
     }
-    const XYZ_32 pos = Sparks_GetWorldPos(spark);
+    XYZ_32 pos = Sparks_GetWorldPos(spark);
+    // Between ticks a free spark (one the world holds, not an item, an effect
+    // or a joint) moves from where it was to where it is, as the desktop does.
+    constexpr uint16_t M_ATTACHED =
+        SPARK_F_ATTACHED_NODE | SPARK_F_FX | SPARK_F_ITEM;
+    if ((spark->flags & M_ATTACHED) == 0U
+        && (int32_t)spark->s_life - (int32_t)spark->life > 1) {
+        const float rate = Interpolation_GetWorldRate();
+        pos = (XYZ_32) {
+            .x = (int32_t)LERP(spark->prev_pos.x, spark->pos.x, rate),
+            .y = (int32_t)LERP(spark->prev_pos.y, spark->pos.y, rate),
+            .z = (int32_t)LERP(spark->prev_pos.z, spark->pos.z, rate),
+        };
+    }
     const MATRIX *const v = &g_ViewMatrix;
     const int64_t zv = v->_20 * pos.x + v->_21 * pos.y + v->_22 * pos.z + v->_23;
     if (zv <= Output_GetNearZ() || zv >= Output_GetFarZ()) {
@@ -341,7 +359,7 @@ static OUTPUT_MESH *M_GetTriMesh(
     const bool blended)
 {
     OUTPUT_MESH **const slot =
-        &p->tri_meshes[(sprite_idx * 2 + half) * 2 + blended];
+        &p->tri_meshes[((sprite_idx + 1) * 2 + half) * 2 + blended];
     if (*slot != nullptr) {
         return *slot;
     }
@@ -349,13 +367,18 @@ static OUTPUT_MESH *M_GetTriMesh(
     static const float unit[3][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 } };
     MESH_BUILDER *const builder = MeshBuilder_Create();
     for (int32_t j = 0; j < 3; j++) {
+        // A negative sprite is a flat triangle: lines, and what PolyFX
+        // draws with no picture of its own.
+        const bool flat = sprite_idx < 0;
         const OUTPUT_MESH_VERTEX vertex = {
             .pos = { .x = unit[j][0], .y = unit[j][1], .z = 0.0f },
             .flags = VERT_NO_LIGHTING | VERT_NO_WIBBLE
-                | Output_Textures_GetSpriteTextureFlags(sprite_idx),
+                | (flat ? VERT_FLAT_SHADED
+                        : Output_Textures_GetSpriteTextureFlags(sprite_idx)),
             .color = { 255, 255, 255, 255 },
-            .uvw_idx =
-                Output_Textures_GetSpriteUVWIndex(sprite_idx, corners[half][j]),
+            .uvw_idx = flat ? -1
+                            : Output_Textures_GetSpriteUVWIndex(
+                                  sprite_idx, corners[half][j]),
         };
         MeshBuilder_AddVertex(builder, &vertex);
     }
@@ -379,8 +402,7 @@ static void M_StageTri(
     const DRAW_TYPE draw_type)
 {
     M_PRIV *const p = &m_Priv;
-    if (p->tri_meshes == nullptr || sprite_idx < 0
-        || sprite_idx >= (int32_t)p->mesh_count) {
+    if (p->tri_meshes == nullptr || sprite_idx >= (int32_t)p->mesh_count) {
         return;
     }
     // The desktop adds the adjustment to the clip space depth, which moves a
@@ -488,6 +510,95 @@ void OutputSource_PolyFX_StageSpriteQuadWorld(
 {
     OutputSource_PolyFX_StageSpriteQuadWorldDepth(
         sprite_idx, world_pos, color, 0.0f, draw_type);
+}
+
+// The desktop's extended PolyFX prims carry a screen-space displacement per
+// corner (ring and wake widths, flare sizes) and shader flags; here they are
+// the plain world quads and triangles above.
+// shortcut: the displacements and flags are dropped, and a textured triangle
+// (debris, bats, water particles) is flat in the mean of its corners; upgrade
+// where rings, wakes or flares come out the wrong size.
+void OutputSource_PolyFX_StageQuadExtDepth(
+    const int32_t sprite_idx, const XYZ_32 world_pos[4],
+    const float disp[4][2], const RGBA_8888 color[4], const uint16_t flags,
+    const float z_depth_adjust, const DRAW_TYPE draw_type)
+{
+    OutputSource_PolyFX_StageSpriteQuadWorldDepth(
+        sprite_idx, world_pos, color, z_depth_adjust, draw_type);
+}
+
+void OutputSource_PolyFX_StageQuadExt(
+    const int32_t sprite_idx, const XYZ_32 world_pos[4],
+    const float disp[4][2], const RGBA_8888 color[4], const uint16_t flags,
+    const DRAW_TYPE draw_type)
+{
+    OutputSource_PolyFX_StageSpriteQuadWorldDepth(
+        sprite_idx, world_pos, color, 0.0f, draw_type);
+}
+
+void OutputSource_PolyFX_StageTriExtUVDepth(
+    const XYZ_32 world_pos[3], const OUTPUT_UVW uvw[3],
+    const OUTPUT_TEXTURE_SIZE texture_size[3], const float disp[3][2],
+    const RGBA_8888 color[3], const uint16_t flags, const float z_depth_adjust,
+    const DRAW_TYPE draw_type)
+{
+    M_StageTri(-1, world_pos, 0, color, z_depth_adjust, draw_type);
+}
+
+void OutputSource_PolyFX_StageTriExtUV(
+    const XYZ_32 world_pos[3], const OUTPUT_UVW uvw[3],
+    const OUTPUT_TEXTURE_SIZE texture_size[3], const float disp[3][2],
+    const RGBA_8888 color[3], const uint16_t flags, const DRAW_TYPE draw_type)
+{
+    M_StageTri(-1, world_pos, 0, color, 0.0f, draw_type);
+}
+
+// A strip of half_width on each side, turned to face the camera: two flat
+// triangles.
+void OutputSource_PolyFX_StageLineSegment(
+    const XYZ_32 from, const RGBA_8888 from_color, const XYZ_32 to,
+    const RGBA_8888 to_color, const float half_width, const DRAW_TYPE draw_type)
+{
+    const float dx = (float)(to.x - from.x);
+    const float dy = (float)(to.y - from.y);
+    const float dz = (float)(to.z - from.z);
+    const float vx = (float)((from.x + to.x) / 2 - g_Camera.pos.x);
+    const float vy = (float)((from.y + to.y) / 2 - g_Camera.pos.y);
+    const float vz = (float)((from.z + to.z) / 2 - g_Camera.pos.z);
+    // The side is the direction crossed with the view.
+    float sx = dy * vz - dz * vy;
+    float sy = dz * vx - dx * vz;
+    float sz = dx * vy - dy * vx;
+    const float len = sqrtf(sx * sx + sy * sy + sz * sz);
+    if (len < 0.00001f) {
+        return;
+    }
+    const float k = half_width / len;
+    sx *= k;
+    sy *= k;
+    sz *= k;
+    const XYZ_32 p[4] = {
+        { from.x - (int32_t)sx, from.y - (int32_t)sy, from.z - (int32_t)sz },
+        { from.x + (int32_t)sx, from.y + (int32_t)sy, from.z + (int32_t)sz },
+        { to.x + (int32_t)sx, to.y + (int32_t)sy, to.z + (int32_t)sz },
+        { to.x - (int32_t)sx, to.y - (int32_t)sy, to.z - (int32_t)sz },
+    };
+    const RGBA_8888 c[4] = { from_color, from_color, to_color, to_color };
+    OutputSource_PolyFX_StageSpriteQuadWorldDepth(-1, p, c, 0.0f, draw_type);
+}
+
+// A bolt of lightning, as the desktop draws it: a blue glow with a white
+// core, added to the scene.
+// shortcut: two strips, not the four-quad cross the desktop builds.
+void OutputSource_Lightnings_StageSegment(const LIGHTNING_SEGMENT *const segment)
+{
+    const RGBA_8888 blue = { 0, 0, 255, 128 };
+    const RGBA_8888 white = { 255, 255, 255, 128 };
+    const float w = segment->thickness / 2.0f;
+    OutputSource_PolyFX_StageLineSegment(
+        segment->from, blue, segment->to, blue, w, DRAW_BLEND_ADD);
+    OutputSource_PolyFX_StageLineSegment(
+        segment->from, white, segment->to, white, w / 4.0f, DRAW_BLEND_ADD);
 }
 #endif
 

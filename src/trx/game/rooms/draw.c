@@ -18,6 +18,7 @@
 #include <trx/game/sparks.h>
 #include <trx/game/viewport.h>
 
+#include <math.h>
 #include <string.h>
 
 // TEMP: see platform/dreamcast/dc_probe.h
@@ -472,6 +473,26 @@ static void M_DrawSingleRoom(const ROOM *const room)
         Matrix_Push();
         Matrix_TranslateAbs32(mesh->pos);
         Matrix_RotY(mesh->rot.y);
+#if defined(__DREAMCAST__)
+        {
+            // A static wholly behind the near plane: its bounding sphere's
+            // far edge is not past it. What the corner test would find out in
+            // eight transforms; the sphere never rejects a visible one.
+            const BOUNDS_16 *const b = &obj->draw_bounds;
+            const float bx = MAX(ABS(b->min.x), ABS(b->max.x));
+            const float by = MAX(ABS(b->min.y), ABS(b->max.y));
+            const float bz = MAX(ABS(b->min.z), ABS(b->max.z));
+            const float r = sqrtf(bx * bx + by * by + bz * bz);
+            const float m0 = (float)g_MatrixPtr->_20;
+            const float m1 = (float)g_MatrixPtr->_21;
+            const float m2 = (float)g_MatrixPtr->_22;
+            const float row = sqrtf(m0 * m0 + m1 * m1 + m2 * m2);
+            if ((float)g_MatrixPtr->_23 + row * r <= (float)Output_GetNearZ()) {
+                Matrix_Pop();
+                continue;
+            }
+        }
+#endif
         const CLIP clip = Output_CheckBoundsClip(&obj->draw_bounds);
         if (clip != CLIP_NOT_VISIBLE) {
             const ROOM *const owner = Room_Get(mesh->room_num);

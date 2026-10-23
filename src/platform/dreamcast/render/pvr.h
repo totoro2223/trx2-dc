@@ -153,6 +153,12 @@ void DC_PVR_DrawLoadingScreen(
 void DC_PVR_SetPicture(const char *name);
 // Draws it over the whole screen, behind all else, inside a frame.
 void DC_PVR_DrawPicture(float brightness);
+// Whether a picture is in video memory (it is not if the disc lacks it).
+bool DC_PVR_HasPicture(void);
+// The same, inside a box given as fractions of the screen, fading in with
+// opacity, over the interface.
+void DC_PVR_DrawPictureBox(
+    float x0, float y0, float x1, float y1, float opacity);
 
 void DC_PVR_SetFilter(bool bilinear);
 // Pages drawn from here on sample a copy at half their size, made for them

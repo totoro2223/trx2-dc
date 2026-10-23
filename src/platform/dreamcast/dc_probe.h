@@ -132,6 +132,9 @@ extern uint32_t g_DC_ProbeUs[DC_PROBE_COUNT];
 extern uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS];
 extern uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS];
 
+// Off unless the build asks for them (meson -Ddc_probes=true): a frame then
+// runs the statements bare, and the sums stay at zero.
+#if defined(TRX_DC_PROBES)
 #define DC_PROBE(i, stmt)                                                      \
     do {                                                                       \
         const uint64_t _probe_t0 = timer_us_gettime64();                       \
@@ -143,3 +146,8 @@ extern uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS];
 #define DC_PROBE_START(t) const uint64_t t = timer_us_gettime64()
 #define DC_PROBE_STOP(i, t)                                                    \
     (g_DC_ProbeUs[i] += (uint32_t)(timer_us_gettime64() - (t)))
+#else
+#define DC_PROBE(i, stmt) stmt
+#define DC_PROBE_START(t) ((void)0)
+#define DC_PROBE_STOP(i, t) ((void)0)
+#endif
