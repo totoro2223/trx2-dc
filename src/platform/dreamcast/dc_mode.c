@@ -43,6 +43,8 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
     },
 };
 
+int32_t g_DC_TestMode = -1;
+
 const DC_MODE_PARAMS *DC_Mode_Get(void)
 {
     const DC_MODE mode = g_Config.rendering.dc_mode;

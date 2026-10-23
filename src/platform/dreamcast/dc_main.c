@@ -11,6 +11,7 @@
 
 #include "dc_bench.h"
 #include "dc_level_select.h"
+#include "dc_mode.h"
 #include "dc_watchdog.h"
 #include "vmu.h"
 
@@ -115,6 +116,27 @@ int __wrap_main(int argc, char *argv[])
         }
         fclose(demo);
     }
+    // A test disc that runs the benchmark straight away, with no keys
+    // (make_disc.sh's TRX_DC_BENCH): the demo's number.
+    FILE *const bench = fopen("/cd/BENCH.TXT", "r");
+    if (bench != nullptr) {
+        int number = -1;
+        if (fscanf(bench, "%d", &number) == 1 && number >= 0) {
+            g_DC_StartDemo = number;
+            g_DC_BenchRequested = true;
+        }
+        fclose(bench);
+    }
+    // A test disc that starts in a mode whatever the settings say
+    // (make_disc.sh's TRX_DC_MODE): the mode's number.
+    FILE *const mode = fopen("/cd/MODE.TXT", "r");
+    if (mode != nullptr) {
+        int number = -1;
+        if (fscanf(mode, "%d", &number) == 1) {
+            g_DC_TestMode = number;
+        }
+        fclose(mode);
+    }
     // Test discs name their level (make_disc.sh's fourth argument).
     int level = -1;
     FILE *const start = fopen("/cd/START.TXT", "r");
@@ -128,7 +150,7 @@ int __wrap_main(int argc, char *argv[])
             DC_Watchdog_SetTestLoads(loads);
         }
         fclose(start);
-    } else if (g_DC_DemoQueueCount == 0) {
+    } else if (g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0) {
         level = DC_LevelSelect_Run(engine);
     }
     static char engine_arg[12];

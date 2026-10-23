@@ -1,0 +1,45 @@
+﻿date 2026-10-22 23:25:18
+build DC build 342
+game tr3
+demo 0
+mode 2 (320x240), shadows 5, bump 0, 60 fps
+frames 3722 in 94610 ms
+fps avg 39.3, min 7.5, best frame 8.8 ms
+frame ms: median 23, 99% under 70, worst 132.6
+frames over 35 ms: 580 (15%)
+per frame, average / worst (ms, or counts and KiB):
+  logic  3.8 / 58.3
+  stage  7.9 / 40.4
+  pass   11.4 / 42.7
+  submit 0.5 / 16.2
+  map    0.0 / 11.9
+  mwait  0.0 / 0.0
+  wait   0.0 / 0.0
+  pvr    7.5 / 10.0
+  polys  723 / 1540
+  inst   97 / 344
+  verts  6158 / 14360
+  OP     73 / 160 KiB
+  TR     9 / 43 KiB
+  PT     1 / 7 KiB
+  MOD    32 / 35 KiB
+  xform  6.4 / 32.6
+probes, average per frame (us or counts):
+  ev=7 lua=2489 rem=91 inp=144 items=398 fx=853 lara=1016 post=386 end=24 ctrl=0 mctl=3735
+  flip=0 log=0 tcyc=0 tuvw=2 tcomp=18 vroom=1605 vobj=2379 vgen=2174 soft=0 emit=2692 cel=0
+  bump=0 envp=27 sscene=597 spre=530 sbounds=98 ssky=0 sroom=46 sstat=944 sitem=680
+  slara=1575 sfx=1621 spaint=0 sgflush=11383 sui=1876 soflush=94 nrooms=3 llight=24
+  lshadow=0 lmesh=285 lwater=565 ljoint=19 lhair=309 lequip=0 troom=1447 tplain=1393
+  tgen=2652 gown=1977 genv=0 gfog=0 gbill=193 goth=3 equad=0 etri=4 eclip=40 eout=1 eback=9
+  msil=0 mend=0 src0=9871 src1=0 src2=54 src3=0 src4=0 src5=0 src6=0 src7=0 src8=0 src9=0
+  plprep=44 pvol=1479 ppsoft=0 pdrawi=9821 ptransp=163 pntransp=26 udraw=108 uops=11
+  ilight=31 lweld=0 aruns=272 afaces=2357 acfaces=61 aempty=49 rall=1605 rplain=0 rdyn=0
+  rflick=0 rvary=0 rnw=1605 rfog=1206 rhit=963
+frame length histogram (ms: frames):
+  8:2 9:6 10:30 11:64 12:119 13:171 14:120 15:124 16:92 17:185 18:160 19:287 20:275 21:186
+  22:211 23:117 24:109 25:147 26:126 27:144 28:100 29:167 30:62 31:51 32:34 33:28 34:25
+  35:30 36:27 37:36 38:33 39:37 40:32 41:35 42:29 43:24 44:22 45:24 46:19 47:13 48:21 49:16
+  50:8 51:16 52:14 53:17 54:9 55:15 56:11 57:11 58:6 59:7 60:3 61:3 62:4 63:3 64:1 66:1
+  67:3 68:8 69:7 70:6 71:3 72:1 73:6 74:1 75:2 77:3 78:2 79:2 80:3 84:1 88:1 94:1 95:1 99:1
+  132:1
+summary: BENCH 3722 frames  avg 39.3 fps  min 7.5  slow 15% | logic 3.8 stage 7.9 pass 11.4 map 0.0 pvr 7.5 ms

@@ -1357,6 +1357,20 @@ static bool M_XNear(const float a, const float b)
     return fabsf(a - b) <= 1.0e-4f * MAX(fabsf(a), fabsf(b)) + 1.0e-6f;
 }
 
+// A colour within one level a channel: the assembly adds and multiplies the
+// floats apart where the compiler fuses them, so TR3's per-channel light can
+// land a level off at a truncation.
+static bool M_ArgbNear(const uint32_t a, const uint32_t b)
+{
+    for (int32_t s = 0; s < 32; s += 8) {
+        const int32_t d = (int32_t)((a >> s) & 0xFF) - (int32_t)((b >> s) & 0xFF);
+        if (d > 1 || d < -1) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // The C loop's vertices against the assembly's, for the ranges.
 static void M_VerifyXform(
     const M_XVERT *const c_side, const M_XVERT *const asm_side,
@@ -1367,7 +1381,7 @@ static void M_VerifyXform(
             const M_XVERT *const a = &asm_side[i];
             const M_XVERT *const b = &c_side[i];
             const bool near = (b->clip & M_CLIP_NEAR) != 0;
-            const bool ok = a->clip == b->clip && a->argb == b->argb
+            const bool ok = a->clip == b->clip && M_ArgbNear(a->argb, b->argb)
                 && M_XNear(a->x, b->x) && M_XNear(a->y, b->y)
                 && M_XNear(a->z, b->z)
                 && (near
@@ -1813,8 +1827,7 @@ static void M_XformObject(
         for (int32_t i = 0; cel && i < count; i++) {
             const uint32_t a = sargb[i];
             const uint32_t b = saved_s[i];
-            const int32_t da = (int32_t)(a >> 24) - (int32_t)(b >> 24);
-            if ((a & 0xFFFFFFu) != (b & 0xFFFFFFu) || da > 1 || da < -1) {
+            if (!M_ArgbNear(a, b)) {
                 m_XVerifyBad++;
                 if (m_XVerifyBad <= 12) {
                     LOG_WARNING(
@@ -1826,6 +1839,83 @@ static void M_XformObject(
     }
 #endif
 }
+
+// What xform_own_sh4.S takes: statics and sprites whose vertices share their
+// flags (see dc_xform_own).
+typedef struct {
+    M_XFORM *c;
+    M_XVERT *xverts;
+    const OUTPUT_MESH_VERTEX *vertices;
+    const uint16_t *vref;
+    int32_t count;
+    int32_t min_shade;
+    const uint32_t *white; // nullptr: tinted
+    float adder;
+    uint32_t k0;
+    int32_t mode; // 0: k0; 1: the vertex's shade; 2: adder + the shade
+    int32_t fog;
+    int32_t coloured; // TR3's ambient colour dimmed by the shade
+    float tr3_double;
+    float ambient[3];
+    uint32_t tint[4]; // a, r, g, b in 8.8
+    uint32_t *sargb; // the cel colours; nullptr: none
+    uint32_t dark;
+    // TR3's own light with no fog: each channel's whole factor (blue, green,
+    // red, 0) by the shade's step.
+    const uint16_t (*light)[4];
+} M_XOWN;
+_Static_assert(offsetof(M_XOWN, sargb) == 80, "xform_own_sh4.S reads these");
+_Static_assert(offsetof(M_XOWN, light) == 88, "xform_own_sh4.S reads these");
+
+// TR3's own light on a vertex depends on its shade (as a step of 32, 256 of
+// them) and on what holds for the instance: the ambient colour, the curve's
+// doubling and the tint. Tables of those are kept for the last few of them,
+// which most statics of a room share frame after frame.
+typedef struct {
+    uint32_t key[7];
+    bool valid;
+    uint16_t factor[256][4];
+} M_OWN_LIGHT;
+
+static const uint16_t (*M_OwnLight(
+    const float ambient[3], const float dbl, const uint32_t tr,
+    const uint32_t tg, const uint32_t tb))[4]
+{
+    static M_OWN_LIGHT m_Tables[4];
+    static int32_t m_Next = 0;
+    uint32_t key[7];
+    memcpy(key, ambient, 3 * sizeof(uint32_t));
+    memcpy(&key[3], &dbl, sizeof(uint32_t));
+    key[4] = tr;
+    key[5] = tg;
+    key[6] = tb;
+    for (int32_t i = 0; i < 4; i++) {
+        if (m_Tables[i].valid && memcmp(m_Tables[i].key, key, sizeof(key)) == 0) {
+            return m_Tables[i].factor;
+        }
+    }
+    M_OWN_LIGHT *const table = &m_Tables[m_Next++ & 3];
+    memcpy(table->key, key, sizeof(key));
+    table->valid = true;
+    // The fog's share is 256 (none): kk is the curve's doubling alone.
+    const float kk = 256.0f * dbl;
+    const uint32_t tint[3] = { tr, tg, tb };
+    for (int32_t step = 0; step < 256; step++) {
+        const float f = (step <= 0 ? 255 : step) * (1.0f / 255.0f);
+        for (int32_t ch = 0; ch < 3; ch++) {
+            const float mul = M_Clamp(ambient[ch] * f, 0.0f, 1.0f);
+            table->factor[step][2 - ch] =
+                (uint16_t)((uint32_t)(mul * kk) * tint[ch] >> 8);
+        }
+        table->factor[step][3] = 0;
+    }
+    return table->factor;
+}
+_Static_assert(offsetof(M_XOWN, white) == 24, "xform_own_sh4.S reads these");
+_Static_assert(offsetof(M_XOWN, mode) == 36, "xform_own_sh4.S reads these");
+_Static_assert(offsetof(M_XOWN, tr3_double) == 48, "xform_own_sh4.S reads these");
+_Static_assert(offsetof(M_XOWN, tint) == 64, "xform_own_sh4.S reads these");
+extern void dc_xform_own(M_XOWN *run);
 
 // Statics and sprites: meshes lit by their own light or not at all, with no
 // room light, object light, reflection or coloured fog to add. M_XformGeneric's
@@ -1854,6 +1944,56 @@ static void M_XformOwn(
     const uint32_t tb = M_TintK(inst->tint.b);
     const bool white = bind->white && !bind->deforms && ta == 256 && tr == 256
         && tg == 256 && tb == 256;
+    // Vertices that share their flags, and none a billboard or a sprite,
+    // are done in assembly: the flags decide once what each vertex then
+    // computes.
+    // Only the bits that change what a vertex computes have to agree.
+    const uint16_t decisive = VERT_NO_LIGHTING | VERT_NO_FOG
+        | VERT_USE_OWN_LIGHT | VERT_BILLBOARD | VERT_ABS_SPRITE;
+    const uint16_t shared = bind->flags_or;
+    const bool fast = ((bind->flags_or ^ bind->flags_and) & decisive) == 0
+        && !c->ortho
+        && (shared & (VERT_BILLBOARD | VERT_ABS_SPRITE)) == 0
+        && (bind->vref == nullptr || count <= 0xFFFF);
+    const bool own_coloured = tr3 && lighting
+        && (shared & (VERT_NO_LIGHTING | VERT_USE_OWN_LIGHT))
+            == VERT_USE_OWN_LIGHT;
+    M_XOWN run = {
+        .c = c,
+        .xverts = xverts,
+        .vertices = vertices,
+        .vref = bind->vref,
+        .count = count,
+        .min_shade = min_shade,
+        .white = white && !own_coloured ? m_WhiteARGB : nullptr,
+        .adder = adder,
+        .k0 = tr3 ? dbl
+            : (shared & VERT_NO_LIGHTING) != 0 || !lighting
+            ? ((shared & VERT_NO_LIGHTING) != 0
+                   ? 256
+                   : M_ShadeK(M_SHADE_NEUTRAL, min_shade))
+            : 0,
+        .mode = tr3 || (shared & VERT_NO_LIGHTING) != 0 || !lighting ? 0
+            : (shared & VERT_USE_OWN_LIGHT) != 0                     ? 2
+                                                                     : 1,
+        .fog = fog_on && (shared & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0,
+        .coloured = own_coloured,
+        .tr3_double = il->tr3_double,
+        .ambient = { il->tr3_ambient[0], il->tr3_ambient[1],
+                     il->tr3_ambient[2] },
+        .tint = { ta, tr, tg, tb },
+        .sargb = batcher->cel ? batcher->sargb : nullptr,
+        .dark = (uint32_t)(m_CelShade * 256.0f),
+        .light = fast && own_coloured
+            ? M_OwnLight(il->tr3_ambient, il->tr3_double, tr, tg, tb)
+            : nullptr,
+    };
+#if !defined(DC_EMIT_VERIFY)
+    if (fast) {
+        dc_xform_own(&run);
+        return;
+    }
+#endif
     for (int32_t i = 0; i < count; i++) {
         const OUTPUT_MESH_VERTEX *const vertex = M_Corner(bind, vertices, i);
         __builtin_prefetch(vertex + 2);
@@ -1913,7 +2053,43 @@ static void M_XformOwn(
                                     k * tg >> 8, k * tb >> 8);
         }
         out->clip = clip;
+        if (run.sargb != nullptr) {
+            // Darkened as the lit colour is, no light on it: alpha 0.
+            run.sargb[i] = M_ScaleRGB8(out->argb, run.dark) & 0x00FFFFFFu;
+        }
     }
+#if defined(DC_EMIT_VERIFY)
+    if (fast) {
+        // The assembly places them all again and the two are compared.
+        static M_XVERT *saved = nullptr;
+        static uint32_t *saved_s = nullptr;
+        static int32_t saved_cap = 0;
+        if (count > saved_cap) {
+            Memory_Free(saved);
+            Memory_Free(saved_s);
+            saved_cap = count;
+            saved = Memory_Alloc(sizeof(M_XVERT) * saved_cap);
+            saved_s = Memory_Alloc(sizeof(uint32_t) * saved_cap);
+        }
+        memcpy(saved, xverts, sizeof(M_XVERT) * count);
+        if (run.sargb != nullptr) {
+            memcpy(saved_s, run.sargb, sizeof(uint32_t) * count);
+        }
+        dc_xform_own(&run);
+        const int32_t whole[1][2] = { { 0, count } };
+        M_VerifyXform(saved, xverts, whole, 1);
+        for (int32_t i = 0; run.sargb != nullptr && i < count; i++) {
+            if (!M_ArgbNear(run.sargb[i], saved_s[i])) {
+                m_XVerifyBad++;
+                if (m_XVerifyBad <= 12) {
+                    LOG_WARNING(
+                        "[xform-verify] MISMATCH own cel %d: asm %08x | C %08x",
+                        (int)i, (unsigned)run.sargb[i], (unsigned)saved_s[i]);
+                }
+            }
+        }
+    }
+#endif
 }
 
 // Everything else: sprites, meshes lit by their own light or not at all,
@@ -2369,7 +2545,7 @@ static bool M_TransformInstance(
             bind->vertex_count; // TEMP
         DC_PROBE_START(probe_gen);
         if (!bind->needs_room_lights && !bind->needs_object_light && black_fog
-            && !m_Frame.ortho && !batcher->env && !batcher->cel) {
+            && !m_Frame.ortho && !batcher->env) {
             M_XformOwn(batcher, bind, inst, &il, &c, scale);
         } else {
             M_XformGeneric(
@@ -5263,11 +5439,11 @@ static void M_UpdateBumpLoad(void)
     m_FrameVertices = 0;
 }
 
-// ponytail: the map is drawn every other frame and kept in between (1 draws
-// it every frame): the casters move little in 33 ms and the shadow is soft,
-// and each map costs the silhouettes (~1.1 ms in Venice) and a scene of its
-// own on the PowerVR. What it was drawn for is kept with it.
-#define M_SOFT_MAP_EVERY 2
+// The map can be drawn every Nth frame and kept in between (1 draws it every
+// frame). Every other frame (15 Hz) saved the silhouettes (~1.1 ms in Venice)
+// and a scene of its own on the PowerVR, but the shadow looked worse, so it
+// is drawn every frame. What it was drawn for is kept with it.
+#define M_SOFT_MAP_EVERY 1
 static struct {
     bool valid;
     int32_t light_count;
@@ -5362,8 +5538,10 @@ void DC_Shadow_DrawVolumes(void)
         + (M_VOLUME_STRENGTH_MAX - M_VOLUME_STRENGTH_MIN) * lights[0].weight);
     const float *const dir = lights[0].dir;
 
-    // 12 cap triangles and at most 12 outline ones.
-    DC_PVR_TRIANGLE tris[24];
+    // 12 cap triangles and two for each of the box's 12 edges at most: a
+    // light inside or beside the box can leave every edge on the outline
+    // (24 triangles overflowed the stack there).
+    DC_PVR_TRIANGLE tris[36];
     int32_t volumes = 0;
     for (int32_t l = 0; l < light_count; l++) {
         for (int32_t i = 0; i < m_CasterCount; i++) {

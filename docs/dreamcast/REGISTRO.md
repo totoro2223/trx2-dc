@@ -480,3 +480,45 @@ Hecho el 2026-10-22. Venecia, Lara quieta, Flycast oculto.
 - Copia de un vértice compartido (32 bytes) con `fschg` + 4 `fmov.d` (alineado a 32): troom −0,06 ms, tplain −0,06 ms; el resto de la copia es el acceso a memoria, no el bucle. Evitarla del todo exigiría que `emit` leyera por la ranura del vértice compartido.
 - Ruta TR3 en ambos ensambladores (verificada en la Jungla, 0 bad): salas con `tr3_k` y objetos con la luz de objeto por canal (ambiente + hasta 3 luces, `fipr`). TR3 (Flycast): troom 1,29 → 0,94, tplain 1,79 → 1,57, pass 104 → 98 ms. Quedan en C: salas TR3 con luz dinámica RGB y objetos con reflejo.
 - Vértices de sala de Venecia por frame: 2378 en total, 1545 son copias de vértices compartidos (la copia de 32 bytes domina el tiempo que queda), 537 con parpadeo, 811 no blancos.
+
+## Demo de Londres en los tres modos, sombra a 30 Hz, estáticos en ensamblador (22/10/2026, DC builds 314–342)
+
+- **Sombra suave a 30 Hz**: `M_SOFT_MAP_EVERY` vuelve a 1 (el mapa se
+  redibuja cada frame); a 15 Hz la sombra no gustaba.
+- **Benchmark sin teclas**: `TRX_DC_BENCH=<n>` en `make_disc.sh` (`BENCH.TXT`)
+  arranca la demo n entera al encender (TR3: 0, Londres) y
+  `TRX_DC_MODE=graphics|performance|experimental-60` (`MODE.TXT`) fuerza el
+  modo, porque un `TR3X.json5` en el disco no se aplicaba. Con Flycast oculto
+  (`-Hidden`, audio por otro dispositivo) se mide sin tocar el PC. Ojo: el
+  `-StopOn` mira el log, hay que borrar el del run anterior.
+- **Desbordamiento de pila en las sombras de volumen** (modo rendimiento en
+  TR3 caía a mitad de la demo, siempre en el mismo punto): `M_BuildVolume`
+  puede dar 12 triángulos de tapa más 2 por cada una de las 12 aristas y el
+  búfer era de 24. Ahora 36.
+- **`dc_xform_own`** (`render/xform_own_sh4.S`): estáticos y sprites
+  (`M_XformOwn`), TR1/TR2/TR3, con cel. Basta que coincidan los bits que
+  deciden (sin luz, sin niebla, luz propia, billboard): los demás (descarte
+  alfa, aditivo…) varían por mesh. La luz coloreada de TR3 sale de una tabla
+  de 256 pasos de sombreado cacheada por (ambiente, doblado, tinte).
+  Verificado con `dc_emit_verify` (0 bad) en TR2 y en la demo de Londres. El
+  verificador admite un nivel de diferencia por canal: el ensamblador suma y
+  multiplica los float por separado donde el compilador los funde.
+- **Medidas** (Flycast oculto, Londres entera, ms por frame; antes = build 314
+  / 322 / 323, después = 340 / 341 / 342):
+
+| Modo | fps antes → después | pass | frames > 35 ms |
+|---|---|---|---|
+| Graphics (640x480, 30) | 26,9 → 27,2 | 14,3 → 13,5 | 44 % → 45 % |
+| Performance (640x480, 30) | 27,5 → 27,7 | 14,0 → 13,3 | 44 % → 45 % |
+| Experimental 60 (320x240, 60 adaptativo) | 39,0 → 39,3 | 11,7 → 11,4 | 15 % → 15 % |
+
+  Informes: `docs/dreamcast/benchmarks/` (`20261022201845_build314`,
+  `…220213_build322`, `…220457_build323` antes; `…231914_build340`,
+  `…232148_build341`, `…232518_build342` después).
+- **Dónde está el tiempo** (Londres, graphics): `pass` 13,5 = transformar
+  (salas 1,5, objetos 1,6, estáticos y sprites 3,2) + emitir caras 3,0 + el
+  resto del batcher; `stage` 8,0; Lua 3 ms por frame (`UI_PAINT` 1–2,5,
+  `TICK` 1,0, `UI_RESERVE_ALL` 0,6–1,6). Los estáticos con luz propia son
+  ~2400 vértices por frame y cuestan ~1,1 µs cada uno ya en ensamblador
+  (unas 200 instrucciones: colocar, recorte, niebla y color); el compilador
+  de tiempos de Flycast cuenta una instrucción por ciclo.

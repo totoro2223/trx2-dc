@@ -362,8 +362,11 @@ void DC_Bench_End(void)
     M_BenchPrint("game tr%d", (int)g_TRVersion);
     M_BenchPrint("demo %d", (int)m_Bench.demo_num);
     M_BenchPrint(
-        "mode %s, shadows %d, bump %d", DC_PVR_IsLowRes() ? "320x240" : "640x480",
-        (int)g_Config.visuals.shadow_type, (int)DC_Mode_Get()->bump_mapping);
+        "mode %d (%s), shadows %d, bump %d, %d fps",
+        (int)g_Config.rendering.dc_mode,
+        DC_PVR_IsLowRes() ? "320x240" : "640x480",
+        (int)g_Config.visuals.shadow_type, (int)DC_Mode_Get()->bump_mapping,
+        (int)DC_Mode_Get()->fps);
     M_BenchPrint("frames %d in %u ms", m_Bench.frames,
         (unsigned)(m_Bench.time_us / 1000));
     M_BenchPrint(

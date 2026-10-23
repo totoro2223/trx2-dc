@@ -25,6 +25,10 @@
 #include <trx/gl/context.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_mode.h>
+#endif
+
 #include <SDL2/SDL.h>
 #include <stdio.h>
 
@@ -284,6 +288,13 @@ static RESULT M_PrepareSystem(void)
                 Shell_GetGameFlowPath(s->args->startup.mod)),
             "The settings start from their defaults");
         Memory_FreePointer(&engine_config_path);
+#if defined(__DREAMCAST__)
+        if (g_DC_TestMode >= 0 && g_DC_TestMode < DC_MODE_NUMBER_OF) {
+            CONFIG_SET(g_Config.rendering.dc_mode, (DC_MODE)g_DC_TestMode);
+            CONFIG_SET(
+                g_Config.rendering.dc_adaptive_fps, DC_Mode_Get()->fps == 60);
+        }
+#endif
 
         if (s->args->test_record_path != nullptr) {
             TestRecorder_Open(

@@ -18,6 +18,7 @@
 #   auto        (the default) remastered if TRACKS or PIX/OG is there
 # Converting the music and pictures takes ffmpeg; without it the disc has
 # neither.
+# TRX_DC_BENCH=<n> runs the game's benchmark demo n (TR3: 0, London) at boot.
 # [level] starts the disc straight in that level, past the level select
 # (test discs); "1 8" also loads saved games 0 and 1 in turn, 8 times (see
 # DC_Watchdog_TakeTestLoad).
@@ -75,6 +76,11 @@ if [ -n "${TRX_DC_DEMO:-}" ]; then
   echo "$TRX_DC_DEMO" > "$STAGE/DEMO.TXT"
   echo "starts in demo $TRX_DC_DEMO"
 fi
+if [ -n "${TRX_DC_BENCH:-}" ]; then
+  # The disc runs the benchmark (that demo of the game) as soon as it boots.
+  echo "$TRX_DC_BENCH" > "$STAGE/BENCH.TXT"
+  echo "starts in benchmark $TRX_DC_BENCH"
+fi
 if [ -n "$START_LEVEL" ]; then
   echo "$START_LEVEL" > "$STAGE/START.TXT"
   echo "starts in level $START_LEVEL"
@@ -88,6 +94,17 @@ mkdir -p "$STAGE/games"
 cp -r "$SHIP/games/$GAME" "$STAGE/games/$GAME"
 # The GLSL shaders are of no use without OpenGL 3.
 rm -rf "$STAGE/cfg/shaders"
+if [ -n "${TRX_DC_MODE:-}" ]; then
+  # A test disc that starts in that mode (graphics, performance or
+  # experimental-60), whatever the settings say (dc_main.c, MODE.TXT).
+  case "$TRX_DC_MODE" in
+    graphics) echo 0 > "$STAGE/MODE.TXT" ;;
+    performance) echo 1 > "$STAGE/MODE.TXT" ;;
+    experimental-60) echo 2 > "$STAGE/MODE.TXT" ;;
+    *) echo "TRX_DC_MODE must be graphics, performance or experimental-60" >&2; exit 1 ;;
+  esac
+  echo "mode $TRX_DC_MODE"
+fi
 # Injections too large for 16 MiB of RAM. The engine holds every injection of
 # a level decompressed while the level loads, and leaves out with a warning
 # any it cannot find.

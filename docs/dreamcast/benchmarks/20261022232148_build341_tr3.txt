@@ -1,0 +1,44 @@
+﻿date 2026-10-22 23:21:48
+build DC build 341
+game tr3
+demo 0
+mode 1 (640x480), shadows 5, bump 0, 30 fps
+frames 2624 in 94551 ms
+fps avg 27.7, min 7.1, best frame 12.6 ms
+frame ms: median 34, 99% under 69, worst 139.6
+frames over 35 ms: 1203 (45%)
+per frame, average / worst (ms, or counts and KiB):
+  logic  4.9 / 57.7
+  stage  8.1 / 49.3
+  pass   13.3 / 55.2
+  submit 0.6 / 17.1
+  map    0.0 / 11.9
+  mwait  0.0 / 0.0
+  wait   0.0 / 0.0
+  pvr    7.5 / 10.0
+  polys  841 / 1587
+  inst   108 / 343
+  verts  6834 / 14260
+  OP     80 / 160 KiB
+  TR     10 / 42 KiB
+  PT     26 / 36 KiB
+  MOD    32 / 35 KiB
+  xform  7.5 / 33.0
+probes, average per frame (us or counts):
+  ev=10 lua=3003 rem=134 inp=192 items=572 fx=1045 lara=1214 post=536 end=32 ctrl=0
+  mctl=4875 flip=0 log=0 tcyc=0 tuvw=0 tcomp=27 vroom=1729 vobj=2460 vgen=2645 soft=0
+  emit=3081 cel=322 bump=0 envp=27 sscene=755 spre=513 sbounds=101 ssky=0 sroom=50
+  sstat=1068 sitem=741 slara=1219 sfx=1800 spaint=0 sgflush=13278 sui=2086 soflush=95
+  nrooms=4 llight=25 lshadow=0 lmesh=283 lwater=296 ljoint=19 lhair=299 lequip=0 troom=1609
+  tplain=1672 tgen=3209 gown=2421 genv=0 gfog=0 gbill=218 goth=4 equad=0 etri=5 eclip=40
+  eout=1 eback=9 msil=0 mend=0 src0=11788 src1=0 src2=55 src3=0 src4=0 src5=0 src6=0 src7=0
+  src8=0 src9=0 plprep=45 pvol=1460 ppsoft=0 pdrawi=11735 ptransp=167 pntransp=29 udraw=113
+  uops=11 ilight=38 lweld=0 aruns=297 afaces=2591 acfaces=64 aempty=50 rall=1729 rplain=0
+  rdyn=0 rflick=0 rvary=0 rnw=1729 rfog=1317 rhit=1025
+frame length histogram (ms: frames):
+  12:2 14:1 15:2 16:2 17:3 18:4 19:4 20:7 21:3 22:8 23:15 24:23 25:34 26:35 27:77 28:150
+  29:379 30:309 31:119 32:109 33:67 34:68 35:50 36:53 37:65 38:120 39:238 40:184 41:77
+  42:79 43:31 44:30 45:29 46:24 47:20 48:14 49:19 50:10 51:19 52:11 53:16 54:10 55:15 56:8
+  57:6 58:7 59:4 60:5 61:1 63:5 64:2 65:6 66:6 67:9 68:5 69:2 70:4 71:1 72:1 73:2 74:1 75:1
+  76:1 78:1 79:1 80:2 81:1 82:1 87:1 92:1 95:1 111:1 126:1 139:1
+summary: BENCH 2624 frames  avg 27.7 fps  min 7.1  slow 45% | logic 4.9 stage 8.1 pass 13.3 map 0.0 pvr 7.5 ms

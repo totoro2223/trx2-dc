@@ -26,6 +26,9 @@ typedef struct {
     bool bilinear;
 } DC_MODE_PARAMS;
 
+// The mode a test disc starts in whatever the settings say (MODE.TXT), or -1.
+extern int32_t g_DC_TestMode;
+
 const DC_MODE_PARAMS *DC_Mode_Get(void);
 
 // The rate the game runs at: the mode's, except that a 60 fps mode falls back

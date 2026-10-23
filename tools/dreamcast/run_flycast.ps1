@@ -118,6 +118,10 @@ public static class HiddenDesk {
   }
 }
 '@
+    # A hidden run is a silent one: the emulator's volume at 0.
+    if ($FlycastArgs -notmatch 'audio:volume') {
+        $FlycastArgs = "$FlycastArgs -config audio:volume=0".Trim()
+    }
     $procId = [HiddenDesk]::Start('TRX-DC', $Flycast, "$FlycastArgs `"$cdiPath`"", (Split-Path $Flycast))
     $proc = Get-Process -Id $procId
 } else {

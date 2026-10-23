@@ -64,6 +64,7 @@ dc_sources = files(
   'render/emit_sh4.S',
   'render/xform_sh4.S',
   'render/xform_obj_sh4.S',
+  'render/xform_own_sh4.S',
   'render/lights_tr4.c',
   'render/output_common.c',
   'render/pvr.c',
