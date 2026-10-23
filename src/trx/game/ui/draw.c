@@ -128,6 +128,14 @@ typedef struct {
 typedef struct {
     MEMORY_ARENA_ALLOCATOR alloc;
     VECTOR *ops[UI_LAYER_NUMBER_OF];
+#if defined(__DREAMCAST__)
+    // What the scripts painted, drawn after the phase's own draws in each
+    // layer and kept so that a frame with no tick can draw it again without
+    // running them.
+    VECTOR *script_ops[UI_LAYER_NUMBER_OF];
+    bool capturing;
+    bool scripts_kept;
+#endif
 } M_PRIV;
 
 static M_PRIV m_Priv = {
@@ -545,6 +553,12 @@ static void M_DrawOp_Image(const M_DRAW_OP *const base)
 static inline void M_ScheduleOp(M_DRAW_OP *const op)
 {
     M_PRIV *const p = &m_Priv;
+#if defined(__DREAMCAST__)
+    if (p->capturing) {
+        Vector_Add(p->script_ops[UI_GetLayer()], &op);
+        return;
+    }
+#endif
     Vector_Add(p->ops[UI_GetLayer()], &op);
 }
 
@@ -881,6 +895,11 @@ void UI_InitDraw(void)
         if (p->ops[i] == nullptr) {
             p->ops[i] = Vector_Create(sizeof(M_DRAW_OP *));
         }
+#if defined(__DREAMCAST__)
+        if (p->script_ops[i] == nullptr) {
+            p->script_ops[i] = Vector_Create(sizeof(M_DRAW_OP *));
+        }
+#endif
     }
 }
 
@@ -893,6 +912,12 @@ void UI_ShutdownDraw(void)
             Vector_Free(p->ops[i]);
             p->ops[i] = nullptr;
         }
+#if defined(__DREAMCAST__)
+        if (p->script_ops[i] != nullptr) {
+            Vector_Free(p->script_ops[i]);
+            p->script_ops[i] = nullptr;
+        }
+#endif
     }
 }
 
@@ -901,9 +926,40 @@ void UI_ClearDraw(void)
     M_PRIV *const p = &m_Priv;
     for (int32_t i = 0; i < UI_LAYER_NUMBER_OF; i++) {
         Vector_Clear(p->ops[i]);
+#if defined(__DREAMCAST__)
+        Vector_Clear(p->script_ops[i]);
+#endif
     }
+#if defined(__DREAMCAST__)
+    p->scripts_kept = false;
+#endif
     Memory_ArenaReset(&p->alloc);
 }
+
+#if defined(__DREAMCAST__)
+void UI_ClearPhaseDraw(void)
+{
+    M_PRIV *const p = &m_Priv;
+    // The arena keeps the scripts' draws; it is reset by the next full clear,
+    // one or two frames on.
+    for (int32_t i = 0; i < UI_LAYER_NUMBER_OF; i++) {
+        Vector_Clear(p->ops[i]);
+    }
+}
+
+void UI_SetScriptCapture(const bool capturing)
+{
+    m_Priv.capturing = capturing;
+    if (!capturing) {
+        m_Priv.scripts_kept = true;
+    }
+}
+
+bool UI_AreScriptDrawsKept(void)
+{
+    return m_Priv.scripts_kept;
+}
+#endif
 
 void UI_Draw(void)
 {
@@ -919,6 +975,14 @@ void UI_Draw(void)
             const M_DRAW_OP *const op = *(M_DRAW_OP **)Vector_Get(ops, i);
             op->draw(op);
         }
+#if defined(__DREAMCAST__)
+        const VECTOR *const script_ops = m_Priv.script_ops[layer];
+        for (int32_t i = 0; i < script_ops->count; i++) {
+            const M_DRAW_OP *const op =
+                *(M_DRAW_OP **)Vector_Get(script_ops, i);
+            op->draw(op);
+        }
+#endif
     }
 }
 

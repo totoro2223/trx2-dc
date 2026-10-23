@@ -224,7 +224,7 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "vroom", "vobj", "vgen", "soft", "emit", "cel", "bump", "envp",
     "sscene", "spre", "sbounds", "ssky", "sroom", "sstat", "sitem", "slara",
     "sfx", "spaint", "sgflush", "sui", "soflush", "nrooms",
-    "llight", "lshadow", "lmesh", "lwater", "ljoint", "lhair", "lequip", "troom", "tplain", "tgen", "gown", "genv", "gfog", "gbill", "goth", "equad", "etri", "eclip", "eout", "eback", "msil", "mend",
+    "llight", "lshadow", "lmesh", "lwater", "ljoint", "lhair", "lequip", "lblend", "troom", "tplain", "tgen", "gown", "genv", "gfog", "gbill", "goth", "equad", "etri", "eclip", "eout", "eback", "msil", "mend",
     "src0", "src1", "src2", "src3", "src4", "src5", "src6", "src7", "src8", "src9",
     "plprep", "pvol", "ppsoft", "pdrawi", "ptransp", "pntransp", "udraw", "uops",
     "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
@@ -526,10 +526,13 @@ static void M_StatsEndScene(void)
     DC_PVR_GetFrameStats(&pvr);
     const uint64_t slept = g_DC_SleepUs - m_Stats.sleep_us;
     m_Stats.sleep_us = g_DC_SleepUs;
+    // A wait for the PVR can start before the scene does, so the rest may
+    // come out below zero.
+    const int64_t draw = (int64_t)(now - m_Stats.begin_us) - pvr.wait_us
+        - g_DC_ShadowMapUs - g_DC_PassUs - g_DC_SubmitUs;
     uint32_t value[M_STAT_COUNT] = {
         [M_LOGIC] = 0,
-        [M_DRAW] = (uint32_t)(now - m_Stats.begin_us) - pvr.wait_us
-            - g_DC_ShadowMapUs - g_DC_PassUs - g_DC_SubmitUs,
+        [M_DRAW] = draw > 0 ? (uint32_t)draw : 0,
         [M_PASS] = g_DC_PassUs,
         [M_SUBMIT] = g_DC_SubmitUs,
         [M_MAP] = g_DC_ShadowMapUs - pvr.map_wait_us,

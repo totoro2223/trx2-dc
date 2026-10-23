@@ -53,6 +53,11 @@ static bool m_PendingFadeToBlack = false;
 static FADER_ARGS m_PendingFadeToBlackArgs;
 
 static double m_LastFlipMs = 0.0;
+#if defined(__DREAMCAST__)
+// No tick ran since the last frame, so the scripts would paint the interface
+// as they did then, short of the fraction between ticks: draw that again.
+static bool m_ReuseScriptDraws = false;
+#endif
 
 static GF_COMMAND M_HandleOverride(const PHASE *const phase)
 {
@@ -343,15 +348,31 @@ static void M_Draw(PHASE *const phase)
 
     DC_PROBE(DC_PROBE_S_SCENE, Output_BeginScene());
     DC_PROBE(DC_PROBE_S_SCENE, Output_SwitchViewport(VIEWPORT_GAME));
+#if defined(__DREAMCAST__)
+    const bool reuse = m_ReuseScriptDraws && UI_AreScriptDrawsKept();
+    DC_PROBE(DC_PROBE_S_UI, reuse ? UI_ClearPhaseDraw() : UI_BeginScene());
+#else
     DC_PROBE(DC_PROBE_S_UI, UI_BeginScene());
+#endif
     if (phase != nullptr && phase->draw != nullptr) {
         phase->draw(phase);
     }
 
     DC_PROBE_START(probe_ui);
+#if defined(__DREAMCAST__)
+    // A phase that began a scene of its own while drawing threw them away.
+    if (!reuse || !UI_AreScriptDrawsKept()) {
+        UI_SetScriptCapture(true);
+        LUA_UI_ReserveRegions();
+        TouchOverlay_Draw();
+        LUA_UI_EndScene();
+        UI_SetScriptCapture(false);
+    }
+#else
     LUA_UI_ReserveRegions();
     TouchOverlay_Draw();
     LUA_UI_EndScene();
+#endif
     DC_PROBE_STOP(DC_PROBE_S_UI, probe_ui);
 
     DC_PROBE(DC_PROBE_S_SCENE, Output_SwitchViewport(VIEWPORT_UI));
@@ -480,7 +501,9 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
             M_SetFractionalRate(frac);
             // The rooms move on once a tick, so on the first frame after one.
             Output_SetControlFrame(nframes > 0);
+            m_ReuseScriptDraws = nframes == 0;
             M_Draw(phase);
+            m_ReuseScriptDraws = false;
             Output_SetControlFrame(false);
             Interpolation_SetRate(1.0);
             M_ReportWork(work_start);

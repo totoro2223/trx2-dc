@@ -145,11 +145,10 @@ static void M_DrawLaraMesh(
     }
     // Takes the matrix the mesh is drawn with, which for a blended frame is
     // the blend rather than either end of it.
-    DC_PROBE_START(probe_water);
     MATRIX wmatrix = *g_WMatrixPtr;
     if (interpolated) {
         Matrix_Push();
-        Matrix_Interpolate();
+        DC_PROBE(DC_PROBE_L_BLEND, Matrix_Interpolate());
         wmatrix = *g_WMatrixPtr;
 #if !defined(__DREAMCAST__)
         Matrix_Pop();
@@ -163,6 +162,7 @@ static void M_DrawLaraMesh(
     const bool mesh_interpolated = interpolated;
 #endif
 
+    DC_PROBE_START(probe_water);
     const GAME_VECTOR pos = {
         .room_num = item->room_num,
         .pos = Matrix_MulVec32_M(&wmatrix, origin),

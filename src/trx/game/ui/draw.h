@@ -173,6 +173,16 @@ void UI_ShutdownDraw(void);
 // Execute all scheduled UI draw operations in order.
 void UI_Draw(void);
 
+#if defined(__DREAMCAST__)
+// Clears what the phase scheduled but keeps what the scripts painted, for a
+// frame with no tick that draws the scripts' last paint again.
+void UI_ClearPhaseDraw(void);
+// Draws scheduled while capturing are the scripts'; ending a capture keeps
+// them until the next full clear (UI_BeginScene).
+void UI_SetScriptCapture(bool capturing);
+bool UI_AreScriptDrawsKept(void);
+#endif
+
 // Draws the mask Lara looks through while she holds binoculars to her eyes,
 // over a level that is being played.
 void UI_DrawBinocularMask(void);

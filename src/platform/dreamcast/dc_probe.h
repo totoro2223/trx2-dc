@@ -53,10 +53,11 @@ enum {
     DC_PROBE_L_LIGHT, // M_CalculateLight
     DC_PROBE_L_SHADOW, // OutputSource_Shadows_Draw
     DC_PROBE_L_MESH, // Output_DrawObjectMesh(_I) of her meshes
-    DC_PROBE_L_WATER, // water observe/push and the matrix copies before it
+    DC_PROBE_L_WATER, // water observe/push (the matrix blend is outside)
     DC_PROBE_L_JOINTS, // Lara_Joints_StashMatrix + Lara_Joints_Draw
     DC_PROBE_L_HAIR, // Lara_Hair_Draw
     DC_PROBE_L_EQUIP, // M_DrawEquipment
+    DC_PROBE_L_BLEND, // the matrix blend of each of her meshes
     // Time in each M_Xform* path.
     DC_PROBE_XT_ROOM,
     DC_PROBE_XT_PLAIN,

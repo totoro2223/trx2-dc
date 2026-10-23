@@ -578,3 +578,42 @@ Informes: `docs/dreamcast/benchmarks/*_build372/373/374_tr3.txt` (después) y
 | Graphics | 26,9 → 28,7 | 14,3 → 12,7 | 44 % → 34 % |
 | Performance | 27,5 → 29,3 | 14,0 → 12,4 | 44 % → 34 % |
 | Experimental 60 | 39,0 → 44,4 | 11,7 → 10,8 | 15 % → 5 % |
+
+## UI reutilizada en frames sin tick (23/10/2026, DC build 375)
+
+Londres, experimental 60, Flycast oculto; base build 374 (mismo código sin
+esto). Informe `docs/dreamcast/benchmarks/20261023090144_build375_tr3.txt`.
+
+- **UI**: en un frame fraccionario sin tick (`nframes == 0`) los scripts no
+  vuelven a pintar; se dibujan otra vez sus operaciones del frame anterior
+  (`UI_ClearPhaseDraw`, `UI_SetScriptCapture` en `ui/draw.c`, decisión en
+  `phase/executor.c`). Lo que pinta la fase va en otra lista y se rehace cada
+  frame; el orden por capa no cambia. Si la fase empieza una escena propia al
+  dibujar, se pinta normal. `sui` 1,47 → 1,10 ms, Lua 1,92 → 1,56, fps 44,4 →
+  44,7. Sin comprobar a ojo en pantalla.
+- **Luz propia de estáticos con niebla por la tabla** (factor × parte de
+  niebla en `xform_own_sh4.S`): `tgen` 2,52 → 2,50 ms, casi ningún vértice de
+  luz propia cae en la niebla. **Deshecho.**
+- **Agua de Lara**: la sonda `lwater` ya no incluye la mezcla de matrices.
+  Agua 0,09 ms (no compensa tocarla); la mezcla de matrices de Lara ~0,34 ms
+  (candidata: `M_InterpolateFloat` usa `acosf`/`sinf`).
+- `stage` podía salir negativo (y dar la vuelta) cuando la CPU espera al PVR
+  antes de empezar la escena: ahora queda en 0.
+
+## Mezcla de matrices de Lara (23/10/2026, DC builds 376–378)
+
+Londres, experimental 60, Flycast oculto.
+
+- Sonda nueva `lblend` (`Matrix_Interpolate` de cada malla de Lara en
+  `M_DrawLaraMesh`): **0,33 ms por frame**, unos 11 µs por matriz (dos por
+  malla, vista y mundo).
+- **nlerp hasta ~50° en vez de 5°** (`M_QuatFSlerp`, umbral 0.999 → 0.9,
+  build 376): `slara` 1,263 → 1,253 ms, nada. Casi todos los giros entre
+  fotogramas son menores de 5°, así que `acosf`/`sinf` casi no se llaman.
+  **Deshecho.**
+- **Mezclar solo la matriz de mundo y multiplicarla por la vista** (build
+  378): en la Dreamcast la matriz "de vista" de Lara no es `g_ViewMatrix` ×
+  mundo (su traslación es la del mundo y `g_ViewMatrix` es casi la identidad
+  ahí), así que la comprobación fallaba siempre y `lblend` subió a 0,39.
+  **Deshecho.** Queda por saber qué relación guardan las dos pilas en la
+  Dreamcast; si una es la otra por una matriz fija, la idea vale ~0,16 ms.
