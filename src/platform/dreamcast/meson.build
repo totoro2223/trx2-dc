@@ -71,6 +71,7 @@ dc_sources = files(
   'render/stubs.c',
   'render/ui.c',
   'sdl_compat.c',
+  'video.c',
   'vmu.c',
 )
 

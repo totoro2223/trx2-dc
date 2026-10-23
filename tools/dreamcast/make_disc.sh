@@ -18,6 +18,7 @@
 #   auto        (the default) remastered if TRACKS or PIX/OG is there
 # Converting the music and pictures takes ffmpeg; without it the disc has
 # neither.
+# TRX_DC_FMV=0 leaves the films (fmv/) out; the first disc with them is slow.
 # TRX_DC_BENCH=<n> runs the game's benchmark demo n (TR3: 0, London) at boot.
 # [level] starts the disc straight in that level, past the level select
 # (test discs); "1 8" also loads saved games 0 and 1 in turn, 8 times (see
@@ -154,20 +155,28 @@ echo "== loading pictures"
 # ones; the classic TR3's pix as they are), shown behind the loading screen:
 # 512x512 RGB565 as the PowerVR reads them, stretched back over the screen.
 # Kept between discs; without ffmpeg the loading screen stays black. The
-# classic TR2 has none.
+# classic TR2 has only the title, legal and credit pictures.
 PIX_CACHE="$BUILD_DIR/pix-$GAME-$SOURCE"
 mkdir -p "$PIX_CACHE" "$STAGE/pix"
 if [ "$SOURCE" = remastered ]; then
   PIX_FILES=("$GAME_DATA"/../PIX/OG/*.DDS)
   PIX_CROP="crop=640:480:(in_w-640)/2:0,"
 else
-  PIX_FILES=("$GAME_DATA"/../pix/*.BMP "$GAME_DATA"/../pix/*.bmp)
+  # TR3's pictures are BMPs beside the data; TR2's (title, legal, credits)
+  # are PCXs in the data itself.
+  PIX_FILES=("$GAME_DATA"/../pix/*.BMP "$GAME_DATA"/../pix/*.bmp
+    "$GAME_DATA"/*.PCX "$GAME_DATA"/*.pcx)
   PIX_CROP=""
 fi
 for f in "${PIX_FILES[@]}"; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
   lower="$(echo "${name%.*}" | tr '[:upper:]' '[:lower:]')"
+  # The gameflow's names for the title and the legal notice.
+  case "$lower" in
+    title|titleuk) lower=title_eu ;;
+    legal) lower=legal_eu ;;
+  esac
   out="$PIX_CACHE/$lower.565"
   if [ ! -f "$out" ] && command -v ffmpeg > /dev/null; then
     ffmpeg -hide_banner -loglevel error -y -i "$f" -frames:v 1 \
@@ -237,6 +246,47 @@ for f in "${MUSIC_FILES[@]}"; do
   [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music/"
 done
 echo "$(ls "$STAGE/games/$GAME/music" | wc -l) tracks"
+
+echo "== films"
+# The game's films (fmv/*.RPL, or the remaster's) as 256-wide streams of
+# quantised frames at 15 a second (tools/dreamcast/fmvenc.c), with their sound
+# as Yamaha ADPCM beside them (src/platform/dreamcast/video.c plays them).
+# The game finds "LOGO.AVI" as logo.fmv. Kept between discs, but the first time
+# takes minutes; TRX_DC_FMV=0 makes a disc without films, which the game then
+# skips. Without ffmpeg there are none either.
+FMV_CACHE="$BUILD_DIR/fmv-$GAME-$SOURCE"
+mkdir -p "$FMV_CACHE" "$STAGE/fmv"
+FMV_TOOL="$BUILD_DIR/fmvenc.exe"
+if [ ! -f "$FMV_TOOL" ] || [ "$ROOT/tools/dreamcast/fmvenc.c" -nt "$FMV_TOOL" ]; then
+  gcc -O2 -fopenmp -o "$FMV_TOOL" "$ROOT/tools/dreamcast/fmvenc.c"
+fi
+if [ "${TRX_DC_FMV:-1}" != 0 ] && command -v ffmpeg > /dev/null; then
+  while IFS= read -r f; do
+    name="$(basename "$f")"
+    stem="${name%.*}"
+    video="$FMV_CACHE/$stem.fmv"
+    sound="$FMV_CACHE/$stem.wav"
+    if [ ! -f "$video" ]; then
+      size="$(ffmpeg -hide_banner -i "$f" 2>&1 | grep -m1 'Video:'         | grep -o ' [0-9]\{2,4\}x[0-9]\{2,4\}' | head -1 | tr -d ' ')"
+      [ -n "$size" ] || continue
+      fw="${size%x*}"
+      fh="${size#*x}"
+      h=$(( (256 * fh / fw + 1) / 2 * 2 ))
+      if ffmpeg -hide_banner -loglevel error -i "$f" -an           -vf "fps=15,scale=256:$h:flags=lanczos" -f rawvideo -pix_fmt rgb24 -           | "$FMV_TOOL" "$video.part" 256 "$h" 15; then
+        mv "$video.part" "$video"
+      else
+        rm -f "$video.part"
+        echo "film $name skipped"
+      fi
+    fi
+    if [ -f "$video" ] && [ ! -f "$sound" ]; then
+      ffmpeg -hide_banner -loglevel error -y -i "$f" -vn -ac 2 -ar 22050         -c:a adpcm_yamaha "$sound" || rm -f "$sound"
+    fi
+    [ -f "$video" ] && cp "$video" "$STAGE/fmv/"
+    [ -f "$sound" ] && cp "$sound" "$STAGE/fmv/"
+  done < <(find "$GAME_DATA/.." -maxdepth 2 -ipath '*/fmv/*' -type f     \( -iname '*.rpl' -o -iname '*.avi' -o -iname '*.mp4' -o -iname '*.ogv'     -o -iname '*.mkv' -o -iname '*.webm' \) | sort)
+fi
+echo "$(ls "$STAGE/fmv" | grep -c '\.fmv$') films"
 
 echo "== image"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \

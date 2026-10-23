@@ -106,9 +106,10 @@ cambia es la columna TR1; casi todos los efectos pesados no existen en TR1.
 
 | # | Stub (llamadores) | TR1 | TR2 | TR3 | Prioridad |
 |---|---|---|---|---|---|
-| 26 | **Quad de vídeo** (`Output_Quad_*`): `fmv.c`. Va unido a `av_stub.c` (`Video_*`, `AudioDecoder_*`) | FMV | FMV | FMV | Media: es la tarea de FMV de E |
-| 27 | **Cielo** (`OutputSource_Sky_StageLayer`, `StageFogGradient`): `output/sky.c` | sin cielo | skybox (probable) | skybox, capa y degradado de niebla | Media: la textura del cielo es un deseo ya anotado en E |
+| 26 | **FMV** (`video.c`, `tools/dreamcast/fmvenc.c`, `make_disc.sh`): escrito y compilado el 23/10/2026, **sin probar**. Queda: ver y ajustar (calidad, ritmo, sincronía con el sonido), medir la carga de disco, y los FMV del remaster (otro formato de fichero, sin mirar). Detalle en PRUEBAS_PENDIENTES.md | FMV | FMV | FMV | Media |
 | 31 | **Depuración** (`Misc_Stage{Cuboid,Sphere}`, `RoomsDebug_*`): cajas de choque, ascensor, puertas de disparo, `lua/capi/scene.c` | sí | sí | sí | Baja: no son efectos del juego |
+
+**Cielo** (`OutputSource_Sky_StageLayer` y `StageFogGradient`): no aplica. Solo los llama el código de TR4 (`g_TRVersion == 4` en `output/sky.c`); el cielo de TR2 y TR3 es una malla normal y ya se dibuja. Los stubs se quedan vacíos.
 
 Quedan fuera de la tabla los 12 stubs `TRX_GL_*` (contexto OpenGL, temporizador
 de GPU, capturas): no se dibujan en Dreamcast ni hacen falta.

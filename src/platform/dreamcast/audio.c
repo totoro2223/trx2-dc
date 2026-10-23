@@ -30,6 +30,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 // The AICA counts a sample's position in 16 bits.
@@ -804,7 +805,7 @@ static void *M_StreamThread(void *const arg)
     return nullptr;
 }
 
-RESULT Audio_Stream_CreateFromFile(
+static RESULT M_StreamOpen(
     const char *const path, int32_t *const out_sound_id)
 {
     MUST(Audio_Init());
@@ -857,6 +858,25 @@ RESULT Audio_Stream_CreateFromFile(
     mutex_unlock(&m_StreamLock);
     *out_sound_id = id;
     return OK;
+}
+
+// A film's sound is the ADPCM WAV beside it (make_disc.sh): the film
+// itself is not one.
+RESULT Audio_Stream_CreateFromFile(
+    const char *const path, int32_t *const out_sound_id)
+{
+    const RESULT result = M_StreamOpen(path, out_sound_id);
+    if (IS_OK(result)) {
+        return result;
+    }
+    const char *const dot = strrchr(path, '.');
+    if (dot == nullptr || strchr(dot, '/') != nullptr) {
+        return result;
+    }
+    IGNORE(result);
+    char wav[256];
+    snprintf(wav, sizeof(wav), "%.*s.wav", (int)(dot - path), path);
+    return M_StreamOpen(wav, out_sound_id);
 }
 
 RESULT Audio_Stream_CreateFromMemory(

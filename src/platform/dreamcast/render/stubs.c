@@ -22,7 +22,9 @@
 #include <trx/gl/context.h>
 #include <trx/gl/gpu_timer.h>
 #include <trx/gl/renderer.h>
+#include <trx/core/result.h>
 #include <trx/core/utils.h>
+#include <stdlib.h>
 #include <trx/game/output/draw.h>
 #include <trx/game/viewport.h>
 
@@ -297,35 +299,77 @@ void Output_Overlay_UpdateLetterbox(void)
     }
 }
 
+// The FMV's frame (fmv.c): it takes the picture's place in video memory, so
+// only one is up at a time. Shortcut: the filter is the PowerVR's own; a
+// frame is stretched, or boxed to the source's shape.
+struct OUTPUT_QUAD {
+    OUTPUT_QUAD_FIT_MODE fit;
+    float src_w;
+    float src_h;
+    bool has_frame;
+};
+
 RESULT Output_Quad_Create(OUTPUT_QUAD **out_quad)
 {
-    DC_STUB();
+    OUTPUT_QUAD *const quad = calloc(1, sizeof(OUTPUT_QUAD));
+    FAIL_IF(quad == nullptr, "no memory for the video quad");
+    quad->fit = OUTPUT_QUAD_FIT_STRETCH;
+    *out_quad = quad;
     return OK;
 }
 
-void Output_Quad_Destroy(OUTPUT_QUAD *renderer)
+void Output_Quad_Destroy(OUTPUT_QUAD *const renderer)
 {
-    DC_STUB();
+    if (renderer != nullptr && renderer->has_frame) {
+        DC_PVR_SetPicture(nullptr);
+    }
+    free(renderer);
 }
 
-void Output_Quad_Render(OUTPUT_QUAD *renderer)
+void Output_Quad_Render(OUTPUT_QUAD *const renderer)
 {
-    DC_STUB();
+    if (renderer == nullptr || !renderer->has_frame) {
+        return;
+    }
+    // Pictured at 4:3 on the 640x480 screen; a wider source leaves bars.
+    float x0 = 0.0f;
+    float y0 = 0.0f;
+    if (renderer->fit != OUTPUT_QUAD_FIT_STRETCH && renderer->src_w > 0.0f
+        && renderer->src_h > 0.0f) {
+        const float aspect = (renderer->src_w / renderer->src_h) / (4.0f / 3.0f);
+        if (aspect > 1.0f) {
+            y0 = (1.0f - 1.0f / aspect) * 0.5f;
+        } else if (aspect < 1.0f) {
+            x0 = (1.0f - aspect) * 0.5f;
+        }
+    }
+    if (x0 == 0.0f && y0 == 0.0f) {
+        DC_PVR_DrawPicture(1.0f);
+    } else {
+        DC_PVR_DrawPictureBox(x0, y0, 1.0f - x0, 1.0f - y0, 1.0f);
+    }
 }
 
 void Output_Quad_SetFilter(OUTPUT_QUAD *renderer, TEXTURE_FILTER filter_mode)
 {
-    DC_STUB();
 }
 
-void Output_Quad_SetFit(OUTPUT_QUAD *renderer, OUTPUT_QUAD_FIT_MODE fit_mode, float src_w, float src_h)
+void Output_Quad_SetFit(
+    OUTPUT_QUAD *const renderer, const OUTPUT_QUAD_FIT_MODE fit_mode,
+    const float src_w, const float src_h)
 {
-    DC_STUB();
+    renderer->fit = fit_mode;
+    renderer->src_w = src_w;
+    renderer->src_h = src_h;
 }
 
-void Output_Quad_Upload(OUTPUT_QUAD *renderer, const OUTPUT_QUAD_SURFACE_DESC *desc, const uint8_t *data)
+void Output_Quad_Upload(
+    OUTPUT_QUAD *const renderer, const OUTPUT_QUAD_SURFACE_DESC *const desc,
+    const uint8_t *const data)
 {
-    DC_STUB();
+    // Only 32-bit frames (fmv.c asks for BGRA).
+    renderer->has_frame = desc->bit_count == 32
+        && DC_PVR_UploadPicture(data, desc->width, desc->height, desc->pitch);
 }
 
 RESULT TRX_GL_Context_Attach(void *window_handle)

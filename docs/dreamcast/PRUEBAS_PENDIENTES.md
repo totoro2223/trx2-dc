@@ -55,10 +55,18 @@ apagar.) Medir antes y después con la misma base, Londres con
 | T17 | **Chispas de TR3**: ahora se interpolan entre ticks las libres (no ligadas a objeto, efecto ni nodo). Sigue sin giro (`SPARK_F_ROTATE`) y cuadradas. | Sangre, humo, chispas a 60: movimiento fluido, sin saltos al nacer. |
 | T32 | `src/platform/dreamcast/output_stub.c` borrado (no estaba en `meson.build`). | Compila (ya comprobado). |
 
+## Flujo normal y vídeo (DC build 283)
+
+| # | Cambio | Qué comprobar |
+|---|---|---|
+| T26a | **Selector**: la primera entrada de cada juego es "Normal flow (logos, title, menu)": arranca como en producción, sin `-l`. `Output_Quad_*` implementado sobre la imagen de pantalla (`DC_PVR_UploadPicture`: cuadro BGRA a 512×512 RGB565, con bandas si el origen no es 4:3). **Sin decodificador**: nada lo llama aún. | Que compile y que una imagen cargada después de un cuadro no reutilice el cuadro (`m_PictureName`). Probar de verdad cuando haya vídeo. |
+| T26b | **Imágenes de TR2 clásico** (`make_disc.sh`): `TITLE.PCX`, `legal.PCX`, `credit*.PCX` y `END.PCX` pasan a `pix/*.565` (`title_eu`, `legal_eu`); en TR3, `TITLEUK`→`title_eu`, `LEGAL`→`legal_eu`. Comprobado el contenido de `legal_eu` y, en el log de Flycast oculto, la secuencia legal, título y demo tras 30 s. | Ver en pantalla: aviso legal, el menú con la imagen del título, los créditos. Los logos y la intro son FMV: ver T26c. |
+
+| T26c | **FMV** (compilado, sin disco ni Flycast): `fmvenc.c` (host) cuantifica cada cuadro a 256 bloques de 2×2 (RGB565) con un byte por bloque, 256 de ancho a 15 fps; `make_disc.sh` convierte `fmv/*.RPL` (también avi, mp4, ogv, mkv, webm) con ffmpeg y deja `fmv/<nombre>.fmv` y `<nombre>.wav` (ADPCM Yamaha 22 kHz); `video.c` implementa `Video_*` y `audio.c` abre el `.wav` hermano de la película. `TRX_DC_FMV=0` los omite. | Primer disco: tarda minutos (unos 6000 cuadros en TR2) y crece (~100 MB en TR2); ver que codifica sin errores. En el juego: logo y intro del flujo normal, calidad del VQ por cuadro (parpadeo del libro de códigos), ritmo (reloj de la consola, no el del sonido) y desfase con la voz, saltar con Start, pausa. Posibles fallos: nombre del fichero (`LOGO.AVI` → `LOGO.fmv`, mayúsculas), lectura del disco a ~200 KB/s junto al sonido, coste de convertir 256×192 a la textura de 512×512 por cuadro. |
+
 ## No hecho (queda en TAREAS.md)
 
 Bloque C: 7, 8, 9, 10, 11, 12, 13 (piden medir o investigar). Bloque D: 15 y 16
 (exigen separar datos de sala o tocar formatos, riesgoso a ciegas). E17: giro de
 chispas, salas de color sin mínimo de sombra ni parpadeo, nombre del guardado
-VMU. E20: reverb y filtro bajo el agua (programa del DSP del AICA). G: 26 (quad
-de vídeo y `av_stub.c`), 27 (cielo), 31 (dibujos de depuración).
+VMU. E20: reverb y filtro bajo el agua (programa del DSP del AICA). G: 26 (FMV, ver T26c) y 31 (dibujos de depuración). La 27 (cielo) no aplica: solo TR4.

@@ -151,6 +151,10 @@ void DC_PVR_DrawLoadingScreen(
 // name ("india.webp"), read from the disc into video memory once
 // (make_disc.sh makes them); nullptr lets it go.
 void DC_PVR_SetPicture(const char *name);
+// Puts a 32-bit BGRA image (a video frame) in the picture's place, stretched
+// to its 512x512 texture. False if there is no video memory for it.
+bool DC_PVR_UploadPicture(
+    const uint8_t *bgra, int32_t width, int32_t height, int32_t pitch);
 // Draws it over the whole screen, behind all else, inside a frame.
 void DC_PVR_DrawPicture(float brightness);
 // Whether a picture is in video memory (it is not if the disc lacks it).

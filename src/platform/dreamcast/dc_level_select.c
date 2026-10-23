@@ -3,7 +3,8 @@
 // Drawn straight into the frame buffer in the BIOS font, before the renderer
 // owns the screen, and read from the first controller. Three pages, right
 // and left between them: the levels (the first entry starts the game as
-// usual, at the title), the in-game cutscenes in story order, and the title's
+// it goes in production: the intro, the title screen with its copyright and
+// the main menu), the in-game cutscenes in story order, and the title's
 // demos with the benchmarks. Up and down pick, A or Start goes.
 
 #include "dc_level_select.h"
@@ -23,7 +24,7 @@
 // Each game's levels in the order of its gameflow (data/trx/ship/games/tr2
 // and tr3).
 static const char *const m_LevelsTR2[] = {
-    "Title screen",
+    "Normal flow (logos, title, menu)",
     "Lara's Home",
     "The Great Wall",
     "Venice",
@@ -45,7 +46,7 @@ static const char *const m_LevelsTR2[] = {
     "Home Sweet Home",
 };
 static const char *const m_LevelsTR3[] = {
-    "Title screen",
+    "Normal flow (logos, title, menu)",
     "Lara's Home",
     "Jungle",
     "Temple Ruins",
