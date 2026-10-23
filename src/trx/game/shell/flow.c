@@ -292,7 +292,12 @@ static RESULT M_PrepareSystem(void)
         if (g_DC_TestMode >= 0 && g_DC_TestMode < DC_MODE_NUMBER_OF) {
             CONFIG_SET(g_Config.rendering.dc_mode, (DC_MODE)g_DC_TestMode);
             CONFIG_SET(
-                g_Config.rendering.dc_adaptive_fps, DC_Mode_Get()->fps == 60);
+                g_Config.rendering.dc_adaptive_fps,
+                (bool)(DC_Mode_Get()->fps == 60));
+            CONFIG_SET(
+                g_Config.visuals.shadow_type,
+                DC_Mode_Get()->volume_shadows ? SHADOW_TYPE_VOLUME
+                                              : SHADOW_TYPE_SOFT_HIGH);
         }
 #endif
 

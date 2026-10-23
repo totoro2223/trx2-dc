@@ -384,6 +384,10 @@ end
 if pcall(trx.config.describe, "rendering.dc_mode") then
   local unused = {}
   for _, key in ipairs({
+    -- The frame rate is the mode's (DC_Mode_GetFPS), the screen is fixed.
+    "rendering.fps",
+    "rendering.aspect_mode",
+    "rendering.borders",
     "window.is_fullscreen",
     "rendering.enable_trapezoid_filter",
     "rendering.fmv_filter",
@@ -412,6 +416,14 @@ if pcall(trx.config.describe, "rendering.dc_mode") then
   for i = #keys, 1, -1 do
     if unused[keys[i]] then
       table.remove(keys, i)
+    end
+  end
+  -- The shadows are chosen here, over what the mode picks; the visuals tab,
+  -- where they sit elsewhere, is not on the console.
+  for i, key in ipairs(keys) do
+    if key == "rendering.dc_cel_shading" then
+      table.insert(keys, i + 1, "visuals.shadow_type")
+      break
     end
   end
 end

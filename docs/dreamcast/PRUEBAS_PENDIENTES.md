@@ -159,6 +159,22 @@ apagar.) Medir antes y después con la misma base, Londres con
 | T26a | **Selector**: la primera entrada de cada juego es "Normal flow (logos, title, menu)" (arranca como en producción, sin `-l`). | Que arranque el flujo completo: copyright, logos, intro, menú. |
 | T26b | **Título del TR2 clásico** (`make_disc.sh`): `TITLE.PCX` pasa a `pix/title_eu.565` (en TR3, `TITLEUK`) y `credit*.PCX`/`END.PCX` a sus nombres; el aviso legal lo hace el bloque `TRX_DC_LEGAL`. | Ver el menú con la imagen del título y los créditos. |
 
+## Menú de render y selector de sombras (23/10/2026, compilado, sin ver el menú)
+
+| # | Cambio | Qué comprobar |
+|---|---|---|
+| T33 | **Selector de sombras en Rendering** (`tabs.lua`, `handlers.lua`): `visuals.shadow_type` junto al cel shading, con cuatro valores: Hard, Soft (low), Soft (high) y la original del juego (octágono en TR1/TR2, sprite en TR3). Elegir una **manda sobre el modo**: ya no se fuerza `volume` en Rendimiento y Experimental 60 (`M_ShadowType` solo lo hace bajo el agua). Cambiar de modo repone la sombra del modo (Hard en los de 30 de rendimiento y en el 60, Soft (high) en Gráficos), que se puede cambiar después. | Que las cuatro salgan en el menú, que cada una dibuje lo suyo, y que Soft en Rendimiento no hunda los fps. |
+| T34 | **Filas que no hacían nada en la consola, fuera de Rendering**: `rendering.fps` (el ritmo lo manda el modo), `aspect_mode` y `borders` (la pantalla es fija). | Que el menú no las muestre. `rendering.fps` pudo ser lo que "no funcionaba" de los 60. |
+
+Experimental 60 desde el arranque (disco de Venecia con `TRX_DC_MODE=experimental-60`, Flycast oculto, 70 s): 55–60 fps con 320×240, trabajo ~14 ms por frame. El camino por el menú no se probó (el modo oculto no admite teclas).
+
+## Cambio de modo en marcha y TR1 (23/10/2026)
+
+| # | Cambio | Qué comprobar |
+|---|---|---|
+| T35 | **Cambiar el modo mientras corre**, probado sin teclas con un disco de prueba (`TRX_DC_SWITCH="<modo> <frame>"` en `make_disc.sh`, `SWITCH.TXT`; modo 3 = los pasos de la fila del menú por Lua). Venecia, Flycast oculto: de Gráficos a Experimental 60 sube de 30 a 58–60 fps y la sombra pasa a Hard; por `trx.config.set` y por `rows.change` igual. La resolución 320×240 no cambia hasta reiniciar el nivel. **Error corregido**: `dc_adaptive_fps` nunca se ponía (el `CONFIG_SET` recibía un `int`, que no llega a un ajuste booleano): faltaba el paso a 30 fps en escenas pesadas. | El menú real con el mando: si ahí "no hace nada", falta saber qué pulsas y qué ves; la lógica de debajo funciona. |
+| T36 | **TR1 se cae al cargar el nivel 3A** (Lost Valley, `level3a.phd`, datos clásicos de Steam): sin memoria al reservar las muestras (1,4 MB del nivel + ~0,8 MB de inyecciones de sonido, con 12,1 MB ya usados). El nivel 1 sí carga (build 385 de la otra sesión). No es de los cambios de sombras. | Recortar memoria en TR1: inyecciones de sonido que no hacen falta, cargar las muestras antes, o liberar datos de sala. |
+
 ## No hecho (queda en TAREAS.md)
 
 Bloque C: 7, 8, 9, 10, 11, 12, 13 (piden medir o investigar). Bloque D: 15 y 16

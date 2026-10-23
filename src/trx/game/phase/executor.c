@@ -2,6 +2,7 @@
 
 #include <trx/config.h>
 #include <trx/core/benchmark.h>
+#include <trx/core/log.h>
 #include <trx/core/memory.h>
 #include <trx/core/strings.h>
 #include <trx/game/clock.h>
@@ -14,6 +15,8 @@
 #include <trx/game/input.h>
 #include <trx/game/interpolation.h>
 #include <trx/game/locale/common.h>
+#include <trx/game/game_flow/common.h>
+#include <trx/game/lua/common.h>
 #include <trx/game/lua/events.h>
 #include <trx/game/lua/events/ui.h>
 #include <trx/game/music.h>
@@ -167,6 +170,46 @@ static void M_ReportWork(const Uint64 start)
         / (double)SDL_GetPerformanceFrequency();
     if (DC_Mode_ReportFrame(seconds)) {
         Clock_SyncTick();
+    }
+    // A test that visits the levels in turn, from the one the disc starts in.
+    static int32_t level_frames = 0;
+    static int32_t level_next = -1;
+    if (g_DC_TestLevelFrames > 0 && ++level_frames >= g_DC_TestLevelFrames) {
+        level_frames = 0;
+        if (level_next < 0) {
+            level_next = g_DC_TestLevelStart + 1;
+        }
+        if (level_next <= g_DC_TestLevelLast) {
+            LOG_INFO("[levels] on to level %d", (int)level_next);
+            GF_OverrideCommand(
+                (GF_COMMAND) { .action = GF_START_GAME, .param = level_next },
+                true);
+            level_next++;
+        } else {
+            LOG_INFO("[levels] done");
+            g_DC_TestLevelFrames = 0;
+        }
+    }
+    static int32_t frames = 0;
+    if (g_DC_TestSwitchMode >= 0 && ++frames == g_DC_TestSwitchFrame) {
+        LOG_INFO("test: the mode is now %d", (int)g_DC_TestSwitchMode);
+        // Through the scripts, as the settings menu does.
+        static const char *const codes[] = {
+            "trx.config.set('rendering.dc_mode', 'graphics')",
+            "trx.config.set('rendering.dc_mode', 'performance')",
+            "trx.config.set('rendering.dc_mode', 'experimental-60')",
+            // The settings menu's own steps, two to the right.
+            "local rows = require('common.ui.settings.rows') "
+            "local a = rows.change('rendering.dc_mode', 1) "
+            "local b = rows.change('rendering.dc_mode', 1) "
+            "error(('rows: %s %s mode=%s'):format(tostring(a), tostring(b), "
+            "trx.config.get('rendering.dc_mode')))",
+        };
+        LUA_RESULT result = LUA_Eval(codes[g_DC_TestSwitchMode % 4]);
+        if (result.message != nullptr) {
+            LOG_ERROR("test: %s", result.message);
+        }
+        LUA_FreeResult(&result);
     }
 }
 #else

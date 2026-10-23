@@ -418,6 +418,17 @@ local HANDLERS = {
   },
   ["visuals.shadow_type"] = {
     offered = function(value)
+      if pcall(trx.config.describe, "rendering.dc_mode") then
+        -- The Dreamcast offers its three shadows and the game's own: the
+        -- octagon of TR1 and TR2, the sprite of TR3.
+        if value == "octagon" then
+          return trx.game.tr_version <= 2
+        elseif value == "sprite" then
+          return trx.game.tr_version == 3
+            and loaded(trx.catalog.objects.SHADOW)
+        end
+        return value ~= "circle"
+      end
       return value ~= "sprite" or loaded(trx.catalog.objects.SHADOW)
     end,
   },

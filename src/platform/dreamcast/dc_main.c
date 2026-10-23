@@ -137,6 +137,30 @@ int __wrap_main(int argc, char *argv[])
         }
         fclose(mode);
     }
+    // A test disc that changes the mode on a frame (make_disc.sh's
+    // TRX_DC_SWITCH): the mode's number and the frame.
+    FILE *const change = fopen("/cd/SWITCH.TXT", "r");
+    if (change != nullptr) {
+        if (fscanf(
+                change, "%d %d", (int *)&g_DC_TestSwitchMode,
+                (int *)&g_DC_TestSwitchFrame)
+            != 2) {
+            g_DC_TestSwitchMode = -1;
+        }
+        fclose(change);
+    }
+    // A test disc that goes on through the levels (make_disc.sh's
+    // TRX_DC_LEVELS): the last one and how long to stay in each.
+    FILE *const levels = fopen("/cd/LEVELS.TXT", "r");
+    if (levels != nullptr) {
+        if (fscanf(
+                levels, "%d %d", (int *)&g_DC_TestLevelLast,
+                (int *)&g_DC_TestLevelFrames)
+            != 2) {
+            g_DC_TestLevelFrames = 0;
+        }
+        fclose(levels);
+    }
     // Test discs name their level (make_disc.sh's fourth argument).
     int level = -1;
     FILE *const start = fopen("/cd/START.TXT", "r");
@@ -153,6 +177,7 @@ int __wrap_main(int argc, char *argv[])
     } else if (g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0) {
         level = DC_LevelSelect_Run(engine);
     }
+    g_DC_TestLevelStart = level;
     static char engine_arg[12];
     static char level_arg[12];
     static char *level_argv[] = {

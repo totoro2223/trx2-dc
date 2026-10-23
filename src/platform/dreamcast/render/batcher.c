@@ -515,11 +515,13 @@ static float m_SoftXY[M_SOFT_MAX_VERTICES][2];
 #define M_IS_SOFT(type)                                                        \
     ((type) == SHADOW_TYPE_SOFT || (type) == SHADOW_TYPE_SOFT_HIGH)
 
+// The shadow the player chose (a mode sets it as it starts, see
+// Shell_HandleConfigChange); the soft ones cannot be drawn under water.
 static SHADOW_TYPE M_ShadowType(void)
 {
     const SHADOW_TYPE type = g_Config.visuals.shadow_type;
-    return M_IS_SOFT(type) && (DC_Mode_Get()->volume_shadows
-               || Lara_GetLaraInfo()->water_status == LWS_UNDERWATER)
+    return M_IS_SOFT(type)
+            && Lara_GetLaraInfo()->water_status == LWS_UNDERWATER
         ? SHADOW_TYPE_VOLUME
         : type;
 }

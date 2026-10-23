@@ -95,6 +95,18 @@ mkdir -p "$STAGE/games"
 cp -r "$SHIP/games/$GAME" "$STAGE/games/$GAME"
 # The GLSL shaders are of no use without OpenGL 3.
 rm -rf "$STAGE/cfg/shaders"
+if [ -n "${TRX_DC_LEVELS:-}" ]; then
+  # A test disc that goes through the levels from the one it starts in:
+  # "<last level> <frames in each>", e.g. "14 450" (dc_main.c, LEVELS.TXT).
+  echo "$TRX_DC_LEVELS" > "$STAGE/LEVELS.TXT"
+  echo "levels up to $TRX_DC_LEVELS"
+fi
+if [ -n "${TRX_DC_SWITCH:-}" ]; then
+  # A test disc that changes the mode on a frame, as the menu does:
+  # "<mode number> <frame>", e.g. "2 900" (dc_main.c, SWITCH.TXT).
+  echo "$TRX_DC_SWITCH" > "$STAGE/SWITCH.TXT"
+  echo "mode switch $TRX_DC_SWITCH"
+fi
 if [ -n "${TRX_DC_MODE:-}" ]; then
   # A test disc that starts in that mode (graphics, performance or
   # experimental-60), whatever the settings say (dc_main.c, MODE.TXT).
@@ -322,7 +334,17 @@ for f in "${FMV_FILES[@]}"; do
   out="$FMV_CACHE/$lower.fmv"
   if [ ! -f "$out" ] || [ "$FMV_TOOL" -nt "$out" ]; then
     # width,height,frame rate of the film, which the player draws as it was.
-    IFS=',' read -r fw fh fr < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$f")
+    if command -v ffprobe > /dev/null; then
+      IFS=',' read -r fw fh fr < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$f")
+    else
+      # Without ffprobe (the DreamSDK shell has only ffmpeg): read the
+      # video stream's line, "..., 320x240, 30 tbr, ...".
+      info="$(ffmpeg -hide_banner -i "$f" 2>&1 | grep -m1 'Video:' || true)"
+      size="$(echo "$info" | grep -o ' [0-9]\{2,4\}x[0-9]\{2,4\}' | head -1 | tr -d ' ')"
+      fw="${size%x*}"
+      fh="${size#*x}"
+      fr="$(echo "$info" | grep -o '[0-9.]* tbr' | head -1 | cut -d' ' -f1 | cut -d. -f1)/1"
+    fi
     # Windows' ffprobe ends its lines with a carriage return.
     fr="${fr//[!0-9\/]/}"
     fps=$(( ${fr%/*} / ${fr#*/} ))

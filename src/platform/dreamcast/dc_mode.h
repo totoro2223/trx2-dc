@@ -28,6 +28,15 @@ typedef struct {
 
 // The mode a test disc starts in whatever the settings say (MODE.TXT), or -1.
 extern int32_t g_DC_TestMode;
+// A test disc that changes the mode while it runs, as the menu does: the mode
+// and the frame to do it on (make_disc.sh's TRX_DC_SWITCH, SWITCH.TXT).
+extern int32_t g_DC_TestSwitchMode;
+extern int32_t g_DC_TestSwitchFrame;
+// A test disc that goes through levels one after another: the last level and
+// the frames to stay in each (make_disc.sh's TRX_DC_LEVELS, LEVELS.TXT).
+extern int32_t g_DC_TestLevelStart;
+extern int32_t g_DC_TestLevelLast;
+extern int32_t g_DC_TestLevelFrames;
 
 const DC_MODE_PARAMS *DC_Mode_Get(void);
 

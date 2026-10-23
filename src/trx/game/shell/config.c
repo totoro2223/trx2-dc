@@ -184,7 +184,13 @@ void Shell_HandleConfigChange(const CONFIG_CHANGE *const change)
     if (L_CHANGED(rendering.dc_mode)) {
         // The adaptive rate belongs to the 60 FPS mode.
         CONFIG_SET(
-            g_Config.rendering.dc_adaptive_fps, DC_Mode_Get()->fps == 60);
+            g_Config.rendering.dc_adaptive_fps,
+            (bool)(DC_Mode_Get()->fps == 60));
+        // And the mode's shadow, which the player may then change.
+        CONFIG_SET(
+            g_Config.visuals.shadow_type,
+            DC_Mode_Get()->volume_shadows ? SHADOW_TYPE_VOLUME
+                                          : SHADOW_TYPE_SOFT_HIGH);
     }
 #endif
 
