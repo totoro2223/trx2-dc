@@ -202,12 +202,35 @@ end
 derive = function(sources, fn)
   local count = #sources
 
-  local function value_of()
-    local args = {}
-    for i = 1, count do
-      args[i] = sources[i]:get()
+  -- One to three sources, the usual cases, are read without a table of
+  -- arguments built each time.
+  local value_of
+  if count == 1 then
+    local s1 = sources[1]
+    value_of = function()
+      return fn(s1:get())
     end
-    return fn(table.unpack(args, 1, count))
+  elseif count == 2 then
+    local s1, s2 = sources[1], sources[2]
+    value_of = function()
+      local a = s1:get()
+      return fn(a, s2:get())
+    end
+  elseif count == 3 then
+    local s1, s2, s3 = sources[1], sources[2], sources[3]
+    value_of = function()
+      local a = s1:get()
+      local b = s2:get()
+      return fn(a, b, s3:get())
+    end
+  else
+    value_of = function()
+      local args = {}
+      for i = 1, count do
+        args[i] = sources[i]:get()
+      end
+      return fn(table.unpack(args, 1, count))
+    end
   end
 
   -- The signal works its value out on first read rather than as it is made,
@@ -245,15 +268,21 @@ end
 
 -- Runs fn and reports each signal or tween it reads to callback, so that a
 -- widget follows every signal its measuring reads, however it reads it.
+-- Puts the outer tracker back and passes on what fn returned (or raises what
+-- it raised) without packing the results in a table: track runs for every
+-- widget measured, which on the Dreamcast is every scene for some.
+local function finish_track(outer, ok, ...)
+  tracker = outer
+  if not ok then
+    error((...), 0)
+  end
+  return ...
+end
+
 local function track(callback, fn, ...)
   local outer = tracker
   tracker = callback
-  local results = table.pack(pcall(fn, ...))
-  tracker = outer
-  if not results[1] then
-    error(results[2], 0)
-  end
-  return table.unpack(results, 2, results.n)
+  return finish_track(outer, pcall(fn, ...))
 end
 
 -- Marks every derived signal that follows this one, however indirectly, as
@@ -328,7 +357,9 @@ end
 ---The value the signal holds now.
 ---@return any # What it holds.
 function Signal:get()
-  report(self)
+  if tracker ~= nil then
+    tracker(self)
+  end
   -- A source changed and its listeners are still running, so the cached value
   -- is out of date until this signal's own turn comes.
   if self._stale then

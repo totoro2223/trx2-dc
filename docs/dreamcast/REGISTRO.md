@@ -522,3 +522,25 @@ Hecho el 2026-10-22. Venecia, Lara quieta, Flycast oculto.
   ~2400 vértices por frame y cuestan ~1,1 µs cada uno ya en ensamblador
   (unas 200 instrucciones: colocar, recorte, niebla y color); el compilador
   de tiempos de Flycast cuenta una instrucción por ciclo.
+- **Lua de la UI** (22–23/10/2026, builds 343–350): un muestreador por línea de
+  Lua (hook de instrucciones, con bytecode sin `-s` y un nombre de chunk por
+  script; temporal, no queda en el árbol) repartió el Lua de la demo de
+  Londres: señales (`signal.lua`) 0,5 ms por frame, widgets base 0,26, barras
+  0,13, accesos a módulos (`helpers.lua`) 0,13, regiones 0,06. Hecho: `track`
+  sin `table.pack`/`unpack`, `derive` sin tabla de argumentos para 1–3
+  fuentes, `report` en línea en `Signal:get`, y la barra de la UI repite los
+  quads que dibujó mientras no cambien posición, tamaño, relleno, tema, suavizado
+  ni escala (`w._drawn`). Lua 2,96 → 2,62 ms por frame, UI 2,02 → 1,72.
+  Medida final, Londres, Flycast oculto (builds 348/349/350):
+
+| Modo | fps (base → ahora) | pass | frames > 35 ms |
+|---|---|---|---|
+| Graphics | 26,9 → 27,3 | 14,3 → 13,7 | 44 % → 44 % |
+| Performance | 27,5 → 27,8 | 14,0 → 13,3 | 44 % → 45 % |
+| Experimental 60 | 39,0 → 39,8 | 11,7 → 11,4 | 15 % → 15 % |
+
+  Informes: `docs/dreamcast/benchmarks/*_build348_tr3.txt`, `…349…`, `…350…`.
+  Pistas que quedan: `UI_RESERVE_ALL` sigue entre 0,07 y 1,0 ms por llamada
+  (alguna raíz de la UI se recalcula casi cada frame: una señal sondeada que
+  cambia cada tick, o un `Tween`), el bucle de roles de `input.lua` (una
+  llamada a C por rol y tick) y los ~2400 vértices de estáticos con luz propia.

@@ -100,6 +100,75 @@ function widgets.Bar(settings)
     local fill = math.max(0.0, math.min(1.0, value_of(w.value) or 0))
     fill = math.floor(fill * 100) / 100
 
+    local shaded = value_of(w.smooth)
+    if shaded == nil then
+      shaded = is_smooth()
+    end
+    local side_on = theme.border_side ~= nil and has_side_borders()
+
+    -- What is drawn depends on these alone, and a bar mostly keeps them from
+    -- one scene to the next: the quads it drew are drawn again from the list
+    -- instead of worked out again (about thirty calls into the engine for
+    -- the sizes, and a table for each band).
+    local screen = primitive.to_screen(100)
+    local kept = w._drawn
+    if
+      kept ~= nil
+      and kept.x == x
+      and kept.y == y
+      and kept.w == bw
+      and kept.h == bh
+      and kept.fill == fill
+      and kept.theme == theme
+      and kept.shaded == shaded
+      and kept.side == side_on
+      and kept.screen == screen
+    then
+      local list = kept.cmds
+      for i = 1, #list do
+        local cmd = list[i]
+        if cmd[1] == 1 then
+          primitive.quad(cmd[2], cmd[3], cmd[4], cmd[5], cmd[6], cmd[7])
+        else
+          primitive.gradient_quad(
+            cmd[2],
+            cmd[3],
+            cmd[4],
+            cmd[5],
+            cmd[6],
+            cmd[7],
+            cmd[8],
+            cmd[9],
+            cmd[10]
+          )
+        end
+      end
+      return
+    end
+    local cmds = {}
+    local function quad(a, b, c, d, e, color)
+      primitive.quad(a, b, c, d, e, color)
+      cmds[#cmds + 1] = { 1, a, b, c, d, e, color }
+    end
+    local function gquad(a, b, c, d, e, c1, c2, c3, c4)
+      primitive.gradient_quad(a, b, c, d, e, c1, c2, c3, c4)
+      cmds[#cmds + 1] = { 2, a, b, c, d, e, c1, c2, c3, c4 }
+    end
+    local function keep()
+      w._drawn = {
+        x = x,
+        y = y,
+        w = bw,
+        h = bh,
+        fill = fill,
+        theme = theme,
+        shaded = shaded,
+        side = side_on,
+        screen = screen,
+        cmds = cmds,
+      }
+    end
+
     -- Work in screen pixels first so every bar edge lands on a whole pixel.
     -- Rounding canvas coordinates independently can make opposite borders
     -- come out at different thicknesses.
@@ -123,7 +192,7 @@ function widgets.Bar(settings)
       local sh = at(y0 + h_px - edge) - sy
       local lx, rx = at(x0), at(x0 + w_px - edge)
       local sw = at(x0 + edge) - lx
-      primitive.gradient_quad(
+      gquad(
         lx,
         sy,
         0,
@@ -134,7 +203,7 @@ function widgets.Bar(settings)
         side[2],
         side[2]
       )
-      primitive.gradient_quad(
+      gquad(
         rx,
         sy,
         0,
@@ -160,7 +229,7 @@ function widgets.Bar(settings)
     local ow, oh = at(x0 + w_px) - ox, at(y0 + h_px) - oy
 
     if theme.kind == "ps1" then
-      primitive.gradient_quad(
+      gquad(
         ox,
         oy,
         0,
@@ -172,10 +241,10 @@ function widgets.Bar(settings)
         theme.border_br
       )
     else
-      primitive.quad(ox, oy, 0, ow, oh, theme.border_light)
+      quad(ox, oy, 0, ow, oh, theme.border_light)
       -- Match the engine: the dark side of the border extends to the far
       -- edge instead of stopping before the last border strip.
-      primitive.quad(
+      quad(
         ix,
         iy,
         0,
@@ -185,15 +254,12 @@ function widgets.Bar(settings)
       )
     end
 
-    primitive.quad(ix, iy, 0, iw, ih, BLACK)
+    quad(ix, iy, 0, iw, ih, BLACK)
     if fill <= 0 then
+      keep()
       return
     end
 
-    local shaded = value_of(w.smooth)
-    if shaded == nil then
-      shaded = is_smooth()
-    end
     local count = shaded and steps - 1 or steps
     for _, band in ipairs(bands(y2, fh_px, count)) do
       local step, by, step_h = band[1], band[2], band[3]
@@ -203,7 +269,7 @@ function widgets.Bar(settings)
         if shaded then
           local bl = theme.ramp_left[step + 1]
           local br = theme.ramp_right[step + 1]
-          primitive.gradient_quad(
+          gquad(
             fx,
             by,
             0,
@@ -216,16 +282,17 @@ function widgets.Bar(settings)
           )
         else
           local trm = mix(tl, tr, fill)
-          primitive.gradient_quad(fx, by, 0, fw, step_h, tl, trm, tl, trm)
+          gquad(fx, by, 0, fw, step_h, tl, trm, tl, trm)
         end
       elseif shaded then
         local c1 = theme.ramp[step]
         local c2 = theme.ramp[step + 1]
-        primitive.gradient_quad(fx, by, 0, fw, step_h, c1, c1, c2, c2)
+        gquad(fx, by, 0, fw, step_h, c1, c1, c2, c2)
       else
-        primitive.quad(fx, by, 0, fw, step_h, theme.ramp[step])
+        quad(fx, by, 0, fw, step_h, theme.ramp[step])
       end
     end
+    keep()
   end)
   return self
 end

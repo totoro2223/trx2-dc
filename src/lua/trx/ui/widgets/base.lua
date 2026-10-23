@@ -102,6 +102,7 @@ end
 ---@field private _spun_at? number
 ---@field private _boxes? table
 ---@field private _reserve? table
+---@field private _drawn? table
 ---@field private _held? table<any, trx.signal.Listener>
 ---@field private on_measure fun(self: trx.ui.Widget): number?, number?
 ---@field private on_paint fun(self: trx.ui.Widget, x: number, y: number, w: number, h: number)
