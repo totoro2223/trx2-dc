@@ -311,6 +311,21 @@ opciones. La copia previa a la limpieza está junto a la tarjeta:
 `T-TRX00_vmu_save_A1.bin.user-backup-0524`. Las pruebas de guardado deben
 hacerse en adelante con una tarjeta aparte (mover el archivo antes de probar).
 
+## Recorrido de niveles, guardados y región (24/10/2026, mediodía, DC builds 311–319)
+
+Flycast oculto, `TRX_DC_LEVELS` (300 fotogramas por nivel) y `TRX_DC_SAVE=90`.
+Detalle y cifras en REGISTRO.md ("recorrido de niveles y guardados").
+
+| # | Cambio | Qué se midió o comprobó | Qué falta |
+|---|---|---|---|
+| T63 | **Gancho de guardar y cargar con ranuras desde 1** (`executor.c`): `trx.savegame.save/load` cuentan las ranuras desde 1; con la 0, `save` fallaba sin aviso y `load` daba "no saved game in this slot", así que las pruebas T58 nunca cargaron nada. Ahora guarda en 1–5 y carga la 1. | Builds 311–313 (antes del arreglo): TR1 16 niveles y 36 guardados a la VMU sin caída; TR2 cae en Barkhang (12); TR3 12 niveles y Flycast se cierra en Lud's Gate. | Build 320: TR1 16 niveles y 9 cargas reales sin caída. TR2 y TR3 con cargas: discos 324 y 325 hechos, **sin correr**. |
+| T64 | **Aviso al no poder copiar a la VMU** (`vmu.c`): `DC_VMU_StoreSave` devolvía `false` en silencio cuando `malloc` del paquete fallaba (montón seco en Temple Ruins de TR3, build 313). | | Ver el aviso en pantalla o en el registro al guardar en un nivel lleno. |
+| T65 | **Texturas de TR3 en VQ** (`texvq.c`): solo leía las versiones 0x2D (TR2) y 32 (TR1); los niveles de TR3 (0xFF080038/0xFF180038) quedaban fuera y el disco llevaba 39 páginas (las inyecciones). | Jungle: 30 páginas `vvvvvvvvvvv44444vvvvvvvvvvvvvv`, VRAM libre 2916 → **4126 K** (build 315). | Ver las texturas de TR3 a ojo (VQ pierde algo de detalle). |
+| T66 | **Opción `dc_heap_census` de Meson** (el `TRX_DC_HEAP_CENSUS` de la otra sesión no tenía interruptor), volcado y plano de la región al terminar la carga (`level loaded`), tabla de 8192 huecos (3072 se desbordaba: 670 bloques sin rastro), bloques sin rastro con sus primeras palabras, y la línea `game heap after the injections` en todas las compilaciones con watchdog. | `live_census.py` da la composición de un nivel: TR1 level3a ~2,5 MB, TR3 Jungle ~3,6 MB (ver REGISTRO). | |
+| T67 | **Piscina de bloques pequeños del nivel** (`dc_level_heap.c`, `M_POOL_SIZE` 256 K en la cima de la región tras un bloque que nunca se libera; los bloques ≤ 256 bytes pedidos durante la carga van allí). Los que sobreviven al nivel (el mapa de solapes de salas, 19–165 B, hecho al final de la carga; el grupo de hilos) partían el hueco del nivel siguiente: TR1 6,6 → 4,4 MB, TR3 6,4 → 2,4 MB. | TR3 Jungle → Temple (build 319): la región retiene 3 bloques (0 K) y el hueco mayor es 5860 K de 5951 K (antes 3382–4618 K). | Con el pico de la carga al 97 % de la región (censo), hasta los bloques del nivel caen en la piscina y el mapa queda 90 K bajo el muro: sin censo hay más margen; medir en la pasada final. Build 320: baja 90 K por carga (6271 → 5448 K); piscina a 384 K en los builds 323–325, sin probar. |
+| T68 | **Las matrices del batcher** (`M_GrowVertexBuffers`, `soft`, `oargb`, `env_uv`...) **vuelven al montón de newlib**, donde nacen al arrancar: crecen durante la carga (la transparencia de cada malla se halla dibujándola, al fallar la caché `object_transparency_*` del disco RAM), en el pico, cuando la región solo tiene agujeros, y dos de ellas (41 K) a 4,6 MB partían el hueco de TR3 (builds 316–318). | Build 319: ya no están en la región. | Coste en newlib: hasta ~150 K con mallas de 3000 vértices. |
+| T69 | **`run_flycast.ps1`**: la consola de Flycast tiene 120 columnas y partía las líneas largas; el lector la ensancha a 400 y quita los sustitutos sueltos que hacían fallar la escritura del archivo (el log se quedaba viejo a medias). | Logs enteros desde el build 311 (segunda pasada). | |
+
 ## Para medir
 
 Las sondas `DC_PROBE` ya **no se compilan por defecto** (costaban ~0,5 ms por

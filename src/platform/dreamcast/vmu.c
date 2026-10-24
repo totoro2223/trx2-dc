@@ -207,6 +207,13 @@ bool DC_VMU_StoreSave(const char *const path, const char *const title)
     fseek(fp, 0, SEEK_SET);
     uint8_t *const payload = size > 0 ? malloc(M_NAME_SIZE + (size_t)size) : nullptr;
     bool ok = payload != nullptr;
+    if (!ok) {
+        // The heap is dry in the fullest levels (TR3's Temple Ruins, DC build
+        // 313): the save stays on the RAM disk, which the power switch empties.
+        LOG_WARNING(
+            "%s could not be copied to the memory card: no memory for its %ld "
+            "bytes", name, size);
+    }
     if (ok) {
         memset(payload, 0, M_NAME_SIZE);
         strcpy((char *)payload, name);
@@ -229,6 +236,9 @@ bool DC_VMU_StoreSave(const char *const path, const char *const title)
         pkg.data_len = M_NAME_SIZE + (int)size;
         pkg.data = payload;
         ok = vmu_pkg_build(&pkg, &file, &file_size) == 0;
+        if (!ok) {
+            LOG_WARNING("%s could not be packed for the memory card", name);
+        }
     }
 
     if (ok) {

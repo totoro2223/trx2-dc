@@ -52,6 +52,29 @@
 #define M_BINS 24
 // The most a block that outlives a level may be to stay out of the region.
 #define M_SMALL_MAX (16 * 1024)
+// Small blocks asked for while a level loads go to a pool of their own at the
+// region's top, walled off by a block never freed: a few of them outlive the
+// level (the rooms' overlap map, made at the end of the load and freed by the
+// next level's; the thread pool), and anywhere else they would sit where the
+// load left them, splitting the span the next level needs (DC build 311:
+// TR1's largest free span fell from 6.6 to 4.4 MB over a 94-byte block at
+// 2.1 MB; TR3's to 2.4 MB; at the head among the rest, build 316, the same
+// block stayed 0.8-1.1 MB under the top, below the load's other small
+// blocks). A pool that fills spills into the head side as before; the ones
+// that survive are all under 256 bytes, and a level loaded holds ~100 KiB of
+// blocks that small (TR3's Jungle, 1088 of them), and a load twice that: a
+// pool of 256 K overflowed each load, and what spilled under the wall put the
+// next survivor 90 K lower every load (DC build 320).
+#define M_LEVEL_SMALL_MAX 256
+#define M_POOL_SIZE (384 * 1024)
+
+// Where a block goes: the level's data from the foot, what outlives a level
+// from the head, the level's small blocks to the pool.
+typedef enum {
+    M_LEVEL,
+    M_HEAD,
+    M_POOL,
+} M_KIND;
 
 typedef struct M_FREE {
     struct M_FREE *next;
@@ -63,6 +86,8 @@ static struct {
     uint8_t *base;
     uint8_t *start;
     uint8_t *end;
+    // The pool's first block; the wall sits just below it.
+    uint8_t *pool;
     M_FREE *bins[M_BINS];
     size_t used;
     size_t peak;
@@ -73,7 +98,9 @@ static struct {
 static mutex_t m_Lock = MUTEX_INITIALIZER;
 
 #if DC_LEVELHEAP_TRACE
-#define M_TRACE_SLOTS 3072
+// A TR3 level holds ~2200 blocks once loaded and more while it loads: 3072
+// slots overflowed and left the survivors unnamed (DC build 315).
+#define M_TRACE_SLOTS 8192
 #define M_TRACE_FRAMES 7
 typedef struct {
     void *ptr;
@@ -81,8 +108,25 @@ typedef struct {
     uint32_t pc[M_TRACE_FRAMES];
 } M_TRACE;
 static M_TRACE m_Trace[M_TRACE_SLOTS];
+static int m_TraceDropped = 0;
 extern char _executable_start[];
 extern char etext[];
+
+static const M_TRACE *M_TraceFind(const void *const ptr)
+{
+    uint32_t at = ((uint32_t)ptr >> 3) % M_TRACE_SLOTS;
+    for (int probe = 0; probe < M_TRACE_SLOTS; probe++) {
+        const M_TRACE *const slot = &m_Trace[at];
+        if (slot->ptr == nullptr) {
+            return nullptr;
+        }
+        if (slot->ptr == ptr) {
+            return slot;
+        }
+        at = (at + 1) % M_TRACE_SLOTS;
+    }
+    return nullptr;
+}
 
 static void M_TraceAdd(void *const ptr, const size_t size)
 {
@@ -111,6 +155,7 @@ static void M_TraceAdd(void *const ptr, const size_t size)
         }
         at = (at + 1) % M_TRACE_SLOTS;
     }
+    m_TraceDropped++;
 }
 
 static void M_TraceDel(void *const ptr)
@@ -143,7 +188,7 @@ void DC_LevelHeap_DumpLive(const char *const label)
         }
         printf("\n");
     }
-    printf("[live-end]\n");
+    printf("[live-end] %d not traced\n", m_TraceDropped);
 }
 #else
 void DC_LevelHeap_DumpLive(const char *const label)
@@ -239,9 +284,19 @@ static void M_Init(void)
                              & ~(uintptr_t)(M_GRAIN - 1))
         - M_TAG;
     *(uint32_t *)m_Heap.end = M_USED;
-    M_SetTags(m_Heap.start, (size_t)(m_Heap.end - m_Heap.start), false);
+    // The pool at the top, behind a used block of its own that is never let
+    // go, so that no free block joins across it.
+    m_Heap.pool = m_Heap.end - M_POOL_SIZE;
+    uint8_t *const wall = m_Heap.pool - M_MIN;
+    M_SetTags(m_Heap.start, (size_t)(wall - m_Heap.start), false);
     M_BinInsert(m_Heap.start);
-    printf("[levelheap] %uK for the level's data\n", (unsigned)(size / 1024));
+    M_SetTags(wall, M_MIN, true);
+    M_SetTags(m_Heap.pool, (size_t)(m_Heap.end - m_Heap.pool), false);
+    M_BinInsert(m_Heap.pool);
+    printf(
+        "[levelheap] %uK for the level's data, %uK of it for its small "
+        "blocks\n",
+        (unsigned)(size / 1024), (unsigned)(M_POOL_SIZE / 1024));
 }
 
 static size_t M_Need(const size_t size)
@@ -277,33 +332,67 @@ static void *M_Carve(uint8_t *block, size_t need, const bool level)
     return block + M_TAG;
 }
 
-// The level's data: from the first bin that fits, its lowest block. The
-// rest: the highest block of every bin that fits, so that what outlives a
-// level never lands in a hole the level left in the middle, where it would
-// split the next level's span in two (DC build 283: 6.7 MB free became
-// 1.6 MB at most in four loads, and Jungle's 1.6 MB of frames no longer fit).
-static void *M_Take(const size_t size, const bool level)
+// The highest free block of at least need bytes that starts in [from, to).
+static uint8_t *M_Highest(
+    const size_t need, const uint8_t *const from, const uint8_t *const to)
 {
-    const size_t need = M_Need(size);
     uint8_t *best = nullptr;
     for (int32_t bin = M_Bin(need); bin < M_BINS; bin++) {
         for (M_FREE *node = m_Heap.bins[bin]; node != nullptr;
              node = node->next) {
             uint8_t *const block = (uint8_t *)node - M_TAG;
-            if (M_SizeAt(block) >= need
-                && (best == nullptr || (level ? block < best : block > best))) {
+            if (M_SizeAt(block) >= need && block >= from && block < to
+                && block > best) {
                 best = block;
             }
         }
-        if (best != nullptr && level) {
-            break;
+    }
+    return best;
+}
+
+// The level's data: from the first bin that fits, its lowest block. The
+// rest: the highest block of every bin that fits, so that what outlives a
+// level never lands in a hole the level left in the middle, where it would
+// split the next level's span in two (DC build 283: 6.7 MB free became
+// 1.6 MB at most in four loads, and Jungle's 1.6 MB of frames no longer fit).
+// The head's keep below the pool and the pool's inside it, each falling back
+// on the whole region when its own part is full.
+static void *M_Take(const size_t size, const M_KIND kind)
+{
+    const size_t need = M_Need(size);
+    uint8_t *best = nullptr;
+    if (kind == M_LEVEL) {
+        for (int32_t bin = M_Bin(need); bin < M_BINS && best == nullptr;
+             bin++) {
+            for (M_FREE *node = m_Heap.bins[bin]; node != nullptr;
+                 node = node->next) {
+                uint8_t *const block = (uint8_t *)node - M_TAG;
+                if (M_SizeAt(block) >= need
+                    && (best == nullptr || block < best)) {
+                    best = block;
+                }
+            }
+        }
+    } else {
+        best = kind == M_POOL ? M_Highest(need, m_Heap.pool, m_Heap.end)
+                              : M_Highest(need, m_Heap.start, m_Heap.pool);
+        if (best == nullptr) {
+            best = M_Highest(need, m_Heap.start, m_Heap.end);
         }
     }
     if (best == nullptr) {
         return nullptr;
     }
     M_BinRemove(best);
-    return M_Carve(best, need, level);
+    return M_Carve(best, need, kind == M_LEVEL);
+}
+
+static M_KIND M_KindFor(const size_t size)
+{
+    if (m_Heap.depth <= 0) {
+        return M_HEAD;
+    }
+    return size > M_LEVEL_SMALL_MAX ? M_LEVEL : M_POOL;
 }
 
 // Lets a free stretch go, joined with the free ones either side.
@@ -335,6 +424,7 @@ void DC_LevelHeap_Leave(void)
     m_Heap.depth--;
 }
 
+
 void *DC_LevelHeap_Alloc(const size_t size)
 {
     // Before the first level the heap serves everything: the region is taken
@@ -356,7 +446,7 @@ void *DC_LevelHeap_Alloc(const size_t size)
     }
     void *result = nullptr;
     if (m_Heap.base != nullptr) {
-        result = M_Take(size, m_Heap.depth > 0);
+        result = M_Take(size, M_KindFor(size));
         if (result == nullptr) {
             m_Heap.spilled++;
         }
@@ -420,7 +510,7 @@ static void *M_Realloc(void *const ptr, const size_t size)
         // Kept where its data already is.
         return M_Carve(block, need, true);
     }
-    void *result = M_Take(size, m_Heap.depth > 0);
+    void *result = M_Take(size, M_KindFor(size));
 #if DC_LEVELHEAP_TRACE
     if (result != nullptr) {
         M_TraceAdd(result, size);
@@ -465,16 +555,27 @@ void DC_LevelHeap_DumpLayout(void)
             (unsigned)((at - from) / 1024), (unsigned)((from - m_Heap.start) / 1024),
             count);
     }
-    // A few of the small ones, with what they hold.
+    // A few of the small ones, and the ones the census has no trace for,
+    // with what they hold.
     int shown = 0;
     for (const uint8_t *b = m_Heap.start; b < m_Heap.end && shown < 40;
          b += M_SizeAt(b)) {
-        if (M_UsedAt(b) && M_SizeAt(b) <= 48) {
+        if (!M_UsedAt(b)) {
+            continue;
+        }
+        const bool untraced =
+#if DC_LEVELHEAP_TRACE
+            M_TraceFind(b + M_TAG) == nullptr;
+#else
+            false;
+#endif
+        if (M_SizeAt(b) <= 48 || untraced) {
             const uint32_t *w = (const uint32_t *)(b + M_TAG);
             printf(
-                "[small] %uK size %u: %08x %08x %08x\n",
+                "[small] %uK size %u%s: %08x %08x %08x %08x\n",
                 (unsigned)((b - m_Heap.start) / 1024), (unsigned)M_SizeAt(b),
-                (unsigned)w[0], (unsigned)w[1], (unsigned)w[2]);
+                untraced ? " untraced" : "", (unsigned)w[0], (unsigned)w[1],
+                (unsigned)w[2], (unsigned)w[3]);
             shown++;
         }
     }

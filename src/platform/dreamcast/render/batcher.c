@@ -2323,20 +2323,25 @@ static void M_GrowVertexBuffers(MESH_BATCHER *const batcher, const int32_t count
 {
     batcher->xverts_capacity = count + 256;
     const int32_t n = batcher->xverts_capacity;
+    // From the heap, as at boot, not the level's region: they outlive the
+    // level, and they grow while it loads (the transparency of each object
+    // mesh is found by drawing it), at the load's peak, when the region has
+    // only holes left; two of them at 4.6 MB cut TR3's next free span from
+    // 6.2 to 4.6 MB (DC builds 311-318).
     Memory_Free(batcher->xverts);
     batcher->xverts = memalign(32, n * sizeof(M_XVERT));
     Memory_Free(batcher->soft);
-    batcher->soft = Memory_Alloc(n * sizeof(*batcher->soft));
+    batcher->soft = calloc(n, sizeof(*batcher->soft));
     Memory_Free(batcher->soft_off);
-    batcher->soft_off = Memory_Alloc(n * sizeof(*batcher->soft_off));
+    batcher->soft_off = calloc(n, sizeof(*batcher->soft_off));
     Memory_Free(batcher->oargb);
-    batcher->oargb = Memory_Alloc(n * sizeof(*batcher->oargb));
+    batcher->oargb = calloc(n, sizeof(*batcher->oargb));
     Memory_Free(batcher->sargb);
-    batcher->sargb = Memory_Alloc(n * sizeof(*batcher->sargb));
+    batcher->sargb = calloc(n, sizeof(*batcher->sargb));
     Memory_Free(batcher->env_uv);
-    batcher->env_uv = Memory_Alloc(n * sizeof(*batcher->env_uv));
+    batcher->env_uv = calloc(n, sizeof(*batcher->env_uv));
     Memory_Free(batcher->eargb);
-    batcher->eargb = Memory_Alloc(n * sizeof(*batcher->eargb));
+    batcher->eargb = calloc(n, sizeof(*batcher->eargb));
 }
 
 // The instance just transformed goes out with its opaque runs whole.

@@ -198,18 +198,20 @@ static void M_ReportWork(const Uint64 start)
     static int32_t save_frames = 0;
     static int32_t saved = 0;
     if (g_DC_TestSave > 0 && ++save_frames % g_DC_TestSave == 0) {
+        // The scripts count the slots from 1 (trx.savegame.SlotNum): slots 1
+        // to 5, then the first back.
         char code[96];
         if (saved % 6 == 5) {
-            LOG_INFO("test: load %d", (int)saved);
+            LOG_INFO("test: load %d (slot 1)", (int)saved);
             snprintf(
                 code, sizeof(code),
-                "trx.savegame.load(0, trx.savegame.Pool.NORMAL)");
+                "trx.savegame.load(1, trx.savegame.Pool.NORMAL)");
         } else {
-            LOG_INFO("test: save %d", (int)saved);
+            LOG_INFO("test: save %d (slot %d)", (int)saved, (int)(saved % 6 + 1));
             snprintf(
                 code, sizeof(code),
                 "trx.savegame.save(%d, trx.savegame.Pool.NORMAL)",
-                (int)(saved % 6));
+                (int)(saved % 6 + 1));
         }
         saved++;
         LUA_RESULT result = LUA_Eval(code);

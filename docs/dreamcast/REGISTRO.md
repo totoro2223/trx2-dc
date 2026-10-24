@@ -645,3 +645,103 @@ Londres, experimental 60, Flycast oculto.
   cargan al arrancar (T62).
 - Un descuido: las pruebas de guardado usaron la tarjeta del emulador que usa
   el usuario (ver el aviso en PRUEBAS_PENDIENTES.md).
+
+## 24/10/2026 (mediodía): recorrido de niveles y guardados en los tres juegos
+
+Flycast oculto, `TRX_DC_LEVELS` (300 fotogramas por nivel) y `TRX_DC_SAVE=90`
+(un guardado cada 90 fotogramas, en cinco ranuras, y una carga tras el quinto),
+sin películas. DC builds 311 (TR1), 312 (TR2), 313 (TR3); el mismo TRX.elf
+(árbol tras el pull de `424d7d9ae`).
+
+| Juego | Niveles | Resultado | Región del nivel (`game heap`) |
+|---|---|---|---|
+| TR1 | 0–15, los 16 | Todos cargan; 36 guardados a la VMU; sin caída | 6655 K; pico 5930 K (level10c); retiene 47 K en 5 bloques; mayor hueco libre entre 4454 y 5821 K |
+| TR2 | 0–12 | **Cae al cargar Barkhang (12)**: la región se llena (pico 6591 K = toda, 85 464 reservas se desvían al montón de newlib) y el guardado siguiente no encuentra memoria: `Memory_Alloc` aserto, `arch: aborting` | 6591 K; Ópera pico 6539 K con 3 desvíos; Venecia 6036 K |
+| TR3 | 0–11 | Cargan los 12; Flycast se cierra solo en Lud's Gate (11) sin nada en el registro serie (síntoma conocido). La región se llena desde Temple (2): 47 365 → 309 710 desvíos acumulados | 6527 K; retiene 42 K en 11–13 bloques; mayor hueco **2383–2643 K** en Rapids, Puna, Sewer y Tower (la mitad partida) |
+
+Lo que se vio además:
+
+- **La carga de partida del gancho nunca cargó nada**: `trx.savegame.load(0)` y
+  `save(0)` usan ranuras desde 1 (`trx.savegame.SlotNum`); la 0 no existe
+  ("no saved game in this slot"), y `save(0)` fallaba sin aviso. Las pruebas de
+  guardado anteriores (T58) solo guardaron. Corregido (ranuras 1–5, carga de la 1).
+- **La copia a la VMU falla en silencio cuando el montón está seco**:
+  `DC_VMU_StoreSave` hace `malloc` del paquete y devuelve `false` sin aviso
+  (TR3 Temple, guardados 7 y 11). La partida queda solo en el disco RAM. Ahora
+  avisa (`could not be copied to the memory card: no memory`).
+- **TR3 sin VQ**: `texvq.c` solo leía las versiones 0x2D (TR2) y 32 (TR1); los
+  niveles de TR3 (0xFF080038/0xFF180038) quedaban fuera y `textures.vq` de TR3
+  tenía 39 páginas (las inyecciones). En juego: 12–15 de ~30 páginas en VQ,
+  2,7–3,3 MB de VRAM libres (TR2: 4,4 MB). Corregido: mismo lector que TR2.
+- **Montón de newlib** (fuera de la región): en TR2 al cargar Barkhang, 11 638 K
+  en uso: región 6592 K, Lua 2304 K, y **~2,2 MB en bloques pequeños (< 24 K)**
+  de larga vida (catálogos, cadenas, configuración, tablas del flujo); `brk`
+  a 124 K del final de la RAM (TR1: 356 K).
+- La VMU de 128 K se llena con unas 12 partidas (9–26 bloques cada una).
+
+### Censo de la región (builds 314 y 315, `-Ddc_heap_census=true`)
+
+Opción nueva de Meson (`dc_heap_census`) para el `TRX_DC_HEAP_CENSUS` de la
+otra sesión, y un volcado más al terminar la carga ("level loaded"), que da la
+composición del nivel. `tools/dreamcast/live_census.py` los lee.
+
+- **Quién parte el hueco**: el mapa de solapes de salas
+  (`Room_InitialiseOverlapMap`, 19–165 bytes): se libera y se vuelve a reservar
+  al **final** de cada carga, con el nivel ya debajo (menor hueco libre →
+  justo encima de los datos del nivel), y el anterior solo lo libera la carga
+  siguiente, cuando ya ha partido el hueco (TR1: a 2150 K; TR3: a 1479 K, el
+  hueco mayor baja de 6,4 a 3,4 MB). También dos bloques de 20 bytes del
+  `ThreadPool_Create` (en el 0, sin daño) y, en TR3, dos bloques de ~20 K a
+  4861 K sin nombre (la tabla del censo, 3072 huecos, se desbordó en la carga;
+  ampliada a 6144).
+- **Regla nueva** (`M_LEVEL_SMALL_MAX`, 1 KiB, `dc_level_heap.c`): los bloques
+  pequeños pedidos durante la carga van a la cabeza con los de larga vida, no al
+  pie; los pocos que sobreviven al nivel rellenan los huecos de los pequeños del
+  nivel anterior y el tramo del nivel queda entero.
+- **Composición de un nivel cargado** (lo que queda en la región): TR1 level3a
+  ~2,5 MB (trozos de `GameBuf` 1,0 MB, fotogramas 424 K, mallas de objeto 222 K,
+  secciones crudas 214 K, mallas de sala 189 K, tabla de ítems 184 K); TR3
+  Jungle ~3,6 MB (`GameBuf` 985 K, secciones crudas 753 K, mallas de sala 663 K,
+  fotogramas 406 K, mallas de objeto 236 K, ítems 184 K). El **pico** de la
+  carga es mucho mayor (TR1 5398 K; TR3 6038 K): las inyecciones (4,3–5 MB
+  comprimidas por juego, cada una inflada al leerla) y la conversión de
+  texturas conviven con el nivel mientras carga. Se añadió la línea
+  `game heap after the injections` para medirlo.
+- Sin guardados (censo de TR3, build 315) Jungle, Temple y Quad Chase cargan
+  sin un solo desvío (pico 6038 K de 6399 K); en la pasada con `TRX_DC_SAVE`
+  (build 313) la región se llenó y hubo 47 000–150 000 desvíos: son los ~400 K
+  del guardado sobre una región casi llena. Guardar en Temple Ruins en una
+  consola real deja el montón seco (de ahí la copia a la VMU fallida).
+- `run_flycast.ps1`: la consola de Flycast tiene 120 columnas y partía las
+  líneas largas (los números de `game heap` caían a la fila siguiente); el
+  lector la ensancha a 400 y limpia los sustitutos sueltos que hacían fallar
+  la escritura del archivo (el log se quedaba a medias).
+
+### Pasada final de TR1 (DC build 320, piscina de 256 K, matrices del batcher en el montón)
+
+`TRX_DC_LEVELS='15 300' TRX_DC_SAVE=90` desde el gimnasio: **los 16 niveles y
+las 9 cargas de partida** (ranura 1: recarga el gimnasio o el nivel 2, hasta
+el 8B) sin caída ni desvío; 46 guardados copiados a la VMU (los demás "could
+not": tarjeta llena, 16 bloques libres). La región retiene 3 bloques (0 K).
+El hueco mayor baja ~90 K por **cada carga** (6271 → 5448 K en 13 cargas) y se
+recupera en los niveles pequeños: la piscina de 256 K se llena durante la
+carga (los pequeños transitorios doblan los ~100 K que quedan al terminar), lo
+que sobra se apila bajo el muro y el mapa de solapes de salas cae debajo de lo
+anterior cada vez. Piscina a **384 K** (`M_POOL_SIZE`), compilada (DC builds
+323–325, discos `TRX-tr1-run2.cdi`, `TRX-tr2-run2.cdi`, `TRX-tr3-run2.cdi` en
+`build/dc-minsize`) y **sin probar**: es lo primero que hay que correr.
+
+### Para continuar (otra sesión)
+
+1. Correr los tres discos `*-run2.cdi` (builds 323–325) con
+   `run_flycast.ps1 -Hidden -Out build/dc-run-trN.txt -Seconds 900 -StopOn
+   'exception [0-9a-f]{4}|Assertion|aborting|starting the disc over|\[levels\] done'`
+   y resumirlos con un lector de `game heap:` por nivel (los logs de las
+   pasadas anteriores están en `build/dc-run-tr*-b31*.txt` y
+   `build/dc-census-tr*-b31*.txt`). Comprobar que el hueco mayor ya no baja
+   por carga, que TR2 pasa Barkhang (12) y que TR3 llega al 20.
+2. Si TR2 sigue cayendo en Barkhang: TAREAS 64 (pico de la carga: inyecciones
+   y conversión de texturas; bloques pequeños de newlib).
+3. La VMU de Flycast (`D:\Flycast\data\T-TRX00_vmu_save_A1.bin`) tiene las
+   partidas de prueba (ranuras 1–5 de los tres juegos); la copia previa es
+   `T-TRX00_vmu_save_A1.bin.user-backup-20261024`.

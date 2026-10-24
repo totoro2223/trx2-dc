@@ -103,6 +103,12 @@ Por defecto, el modo Gráficos usa Soft (high).
 | `-fshort-enums` | FALLIDO | la config escribe enums por `int32_t *` |
 | Cargas repetidas (8 seguidas) | OK | mayor hueco 5,2–6,5 MB (builds 285–292) |
 | Jungle hoy | OK | 11,1 MB usados, ~2 MB libres |
+| Piscina de bloques pequeños del nivel en la cima de la región (`M_POOL_SIZE`, 256 K, bloques ≤ 256 B de la carga) | OK | TR3 Jungle → Temple: hueco mayor 3382–4618 K → 5860 K de 5951 K; TR1 partía 6,6 → 4,4 MB por el mapa de solapes de salas (build 319) |
+| Matrices del batcher (`M_GrowVertexBuffers`) en el montón, no en la región | OK | dos de 41 K a 4,6 MB partían el hueco de TR3; crecen en el pico de la carga (build 319) |
+| Bloques pequeños de la carga a la cabeza con los de larga vida (sin piscina) | FALLIDO | el superviviente queda 0,8–1,1 MB bajo la cima, debajo de los pequeños transitorios (build 316) |
+| Texturas de TR3 en VQ (`texvq.c` leía solo TR1 y TR2) | OK | 30 páginas en VQ; VRAM libre 2916 → 4126 K (build 315) |
+| Censo de la región (`-Ddc_heap_census=true`, `live_census.py`) | OK | TR1 level3a ~2,5 MB cargado, TR3 Jungle ~3,6 MB; pico de carga 5,4 / 6,0 MB (inyecciones y conversión de texturas conviven con el nivel) |
+| Montón de newlib fuera de la región | Medido | TR2 al cargar Barkhang: región 6592 K + Lua 2304 K + **~2,2 MB en bloques < 24 K** de larga vida; `brk` a 124 K del final de la RAM |
 
 ## Sonido, entrada y juego
 
@@ -160,3 +166,16 @@ sombra bajo el agua, UI reutilizada entre ticks.
   bloques pequeños): TR1 14 niveles, TR2 17, TR3 12, sin caídas.
 - **Opciones de render en la VMU**: se escriben al salir del menú principal y
   se restauran al arrancar (VMU limpia de Flycast).
+
+- **Recorrido de niveles con guardados** (mediodía, 300 fotogramas por nivel,
+  `TRX_DC_SAVE=90`, DC builds 311–313): **TR1 los 16 niveles** y 36 guardados
+  a la VMU sin caída; **TR2 cae al cargar Barkhang (12)**: la región se llena
+  (85 464 reservas desviadas al montón) y el guardado siguiente no encuentra
+  memoria (`Memory_Alloc` aserto); **TR3 carga 12 niveles** (hasta Lud's Gate)
+  y Flycast se cierra solo sin nada en el registro. Las cargas de partida del
+  gancho no cargaban nada (ranura 0, inexistente): corregido. **Build 320**:
+  TR1 16 niveles y 9 cargas reales sin caída; hueco mayor 6271 → 5448 K (baja
+  ~90 K por carga; piscina ampliada a 384 K sin probar, builds 323–325).
+- **La copia a la VMU falla en silencio** cuando el montón está seco (TR3
+  Temple Ruins, guardados 7 y 11 de la prueba): ahora avisa.
+- **La VMU de 128 K** se llena con ~12 partidas (9–26 bloques cada una).

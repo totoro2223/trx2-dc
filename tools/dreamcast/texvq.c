@@ -510,7 +510,12 @@ int main(const int argc, char **const argv)
         }
         if (memcmp(data, "TRXJ", 4) == 0 || memcmp(data, "TRXI", 4) == 0) {
             ReadInjection(data, size);
-        } else if (S32(data) == 0x2D) {
+        } else if (
+            S32(data) == 0x2D || (uint32_t)S32(data) == 0xFF080038u
+            || (uint32_t)S32(data) == 0xFF180038u) {
+            // TR2, and TR3 (level/format/format_tr3.c), which lays its pages
+            // out the same way. DC build 313 shipped TR3 with only its
+            // injections' pages in VQ.
             ReadLevel(data, size);
         } else if (S32(data) == 32) {
             ReadLevelTR1(data, size);

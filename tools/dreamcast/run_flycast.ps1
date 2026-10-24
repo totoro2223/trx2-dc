@@ -47,6 +47,7 @@ public class DcConRead {
   [StructLayout(LayoutKind.Sequential)] public struct SMALL_RECT { public short L, T, R, B; }
   [StructLayout(LayoutKind.Sequential)] public struct CSBI { public COORD Size, Cursor; public ushort Attr; public SMALL_RECT Win; public COORD Max; }
   [DllImport("kernel32.dll")] public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out CSBI info);
+  [DllImport("kernel32.dll")] public static extern bool SetConsoleScreenBufferSize(IntPtr h, COORD size);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
   public static extern bool ReadConsoleOutputCharacterW(IntPtr h, StringBuilder sb, uint len, COORD at, out uint read);
   public static string Dump(uint pid) {
@@ -54,13 +55,24 @@ public class DcConRead {
     if (!AttachConsole(pid)) return null;
     IntPtr h = CreateFileW("CONOUT$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
     CSBI i; GetConsoleScreenBufferInfo(h, out i);
+    // Flycast's console is 120 columns and wraps the engine's lines, whose
+    // 75-character prefix leaves the figures on the next row: widen it once.
+    if (i.Size.X < 400) {
+      SetConsoleScreenBufferSize(h, new COORD { X = 400, Y = i.Size.Y });
+      GetConsoleScreenBufferInfo(h, out i);
+    }
     var all = new StringBuilder();
     for (short y = 0; y <= i.Cursor.Y; y++) {
       var sb = new StringBuilder(i.Size.X);
       uint r; ReadConsoleOutputCharacterW(h, sb, (uint)i.Size.X, new COORD { X = 0, Y = y }, out r);
       string line = sb.ToString();
-      if (line.Length > 120) line = line.Substring(0, 120);
-      all.AppendLine(line.TrimEnd());
+      // The engine's lines carry a 75-character prefix; the figures come after.
+      if (line.Length > 400) line = line.Substring(0, 400);
+      // The cells past the console's text hold stray surrogates, which the
+      // file write refuses.
+      var clean = new StringBuilder(line.Length);
+      foreach (char ch in line) if (!char.IsSurrogate(ch) && ch >= ' ') clean.Append(ch);
+      all.AppendLine(clean.ToString().TrimEnd());
     }
     CloseHandle(h);
     FreeConsole();

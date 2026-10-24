@@ -297,6 +297,18 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
 #endif
 
     Inject_InitLevel(level, INJECTION_MODE_FULL);
+#if defined(__DREAMCAST__) && defined(TRX_DC_WATCHDOG)
+    {
+        // What the injections take while the level reads beside them: the
+        // load's peak is the two together.
+        DC_LEVEL_HEAP_STATS heap;
+        DC_LevelHeap_GetStats(&heap);
+        LOG_INFO(
+            "game heap after the injections: %dK in %d blocks, largest free "
+            "%dK",
+            heap.used_kb, heap.blocks, heap.largest_free_kb);
+    }
+#endif
     const LEVEL_FORMAT_LOADER *loader = nullptr;
     const RESULT result = Level_Format_LoadFromFile(level, &loader);
     if (IS_OK(result)) {
@@ -306,6 +318,12 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
 
 #if defined(__DREAMCAST__)
     DC_Loading_End();
+    #if defined(TRX_DC_WATCHDOG) && defined(TRX_DC_HEAP_CENSUS)
+    // What the level is made of, by who asked for it (live_census.py), and
+    // where it lies.
+    DC_LevelHeap_DumpLive("level loaded");
+    DC_LevelHeap_DumpLayout();
+    #endif
 #endif
     Benchmark_End(&benchmark, nullptr);
     return result;
