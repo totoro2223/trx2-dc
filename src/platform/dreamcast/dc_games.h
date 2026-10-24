@@ -35,7 +35,12 @@ bool DC_Games_ExpansionAvailable(void);
 // Leave a choice for the next boot: the game before (-1) or after (+1) this
 // one, or its expansion. The caller ends the game; the console starts over.
 bool DC_Games_Choose(int delta);
-bool DC_Games_ChooseExpansion(void);
+// The expansion starts in a level (-1: its title) with no list in between.
+bool DC_Games_ChooseExpansion(int level);
+
+// The level the last boot was told to start in (see ChooseExpansion), once;
+// -2 if it was told none.
+int DC_Games_TakeStartLevel(void);
 
 // The game that is running stays the choice across the reboot that follows
 // leaving it (the list of levels of the same game comes back).

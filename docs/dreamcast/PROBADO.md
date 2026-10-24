@@ -179,3 +179,14 @@ sombra bajo el agua, UI reutilizada entre ticks.
 - **La copia a la VMU falla en silencio** cuando el montón está seco (TR3
   Temple Ruins, guardados 7 y 11 de la prueba): ahora avisa.
 - **La VMU de 128 K** se llena con ~12 partidas (9–26 bloques cada una).
+- **Guardar desde el pasaporte (TR2, Flycast)**: la caja "Saving to VMU..." sale,
+  el archivo `TRX_TR2_xx` queda en la tarjeta, la caja pasa a "Saved to the VMU"
+  (o "Could not save to the VMU" / "No VMU found: ..." según `dc_vmu_result`),
+  se mantiene un segundo y el pasaporte se cierra y vuelve al juego.
+- **Avisos de los juegos del disco** en el título del juego: cajas flotantes en las
+  esquinas derechas con el estilo de la caja del guardado (TR1 solo Abajo, TR2 Arriba
+  y Abajo). Pasar de TR1 a TR2 con Abajo funciona en Flycast.
+- **Selector previo al motor** (lista de niveles en la fuente de la BIOS): página 4
+  "Expansion levels" en los discos con expansión y cajas "Press L/R to go to TRn".
+  Elegir "Return to Egypt" reinicia el disco dentro de la expansión y carga
+  `egypt.phd` (Flycast oculto, `TRX_DC_ALL_PICK`).

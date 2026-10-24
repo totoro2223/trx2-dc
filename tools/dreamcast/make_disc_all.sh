@@ -65,6 +65,12 @@ if [ -n "${TRX_DC_ALL_SWITCH:-}" ]; then
   echo "$TRX_DC_ALL_SWITCH" > "$STAGE/g1/SWITCH.TXT"
 fi
 
+# A test disc that picks an entry of the level list by itself
+# (TRX_DC_ALL_PICK="3 1": the page and the entry; in TR1's folder only).
+if [ -n "${TRX_DC_ALL_PICK:-}" ]; then
+  echo "$TRX_DC_ALL_PICK" > "$STAGE/g1/SELPICK.TXT"
+fi
+
 echo "== image"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
   -o "$TMP/TRX.iso" "$STAGE"

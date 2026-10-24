@@ -364,6 +364,11 @@ M.dc_games = raw.dc_games
 ---@type fun(delta: integer): boolean
 M.dc_switch = raw.dc_switch
 
+---How the last save to the Dreamcast's memory card went: `0` nothing yet, `1`
+---written, `2` not written, `3` no card. `0` anywhere else.
+---@type fun(): integer
+M.dc_vmu_result = raw.dc_vmu_result
+
 ---Plays a demo, and returns the one that started.
 ---@param demo_num? trx.game.DemoNum Omit to play the next demo in rotation.
 ---@return trx.game.Level? # The demo that started, or `nil` if the game has no demos.

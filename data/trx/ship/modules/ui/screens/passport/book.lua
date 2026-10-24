@@ -415,9 +415,11 @@ end
 local function save_with_crystal(row)
   local crystal = trx.catalog.objects.SAVE_CRYSTAL_ITEM
   trx.inventory.take(crystal)
-  if not trx.savegame.save(row.slot_num, row.pool) then
+  local ok = trx.savegame.save(row.slot_num, row.pool)
+  if not ok then
     trx.inventory.give(crystal)
   end
+  return ok
 end
 
 -- The Dreamcast writes the save to the memory card with the game stopped, so
@@ -425,22 +427,46 @@ end
 -- the box on the screen, and the passport closes after it.
 local on_console = pcall(trx.config.describe, "rendering.dc_mode")
 
+-- The box says how the save went, and holds for a moment before the passport
+-- closes.
+local RESULT_HOLD = 60
+local RESULTS = {
+  [1] = "Saved to the VMU",
+  [2] = "Could not save to the VMU",
+  [3] = "No VMU found: saved until the console is switched off",
+}
+
+function Passport:say(text)
+  if self.message ~= nil then
+    self.message:close()
+  end
+  self.message = self.ctx:push({
+    root = requester.message(text),
+    place = { y = 0.82 },
+  })
+end
+
 function Passport:save_with_notice(row)
   local function save()
+    local ok
     if self.crystal then
-      save_with_crystal(row)
+      ok = save_with_crystal(row)
     else
-      trx.savegame.save(row.slot_num, row.pool)
+      ok = trx.savegame.save(row.slot_num, row.pool)
     end
-    self:close(true)
+    if not on_console then
+      self:close(true)
+      return
+    end
+    self:say(ok and RESULTS[trx.game.dc_vmu_result()] or "Could not save the game")
+    timer.after(RESULT_HOLD, function()
+      self:close(true)
+    end, { clock = timer.Clock.UI })
   end
   if not on_console then
     return save()
   end
-  self.message = self.ctx:push({
-    root = requester.message("Saving to VMU... Do not remove the card"),
-    place = { y = 0.82 },
-  })
+  self:say("Saving to VMU... Do not remove the card")
   timer.after(2, save, { clock = timer.Clock.UI })
 end
 

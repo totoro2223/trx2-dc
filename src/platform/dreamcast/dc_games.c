@@ -1,6 +1,10 @@
 #include "dc_games.h"
 
+#include "vmu.h"
+
 #include <trx/core/log.h>
+
+#include <arch/cache.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -20,6 +24,7 @@ typedef struct {
     uint32_t game;
     uint32_t expansion;
     uint32_t crashes; // restarts in a row after a crash
+    uint32_t level; // the level the next boot starts in, plus 2; 0 for none
     uint32_t check;
 } M_NOTE;
 
@@ -30,23 +35,50 @@ static int m_Count = 0;
 static int m_Index = 0;
 static bool m_Expansion = false;
 static uint32_t m_Crashes = 0;
+static int m_StartLevel = -2;
+// A choice is waiting for the next boot: leaving the game must not undo it.
+static bool m_Chosen = false;
 
 static volatile M_NOTE *M_Note(void)
 {
+    // A dirty line of the cached copy of these words (left by whatever used
+    // the memory before) would be written back over the note when the console
+    // starts over: the line is dropped first, and the words are then read and
+    // written uncached.
+    dcache_purge_range(0x8CFF0100u & ~31u, 64);
     return (volatile M_NOTE *)M_MAGIC_ADDRESS;
 }
 
 static uint32_t M_Sum(const volatile M_NOTE *const note)
 {
-    return M_MAGIC ^ note->game ^ note->expansion ^ note->crashes ^ M_CHECK;
+    return M_MAGIC ^ note->game ^ note->expansion ^ note->crashes ^ note->level
+        ^ M_CHECK;
 }
 
-static void M_Leave(const int game, const bool expansion, const uint32_t crashes)
+// The note as the card keeps it, for a choice of game (RAM may not outlive
+// the reboot on every console, or emulator).
+static void M_Park(const volatile M_NOTE *const note)
+{
+    M_NOTE copy = {
+        .magic = note->magic,
+        .game = note->game,
+        .expansion = note->expansion,
+        .crashes = note->crashes,
+        .level = note->level,
+        .check = note->check,
+    };
+    DC_VMU_PutNote(&copy, sizeof(copy));
+}
+
+static void M_Leave(
+    const int game, const bool expansion, const uint32_t crashes,
+    const uint32_t level)
 {
     volatile M_NOTE *const note = M_Note();
     note->game = (uint32_t)game;
     note->expansion = expansion ? 1u : 0u;
     note->crashes = crashes;
+    note->level = level;
     note->check = M_Sum(note);
     note->magic = M_MAGIC;
 }
@@ -57,10 +89,27 @@ void DC_Games_Init(void)
     // What the last boot left, once (a cold start finds RAM with anything in
     // it, which the check rejects).
     volatile M_NOTE *const note = M_Note();
+    // The card's note, where the console's RAM did not keep one.
+    if (!(note->magic == M_MAGIC && note->check == M_Sum(note))) {
+        M_NOTE parked = {};
+        if (DC_VMU_TakeNote(&parked, sizeof(parked))) {
+            note->game = parked.game;
+            note->expansion = parked.expansion;
+            note->crashes = parked.crashes;
+            note->level = parked.level;
+            note->check = M_Sum(note);
+            note->magic = parked.magic;
+        }
+    } else {
+        // The RAM kept it: the card's copy is stale.
+        M_NOTE parked = {};
+        DC_VMU_TakeNote(&parked, sizeof(parked));
+    }
     const bool noted = note->magic == M_MAGIC && note->check == M_Sum(note);
     m_Crashes = noted ? note->crashes : 0;
     const uint32_t noted_game = note->game;
     const uint32_t noted_expansion = note->expansion;
+    m_StartLevel = noted && note->level != 0 ? (int)note->level - 2 : -2;
     note->magic = 0;
     FILE *const list = fopen("/cd/GAMES.TXT", "r");
     if (list == nullptr) {
@@ -160,6 +209,13 @@ bool DC_Games_ExpansionAvailable(void)
     return stat(path, &st) == 0;
 }
 
+int DC_Games_TakeStartLevel(void)
+{
+    const int level = m_StartLevel;
+    m_StartLevel = -2;
+    return level;
+}
+
 bool DC_Games_Choose(const int delta)
 {
     if (m_Count == 0) {
@@ -170,24 +226,28 @@ bool DC_Games_Choose(const int delta)
         return false;
     }
     LOG_INFO("next boot: TR%d", m_Ids[index]);
-    M_Leave(m_Ids[index], false, 0);
+    M_Leave(m_Ids[index], false, 0, 0);
+    M_Park(M_Note());
+    m_Chosen = true;
     return true;
 }
 
-bool DC_Games_ChooseExpansion(void)
+bool DC_Games_ChooseExpansion(const int level)
 {
     if (!DC_Games_ExpansionAvailable()) {
         return false;
     }
     LOG_INFO("next boot: the expansion of TR%d", DC_Games_CurrentId());
-    M_Leave(DC_Games_CurrentId(), true, 0);
+    M_Leave(DC_Games_CurrentId(), true, 0, (uint32_t)(level + 2));
+    M_Park(M_Note());
+    m_Chosen = true;
     return true;
 }
 
 void DC_Games_Remember(void)
 {
-    if (m_Count > 0) {
-        M_Leave(DC_Games_CurrentId(), false, 0);
+    if (m_Count > 0 && !m_Chosen) {
+        M_Leave(DC_Games_CurrentId(), false, 0, 0);
     }
 }
 
@@ -198,6 +258,6 @@ bool DC_Games_Recover(void)
     if (m_Crashes >= 3) {
         return false;
     }
-    M_Leave(DC_Games_CurrentId(), false, m_Crashes + 1);
+    M_Leave(DC_Games_CurrentId(), false, m_Crashes + 1, 0);
     return true;
 }

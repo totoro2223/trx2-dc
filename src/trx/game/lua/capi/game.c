@@ -25,6 +25,7 @@
 #include <trx/version.h>
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_games.h>
+    #include <platform/dreamcast/vmu.h>
     #include <trx/game/game_flow/common.h>
 #endif
 
@@ -298,6 +299,19 @@ static int M_L_GameDCGames(lua_State *const L)
     return 4;
 }
 
+// trxc.game.dc_vmu_result(): integer
+// How the last save to the memory card went: 0 nothing yet, 1 written, 2 not
+// written, 3 no card. 0 anywhere else.
+static int M_L_GameDCVMUResult(lua_State *const L)
+{
+#if defined(__DREAMCAST__)
+    lua_pushinteger(L, DC_VMU_LastResult());
+#else
+    lua_pushinteger(L, 0);
+#endif
+    return 1;
+}
+
 // trxc.game.dc_switch(delta: integer): boolean
 // Ends the game so that the disc starts over in the game before (-1) or after
 // (1) this one, or in its expansion (0). False where there is none.
@@ -306,7 +320,7 @@ static int M_L_GameDCSwitch(lua_State *const L)
     const lua_Integer delta = luaL_checkinteger(L, 1);
     bool ok = false;
 #if defined(__DREAMCAST__)
-    ok = delta == 0 ? DC_Games_ChooseExpansion() : DC_Games_Choose((int)delta);
+    ok = delta == 0 ? DC_Games_ChooseExpansion(-2) : DC_Games_Choose((int)delta);
     if (ok) {
         GF_OverrideCommand((GF_COMMAND) { .action = GF_EXIT_GAME }, true);
     }
@@ -663,6 +677,7 @@ static const luaL_Reg m_Module[] = {
     { "tr_version", M_L_GameTRVersion },
     { "dc_games", M_L_GameDCGames },
     { "dc_switch", M_L_GameDCSwitch },
+    { "dc_vmu_result", M_L_GameDCVMUResult },
     { "cutscene_frame", M_L_GameCutsceneFrame },
     { "real_time", M_L_GameRealTime },
     { "sim_time", M_L_GameSimTime },

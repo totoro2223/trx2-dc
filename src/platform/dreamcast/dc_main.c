@@ -279,7 +279,16 @@ int __wrap_main(int argc, char *argv[])
         }
         fclose(start);
     } else if (g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0) {
-        level = DC_LevelSelect_Run(engine, mod_id);
+        // The expansion's level that the list of the game before picked.
+        const int picked = DC_Games_TakeStartLevel();
+        level = picked >= -1 ? picked : DC_LevelSelect_Run(engine, mod_id);
+        if (level == DC_LEVEL_SELECT_RESTART) {
+            // Another game or the expansion: the disc starts over, as when
+            // the game ends (the choice waits in the note).
+            printf("TRX: starting the disc over for the choice\n");
+            DC_Games_Remember();
+            arch_reboot();
+        }
     }
     g_DC_TestLevelStart = level;
     static char engine_arg[12];

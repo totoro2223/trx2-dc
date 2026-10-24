@@ -13,6 +13,7 @@
 local entries = require("common.ui.ring.entries")
 local fade = require("common.ui.fade")
 local motion = require("common.ui.ring.motion")
+local requester = require("common.ui.widgets.requester")
 local ring = require("common.ui.ring")
 local timer = require("common.timer")
 
@@ -1135,6 +1136,13 @@ local function run(state)
   for _, anim in ipairs(state.anims) do
     anim.last = anim.frame
   end
+  if state.hints ~= nil then
+    state.hints:set(
+      not state.hidden
+        and status ~= Status.SELECTED
+        and status ~= Status.CLOSING_ITEM
+    )
+  end
 
   if status == Status.SELECTED then
     if is_passport(state) and not state.passport_open then
@@ -1356,6 +1364,29 @@ local function open(ctx)
   ring.attach(state)
 
   state.fades = fade.screen(ctx)
+
+  -- A Dreamcast disc of several games: boxes in the right-hand corners say
+  -- that Up and Down go to the game before and after this one (control
+  -- below), in the style of the box that says a save is being written.
+  if ctx.mode == MenuMode.TITLE then
+    local _, previous, following = trx.game.dc_games()
+    state.hints = trx.signal.new(false)
+    local function hint(key, game, place)
+      ctx:push({
+        root = trx.ui.widgets.Stack({
+          visible = state.hints,
+          children = { requester.message(trx.locale.format(key, game)) },
+        }),
+        place = place,
+      })
+    end
+    if previous ~= 0 then
+      hint("general/dc/press_up", previous, { x = 1, y = 0, margin = 6 })
+    end
+    if following ~= 0 then
+      hint("general/dc/press_down", following, { x = 1, y = 1, margin = 6 })
+    end
+  end
 
   local function spin_in()
     state.waiting = false

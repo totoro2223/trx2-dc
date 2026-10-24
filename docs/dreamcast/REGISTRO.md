@@ -745,3 +745,15 @@ anterior cada vez. Piscina a **384 K** (`M_POOL_SIZE`), compilada (DC builds
 3. La VMU de Flycast (`D:\Flycast\data\T-TRX00_vmu_save_A1.bin`) tiene las
    partidas de prueba (ranuras 1–5 de los tres juegos); la copia previa es
    `T-TRX00_vmu_save_A1.bin.user-backup-20261024`.
+## 24/10/2026 (tarde): avisos de juegos, expansión en el selector, resultado del guardado
+
+- La nota con la elección de juego (RAM alta, `0xACFF0100`) **no sobrevivía al reinicio
+  hecho desde el selector previo al motor** (sí desde el juego). Causa no aclarada
+  (el arranque muy temprano la perdía en Flycast). Ahora la elección también se deja
+  en la tarjeta (`DCNEXT`, un bloque) y el arranque la lee y la borra: sirve también
+  donde la RAM no aguante el reinicio. `DC_Games_Remember` ya no pisa una elección
+  pendiente (antes, salir del juego tras elegir otro juego la sobrescribía).
+- El selector previo al motor ofrece los niveles de la expansión (página 4), con el
+  nivel pasado por la nota (`DC_Games_TakeStartLevel`), y L/R cambian de juego.
+- El pasaporte dice cómo fue el guardado (`trx.game.dc_vmu_result()`), sin cerrar
+  hasta un segundo después.

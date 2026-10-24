@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 // Saved games live on the RAM disk, where the engine reads and writes them
 // as files like on any other platform; the first memory card found keeps a
@@ -13,6 +14,16 @@ void DC_VMU_RestoreSaves(const char *saves_dir);
 // title describes it in the Dreamcast's file manager. False if there is no
 // card or no room left on it.
 bool DC_VMU_StoreSave(const char *path, const char *title);
+
+// How the last DC_VMU_StoreSave went: 0 nothing yet, 1 written, 2 the card
+// refused it (no room, or it failed), 3 no card in the console.
+int DC_VMU_LastResult(void);
+
+// A few bytes that the next boot reads once and removes (the game the disc
+// starts in next): the card keeps them where the console's RAM may not.
+// False if there is no card, or nothing there.
+bool DC_VMU_PutNote(const void *data, size_t size);
+bool DC_VMU_TakeNote(void *data, size_t size);
 
 // Removes a saved game's copy from the memory card.
 void DC_VMU_DeleteSave(const char *path);
