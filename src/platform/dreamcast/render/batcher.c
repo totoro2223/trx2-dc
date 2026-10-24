@@ -197,10 +197,10 @@ _Static_assert(
 #define M_SOFT_SPAN 1024.0f
 // How far from the casters' middle, along the light, faces take the shadow;
 // it fades out on the way.
-#define M_SOFT_REACH 2048.0f
+#define M_SOFT_REACH 3072.0f
 // How much of a face's colour the shadow takes away, from a light at the end
 // of its reach to one up close: the nearer the light, the darker.
-#define M_SOFT_STRENGTH_MIN 0.5f
+#define M_SOFT_STRENGTH_MIN 0.6f
 #define M_SOFT_STRENGTH_MAX 0.9f
 // How strong a shadow is without a light near, as a light's weight.
 #define M_SOFT_NO_LIGHT_WEIGHT 0.3f
@@ -3414,9 +3414,10 @@ M_HOT float M_Dot3(const float a[3], const float b[3])
 static float M_PerspScale(const float dist, const float z)
 {
     const float depth = dist + z;
-    // A shadow never grows past twice its caster: the depth is held at half
-    // the light's distance at the least.
-    const float least = dist * 0.5f;
+    // A soft shadow never grows past three times its caster: the depth is
+    // held at a third of the light's distance at the least. (The volumes keep
+    // to twice: see M_BuildVolume.)
+    const float least = dist * (1.0f / 3.0f);
     const float r = M_InvSqrt(depth > least ? depth : least);
     return dist * r * r;
 }

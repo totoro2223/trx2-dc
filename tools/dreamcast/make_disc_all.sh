@@ -8,9 +8,9 @@
 #   tools/dreamcast/make_disc_all.sh <build-dir> [output.cdi]
 #
 # TRX_DC_REMASTER is the remastered collection's folder (the one that holds 1,
-# 2 and 3); the default is where the other discs take theirs. With films the
-# disc would not fit (~1.8 GB), so it has none unless TRX_DC_FMV says which
-# (the games' films are kept in their own caches, see make_disc.sh).
+# 2 and 3); the default is where the other discs take theirs. The disc has all
+# the games' films (~1.8 GB); TRX_DC_FMV=0 leaves them out (1 GB), or names
+# the ones to keep (the films are kept in their own caches, see make_disc.sh).
 source /opt/toolchains/dc/kos/environ.sh
 set -eo pipefail
 
@@ -29,16 +29,20 @@ STEAM="${TRX_DC_STEAM:-/g/SteamLibrary/steamapps/common}"
 LEGAL1="/h/SteamLibrary/steamapps/common/Tomb Raider (I)/LARA_RTX/DATA/EIDOSPC.PCX"
 LEGAL2="$STEAM/Tomb Raider (II)/data/legal.PCX"
 LEGAL3="$STEAM/TombRaider (III)/pix/LEGAL.BMP"
+# The original games' films that the remaster lacks (TR1's logos, TR2's).
+EXTRA1="/h/SteamLibrary/steamapps/common/Tomb Raider (I)/LARA_RTX/FMV"
+EXTRA2="$STEAM/Tomb Raider (II)/fmv"
 
 for n in 1 2 3; do
   case "$n" in
-    1) MOD=tr1-ub; LEGAL="$LEGAL1" ;;
-    2) MOD=tr2-gm; LEGAL="$LEGAL2" ;;
-    3) MOD=tr3-la; LEGAL="$LEGAL3" ;;
+    1) MOD=tr1-ub; LEGAL="$LEGAL1"; EXTRA="$EXTRA1" ;;
+    2) MOD=tr2-gm; LEGAL="$LEGAL2"; EXTRA="$EXTRA2" ;;
+    3) MOD=tr3-la; LEGAL="$LEGAL3"; EXTRA="" ;;
   esac
   echo "=== TR$n"
   TRX_DC_GAME="tr$n" TRX_DC_SOURCE=remastered TRX_DC_SUBDIR="g$n" \
-    TRX_DC_FMV="${TRX_DC_FMV:-0}" TRX_DC_LEGAL="$LEGAL" \
+    TRX_DC_FMV="${TRX_DC_FMV:-all}" TRX_DC_FMV_EXTRA="$EXTRA" \
+    TRX_DC_LEGAL="$LEGAL" \
     TRX_DC_MOD="$MOD" TRX_DC_MOD_OPTIONAL=1 \
     bash tools/dreamcast/make_disc.sh "$BUILD_DIR" "$REMASTER/$n/DATA"
 done
