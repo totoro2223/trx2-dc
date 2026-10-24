@@ -59,5 +59,8 @@ typedef enum {
 
 void GameBuf_ResetSingle(GAME_BUFFER buffer);
 void GameBuf_Reset(void);
+#if defined(__DREAMCAST__)
+void GameBuf_Check(const char *tag, GAME_BUFFER buffer);
+#endif
 
 void *GameBuf_Alloc(size_t alloc_size, GAME_BUFFER buffer);

@@ -22,6 +22,11 @@ trx.config.declare({
   default = true,
 })
 
+trx.locale.declare({
+  ["general/dc/press_up"] = "Press Up to go to TR%d",
+  ["general/dc/press_down"] = "Press Down to go to TR%d",
+})
+
 local BLINK_PERIOD = 10
 local VERSION_SCALE = 0.5
 local ORDER = { order = 1 }
@@ -128,6 +133,33 @@ function M.setup()
     }),
     ORDER
   )
+
+  -- A Dreamcast disc of several games: the main menu's Up and Down go to the
+  -- game before and after this one (ring/screen.lua), which the right-hand
+  -- corners say, in the game's own font.
+  local _, previous, following = trx.game.dc_games()
+  if previous ~= 0 then
+    ui.regions.place(
+      ui.Region.TOP_RIGHT,
+      ui.widgets.Label({
+        text = trx.locale.format("general/dc/press_up", previous),
+        scale = VERSION_SCALE,
+        visible = signals.version_shown,
+      }),
+      ORDER
+    )
+  end
+  if following ~= 0 then
+    ui.regions.place(
+      ui.Region.BOTTOM_RIGHT,
+      ui.widgets.Label({
+        text = trx.locale.format("general/dc/press_down", following),
+        scale = VERSION_SCALE,
+        visible = signals.version_shown,
+      }),
+      ORDER
+    )
+  end
 
   -- An arrow in a corner takes the height of a bar, so that a corner keeps
   -- the room it has while it shows a bar. It shows only where nothing else

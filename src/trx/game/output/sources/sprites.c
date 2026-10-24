@@ -19,6 +19,7 @@
     #include <trx/game/output/sources/poly_fx.h>
     #include <trx/game/sparks/manager.h>
     #include <trx/core/log.h>
+    #include <platform/dreamcast/dc_mode.h>
     #include <trx/version.h>
 #endif
 
@@ -109,7 +110,7 @@ static void M_PrepareMeshes(M_PRIV *const p)
     p->spark_meshes_blended =
         Memory_Alloc(sizeof(*p->spark_meshes_blended) * (p->mesh_count + 1));
     p->tri_meshes =
-        Memory_Alloc(sizeof(*p->tri_meshes) * (p->mesh_count + 1) * 6);
+        Memory_Alloc(sizeof(*p->tri_meshes) * (p->mesh_count + 1) * 8);
     return;
 #endif
     MESH_BUILDER *const builder = MeshBuilder_Create();
@@ -167,7 +168,7 @@ static void M_FreeMeshes(M_PRIV *const p)
         Memory_FreePointer(&p->spark_meshes_blended);
     }
     if (p->tri_meshes != nullptr) {
-        for (size_t i = 0; i < (p->mesh_count + 1) * 6; i++) {
+        for (size_t i = 0; i < (p->mesh_count + 1) * 8; i++) {
             if (p->tri_meshes[i] != nullptr) {
                 MeshBatcher_RemoveMesh(p->batcher, p->tri_meshes[i]);
                 Output_Mesh_Destroy(p->tri_meshes[i]);
@@ -279,16 +280,49 @@ static OUTPUT_MESH *M_GetSparkMesh(
 
 // The camera's right and down, as unit vectors in the world (the view matrix's
 // first two rows over the 1 << W2V_SHIFT of its scale).
-static void M_CameraAxes(float right[3], float down[3])
+// The view matrix in floats, made again when it changes: a spark converts
+// nothing but its own numbers (the 64-bit products of the fixed point cost
+// tens of microseconds each on the SH-4).
+static struct {
+    bool valid;
+    MATRIX source;
+    float right[3];
+    float down[3];
+    float depth[4]; // the third row, in the matrix's own scale
+    float near_z;
+    float far_z;
+} m_View;
+
+static void M_RefreshView(void)
 {
+    if (m_View.valid && memcmp(&m_View.source, &g_ViewMatrix, sizeof(MATRIX)) == 0) {
+        return;
+    }
     const MATRIX *const v = &g_ViewMatrix;
     const float k = 1.0f / (float)(1 << W2V_SHIFT);
-    right[0] = (float)v->_00 * k;
-    right[1] = (float)v->_01 * k;
-    right[2] = (float)v->_02 * k;
-    down[0] = (float)v->_10 * k;
-    down[1] = (float)v->_11 * k;
-    down[2] = (float)v->_12 * k;
+    m_View.right[0] = (float)v->_00 * k;
+    m_View.right[1] = (float)v->_01 * k;
+    m_View.right[2] = (float)v->_02 * k;
+    m_View.down[0] = (float)v->_10 * k;
+    m_View.down[1] = (float)v->_11 * k;
+    m_View.down[2] = (float)v->_12 * k;
+    m_View.depth[0] = (float)v->_20;
+    m_View.depth[1] = (float)v->_21;
+    m_View.depth[2] = (float)v->_22;
+    m_View.depth[3] = (float)v->_23;
+    m_View.near_z = (float)Output_GetNearZ();
+    m_View.far_z = (float)Output_GetFarZ();
+    m_View.source = *v;
+    m_View.valid = true;
+}
+
+static void M_CameraAxes(float right[3], float down[3])
+{
+    M_RefreshView();
+    for (int32_t i = 0; i < 3; i++) {
+        right[i] = m_View.right[i];
+        down[i] = m_View.down[i];
+    }
 }
 
 // A quad that faces the camera: each corner is a point of the world moved by
@@ -315,37 +349,30 @@ static void M_ExpandBillboard(
 // blood, fire, smoke, splashes) is drawn as a sprite is, a quad facing the
 // camera, its colour the instance's tint.
 // A quad of the spark's own width and height, turned when it rotates.
-// Gun smoke is counted by what becomes of it, and the counts logged now and
-// then: the pistols' smoke of TR3 has not been seen, and this says whether it
-// is made, dropped (and why) or drawn.
-static struct {
-    int seen;
-    int near_far;
-    int small;
-    int bad_sprite;
-    int drawn;
-} m_SmokeStats;
+static OUTPUT_MESH *M_GetTriMesh(
+    M_PRIV *p, int32_t sprite_idx, int32_t half, bool blended);
+static void M_StageTriMesh(
+    OUTPUT_MESH *mesh, const XYZ_32 pts[3], const RGBA_8888 color[3],
+    float z_depth_adjust, DRAW_TYPE draw_type);
 
-static void M_SmokeLog(void)
-{
-    if (++m_SmokeStats.seen % 240 == 1) {
-        LOG_INFO(
-            "smoke sparks: seen %d, drawn %d, outside depth %d, too small %d, "
-            "bad sprite %d",
-            m_SmokeStats.seen, m_SmokeStats.drawn, m_SmokeStats.near_far,
-            m_SmokeStats.small, m_SmokeStats.bad_sprite);
-    }
-}
+static OUTPUT_MESH *M_GetTriMesh(
+    M_PRIV *p, int32_t sprite_idx, int32_t half, bool blended);
+static void M_StageTriMesh(
+    OUTPUT_MESH *mesh, const XYZ_32 pts[3], const RGBA_8888 color[3],
+    float z_depth_adjust, DRAW_TYPE draw_type);
+
+static void M_StageSpark(const SPARK *spark);
 
 void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
 {
+    M_StageSpark(spark);
+}
+
+static void M_StageSpark(const SPARK *const spark)
+{
     M_PRIV *const p = &m_Priv;
-    if (spark == nullptr || !spark->on || p->spark_meshes == nullptr) {
+    if (spark == nullptr || !spark->on || p->tri_meshes == nullptr) {
         return;
-    }
-    const bool smoke = spark->context == SPARK_CONTEXT_SMOKE;
-    if (smoke) {
-        M_SmokeLog();
     }
     XYZ_32 pos = Sparks_GetWorldPos(spark);
     // Between ticks a free spark (one the world holds, not an item, an effect
@@ -354,20 +381,21 @@ void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
         SPARK_F_ATTACHED_NODE | SPARK_F_FX | SPARK_F_ITEM;
     if ((spark->flags & M_ATTACHED) == 0U
         && (int32_t)spark->s_life - (int32_t)spark->life > 1) {
-        const float rate = Interpolation_GetWorldRate();
+        const float rate = (float)Interpolation_GetWorldRate();
         pos = (XYZ_32) {
             .x = (int32_t)LERP(spark->prev_pos.x, spark->pos.x, rate),
             .y = (int32_t)LERP(spark->prev_pos.y, spark->pos.y, rate),
             .z = (int32_t)LERP(spark->prev_pos.z, spark->pos.z, rate),
         };
     }
-    const MATRIX *const v = &g_ViewMatrix;
-    const int64_t zv = v->_20 * pos.x + v->_21 * pos.y + v->_22 * pos.z + v->_23;
-    if (zv <= Output_GetNearZ() || zv >= Output_GetFarZ()) {
-        m_SmokeStats.near_far += smoke;
-        return;
+    M_RefreshView();
+    const float zv = m_View.depth[0] * (float)pos.x
+        + m_View.depth[1] * (float)pos.y + m_View.depth[2] * (float)pos.z
+        + m_View.depth[3];
+    if (zv <= m_View.near_z || zv >= m_View.far_z) {
+            return;
     }
-    int32_t vpos_z = (int32_t)(zv >> W2V_SHIFT);
+    int32_t vpos_z = (int32_t)(zv * (1.0f / (float)(1 << W2V_SHIFT)));
     if (vpos_z == 0) {
         vpos_z = 1;
     }
@@ -375,13 +403,14 @@ void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
     int32_t sw = spark->size.width;
     int32_t sh = spark->size.height;
     if ((spark->flags & SPARK_F_SCALE) != 0U) {
-        sw = (int32_t)((((int64_t)sw * REF_PERSP) << spark->scalar) / vpos_z);
-        sh = (int32_t)((((int64_t)sh * REF_PERSP) << spark->scalar) / vpos_z);
+        const float k =
+            (float)REF_PERSP * (float)(1 << spark->scalar) / (float)vpos_z;
+        sw = (int32_t)((float)sw * k);
+        sh = (int32_t)((float)sh * k);
     }
     const float half = (sw + sh) / 4.0f * (float)vpos_z / (float)REF_PERSP;
     if (half < 1.0f) {
-        m_SmokeStats.small += smoke;
-        return;
+            return;
     }
 
     DRAW_TYPE draw_type = spark->draw_type;
@@ -405,10 +434,8 @@ void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
         }
         draw_type = DRAW_BLEND;
     } else if (sprite_idx < 0 || sprite_idx >= (int32_t)p->mesh_count) {
-        m_SmokeStats.bad_sprite += smoke;
-        return;
+            return;
     }
-    m_SmokeStats.drawn += smoke;
 
     // The four corners in the camera's plane, as the desktop gives them,
     // turned about the spark's centre when it rotates: a quad of the spark's
@@ -455,8 +482,16 @@ void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
     if (sprite_idx < 0 && tint.a < 1.0f) {
         draw_type = DRAW_BLEND_ADD;
     }
-    OutputSource_PolyFX_StageSpriteQuadWorldDepth(
-        sprite_idx, corners, colours, 0.0f, draw_type);
+    // One instance for the whole spark: the corners make a parallelogram, the
+    // unit square stretched onto the first corner and the two edges from it.
+    const bool blended = draw_type == DRAW_BLEND_ADD
+        || draw_type == DRAW_REFLECTIVE_BLEND_ADD
+        || draw_type == DRAW_BLEND_SUB;
+    const XYZ_32 edges[3] = { corners[0], corners[1], corners[3] };
+    const RGBA_8888 colour3[3] = { colour, colour, colour };
+    M_StageTriMesh(
+        M_GetTriMesh(p, sprite_idx, 3, blended), edges, colour3, 0.0f,
+        draw_type);
 }
 
 // The unit triangle with a sprite's corners (0, 1, 2 or 0, 2, 3, a quad's
@@ -466,21 +501,26 @@ static OUTPUT_MESH *M_GetTriMesh(
     const bool blended)
 {
     OUTPUT_MESH **const slot =
-        &p->tri_meshes[((sprite_idx + 1) * 3 + half) * 2 + blended];
+        &p->tri_meshes[((sprite_idx + 1) * 4 + half) * 2 + blended];
     if (*slot != nullptr) {
         return *slot;
     }
-    static const int32_t corners[3][3] = {
-        { 0, 1, 2 }, { 0, 2, 3 }, { 0, 1, 3 }
+    static const int32_t corners[4][4] = {
+        { 0, 1, 2, 0 }, { 0, 2, 3, 0 }, { 0, 1, 3, 0 }, { 0, 1, 2, 3 }
     };
-    static const float unit[3][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 } };
+    // Half 3 is the whole sprite on a parallelogram: the unit square.
+    static const float unit[4][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 } };
+    static const int32_t square[4] = { 0, 1, 3, 2 };
+    const int32_t count = half == 3 ? 4 : 3;
     MESH_BUILDER *const builder = MeshBuilder_Create();
-    for (int32_t j = 0; j < 3; j++) {
+    for (int32_t j = 0; j < count; j++) {
         // A negative sprite is a flat triangle: lines, and what PolyFX
         // draws with no picture of its own.
         const bool flat = sprite_idx < 0;
         const OUTPUT_MESH_VERTEX vertex = {
-            .pos = { .x = unit[j][0], .y = unit[j][1], .z = 0.0f },
+            .pos = { .x = unit[half == 3 ? square[j] : j][0],
+                     .y = unit[half == 3 ? square[j] : j][1],
+                     .z = 0.0f },
             .flags = VERT_NO_LIGHTING | VERT_NO_WIBBLE
                 | (flat ? VERT_FLAT_SHADED
                         : Output_Textures_GetSpriteTextureFlags(sprite_idx)),

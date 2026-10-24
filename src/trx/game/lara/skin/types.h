@@ -76,4 +76,10 @@ typedef struct {
     bool visible;
     const OBJECT_MESH *mesh;
     XYZ_16 offset;
+    // A weapon on her back made from its pickup (see M_SetBackGunFromPickup):
+    // turned about the pivot by these angles (y, then z) before it is drawn.
+    // All zero for every other equipment.
+    XYZ_16 rot;
+    XYZ_16 pivot;
+    int32_t scale; // in 1 << W2V_SHIFT; 0 for none
 } LARA_SKIN_EQUIPMENT;

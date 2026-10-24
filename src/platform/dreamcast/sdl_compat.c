@@ -8,6 +8,8 @@
 // through the usual events, and the window and display calls describe the
 // fixed 640x480 screen.
 
+#include "dc_games.h"
+
 #include <SDL2/SDL.h>
 
 #include <dc/maple.h>
@@ -804,7 +806,9 @@ int SDL_ShowSimpleMessageBox(
 char *SDL_GetBasePath(void)
 {
     // The game ships on the disc; the engine's own data sits at its root.
-    return strdup("/cd/");
+    char path[48];
+    snprintf(path, sizeof(path), "%s/", g_DC_Root);
+    return strdup(path);
 }
 
 SDL_Locale *SDL_GetPreferredLocales(void)

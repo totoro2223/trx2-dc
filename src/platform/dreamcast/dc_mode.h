@@ -39,6 +39,16 @@ extern int32_t g_DC_TestSwitchFrame;
 extern int32_t g_DC_TestLevelStart;
 extern int32_t g_DC_TestLevelLast;
 extern int32_t g_DC_TestLevelFrames;
+// A test disc fires the pistols' smoke every this many frames (0: never).
+extern int32_t g_DC_TestFire;
+// A test disc hands Lara this weapon (a LARA_GUN_TYPE) a moment into the level.
+extern int32_t g_DC_TestGive;
+// A test disc leaves the game this many frames into the level (the console
+// then starts the disc over).
+extern int32_t g_DC_TestExit;
+// A test disc saves the game to the next slot every this many frames, and
+// loads the first one back after each fifth (0: never).
+extern int32_t g_DC_TestSave;
 
 const DC_MODE_PARAMS *DC_Mode_Get(void);
 

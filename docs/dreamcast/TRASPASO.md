@@ -197,3 +197,41 @@ Ver [TAREAS.md](TAREAS.md).
 - Citar "DC build N" con cada CDI nuevo.
 - Commits en la rama `dreamcast` con prefijo `dreamcast: ` y descripción
   breve (ver `git log`).
+
+## Ganchos de prueba y disco de tres juegos (24/10/2026)
+
+Variables de `make_disc.sh` para discos de prueba (cada una escribe un `.TXT`
+en la raíz del juego y `dc_main.c` lo lee): `TRX_DC_FIRE=<n>` (humo de pistolas
+cada n fotogramas; negativo, se crea pero no se dibuja), `TRX_DC_GIVE=<tipo>`
+(da un arma a Lara a los 60 fotogramas), `TRX_DC_EXIT=<n>` (sale del juego a
+los n fotogramas: el disco se reinicia), `TRX_DC_SAVE=<n>` (guarda cada n
+fotogramas en un hueco distinto y carga el primero tras cada quinto) y
+`TRX_DC_SWITCH="<código> <fotograma>"` (la lista de `executor.c`: 6 carga el
+pasaporte, 7 cambia al juego siguiente, 8 a la expansión).
+
+`tools/dreamcast/make_disc_all.sh <build> [salida.cdi]` hace el disco de los
+tres juegos con sus expansiones (datos del remaster, sin películas). Cada juego
+va en `g1`, `g2` o `g3` (`TRX_DC_SUBDIR` en `make_disc.sh`) y la raíz lleva
+`GAMES.TXT`. `src/platform/dreamcast/dc_games.c` elige el juego al arrancar y
+deja la elección, en RAM alta (`0xACFF0100`), para el siguiente arranque; la
+misma nota cuenta las caídas seguidas (`M_Recover`, `dc_main.c`). Todo lo que
+se abría en `/cd/...` pasa por `g_DC_Root`.
+
+## Memoria entre niveles: cómo se vigila
+
+`dc_level_heap.c` reparte la región de la partida: el nivel por abajo, lo que
+vive más que un nivel por arriba, y **lo pequeño (hasta 16 KiB) que vive más
+que un nivel, fuera, en el montón de newlib**. En cada carga el registro dice
+`game heap: <tamaño>K, <usado>K in <n> blocks, largest free <x>K`: el usado
+debe quedar plano de un nivel a otro; si crece, hay una fuga.
+
+Para ver quién tiene lo que queda: compilar con `-DTRX_DC_HEAP_CENSUS` y
+`TRX_DC_WATCHDOG` (la región anota quién pidió cada bloque y vuelca la lista y
+su disposición en cada carga) y pasar el registro de un disco de prueba con
+`TRX_DC_LEVELS="<último> 200"` por
+`tools/dreamcast/live_census.py <registro> TRX.elf sh-elf-addr2line.exe`.
+`GameBuf_Check` compara los trozos de una arena con los hechos.
+
+Pruebas de guardado (`TRX_DC_SAVE`): **mover antes el archivo de la VMU del
+emulador** (`G:\Flycast\data\T-TRX00_vmu_save_A1.bin`) porque es la tarjeta
+de las partidas del usuario.

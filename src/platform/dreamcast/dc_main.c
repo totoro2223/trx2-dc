@@ -10,12 +10,15 @@
 // before the engine's own main.
 
 #include "dc_bench.h"
+#include "dc_games.h"
+#include "dc_settings.h"
 #include "dc_level_select.h"
 #include "dc_mode.h"
 #include "dc_watchdog.h"
 #include "vmu.h"
 
 #include <arch/arch.h>
+#include <arch/irq.h>
 #include <arch/mmu.h>
 #include <kos/dbgio.h>
 #include <kos/init.h>
@@ -33,6 +36,42 @@ KOS_INIT_FLAGS(INIT_DEFAULT);
 
 int __real_main(int argc, char *argv[]);
 
+// A file of the running game's folder.
+static FILE *M_Open(const char *const name)
+{
+    char path[96];
+    DC_Games_Path(path, sizeof(path), name);
+    return fopen(path, "r");
+}
+
+// A crash (a failed assertion, a bad address, an out of memory) would stop the
+// console with the screen as it was; the disc starts over instead, at the list
+// of levels of the same game, which is all the flow a game that cannot go on
+// can keep. Three in a row stop it for good, since they would only loop.
+static void M_Recover(
+    const irq_t code, irq_context_t *const context, void *const data)
+{
+    (void)data;
+    printf(
+        "TRX: exception %04x at %08lx: starting the disc over\n",
+        (unsigned)code, (unsigned long)context->pc);
+    if (DC_Games_Recover()) {
+        arch_reboot();
+    }
+    arch_abort();
+}
+
+static void M_InstallRecovery(void)
+{
+    static const irq_t codes[] = {
+        EXC_ILLEGAL_INSTR, EXC_SLOT_ILLEGAL_INSTR, EXC_DATA_ADDRESS_READ,
+        EXC_DATA_ADDRESS_WRITE, EXC_TRAPA,
+    };
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
+        irq_set_handler(codes[i], M_Recover, nullptr);
+    }
+}
+
 static void M_EnsureDir(const char *const path)
 {
     if (mkdir(path, 0777) != 0) {
@@ -48,7 +87,7 @@ static void M_SetupEnvironment(void)
     M_EnsureDir("/ram/trx/saves");
     M_EnsureDir("/ram/trx/screenshots");
 
-    setenv("TRX_DIR", "/cd", 0);
+    setenv("TRX_DIR", g_DC_Root, 0);
     setenv("TRX_CACHE_DIR", "/ram/trx/cache", 0);
     // The RAM disk cannot make directories (no mkdir), so the saves sit at its root.
     setenv("TRX_SAVES_DIR", "/ram", 0);
@@ -75,6 +114,8 @@ int __wrap_main(int argc, char *argv[])
     // Until the renderer owns the screen, show the log on it.
     dbgio_dev_select("fb");
 #endif
+    DC_Games_Init();
+    M_InstallRecovery();
     M_SetupEnvironment();
 #if defined(TRX_DC_MMU_NULL_TRAP)
     // Without the MMU a null pointer reads the boot ROM and a null call runs
@@ -99,7 +140,7 @@ int __wrap_main(int argc, char *argv[])
     // The game on the disc (make_disc.sh's TRX_DC_GAME): TR2 unless it
     // says otherwise.
     int engine = 2;
-    FILE *const game = fopen("/cd/GAME.TXT", "r");
+    FILE *const game = M_Open("GAME.TXT");
     if (game != nullptr) {
         if (fscanf(game, "%d", &engine) != 1) {
             engine = 2;
@@ -109,16 +150,20 @@ int __wrap_main(int argc, char *argv[])
     // An expansion on the disc (make_disc.sh's TRX_DC_MOD): the engine runs
     // it by name, as --mod does.
     static char mod_id[32];
-    FILE *const mod_file = fopen("/cd/MOD.TXT", "r");
+    FILE *const mod_file = M_Open("MOD.TXT");
     if (mod_file != nullptr) {
         if (fscanf(mod_file, "%31s", mod_id) != 1) {
             mod_id[0] = '\0';
         }
         fclose(mod_file);
     }
+    // An expansion the menu of a disc of several games asked for.
+    if (DC_Games_Expansion()[0] != '\0') {
+        snprintf(mod_id, sizeof(mod_id), "%s", DC_Games_Expansion());
+    }
     // A test disc that starts in one of the title's demos (make_disc.sh's
     // TRX_DC_DEMO).
-    FILE *const demo = fopen("/cd/DEMO.TXT", "r");
+    FILE *const demo = M_Open("DEMO.TXT");
     if (demo != nullptr) {
         int number = -1;
         while (g_DC_DemoQueueCount < DC_DEMO_QUEUE_MAX
@@ -129,7 +174,7 @@ int __wrap_main(int argc, char *argv[])
     }
     // A test disc that runs the benchmark straight away, with no keys
     // (make_disc.sh's TRX_DC_BENCH): the demo's number.
-    FILE *const bench = fopen("/cd/BENCH.TXT", "r");
+    FILE *const bench = M_Open("BENCH.TXT");
     if (bench != nullptr) {
         int number = -1;
         if (fscanf(bench, "%d", &number) == 1 && number >= 0) {
@@ -140,7 +185,7 @@ int __wrap_main(int argc, char *argv[])
     }
     // A test disc that starts in a mode whatever the settings say
     // (make_disc.sh's TRX_DC_MODE): the mode's number.
-    FILE *const mode = fopen("/cd/MODE.TXT", "r");
+    FILE *const mode = M_Open("MODE.TXT");
     if (mode != nullptr) {
         int number = -1;
         if (fscanf(mode, "%d", &number) == 1) {
@@ -150,7 +195,7 @@ int __wrap_main(int argc, char *argv[])
     }
     // A test disc that fixes the shadow type (make_disc.sh's TRX_DC_SHADOW):
     // the SHADOW_TYPE's number.
-    FILE *const shadow = fopen("/cd/SHADOW.TXT", "r");
+    FILE *const shadow = M_Open("SHADOW.TXT");
     if (shadow != nullptr) {
         int number = -1;
         if (fscanf(shadow, "%d", &number) == 1) {
@@ -158,9 +203,47 @@ int __wrap_main(int argc, char *argv[])
         }
         fclose(shadow);
     }
+    // A test disc that makes the pistols smoke every n frames
+    // (make_disc.sh's TRX_DC_FIRE).
+    FILE *const fire = M_Open("FIRE.TXT");
+    if (fire != nullptr) {
+        int number = 0;
+        if (fscanf(fire, "%d", &number) == 1) {
+            g_DC_TestFire = number;
+        }
+        fclose(fire);
+    }
+    // A test disc that leaves the game after n frames (make_disc.sh's
+    // TRX_DC_EXIT).
+    FILE *const leave = M_Open("EXIT.TXT");
+    if (leave != nullptr) {
+        int number = 0;
+        if (fscanf(leave, "%d", &number) == 1) {
+            g_DC_TestExit = number;
+        }
+        fclose(leave);
+    }
+    // A test disc that saves and loads games (make_disc.sh's TRX_DC_SAVE).
+    FILE *const saves = M_Open("SAVE.TXT");
+    if (saves != nullptr) {
+        int number = 0;
+        if (fscanf(saves, "%d", &number) == 1) {
+            g_DC_TestSave = number;
+        }
+        fclose(saves);
+    }
+    // A test disc that gives Lara a weapon (make_disc.sh's TRX_DC_GIVE).
+    FILE *const give = M_Open("GIVE.TXT");
+    if (give != nullptr) {
+        int number = 0;
+        if (fscanf(give, "%d", &number) == 1) {
+            g_DC_TestGive = number;
+        }
+        fclose(give);
+    }
     // A test disc that changes the mode on a frame (make_disc.sh's
     // TRX_DC_SWITCH): the mode's number and the frame.
-    FILE *const change = fopen("/cd/SWITCH.TXT", "r");
+    FILE *const change = M_Open("SWITCH.TXT");
     if (change != nullptr) {
         if (fscanf(
                 change, "%d %d", (int *)&g_DC_TestSwitchMode,
@@ -172,7 +255,7 @@ int __wrap_main(int argc, char *argv[])
     }
     // A test disc that goes on through the levels (make_disc.sh's
     // TRX_DC_LEVELS): the last one and how long to stay in each.
-    FILE *const levels = fopen("/cd/LEVELS.TXT", "r");
+    FILE *const levels = M_Open("LEVELS.TXT");
     if (levels != nullptr) {
         if (fscanf(
                 levels, "%d %d", (int *)&g_DC_TestLevelLast,
@@ -184,7 +267,7 @@ int __wrap_main(int argc, char *argv[])
     }
     // Test discs name their level (make_disc.sh's fourth argument).
     int level = -1;
-    FILE *const start = fopen("/cd/START.TXT", "r");
+    FILE *const start = M_Open("START.TXT");
     if (start != nullptr) {
         if (fscanf(start, "%d", &level) != 1) {
             level = -1;
@@ -253,6 +336,8 @@ int __wrap_main(int argc, char *argv[])
         // however the last game used it. Leaving it to the exit path worked
         // the first time and not the second.
         printf("TRX: the game ended; starting the disc over\n");
+        DC_Settings_Save();
+        DC_Games_Remember();
         arch_reboot();
     }
 #endif

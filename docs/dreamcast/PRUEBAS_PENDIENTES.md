@@ -260,6 +260,57 @@ Todo compilado con `build.sh minsize`; **ningún disco generado ni ejecutado**.
 | T50 | **Ninguna chispa se dibujaba en TR3** (fuego, humo de pistolas, sangre, bengalas, explosiones): `Sparks_Draw` volvía al principio en Dreamcast desde que no había PolyFX (un atajo con "quitar cuando dibuje") y nunca se quitó, así que `StageSpark` no se llamaba nunca. Quitado. Los demás efectos (anillos, estelas, nieve, láseres, rayos, salpicaduras, huellas, restos, murciélagos) sí tienen llamadas y no estaban cortados. | Fuego de trampas y de Lara ardiendo, humo y chispas de pistolas, sangre, bengalas: todos visibles. Coste de fps con mucho fuego (hasta 32 fuegos × 20 chispas, cada una dos veces). |
 | T51 | **Aviso al guardar en la VMU**, ahora una caja del estilo del menú (`requester.message`) sobre la misma pantalla, en la parte baja; el guardado se hace dos ticks después (`Passport:save_with_notice`, solo en Dreamcast). Sustituye a la pantalla de carga completa. | Guardar desde el pasaporte: la caja "Saving to VMU... Do not remove the card" aparece sobre el fondo del juego, el guardado se hace y el pasaporte se cierra. |
 
+## Humo, sombras, armas, tres juegos en un disco (24/10/2026, tarde)
+
+Hecho con las pruebas ocultas y las capturas de Flycast que se indican; lo que
+dice "sin ver" falta en consola real.
+
+| # | Cambio | Qué se midió o comprobó | Qué falta |
+|---|---|---|---|
+| T52 | **Rendimiento del humo de las pistolas (TR3)**. Causas: cada chispa eran dos instancias de 400 bytes, hacía productos de 64 bits y una división de 64 bits por chispa, `Interpolation_GetWorldRate()` en doble y un registro por el puerto serie cada 240 chispas (unos 20 ms cada uno, el grueso del coste que se veía). Ahora una chispa es **una** instancia (cuadrilátero unidad, `M_GetTriMesh` mitad 3), la vista se pasa a coma flotante una vez por fotograma (`M_RefreshView`) y no hay registro. | Selva de TR3, humo forzado cada 6 fotogramas (`TRX_DC_FIRE=6`, ~80 chispas vivas): `stage` 4,2 → 13,7 ms y `pass` 9,2 → 12,8 ms al principio; **ahora 6,7 y 10,9 ms**, 30 fps. Sin humo: 4,2 y 9,2. | Disparar de verdad en TR3 y mirar los fps. |
+| T53 | **Sombra suave: caída más larga** (`M_SOFT_REACH` 1536 → 2048) y **tope de tamaño**: la sombra suave "alta" y los volúmenes crecen como mucho al doble del lanzador (`M_PerspScale` con profundidad mínima la mitad de la distancia a la luz; la longitud del volumen no pasa de la distancia de cada esquina a la luz). | Benchmark de Londres con sombra suave: **28,2 fps antes y después**, mismos ms por etapa: el alargue no cuesta nada medible (Lara es pequeña). Vale la pena. | Ver la sombra en juego, sobre todo con luces cercanas. |
+| T54 | **Arma larga en la espalda sin trajes** (`M_SetBackGunFromModel`, `lara/skin/common.c`; giro, escala y pivote en `lara/draw.c`). El disco no lleva `lara_outfits.bin` (5,3 MiB) y los niveles del remaster no traen malla de espalda: Lara salía sin arma. Ahora se pone el modelo del inventario de cada arma larga, girado en diagonal y reducido a 700 unidades. | Capturas en TR2: **escopeta (diagonal) y M16 (horizontal) se ven bien en la espalda**. Lanzagranadas y arpón: no comprobados (el objeto puede no estar en el nivel). Gancho `TRX_DC_GIVE=<LARA_GUN_TYPE>`. | Probar lanzagranadas y arpón; TR1 (escopeta) y TR3 (MP5, cohete); ajustar el sitio si no gusta. |
+| T55 | **Aviso de guardado flotante en todos los juegos**: la caja del menú sale en `Passport:save_with_notice`, que es código común (TR1, TR2 y TR3), solo en Dreamcast. | Se comprobó que `book.lua` carga (`SWITCH.TXT` "6 120": `book loaded: table`); no se abrió el pasaporte. | Guardar con una VMU en cada juego. |
+| T56 | **Recuperación de caídas** (`M_Recover`, `dc_main.c`): un aserto, una dirección mala o falta de memoria arrancan el disco otra vez en la lista de niveles del mismo juego, en vez de parar la consola. Tres seguidas la paran. | Probado con el aserto de TR3 y la falta de memoria de TR2 de las pruebas de flujo: ver T58. | Ver el efecto en consola real (la nota con el juego queda en RAM alta, `0xACFF0100`). |
+| T57 | **Disco con los tres juegos** (`make_disc_all.sh`): `g1`, `g2`, `g3` con sus expansiones (datos del remaster); en el menú principal **Arriba** va al juego anterior y **Abajo** al siguiente, con el aviso en las esquinas derechas; la página de Nueva partida ofrece **Play Expansion**. El cambio reinicia el disco (`dc_games.c`). | En Flycast: arranque en TR1, "next boot: TR2" y arranque en TR2; expansión de TR1 arranca (`--mod tr1-ub`). **Sin películas**: 1,0 GB; con ellas serían ~1,8 GB. | Los avisos en las esquinas no se vieron en pantalla (el menú sale poco tiempo entre demos); que la RAM alta sobreviva al reinicio en consola real (si no, el disco arranca en TR1 y se pierde el juego elegido). |
+| T58 | **Pruebas de flujo y de guardado** (Flycast oculto): ver "Resultados" abajo. | | |
+
+### Resultados de las pruebas de flujo (T58)
+
+- **Guardar y cargar en bucle** (`TRX_DC_SAVE=150`, un guardado cada 150
+  fotogramas en cinco huecos y una carga después del quinto, con la escritura
+  en la VMU de cada uno): TR3 selva, 4 vueltas; TR2 nivel 1, 33 operaciones;
+  TR1 nivel 1, 38 operaciones. **Ningún cuelgue, aserto ni caída.**
+- **Salir del juego** (`TRX_DC_EXIT`): el disco se reinicia (2 arranques en la
+  prueba de TR2 y de TR3), sin caída.
+- **Pasar de nivel en nivel sin reiniciar** (`TRX_DC_LEVELS`): TR1, los 8
+  niveles bien. **TR2 cae al cargar el nivel 5** tras el 4 (falta de memoria,
+  `Memory_Alloc`) y **TR3 falla al cargar el 3** (`inflate failed (-3)` en una
+  inyección). Eran caídas que paraban la consola; con T56 reinician el disco.
+  Sin arreglar la causa (TAREAS.md, J 60 y 61).
+
+## Memoria entre niveles y opciones en la VMU (24/10/2026, noche)
+
+| # | Cambio | Qué se midió o comprobó | Qué falta |
+|---|---|---|---|
+| T59 | **Fuga de cada nivel, arreglada.** `Walkable_Reset` ponía a cero la tabla de configuración del nivel anterior, que la Dreamcast libera con el resto de las arenas de `GameBuf`: escribía ceros en lo que ocupara ya esa memoria, que era la lista de trozos de otra arena (la de los fotogramas de animación). La lista quedaba cortada y los trozos que le seguían no se liberaban nunca: **~0,9 MB por nivel** en TR2. `Walkable_ResetLevel` ya no toca la tabla vieja en Dreamcast. | Con `TRX_DC_HEAP_CENSUS` y `tools/dreamcast/live_census.py` se vio el dueño (`GameBuf_Alloc` ← `M_ParseFrame`); un contador de trozos hechos y listados (`GameBuf_Check`) dio el punto exacto (entre `Walkable_ResetLevel` y `Rope_Reset`). Lo que la región retiene entre niveles: **de 69 K → 1,5 MB creciendo a 21 K–100 K estable**. | |
+| T60 | **Bloques pequeños que sobreviven a un nivel, fuera de la región** (`M_SMALL_MAX`, 16 KiB, `dc_level_heap.c`): quedaban bajo algún bloque grande que el nivel tomó de arriba y, al liberarse éste, partían el hueco del siguiente nivel (el cuarto de TR3 veía 1,9 MB libres seguidos de 6,4). Ahora van al montón de newlib. | **Pasar de nivel en nivel sin reiniciar** (`TRX_DC_LEVELS`, 200 fotogramas en cada uno): **TR1 14 niveles, TR2 17, TR3 12, sin una sola caída**; antes TR2 caía al cargar el 5 y TR3 el 4. La región retiene 7 bloques (40 K) en TR3. | Jugar de verdad de una pasada (la prueba solo carga y deja pasar fotogramas). |
+| T61 | **`GameBuf_Alloc` con candado** en Dreamcast (las inyecciones se leen en el grupo de hilos). No era la causa de T59, pero dos hilos sobre una arena podían perder trozos. | | |
+| T62 | **Opciones de render en la VMU** (`dc_settings.c`): el modo, 60 fps, cel shading, adaptativo, contador de fps, los dos filtros y el tipo de sombra se guardan en un archivo pequeño (`dcopts.txt`, 2 bloques, `TRX_DCOPTS` en la tarjeta). Se cargan al arrancar el motor (antes del menú principal) y se escriben al **salir del menú principal** (`GF_RunTitle`) y antes de reiniciar el disco, solo si cambiaron. | En Flycast con VMU limpia: arranque 1 cambia una opción y sale → "render options written"; arranque 2: "restored dcopts.txt" y "render options loaded". | Probar en el menú real y en consola real. |
+
+### Aviso: mis pruebas de guardado tocaron la VMU del emulador
+
+Las pruebas de guardado y carga en bucle (`TRX_DC_SAVE`) escribieron en las
+ranuras 0 a 4 de TR1, TR2 y TR3 de `G:\Flycast\data\T-TRX00_vmu_save_A1.bin`,
+que es la misma tarjeta que usan las partidas del usuario (todos los discos
+comparten el identificador `T-TRX00`). Si había partidas ahí, las de esas
+ranuras se sobrescribieron. Después se borraron los guardados de prueba que
+sobraban (TR2 y TR3, ranuras 3 y 4 de la numeración de Lua; en el archivo
+`TRX_TR2_02`, `TRX_TR2_03`, `TRX_TR3_02` y `TRX_TR3_03`) para dejar sitio a las
+opciones. La copia previa a la limpieza está junto a la tarjeta:
+`T-TRX00_vmu_save_A1.bin.user-backup-0524`. Las pruebas de guardado deben
+hacerse en adelante con una tarjeta aparte (mover el archivo antes de probar).
+
 ## Para medir
 
 Las sondas `DC_PROBE` ya **no se compilan por defecto** (costaban ~0,5 ms por

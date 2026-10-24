@@ -15,7 +15,12 @@
 #include <trx/game/input.h>
 #include <trx/game/interpolation.h>
 #include <trx/game/locale/common.h>
+#include <trx/game/game_buf.h>
 #include <trx/game/game_flow/common.h>
+#include <trx/game/gun/common.h>
+#include <trx/game/gun/misc.h>
+#include <trx/game/gun/smoke.h>
+#include <trx/game/inventory.h>
 #include <trx/game/lua/common.h>
 #include <trx/game/lua/events.h>
 #include <trx/game/lua/events/ui.h>
@@ -190,6 +195,47 @@ static void M_ReportWork(const Uint64 start)
             g_DC_TestLevelFrames = 0;
         }
     }
+    static int32_t save_frames = 0;
+    static int32_t saved = 0;
+    if (g_DC_TestSave > 0 && ++save_frames % g_DC_TestSave == 0) {
+        char code[96];
+        if (saved % 6 == 5) {
+            LOG_INFO("test: load %d", (int)saved);
+            snprintf(
+                code, sizeof(code),
+                "trx.savegame.load(0, trx.savegame.Pool.NORMAL)");
+        } else {
+            LOG_INFO("test: save %d", (int)saved);
+            snprintf(
+                code, sizeof(code),
+                "trx.savegame.save(%d, trx.savegame.Pool.NORMAL)",
+                (int)(saved % 6));
+        }
+        saved++;
+        LUA_RESULT result = LUA_Eval(code);
+        if (result.message != nullptr) {
+            LOG_ERROR("test: %s", result.message);
+        }
+        LUA_FreeResult(&result);
+    }
+    static int32_t exit_frames = 0;
+    if (g_DC_TestExit > 0 && ++exit_frames == g_DC_TestExit) {
+        LOG_INFO("test: leaving the game");
+        GF_OverrideCommand((GF_COMMAND) { .action = GF_EXIT_GAME }, true);
+    }
+    static int32_t give_frames = 0;
+    if (g_DC_TestGive > 0 && ++give_frames == 60) {
+        const OBJECT_ID gun = Gun_GetGunObject((LARA_GUN_TYPE)g_DC_TestGive);
+        LOG_INFO("test: Lara is given weapon %d (object %d)", (int)g_DC_TestGive, (int)gun);
+        Inv_AddItem(gun);
+        Gun_UpdateLaraMeshes(gun);
+    }
+    static int32_t fire_frames = 0;
+    const int32_t fire_every = g_DC_TestFire < 0 ? -g_DC_TestFire : g_DC_TestFire;
+    if (fire_every > 0 && ++fire_frames % fire_every == 0) {
+        Gun_Smoke_OnFire(LGT_PISTOLS, true);
+        Gun_Smoke_OnFire(LGT_PISTOLS, false);
+    }
     static int32_t frames = 0;
     if (g_DC_TestSwitchMode >= 0 && ++frames == g_DC_TestSwitchFrame) {
         LOG_INFO("test: the mode is now %d", (int)g_DC_TestSwitchMode);
@@ -210,8 +256,22 @@ static void M_ReportWork(const Uint64 start)
             "error(('rows: %s fps60=%s'):format(tostring(a), "
             "tostring(trx.config.get('rendering.dc_60fps'))))",
             "trx.config.set('rendering.dc_60fps', false)",
+            // The passport's book loads (a syntax error shows here).
+            "local b = require('common.ui.screens.passport.book') "
+            "error('book loaded: ' .. type(b))",
+            // The main menu's Down on a disc of several games.
+            "trx.game.dc_switch(1)",
+            // And the expansion row.
+            "trx.game.dc_switch(0)",
+            // A render option off and on again (the options on the card).
+            "trx.config.set('rendering.dc_cel_shading', false)",
+            "trx.config.set('rendering.dc_cel_shading', true)",
+            // Test saves taken off the card again (slots 3 and 4; slot 0).
+            "trx.savegame.delete(3, trx.savegame.Pool.NORMAL) "
+            "trx.savegame.delete(4, trx.savegame.Pool.NORMAL)",
+            "trx.savegame.delete(0, trx.savegame.Pool.NORMAL)",
         };
-        LUA_RESULT result = LUA_Eval(codes[g_DC_TestSwitchMode % 6]);
+        LUA_RESULT result = LUA_Eval(codes[g_DC_TestSwitchMode % 13]);
         if (result.message != nullptr) {
             LOG_ERROR("test: %s", result.message);
         }

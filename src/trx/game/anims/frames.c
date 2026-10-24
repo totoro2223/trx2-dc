@@ -19,6 +19,7 @@ typedef enum {
 } M_ROT_PACK_MODE;
 
 static ANIM_FRAME *m_Frames = nullptr;
+static int32_t m_FrameCap = 0;
 
 #if defined(__DREAMCAST__)
 #define M_MAX_FRAME_MESHES 64
@@ -209,6 +210,7 @@ int32_t Anim_GetTotalFrameCount(
 void Anim_InitialiseFrames(const int32_t num_frames)
 {
     LOG_INFO("%d anim frames", num_frames);
+    m_FrameCap = num_frames;
     m_Frames = GameBuf_Alloc(sizeof(ANIM_FRAME) * num_frames, GBUF_ANIM_FRAMES);
 }
 
@@ -240,6 +242,10 @@ void Anim_LoadFrames(
         const int32_t frame_count = M_GetAnimFrameCount(loader, i, data_length);
         const int16_t *data_ptr = &data[anim->frame_ofs / sizeof(int16_t)];
         for (int32_t j = 0; j < frame_count; j++) {
+            if (frame_idx >= m_FrameCap) {
+                LOG_ERROR("anim %d: frame %d of %d", i, frame_idx, m_FrameCap);
+                break;
+            }
             ANIM_FRAME *const frame = &m_Frames[frame_idx++];
             if (j == 0) {
                 anim->frame_ptr = frame;
@@ -250,8 +256,12 @@ void Anim_LoadFrames(
 
             data_ptr += M_ParseFrame(
                 loader, frame, data_ptr, cur_obj->mesh_count, anim->frame_size);
+            if ((frame_idx & 1023) == 0) {
+            }
         }
     }
+
+    LOG_INFO("frames: %d parsed of %d", frame_idx, m_FrameCap);
 
     // Some OG data contains objects that point to the previous object's frames,
     // so ensure everything that's loaded is configured as such.

@@ -197,7 +197,7 @@ _Static_assert(
 #define M_SOFT_SPAN 1024.0f
 // How far from the casters' middle, along the light, faces take the shadow;
 // it fades out on the way.
-#define M_SOFT_REACH 1536.0f
+#define M_SOFT_REACH 2048.0f
 // How much of a face's colour the shadow takes away, from a light at the end
 // of its reach to one up close: the nearer the light, the darker.
 #define M_SOFT_STRENGTH_MIN 0.5f
@@ -3414,7 +3414,9 @@ M_HOT float M_Dot3(const float a[3], const float b[3])
 static float M_PerspScale(const float dist, const float z)
 {
     const float depth = dist + z;
-    const float least = dist * 0.25f;
+    // A shadow never grows past twice its caster: the depth is held at half
+    // the light's distance at the least.
+    const float least = dist * 0.5f;
     const float r = M_InvSqrt(depth > least ? depth : least);
     return dist * r * r;
 }
@@ -5190,6 +5192,12 @@ static int32_t M_BuildVolume(
             }
             const float len_sq = M_Dot3(push[i], push[i]);
             const float inv = len_sq > 1.0f ? M_InvSqrt(len_sq) : 1.0f;
+            // The volume widens from the light as (d + length) / d: no more
+            // than twice the caster's size, so the length stays within the
+            // corner's own distance from the light.
+            if (len_sq > 1.0f && length > len_sq * inv) {
+                length = len_sq * inv;
+            }
             for (int32_t k = 0; k < 3; k++) {
                 push[i][k] = len_sq > 1.0f ? push[i][k] * inv : dir[k];
             }

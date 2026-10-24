@@ -24,6 +24,7 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_bench.h>
+    #include <platform/dreamcast/dc_settings.h>
 #endif
 
 static void M_PlayIntroFMVs(void)
@@ -95,6 +96,10 @@ RESULT GF_RunTitle(GF_COMMAND *const out_cmd)
     GF_SetupTitleSequences(title_level);
     GF_ShowTitleLoadingCamera(title_level);
     *out_cmd = GF_ShowInventory(INV_TITLE_MODE);
+#if defined(__DREAMCAST__)
+    // The main menu is over: the render options go to the memory card.
+    DC_Settings_Save();
+#endif
     return OK;
 }
 

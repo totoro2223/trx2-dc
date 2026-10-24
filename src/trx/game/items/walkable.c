@@ -236,6 +236,14 @@ void Walkable_Reset(void)
 
 void Walkable_ResetLevel(void)
 {
+#if defined(__DREAMCAST__)
+    // The previous level's table went with its arena (GameBuf_Reset frees it
+    // here): Walkable_Reset would write zeros into whatever holds that memory
+    // now, which was another arena's chunk list, cut short, with all that came
+    // after it never freed (a megabyte a level).
+    m_Setup = nullptr;
+    m_SetupCount = 0;
+#endif
     Walkable_Reset();
     const int32_t item_count = Item_GetLevelCount();
     m_SetupCount = item_count;

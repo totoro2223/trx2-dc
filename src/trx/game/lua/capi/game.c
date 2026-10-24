@@ -23,6 +23,10 @@
 #include <trx/game/screenshot.h>
 #include <trx/game/shell/common.h>
 #include <trx/version.h>
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_games.h>
+    #include <trx/game/game_flow/common.h>
+#endif
 
 #include <lauxlib.h>
 
@@ -270,6 +274,46 @@ static int M_L_GameCutsceneFrame(lua_State *const L)
 static int M_L_GameTRVersion(lua_State *const L)
 {
     lua_pushinteger(L, g_TRVersion);
+    return 1;
+}
+
+// trxc.game.dc_games(): current: integer, previous: integer, next: integer,
+//     expansion: boolean
+// The game running on a Dreamcast disc of several (1 to 3), the games before
+// and after it (0 for none) and whether it has an expansion on the disc. Zeros
+// and false anywhere else.
+static int M_L_GameDCGames(lua_State *const L)
+{
+#if defined(__DREAMCAST__)
+    lua_pushinteger(L, DC_Games_CurrentId());
+    lua_pushinteger(L, DC_Games_PrevId());
+    lua_pushinteger(L, DC_Games_NextId());
+    lua_pushboolean(L, DC_Games_ExpansionAvailable());
+#else
+    lua_pushinteger(L, 0);
+    lua_pushinteger(L, 0);
+    lua_pushinteger(L, 0);
+    lua_pushboolean(L, false);
+#endif
+    return 4;
+}
+
+// trxc.game.dc_switch(delta: integer): boolean
+// Ends the game so that the disc starts over in the game before (-1) or after
+// (1) this one, or in its expansion (0). False where there is none.
+static int M_L_GameDCSwitch(lua_State *const L)
+{
+    const lua_Integer delta = luaL_checkinteger(L, 1);
+    bool ok = false;
+#if defined(__DREAMCAST__)
+    ok = delta == 0 ? DC_Games_ChooseExpansion() : DC_Games_Choose((int)delta);
+    if (ok) {
+        GF_OverrideCommand((GF_COMMAND) { .action = GF_EXIT_GAME }, true);
+    }
+#else
+    (void)delta;
+#endif
+    lua_pushboolean(L, ok);
     return 1;
 }
 
@@ -617,6 +661,8 @@ static const luaL_Reg m_Module[] = {
     { "is_playing", M_L_GameIsPlaying },
     { "is_playable", M_L_GameIsPlayable },
     { "tr_version", M_L_GameTRVersion },
+    { "dc_games", M_L_GameDCGames },
+    { "dc_switch", M_L_GameDCSwitch },
     { "cutscene_frame", M_L_GameCutsceneFrame },
     { "real_time", M_L_GameRealTime },
     { "sim_time", M_L_GameSimTime },

@@ -27,10 +27,12 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_mode.h>
+    #include <platform/dreamcast/dc_settings.h>
 #endif
 
 #include <SDL2/SDL.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static SHELL_SESSION *m_Session = nullptr;
 static SDL_Window *m_Window = nullptr;
@@ -289,6 +291,8 @@ static RESULT M_PrepareSystem(void)
             "The settings start from their defaults");
         Memory_FreePointer(&engine_config_path);
 #if defined(__DREAMCAST__)
+        // The render options the memory card kept.
+        DC_Settings_Load(getenv("TRX_SAVES_DIR"));
         if (g_DC_TestMode >= 0 && g_DC_TestMode < DC_MODE_NUMBER_OF) {
             CONFIG_SET(g_Config.rendering.dc_mode, (DC_MODE)g_DC_TestMode);
             CONFIG_SET(

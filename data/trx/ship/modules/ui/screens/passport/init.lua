@@ -24,6 +24,7 @@ trx.locale.declare({
   ["general/passport/select_level"] = "Select Level",
   ["general/passport/story_so_far"] = "Story so far...",
   ["general/passport/switch_mod"] = "Switch Game",
+  ["general/passport/dc_expansion"] = "Play Expansion",
   ["general/passport/play_previous_levels"] = "Play previous levels",
 })
 

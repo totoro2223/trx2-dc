@@ -352,6 +352,18 @@ M.play_level = raw.play_level
 ---@type fun(cutscene_num: trx.cutscenes.Num)
 M.play_cutscene = raw.play_cutscene
 
+---On a Dreamcast disc that holds several games: the game running (1 to 3), the
+---game before it and the game after it (0 for none), and whether it has an
+---expansion on the disc. All zero and `false` anywhere else.
+---@type fun(): integer, integer, integer, boolean
+M.dc_games = raw.dc_games
+
+---Ends the game so that the Dreamcast disc starts over in the game before
+---(`-1`) or after (`1`) this one, or in its expansion (`0`). Returns whether
+---there was one to go to.
+---@type fun(delta: integer): boolean
+M.dc_switch = raw.dc_switch
+
 ---Plays a demo, and returns the one that started.
 ---@param demo_num? trx.game.DemoNum Omit to play the next demo in rotation.
 ---@return trx.game.Level? # The demo that started, or `nil` if the game has no demos.

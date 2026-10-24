@@ -917,7 +917,18 @@ local function control_open(state, keys)
     return
   end
 
-  if state.mode == MenuMode.TITLE or state.mode == MenuMode.KEYS then
+  if state.mode == MenuMode.TITLE then
+    -- A Dreamcast disc of several games: Up goes to the game before this one
+    -- and Down to the one after (captions.lua says so in the corners).
+    local _, previous, following = trx.game.dc_games()
+    if keys:pressed(Role.MENU_UP) and previous ~= 0 then
+      trx.game.dc_switch(-1)
+    elseif keys:pressed(Role.MENU_DOWN) and following ~= 0 then
+      trx.game.dc_switch(1)
+    end
+    return
+  end
+  if state.mode == MenuMode.KEYS then
     return
   end
   if keys:pressed(Role.MENU_UP) then

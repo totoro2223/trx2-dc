@@ -9,6 +9,7 @@
 
 #include "pvr.h"
 
+#include <platform/dreamcast/dc_games.h>
 #include <platform/dreamcast/dc_mode.h>
 
 #include <trx/core/log.h>
@@ -211,7 +212,6 @@ static struct {
 } m_Pages = {};
 // A VQ page: a codebook of 256 2x2 blocks, then a byte per block of the page,
 // twiddled (tools/dreamcast/texvq.c makes them).
-#define M_VQ_PATH "/cd/textures.vq"
 #define M_VQ_BOOK_BYTES (256 * 4 * 2)
 #define M_VQ_BYTES (M_VQ_BOOK_BYTES + TEXTURE_PAGE_SIZE / 4)
 // The disc's VQ pages while a level loads: the file, its index, and room for
@@ -683,7 +683,9 @@ static void M_CloseVQ(void)
 // The disc's VQ pages, if it has them, for the level about to load.
 static void M_OpenVQ(void)
 {
-    m_VQ.fp = fopen(M_VQ_PATH, "rb");
+    char vq_path[64];
+    DC_Games_Path(vq_path, sizeof(vq_path), "textures.vq");
+    m_VQ.fp = fopen(vq_path, "rb");
     uint32_t head[2];
     if (m_VQ.fp == nullptr || fread(head, 4, 2, m_VQ.fp) != 2
         || memcmp(head, "TVQ1", 4) != 0) {
@@ -735,13 +737,13 @@ void DC_PVR_SetPicture(const char *const name)
     // The gameflow's "india.webp" (or a path ending so) is the disc's
     // "/cd/pix/india.565" (make_disc.sh).
     static char loaded[64] = "";
-    char path[64] = "";
+    char path[96] = "";
     if (name != nullptr) {
         const char *base = strrchr(name, '/');
         base = base != nullptr ? base + 1 : name;
         snprintf(
-            path, sizeof(path), "/cd/pix/%.*s.565", (int)strcspn(base, "."),
-            base);
+            path, sizeof(path), "%s/pix/%.*s.565", g_DC_Root,
+            (int)strcspn(base, "."), base);
     }
     if (m_Picture != nullptr && strcmp(path, loaded) == 0) {
         return;

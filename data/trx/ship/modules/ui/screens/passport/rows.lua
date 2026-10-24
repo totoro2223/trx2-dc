@@ -115,6 +115,14 @@ function M.new_game_rows()
       choice = "story",
     }
   end
+  -- A Dreamcast disc with the expansion of this game (remastered data).
+  local _, _, _, has_expansion = trx.game.dc_games()
+  if has_expansion then
+    extras[#extras + 1] = {
+      text = trx.locale.get("general/passport/dc_expansion"),
+      choice = "dc_expansion",
+    }
+  end
   if #pages.switchable_mods() > 1 then
     extras[#extras + 1] = {
       text = trx.locale.get("general/passport/switch_mod"),

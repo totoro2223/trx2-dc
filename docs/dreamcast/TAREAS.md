@@ -129,6 +129,18 @@ Mask y The Lost Artifact con los datos del remaster, un disco cada una
 
 ## I. Efectos de TR3
 
-Hechos (compilados, sin ver): ver T47 a T49 en
-[PRUEBAS_PENDIENTES.md](PRUEBAS_PENDIENTES.md). Si el humo de las pistolas no
-sale tras T47, el registro dirá por qué; no hay más tareas aquí hasta verlo.
+Hechos (compilados): ver T47 a T49 y T52 en
+[PRUEBAS_PENDIENTES.md](PRUEBAS_PENDIENTES.md). El humo de las pistolas y el
+fuego no se dibujaban porque `Sparks_Draw` volvía antes en Dreamcast (quitado,
+T50); falta verlos en consola.
+
+## J. Abierto tras las pruebas del 24/10/2026
+
+(Las filas 60 y 61, la falta de memoria de TR2 y TR3 al pasar de nivel en
+nivel, se resolvieron: T59 y T60 en PRUEBAS_PENDIENTES.md.)
+
+| # | Qué | Detalle |
+|---|---|---|
+| 59 | **Sombra suave sobre la superficie del agua (TR2)** | No se pudo reproducir: el código ya salta las salas bajo el agua mientras Lara no está sumergida (`is_room` en `batcher.c`). Hace falta una captura con el sitio exacto (nivel y postura de Lara). |
+| 62 | **Armas largas en la espalda: lanzagranadas, arpón (TR2), MP5 y cohete (TR3), escopeta de TR1** | El modelo del inventario puede faltar en el nivel, o salir mal girado. Probar con `TRX_DC_GIVE`. |
+| 63 | **Disco de tres juegos en consola real** | La RAM alta debe sobrevivir al reinicio; si no, guardar la elección en la VMU. Tamaño 1,0 GB sin películas. |

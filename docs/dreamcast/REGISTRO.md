@@ -617,3 +617,31 @@ Londres, experimental 60, Flycast oculto.
   ahí), así que la comprobación fallaba siempre y `lblend` subió a 0,39.
   **Deshecho.** Queda por saber qué relación guardan las dos pilas en la
   Dreamcast; si una es la otra por una matriz fija, la idea vale ~0,16 ms.
+
+## 24/10/2026 (tarde): humo, sombras, armas, tres juegos
+
+- Se quitó el `return` de `Sparks_Draw` en Dreamcast: ninguna chispa se
+  dibujaba (fuego, humo, sangre). Después el humo costaba demasiado: el registro
+  por el puerto serie era la mayor parte; una instancia por chispa y la vista
+  en coma flotante bajaron el resto (T52).
+- Sombra suave más larga y con tope de tamaño (T53). Las armas largas se ponen
+  en la espalda con el modelo del inventario (T54). Aviso de guardado en la
+  interfaz común (T55).
+- Las caídas reinician el disco en la lista de niveles (T56). Disco de tres
+  juegos con cambio por Arriba y Abajo y expansiones en la página de Nueva
+  partida (T57).
+- Pruebas ocultas de flujo (TR1 pasó los 8 niveles; TR2 cayó por memoria al
+  cargar el 5; TR3 falló la lectura de una inyección al cargar el 3) y de
+  guardado: ver PRUEBAS_PENDIENTES.md, T58.
+
+## 24/10/2026 (noche): memoria entre niveles, opciones en la VMU
+
+- La causa de la falta de memoria al pasar de nivel en nivel era una escritura
+  en memoria ya liberada (`Walkable_Reset`), no una fuga de reserva: cortaba la
+  lista de trozos de la arena de fotogramas. Después, los bloques pequeños que
+  sobreviven a un nivel se sacaron de la región (T59, T60). TR1, TR2 y TR3
+  recorren todos sus niveles de seguido.
+- Las opciones de render se guardan en la VMU al salir del menú principal y se
+  cargan al arrancar (T62).
+- Un descuido: las pruebas de guardado usaron la tarjeta del emulador que usa
+  el usuario (ver el aviso en PRUEBAS_PENDIENTES.md).

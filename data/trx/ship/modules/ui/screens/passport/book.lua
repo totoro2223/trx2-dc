@@ -445,6 +445,11 @@ function Passport:save_with_notice(row)
 end
 
 function Passport:choose_new_game(row)
+  if row.choice == "dc_expansion" then
+    -- Ends the game: the disc starts over in the expansion.
+    trx.game.dc_switch(0)
+    return
+  end
   if row.choice == "new_game" then
     trx.game.start_new_game()
   elseif row.choice == "new_game_plus" then

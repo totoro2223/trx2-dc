@@ -26,6 +26,14 @@
 
 #include <kos/mutex.h>
 
+// A diagnostic, built in with -DTRX_DC_HEAP_CENSUS: who holds what the region
+// keeps between levels (tools/dreamcast/live_census.py reads the log).
+#if defined(TRX_DC_HEAP_CENSUS)
+    #define DC_LEVELHEAP_TRACE 1
+#else
+    #define DC_LEVELHEAP_TRACE 0
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +50,8 @@
 // A shrunk block gives its tail back past this.
 #define M_SPLIT_MIN 1024
 #define M_BINS 24
+// The most a block that outlives a level may be to stay out of the region.
+#define M_SMALL_MAX (16 * 1024)
 
 typedef struct M_FREE {
     struct M_FREE *next;
@@ -61,6 +71,86 @@ static struct {
     int32_t depth;
 } m_Heap = {};
 static mutex_t m_Lock = MUTEX_INITIALIZER;
+
+#if DC_LEVELHEAP_TRACE
+#define M_TRACE_SLOTS 3072
+#define M_TRACE_FRAMES 7
+typedef struct {
+    void *ptr;
+    uint32_t size;
+    uint32_t pc[M_TRACE_FRAMES];
+} M_TRACE;
+static M_TRACE m_Trace[M_TRACE_SLOTS];
+extern char _executable_start[];
+extern char etext[];
+
+static void M_TraceAdd(void *const ptr, const size_t size)
+{
+    uint32_t sp;
+    __asm__ volatile("mov r15, %0" : "=r"(sp));
+    const uint32_t *const stack = (const uint32_t *)sp;
+    uint32_t pc[M_TRACE_FRAMES] = {};
+    int frames = 0;
+    for (int i = 0; i < 160 && frames < M_TRACE_FRAMES; i++) {
+        const uint32_t word = stack[i];
+        if (word >= (uint32_t)_executable_start && word < (uint32_t)etext
+            && (word & 1) == 0 && (frames == 0 || pc[frames - 1] != word)) {
+            pc[frames++] = word;
+        }
+    }
+    uint32_t at = ((uint32_t)ptr >> 3) % M_TRACE_SLOTS;
+    for (int probe = 0; probe < M_TRACE_SLOTS; probe++) {
+        M_TRACE *const slot = &m_Trace[at];
+        if (slot->ptr == nullptr || slot->ptr == (void *)1) {
+            slot->ptr = ptr;
+            slot->size = (uint32_t)size;
+            for (int i = 0; i < M_TRACE_FRAMES; i++) {
+                slot->pc[i] = pc[i];
+            }
+            return;
+        }
+        at = (at + 1) % M_TRACE_SLOTS;
+    }
+}
+
+static void M_TraceDel(void *const ptr)
+{
+    uint32_t at = ((uint32_t)ptr >> 3) % M_TRACE_SLOTS;
+    for (int probe = 0; probe < M_TRACE_SLOTS; probe++) {
+        M_TRACE *const slot = &m_Trace[at];
+        if (slot->ptr == nullptr) {
+            return;
+        }
+        if (slot->ptr == ptr) {
+            slot->ptr = (void *)1;
+            return;
+        }
+        at = (at + 1) % M_TRACE_SLOTS;
+    }
+}
+
+void DC_LevelHeap_DumpLive(const char *const label)
+{
+    printf("[live-begin] %s\n", label);
+    for (int i = 0; i < M_TRACE_SLOTS; i++) {
+        const M_TRACE *const slot = &m_Trace[i];
+        if (slot->ptr == nullptr || slot->ptr == (void *)1) {
+            continue;
+        }
+        printf("[live] %u", (unsigned)slot->size);
+        for (int k = 0; k < M_TRACE_FRAMES && slot->pc[k] != 0; k++) {
+            printf(" %08x", (unsigned)slot->pc[k]);
+        }
+        printf("\n");
+    }
+    printf("[live-end]\n");
+}
+#else
+void DC_LevelHeap_DumpLive(const char *const label)
+{
+    (void)label;
+}
+#endif
 
 static inline uint8_t *M_Block(void *const payload)
 {
@@ -252,6 +342,14 @@ void *DC_LevelHeap_Alloc(const size_t size)
     if (size == 0 || (!m_Heap.tried && m_Heap.depth <= 0)) {
         return nullptr;
     }
+    // What outlives a level and is small (names, tables, a vector's array)
+    // goes to newlib's heap: in the region such a block lands under some big
+    // block the level has taken from the top, which is let go at its end,
+    // and then sits in the middle of the span the next level loads into. TR3's
+    // fourth level found its largest free span at 1.9 MB of 6.4.
+    if (m_Heap.depth <= 0 && size <= M_SMALL_MAX) {
+        return nullptr;
+    }
     mutex_lock(&m_Lock);
     if (!m_Heap.tried) {
         M_Init();
@@ -262,6 +360,11 @@ void *DC_LevelHeap_Alloc(const size_t size)
         if (result == nullptr) {
             m_Heap.spilled++;
         }
+#if DC_LEVELHEAP_TRACE
+        else {
+            M_TraceAdd(result, size);
+        }
+#endif
     }
     mutex_unlock(&m_Lock);
     return result;
@@ -275,6 +378,9 @@ bool DC_LevelHeap_Owns(const void *const ptr)
 
 static void M_Free(void *const ptr)
 {
+#if DC_LEVELHEAP_TRACE
+    M_TraceDel(ptr);
+#endif
     uint8_t *const block = M_Block(ptr);
     const size_t size = M_SizeAt(block);
     m_Heap.used -= size;
@@ -315,6 +421,11 @@ static void *M_Realloc(void *const ptr, const size_t size)
         return M_Carve(block, need, true);
     }
     void *result = M_Take(size, m_Heap.depth > 0);
+#if DC_LEVELHEAP_TRACE
+    if (result != nullptr) {
+        M_TraceAdd(result, size);
+    }
+#endif
     if (result == nullptr) {
         result = malloc(size);
         m_Heap.spilled++;
@@ -332,6 +443,43 @@ void *DC_LevelHeap_Realloc(void *const ptr, const size_t size)
     void *const result = M_Realloc(ptr, size);
     mutex_unlock(&m_Lock);
     return result;
+}
+
+// A diagnostic: the region as runs of used blocks (offset and size in KiB from
+// its start, and how many blocks), with the free spans between them.
+void DC_LevelHeap_DumpLayout(void)
+{
+    mutex_lock(&m_Lock);
+    printf("[layout-begin] %uK\n", (unsigned)((m_Heap.end - m_Heap.start) / 1024));
+    const uint8_t *at = m_Heap.start;
+    while (at < m_Heap.end) {
+        const bool used = M_UsedAt(at);
+        const uint8_t *const from = at;
+        int count = 0;
+        while (at < m_Heap.end && M_UsedAt(at) == used) {
+            at += M_SizeAt(at);
+            count++;
+        }
+        printf(
+            "[layout] %s %uK at %uK (%d)\n", used ? "used" : "free",
+            (unsigned)((at - from) / 1024), (unsigned)((from - m_Heap.start) / 1024),
+            count);
+    }
+    // A few of the small ones, with what they hold.
+    int shown = 0;
+    for (const uint8_t *b = m_Heap.start; b < m_Heap.end && shown < 40;
+         b += M_SizeAt(b)) {
+        if (M_UsedAt(b) && M_SizeAt(b) <= 48) {
+            const uint32_t *w = (const uint32_t *)(b + M_TAG);
+            printf(
+                "[small] %uK size %u: %08x %08x %08x\n",
+                (unsigned)((b - m_Heap.start) / 1024), (unsigned)M_SizeAt(b),
+                (unsigned)w[0], (unsigned)w[1], (unsigned)w[2]);
+            shown++;
+        }
+    }
+    printf("[layout-end]\n");
+    mutex_unlock(&m_Lock);
 }
 
 void DC_LevelHeap_GetStats(DC_LEVEL_HEAP_STATS *const out)

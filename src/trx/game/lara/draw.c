@@ -105,14 +105,40 @@ static void M_DrawEquipmentMesh(
             }),
     };
     Output_Water_PushLaraMesh(WATER_LARA_MESH_OTHER, pos, mesh->radius);
+    // A weapon on her back made from its inventory model (see
+    // M_SetBackGunFromModel) is turned, scaled and centred first.
+    const bool turned = equipment->rot.y != 0 || equipment->rot.z != 0;
     if (interpolated) {
         Matrix_Push_I();
         Matrix_TranslateRel16_I(equipment->offset);
-        Output_DrawObjectMesh_I(mesh, clip);
+        if (turned) {
+            Matrix_RotY_I(equipment->rot.y);
+            Matrix_RotZ_I(equipment->rot.z);
+            // The interpolation rebuilds the matrix from its angles and drops
+            // a scale: the scale and the pivot come after it.
+            Matrix_Push();
+            Matrix_Interpolate();
+            if (equipment->scale != 0) {
+                Matrix_Scale(equipment->scale);
+            }
+            Matrix_TranslateRel16(equipment->pivot);
+            Output_DrawObjectMesh(mesh, clip);
+            Matrix_Pop();
+        } else {
+            Output_DrawObjectMesh_I(mesh, clip);
+        }
         Matrix_Pop_I();
     } else {
         Matrix_Push();
         Matrix_TranslateRel16(equipment->offset);
+        if (turned) {
+            Matrix_RotY(equipment->rot.y);
+            Matrix_RotZ(equipment->rot.z);
+            if (equipment->scale != 0) {
+                Matrix_Scale(equipment->scale);
+            }
+            Matrix_TranslateRel16(equipment->pivot);
+        }
         Output_DrawObjectMesh(mesh, clip);
         Matrix_Pop();
     }

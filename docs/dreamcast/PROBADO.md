@@ -139,3 +139,24 @@ sombra bajo el agua, UI reutilizada entre ticks.
 - **Huellas de TR3**: salen bien con el mapa de esquinas 0, 1, 3 en los
   triángulos de sprite (`sprites.c`, `M_GetTriMesh`). Las salpicaduras y ondas
   usan el mismo camino, sin comprobar aparte.
+
+- **Humo forzado en TR3** (selva, Flycast oculto, humo cada 6 fotogramas): con
+  una instancia por chispa y la vista en coma flotante, `stage` +2,5 ms y
+  `pass` +1,7 ms sobre 30 fps (antes +9,5 y +3,6). Era sobre todo el registro
+  por el puerto serie.
+- **Alargar la caída de la sombra suave** (1536 → 2048): 28,2 fps antes y
+  después en el benchmark de Londres.
+- **Escopeta y M16 en la espalda** (TR2, nivel 5, captura de Flycast): se ven.
+- **Guardar y cargar en bucle** en TR3 (selva): cuatro vueltas de cinco
+  guardados y una carga, sin cuelgue ni caída (el registro tiene el ruido
+  "Out of memory. Requested sbrk_base" del asignador, que no es un fallo).
+- **Salir del juego y volver a entrar** (`TRX_DC_EXIT`): el reinicio del disco
+  funciona.
+- **Disco de tres juegos**: arranca en TR1 y cambia a TR2 y a la expansión de
+  TR1 con el reinicio.
+
+- **Pasar de nivel en nivel sin reiniciar** (Flycast oculto, 200 fotogramas por
+  nivel, tras arreglar la fuga de `Walkable_Reset` y sacar de la región los
+  bloques pequeños): TR1 14 niveles, TR2 17, TR3 12, sin caídas.
+- **Opciones de render en la VMU**: se escriben al salir del menú principal y
+  se restauran al arrancar (VMU limpia de Flycast).

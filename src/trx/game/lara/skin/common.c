@@ -18,6 +18,7 @@
 #include <trx/game/lara.h>
 #include <trx/game/lara/mesh.h>
 #include <trx/game/lara/skin/gold.h>
+#include <trx/game/matrix.h>
 #include <trx/game/objects/common.h>
 #include <trx/version.h>
 
@@ -344,6 +345,9 @@ static void M_SetEquipment(
     LARA_SKIN_EQUIPMENT *const equipment = &m_Equipment[mesh];
     equipment->type = type;
     equipment->data = data;
+    equipment->rot = (XYZ_16) {};
+    equipment->pivot = (XYZ_16) {};
+    equipment->scale = 0;
     switch (type) {
     case EQUIPMENT_TYPE_WEAPON: {
         // Use the weapon's object when it provides one. This keeps its model
@@ -457,12 +461,98 @@ static int32_t M_GetMapOffset(
 // mesh traded for the one in the weapon's animation object, which holds her
 // meshes with the weapon in hand or holstered, where the game's classic
 // outfit carries that weapon; her own mesh elsewhere, and when unarmed.
+// The inventory's model of a pickup: a mesh of the whole thing (the pickup
+// itself is a sprite in the levels).
+static OBJECT_ID M_GetOptionObject(const OBJECT_ID item)
+{
+#define X_PICKUP(i, o)                                                             if (item == (i)) {                                                                 return (o);                                                                }
+#include <trx/game/objects/pickups.def>
+#undef X_PICKUP
+    return NO_OBJECT;
+}
+
+// A long gun on her back, for a level with no outfit swap (the disc leaves
+// lara_outfits.bin out for want of memory; the levels' own objects carry no
+// back mesh, and one taken from them left her without a body): the gun's
+// inventory model, laid across her back. The model is turned so that its
+// longest side runs up and across, scaled down to the size of the gun she
+// carries, and centred behind her torso.
+static void M_SetBackGunFromModel(const LARA_GUN_TYPE gun_type)
+{
+    Lara_Skin_ClearEquipment(LM_TORSO);
+    if (!Gun_IsRifleType(gun_type)) {
+        return;
+    }
+    const OBJECT_ID model_id = M_GetOptionObject(Gun_GetGunObject(gun_type));
+    if (model_id == NO_OBJECT) {
+        return;
+    }
+    const OBJECT *const model = Object_Get(model_id);
+    if (!model->loaded || model->mesh_idx < 0 || model->mesh_count < 1) {
+        return;
+    }
+    const OBJECT_MESH *const mesh = Object_GetMesh(model->mesh_idx);
+    if (mesh == nullptr || mesh->num_vertices <= 0) {
+        return;
+    }
+    int32_t lo[3] = { INT32_MAX, INT32_MAX, INT32_MAX };
+    int32_t hi[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
+    for (int32_t i = 0; i < mesh->num_vertices; i++) {
+        const int32_t v[3] = {
+            mesh->vertices[i].x, mesh->vertices[i].y, mesh->vertices[i].z
+        };
+        for (int32_t k = 0; k < 3; k++) {
+            lo[k] = MIN(lo[k], v[k]);
+            hi[k] = MAX(hi[k], v[k]);
+        }
+    }
+    int32_t longest = 0;
+    for (int32_t k = 1; k < 3; k++) {
+        if (hi[k] - lo[k] > hi[longest] - lo[longest]) {
+            longest = k;
+        }
+    }
+    constexpr int16_t M_QUARTER = 0x4000;
+    constexpr int16_t M_DIAGONAL = 0x2000;
+    XYZ_16 rot = {};
+    if (longest == 2) {
+        rot.y = M_QUARTER; // the barrel along z: turned round to lie along x
+    } else if (longest == 1) {
+        rot.z = -M_QUARTER; // stood on end: laid along x
+    }
+    rot.z = (int16_t)(rot.z + M_DIAGONAL);
+
+    constexpr int32_t M_LENGTH = 200;
+    const int32_t length = hi[longest] - lo[longest];
+    int32_t thick = MIN(hi[0] - lo[0], MIN(hi[1] - lo[1], hi[2] - lo[2]));
+    LARA_SKIN_EQUIPMENT *const equipment = &m_Equipment[LM_TORSO];
+    equipment->type = EQUIPMENT_TYPE_WEAPON;
+    equipment->data = gun_type;
+    equipment->mesh = mesh;
+    if (length > M_LENGTH) {
+        equipment->scale =
+            (int32_t)((int64_t)M_LENGTH * (1 << W2V_SHIFT) / length);
+        thick = (int32_t)((int64_t)thick * M_LENGTH / length);
+    }
+    const OBJECT_MESH *const torso = Lara_Mesh_Get(LM_TORSO);
+    equipment->offset = (XYZ_16) {
+        .x = torso->center.x,
+        .y = torso->center.y,
+        .z = (int16_t)(torso->center.z - 70 - thick / 2),
+    };
+    equipment->rot = rot;
+    equipment->pivot = (XYZ_16) {
+        .x = (int16_t)-((lo[0] + hi[0]) / 2),
+        .y = (int16_t)-((lo[1] + hi[1]) / 2),
+        .z = (int16_t)-((lo[2] + hi[2]) / 2),
+    };
+}
+
 static void M_SetUndressedGunMesh(
     const LARA_MESH mesh, const LARA_GUN_TYPE gun_type)
 {
-    // Her body stays her own: the long guns' objects in the levels carry no
-    // usable back mesh, and one taken from them left her without a body.
     if (mesh == LM_TORSO) {
+        M_SetBackGunFromModel(gun_type);
         return;
     }
     const WEAPON_INFO *const weapon = Gun_Registry_IsValidType(gun_type)

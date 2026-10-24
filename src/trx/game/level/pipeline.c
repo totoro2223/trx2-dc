@@ -264,6 +264,10 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
         // counts, and should stay near the whole of what is free.
         DC_LEVEL_HEAP_STATS heap;
         DC_LevelHeap_GetStats(&heap);
+#if defined(TRX_DC_WATCHDOG) && defined(TRX_DC_HEAP_CENSUS)
+        DC_LevelHeap_DumpLive("level load");
+        DC_LevelHeap_DumpLayout();
+#endif
         LOG_INFO(
             "game heap: %dK, %dK in %d blocks, largest free %dK, "
             "peak %dK, %d spilled",

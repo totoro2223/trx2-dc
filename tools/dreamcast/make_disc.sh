@@ -52,16 +52,25 @@ ROOT="$(pwd)"
 SHIP="$ROOT/data/trx/ship"
 STAGE="$BUILD_DIR/disc"
 TMP="$BUILD_DIR/disc-tmp"
+# TRX_DC_SUBDIR=g1 stages this game as one folder of a disc that holds several
+# (make_disc_all.sh): no boot binary and no image here, only the folder.
+SUBDIR="${TRX_DC_SUBDIR:-}"
+if [ -n "$SUBDIR" ]; then
+  STAGE="$BUILD_DIR/disc-all/$SUBDIR"
+  TMP="$BUILD_DIR/disc-tmp-$SUBDIR"
+fi
 
 rm -rf "$STAGE" "$TMP"
 mkdir -p "$STAGE" "$TMP"
 
-echo "== boot binary"
-"${KOS_CC%gcc}objcopy" -R .stack -O binary "$BUILD_DIR/TRX.elf" "$TMP/TRX.bin"
-/opt/toolchains/dc/kos/utils/scramble/scramble "$TMP/TRX.bin" "$STAGE/1ST_READ.BIN"
-/opt/toolchains/dc/kos/utils/makeip/makeip -f \
-  -g "TRX" -c "TRX PORT" -n "T-TRX00" \
-  "$TMP/IP.BIN" > /dev/null
+if [ -z "$SUBDIR" ]; then
+  echo "== boot binary"
+  "${KOS_CC%gcc}objcopy" -R .stack -O binary "$BUILD_DIR/TRX.elf" "$TMP/TRX.bin"
+  /opt/toolchains/dc/kos/utils/scramble/scramble "$TMP/TRX.bin" "$STAGE/1ST_READ.BIN"
+  /opt/toolchains/dc/kos/utils/makeip/makeip -f \
+    -g "TRX" -c "TRX PORT" -n "T-TRX00" \
+    "$TMP/IP.BIN" > /dev/null
+fi
 
 echo "== version"
 # Every disc made gets the next number; the loading screen shows it.
@@ -81,6 +90,22 @@ if [ -n "${TRX_DC_BENCH:-}" ]; then
   # The disc runs the benchmark (that demo of the game) as soon as it boots.
   echo "$TRX_DC_BENCH" > "$STAGE/BENCH.TXT"
   echo "starts in benchmark $TRX_DC_BENCH"
+fi
+if [ -n "${TRX_DC_SAVE:-}" ]; then
+  # The game is saved every that many frames, and loaded after every fifth.
+  echo "$TRX_DC_SAVE" > "$STAGE/SAVE.TXT"
+fi
+if [ -n "${TRX_DC_EXIT:-}" ]; then
+  # The game is left that many frames into the level (a test of the exit).
+  echo "$TRX_DC_EXIT" > "$STAGE/EXIT.TXT"
+fi
+if [ -n "${TRX_DC_GIVE:-}" ]; then
+  # Lara is handed that weapon (a LARA_GUN_TYPE) a moment into the level.
+  echo "$TRX_DC_GIVE" > "$STAGE/GIVE.TXT"
+fi
+if [ -n "${TRX_DC_FIRE:-}" ]; then
+  # The pistols smoke every n frames (a test of the smoke's cost).
+  echo "$TRX_DC_FIRE" > "$STAGE/FIRE.TXT"
 fi
 if [ -n "$START_LEVEL" ]; then
   echo "$START_LEVEL" > "$STAGE/START.TXT"
@@ -177,7 +202,9 @@ if [ -n "$MOD" ]; then
       *.tr2 | *.phd) cp "$f" "$STAGE/games/$MOD/levels/$lower" ;;
     esac
   done
-  echo "$MOD" > "$STAGE/MOD.TXT"
+  # TRX_DC_MOD_OPTIONAL: the expansion is on the disc for the menu to start,
+  # not what the disc starts in.
+  [ -n "${TRX_DC_MOD_OPTIONAL:-}" ] || echo "$MOD" > "$STAGE/MOD.TXT"
   echo "$(ls "$STAGE/games/$MOD/levels" | wc -l) levels of $MOD"
 fi
 
@@ -411,6 +438,11 @@ for f in "${FMV_FILES[@]}"; do
 done
 echo "$(ls "$STAGE/games/$GAME/fmv" | grep -c fmv) films"
 
+if [ -n "$SUBDIR" ]; then
+  rm -rf "$TMP"
+  echo "staged $STAGE"
+  exit 0
+fi
 echo "== image"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
   -o "$TMP/TRX.iso" "$STAGE"

@@ -32,3 +32,7 @@ typedef struct {
 } DC_LEVEL_HEAP_STATS;
 
 void DC_LevelHeap_GetStats(DC_LEVEL_HEAP_STATS *out);
+
+// Lists the blocks the region holds, with who asked for them (a diagnostic).
+void DC_LevelHeap_DumpLive(const char *label);
+void DC_LevelHeap_DumpLayout(void);

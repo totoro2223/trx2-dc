@@ -5,6 +5,8 @@
 
 #include "loading.h"
 
+#include "dc_games.h"
+
 #include "render/pvr.h"
 
 #include <arch/timer.h>
@@ -31,7 +33,9 @@ static const char *M_GetVersion(void)
 {
     static char version[40] = "";
     if (version[0] == '\0') {
-        FILE *const fp = fopen("/cd/VERSION.TXT", "r");
+        char path[64];
+        DC_Games_Path(path, sizeof(path), "VERSION.TXT");
+        FILE *const fp = fopen(path, "r");
         if (fp == nullptr || fgets(version, sizeof(version), fp) == nullptr) {
             strcpy(version, "DC build ?");
         }

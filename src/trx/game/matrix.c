@@ -810,6 +810,17 @@ void Matrix_Scale(const int32_t scale)
     Matrix_ScaleZ(scale);
 }
 
+void Matrix_Scale_I(const int32_t scale)
+{
+    Matrix_Scale(scale);
+    M_ScaleX(m_IMMatrixPtr, scale);
+    M_ScaleY(m_IMMatrixPtr, scale);
+    M_ScaleZ(m_IMMatrixPtr, scale);
+    M_ScaleX(m_WIMMatrixPtr, scale);
+    M_ScaleY(m_WIMMatrixPtr, scale);
+    M_ScaleZ(m_WIMMatrixPtr, scale);
+}
+
 void Matrix_ScaleXYZ(const XYZ_32 scale)
 {
     Matrix_ScaleX(scale.x);
