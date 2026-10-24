@@ -133,3 +133,9 @@ Reflejos de pistolas con intensidad baja, sombra del cel según la luz, relieve
 más intenso y su apagado por fps, culling por portal y borde (buscar caras que
 faltan en los bordes), sombras Soft (high) y Hard nuevas, Adaptive 60 FPS,
 sombra bajo el agua, UI reutilizada entre ticks.
+
+## Visto en juego (24/10/2026)
+
+- **Huellas de TR3**: salen bien con el mapa de esquinas 0, 1, 3 en los
+  triángulos de sprite (`sprites.c`, `M_GetTriMesh`). Las salpicaduras y ondas
+  usan el mismo camino, sin comprobar aparte.

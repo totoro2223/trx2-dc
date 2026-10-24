@@ -163,17 +163,14 @@ void Output_Overlay_CaptureSnapshot(void)
     Output_Overlay_CaptureGameSnapshot();
 }
 
-// shortcut: one slot only, the shared capture; a second capture while it is
-// held replaces it.
-static bool m_SlotTaken = false;
-
+// The scripts' snapshot layers (a cross fade from the last frame, the frame
+// held while the next screen starts) hold a slot but keep nothing on the
+// Dreamcast: capturing means drawing the scene again into a texture, which
+// took the frame rate to nothing as Lara died, and drawing the capture
+// covered the dying animation with a frozen picture. The slot is given and
+// nothing is drawn; the fades to colour still work.
 int32_t Output_Overlay_CaptureSnapshotSlot(void)
 {
-    if (m_SlotTaken) {
-        return -1;
-    }
-    Output_Overlay_CaptureGameSnapshot();
-    m_SlotTaken = true;
     return 0;
 }
 
@@ -230,16 +227,10 @@ void Output_Overlay_DrawSnapshot(float opacity)
 
 void Output_Overlay_DrawSnapshotSlot(int32_t slot, float opacity)
 {
-    if (slot == 0 && m_SlotTaken) {
-        DC_PVR_DrawScreenCapture(opacity);
-    }
 }
 
 void Output_Overlay_FreeSnapshotSlot(int32_t slot)
 {
-    if (slot == 0) {
-        m_SlotTaken = false;
-    }
 }
 
 float Output_Overlay_GetLetterbox(void)

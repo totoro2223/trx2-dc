@@ -9,6 +9,7 @@ local metrics = require("common.ui.metrics")
 local pages = require("common.ui.screens.passport.pages")
 local requester = require("common.ui.widgets.requester")
 local ring = require("common.ui.ring")
+local timer = require("common.timer")
 local rows = require("common.ui.screens.passport.rows")
 
 local M = {}
@@ -419,6 +420,30 @@ local function save_with_crystal(row)
   end
 end
 
+-- The Dreamcast writes the save to the memory card with the game stopped, so
+-- the box that says so is drawn first: the save follows two ticks later, with
+-- the box on the screen, and the passport closes after it.
+local on_console = pcall(trx.config.describe, "rendering.dc_mode")
+
+function Passport:save_with_notice(row)
+  local function save()
+    if self.crystal then
+      save_with_crystal(row)
+    else
+      trx.savegame.save(row.slot_num, row.pool)
+    end
+    self:close(true)
+  end
+  if not on_console then
+    return save()
+  end
+  self.message = self.ctx:push({
+    root = requester.message("Saving to VMU... Do not remove the card"),
+    place = { y = 0.82 },
+  })
+  timer.after(2, save, { clock = timer.Clock.UI })
+end
+
 function Passport:choose_new_game(row)
   if row.choice == "new_game" then
     trx.game.start_new_game()
@@ -485,12 +510,7 @@ function Passport:choose(entry, row)
     if row.pool ~= trx.savegame.Pool.NORMAL then
       return
     end
-    if self.crystal then
-      save_with_crystal(row)
-    else
-      trx.savegame.save(row.slot_num, row.pool)
-    end
-    self:close(true)
+    self:save_with_notice(row)
   elseif role == pages.Page.SELECT_LEVEL then
     if pages.game_modes_available() then
       self.chosen_level = row.level.num

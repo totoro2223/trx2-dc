@@ -11,12 +11,15 @@
 
 #if defined(__DREAMCAST__)
     #include <trx/config.h>
+    #include <trx/core/math.h>
     #include <trx/game/camera.h>
     #include <trx/game/interpolation.h>
     #include <trx/game/matrix.h>
     #include <trx/game/output/sources/lightnings.h>
     #include <trx/game/output/sources/poly_fx.h>
     #include <trx/game/sparks/manager.h>
+    #include <trx/core/log.h>
+    #include <trx/version.h>
 #endif
 
 #include <math.h>
@@ -35,6 +38,16 @@ typedef struct {
     // The world triangles' (see M_StageTri), by sprite + 1 (0 is the flat
     // one), corners and blend.
     OUTPUT_MESH **tri_meshes;
+    // The triangles that carry their own coordinates (debris, bats, water
+    // particles), by the three corners' values: a few at a time, the oldest
+    // replaced.
+    struct {
+        OUTPUT_UVW key[3];
+        bool blended;
+        OUTPUT_MESH *mesh;
+        uint32_t stamp;
+    } uv_meshes[16];
+    uint32_t uv_stamp;
 #endif
     size_t mesh_count;
 
@@ -96,7 +109,7 @@ static void M_PrepareMeshes(M_PRIV *const p)
     p->spark_meshes_blended =
         Memory_Alloc(sizeof(*p->spark_meshes_blended) * (p->mesh_count + 1));
     p->tri_meshes =
-        Memory_Alloc(sizeof(*p->tri_meshes) * (p->mesh_count + 1) * 4);
+        Memory_Alloc(sizeof(*p->tri_meshes) * (p->mesh_count + 1) * 6);
     return;
 #endif
     MESH_BUILDER *const builder = MeshBuilder_Create();
@@ -154,7 +167,7 @@ static void M_FreeMeshes(M_PRIV *const p)
         Memory_FreePointer(&p->spark_meshes_blended);
     }
     if (p->tri_meshes != nullptr) {
-        for (size_t i = 0; i < (p->mesh_count + 1) * 4; i++) {
+        for (size_t i = 0; i < (p->mesh_count + 1) * 6; i++) {
             if (p->tri_meshes[i] != nullptr) {
                 MeshBatcher_RemoveMesh(p->batcher, p->tri_meshes[i]);
                 Output_Mesh_Destroy(p->tri_meshes[i]);
@@ -162,6 +175,13 @@ static void M_FreeMeshes(M_PRIV *const p)
         }
         Memory_FreePointer(&p->tri_meshes);
     }
+    for (size_t i = 0; i < ARRAY_SIZE(p->uv_meshes); i++) {
+        if (p->uv_meshes[i].mesh != nullptr) {
+            MeshBatcher_RemoveMesh(p->batcher, p->uv_meshes[i].mesh);
+            Output_Mesh_Destroy(p->uv_meshes[i].mesh);
+        }
+    }
+    memset(p->uv_meshes, 0, sizeof(p->uv_meshes));
 #endif
 }
 
@@ -257,17 +277,75 @@ static OUTPUT_MESH *M_GetSparkMesh(
     return *slot;
 }
 
+// The camera's right and down, as unit vectors in the world (the view matrix's
+// first two rows over the 1 << W2V_SHIFT of its scale).
+static void M_CameraAxes(float right[3], float down[3])
+{
+    const MATRIX *const v = &g_ViewMatrix;
+    const float k = 1.0f / (float)(1 << W2V_SHIFT);
+    right[0] = (float)v->_00 * k;
+    right[1] = (float)v->_01 * k;
+    right[2] = (float)v->_02 * k;
+    down[0] = (float)v->_10 * k;
+    down[1] = (float)v->_11 * k;
+    down[2] = (float)v->_12 * k;
+}
+
+// A quad that faces the camera: each corner is a point of the world moved by
+// its displacement along the camera's right and down, in world units (what
+// the desktop's billboard shader does with the same numbers).
+static void M_ExpandBillboard(
+    const XYZ_32 pos[4], const float disp[4][2], XYZ_32 out[4])
+{
+    float right[3];
+    float down[3];
+    M_CameraAxes(right, down);
+    for (int32_t i = 0; i < 4; i++) {
+        const float dx = disp[i][0];
+        const float dy = disp[i][1];
+        out[i] = (XYZ_32) {
+            .x = pos[i].x + (int32_t)(right[0] * dx + down[0] * dy),
+            .y = pos[i].y + (int32_t)(right[1] * dx + down[1] * dy),
+            .z = pos[i].z + (int32_t)(right[2] * dx + down[2] * dy),
+        };
+    }
+}
+
 // The desktop's PolyFX renderer is not built on the Dreamcast: a spark (TR3's
 // blood, fire, smoke, splashes) is drawn as a sprite is, a quad facing the
 // camera, its colour the instance's tint.
-// shortcut: no rotation, and a square
-// of the mean of the spark's width and height; upgrade if smoke looks wrong
-// or at 60 fps.
+// A quad of the spark's own width and height, turned when it rotates.
+// Gun smoke is counted by what becomes of it, and the counts logged now and
+// then: the pistols' smoke of TR3 has not been seen, and this says whether it
+// is made, dropped (and why) or drawn.
+static struct {
+    int seen;
+    int near_far;
+    int small;
+    int bad_sprite;
+    int drawn;
+} m_SmokeStats;
+
+static void M_SmokeLog(void)
+{
+    if (++m_SmokeStats.seen % 240 == 1) {
+        LOG_INFO(
+            "smoke sparks: seen %d, drawn %d, outside depth %d, too small %d, "
+            "bad sprite %d",
+            m_SmokeStats.seen, m_SmokeStats.drawn, m_SmokeStats.near_far,
+            m_SmokeStats.small, m_SmokeStats.bad_sprite);
+    }
+}
+
 void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
 {
     M_PRIV *const p = &m_Priv;
     if (spark == nullptr || !spark->on || p->spark_meshes == nullptr) {
         return;
+    }
+    const bool smoke = spark->context == SPARK_CONTEXT_SMOKE;
+    if (smoke) {
+        M_SmokeLog();
     }
     XYZ_32 pos = Sparks_GetWorldPos(spark);
     // Between ticks a free spark (one the world holds, not an item, an effect
@@ -286,6 +364,7 @@ void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
     const MATRIX *const v = &g_ViewMatrix;
     const int64_t zv = v->_20 * pos.x + v->_21 * pos.y + v->_22 * pos.z + v->_23;
     if (zv <= Output_GetNearZ() || zv >= Output_GetFarZ()) {
+        m_SmokeStats.near_far += smoke;
         return;
     }
     int32_t vpos_z = (int32_t)(zv >> W2V_SHIFT);
@@ -301,6 +380,7 @@ void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
     }
     const float half = (sw + sh) / 4.0f * (float)vpos_z / (float)REF_PERSP;
     if (half < 1.0f) {
+        m_SmokeStats.small += smoke;
         return;
     }
 
@@ -325,31 +405,58 @@ void OutputSource_PolyFX_StageSpark(const SPARK *const spark)
         }
         draw_type = DRAW_BLEND;
     } else if (sprite_idx < 0 || sprite_idx >= (int32_t)p->mesh_count) {
+        m_SmokeStats.bad_sprite += smoke;
         return;
     }
+    m_SmokeStats.drawn += smoke;
 
-    const bool add =
-        draw_type == DRAW_BLEND_ADD || draw_type == DRAW_REFLECTIVE_BLEND_ADD;
-    const bool sub = draw_type == DRAW_BLEND_SUB;
-    Matrix_Push();
-    Matrix_TranslateAbs(pos.x, pos.y, pos.z);
-    Matrix_Scale((int32_t)(half * (1 << W2V_SHIFT)));
-    MESH_INSTANCE inst = {
-        .mesh = M_GetSparkMesh(p, sprite_idx, add || sub),
-        .cwmatrix = *g_MatrixPtr,
-        .wmatrix = *g_WMatrixPtr,
-        .tint = tint,
-        .room = Output_GetCurrentRoom(),
-    };
-    Matrix_Pop();
-    if (add) {
-        MeshBatcher_Stage(p->batcher, &inst, SCENE_PASS_BLEND_ADD);
-    } else if (sub) {
-        MeshBatcher_Stage(p->batcher, &inst, SCENE_PASS_BLEND_SUB);
-    } else {
-        MeshBatcher_Stage(p->batcher, &inst, SCENE_PASS_OPAQUE);
-        MeshBatcher_Stage(p->batcher, &inst, SCENE_PASS_TRANSPARENT);
+    // The four corners in the camera's plane, as the desktop gives them,
+    // turned about the spark's centre when it rotates: a quad of the spark's
+    // own width and height (not a square of their mean), as world quads that
+    // the triangle path draws.
+    const float w = ((sw / 2.0f) * (float)vpos_z) / (float)REF_PERSP;
+    const float h = ((sh / 2.0f) * (float)vpos_z) / (float)REF_PERSP;
+    float disp[4][2] = { { -w, -h }, { -w, h }, { w, h }, { w, -h } };
+    if ((spark->flags & SPARK_F_ROTATE) != 0U) {
+        const bool current =
+            (int32_t)spark->s_life - (int32_t)spark->life <= 1;
+        const int32_t rot_angle = current
+            ? (int32_t)spark->rot_angle
+            : Math_AngleMean(
+                  (int32_t)spark->prev_rot_angle, (int32_t)spark->rot_angle,
+                  Interpolation_GetWorldRate());
+        const int32_t angle = rot_angle * DEG_360 / 0xFFF;
+        const float sn = Math_Sin(angle) / (float)(1 << W2V_SHIFT);
+        const float cs = Math_Cos(angle) / (float)(1 << W2V_SHIFT);
+        for (int32_t i = 0; i < 4; i++) {
+            const float x = disp[i][0];
+            const float y = disp[i][1];
+            disp[i][0] = x * cs - y * sn;
+            disp[i][1] = x * sn + y * cs;
+        }
     }
+    const XYZ_32 centre[4] = { pos, pos, pos, pos };
+    XYZ_32 corners[4];
+    M_ExpandBillboard(centre, disp, corners);
+
+    // TR3's spark colours are on the 128-neutral scale the desktop's shader
+    // doubles; the sprite meshes took them as they were, and a smoke that
+    // starts at black and rises to 32 or 64 came out too dim to see.
+    const float gain = g_TRVersion == 3 && sprite_idx >= 0 ? 2.0f : 1.0f;
+    const float blend = tint.a < 1.0f ? tint.a : 1.0f;
+    const RGBA_8888 colour = {
+        .r = (uint8_t)MIN(255.0f, tint.r * 255.0f * gain * blend),
+        .g = (uint8_t)MIN(255.0f, tint.g * 255.0f * gain * blend),
+        .b = (uint8_t)MIN(255.0f, tint.b * 255.0f * gain * blend),
+        .a = 255,
+    };
+    const RGBA_8888 colours[4] = { colour, colour, colour, colour };
+    // A flat spark that was blended at half its colour is added at half.
+    if (sprite_idx < 0 && tint.a < 1.0f) {
+        draw_type = DRAW_BLEND_ADD;
+    }
+    OutputSource_PolyFX_StageSpriteQuadWorldDepth(
+        sprite_idx, corners, colours, 0.0f, draw_type);
 }
 
 // The unit triangle with a sprite's corners (0, 1, 2 or 0, 2, 3, a quad's
@@ -359,11 +466,13 @@ static OUTPUT_MESH *M_GetTriMesh(
     const bool blended)
 {
     OUTPUT_MESH **const slot =
-        &p->tri_meshes[((sprite_idx + 1) * 2 + half) * 2 + blended];
+        &p->tri_meshes[((sprite_idx + 1) * 3 + half) * 2 + blended];
     if (*slot != nullptr) {
         return *slot;
     }
-    static const int32_t corners[2][3] = { { 0, 1, 2 }, { 0, 2, 3 } };
+    static const int32_t corners[3][3] = {
+        { 0, 1, 2 }, { 0, 2, 3 }, { 0, 1, 3 }
+    };
     static const float unit[3][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 } };
     MESH_BUILDER *const builder = MeshBuilder_Create();
     for (int32_t j = 0; j < 3; j++) {
@@ -396,6 +505,10 @@ static OUTPUT_MESH *M_GetTriMesh(
 // onto them by the instance's matrix, its columns two edges and their normal.
 // shortcut: one colour per triangle, the corners' mean; upgrade if a splash's
 // fade looks banded.
+static void M_StageTriMesh(
+    OUTPUT_MESH *mesh, const XYZ_32 pts[3], const RGBA_8888 color[3],
+    const float z_depth_adjust, const DRAW_TYPE draw_type);
+
 static void M_StageTri(
     const int32_t sprite_idx, const XYZ_32 pts[3], const int32_t half,
     const RGBA_8888 color[3], const float z_depth_adjust,
@@ -405,11 +518,38 @@ static void M_StageTri(
     if (p->tri_meshes == nullptr || sprite_idx >= (int32_t)p->mesh_count) {
         return;
     }
+    const bool blended = draw_type == DRAW_BLEND_ADD
+        || draw_type == DRAW_REFLECTIVE_BLEND_ADD
+        || draw_type == DRAW_BLEND_SUB;
+    M_StageTriMesh(
+        M_GetTriMesh(p, sprite_idx, half, blended), pts, color, z_depth_adjust,
+        draw_type);
+}
+
+static void M_StageTriMesh(
+    OUTPUT_MESH *const mesh, const XYZ_32 pts[3], const RGBA_8888 color[3],
+    const float z_depth_adjust, const DRAW_TYPE draw_type)
+{
+    M_PRIV *const p = &m_Priv;
     // The desktop adds the adjustment to the clip space depth, which moves a
     // point towards the camera by about that over twice the near plane of
     // its distance: what keeps a footprint off the floor it lies on.
-    const float pull = MAX(0.0f, -z_depth_adjust)
-        / (2.0f * (float)(Output_GetNearZ() >> W2V_SHIFT));
+    const float near_w = (float)(Output_GetNearZ() >> W2V_SHIFT);
+    float pull = MAX(0.0f, -z_depth_adjust) / (2.0f * near_w);
+    if (pull > 0.0f) {
+        // A quad drawn over everything (the sun's flare, which asks for a
+        // push of its whole distance) is moved along the line to the camera
+        // as far as three near planes from it, and no further: past that it
+        // would be behind the near plane, and gone. Its place on the screen
+        // is the same all along that line.
+        const MATRIX *const v = &g_ViewMatrix;
+        const float depth = (float)((v->_20 * pts[0].x + v->_21 * pts[0].y
+                                     + v->_22 * pts[0].z + v->_23)
+                                    >> W2V_SHIFT);
+        const float limit =
+            depth > 3.0f * near_w ? 1.0f - 3.0f * near_w / depth : 0.0f;
+        pull = MIN(pull, limit);
+    }
     XYZ_32 q[3];
     for (int32_t i = 0; i < 3; i++) {
         q[i] = (XYZ_32) {
@@ -446,7 +586,7 @@ static void M_StageTri(
     Matrix_TranslateAbs(q[0].x, q[0].y, q[0].z);
     Matrix_Mul3x3(&basis);
     MESH_INSTANCE inst = {
-        .mesh = M_GetTriMesh(p, sprite_idx, half, add || sub),
+        .mesh = mesh,
         .cwmatrix = *g_MatrixPtr,
         .wmatrix = *g_WMatrixPtr,
         .tint = {
@@ -473,14 +613,14 @@ void OutputSource_PolyFX_StageSpriteTriWorldDepth(
     const RGBA_8888 color[3], const float z_depth_adjust,
     const DRAW_TYPE draw_type)
 {
-    M_StageTri(sprite_idx, world_pos, 0, color, z_depth_adjust, draw_type);
+    M_StageTri(sprite_idx, world_pos, 2, color, z_depth_adjust, draw_type);
 }
 
 void OutputSource_PolyFX_StageSpriteTriWorld(
     const int32_t sprite_idx, const XYZ_32 world_pos[3],
     const RGBA_8888 color[3], const DRAW_TYPE draw_type)
 {
-    M_StageTri(sprite_idx, world_pos, 0, color, 0.0f, draw_type);
+    M_StageTri(sprite_idx, world_pos, 2, color, 0.0f, draw_type);
 }
 
 void OutputSource_PolyFX_StageSpriteTriWorldLight(
@@ -488,7 +628,7 @@ void OutputSource_PolyFX_StageSpriteTriWorldLight(
     const RGBA_8888 color[3], const OUTPUT_LIGHT_INFO light_info,
     const DRAW_TYPE draw_type)
 {
-    M_StageTri(sprite_idx, world_pos, 0, color, 0.0f, draw_type);
+    M_StageTri(sprite_idx, world_pos, 2, color, 0.0f, draw_type);
 }
 
 void OutputSource_PolyFX_StageSpriteQuadWorldDepth(
@@ -523,6 +663,15 @@ void OutputSource_PolyFX_StageQuadExtDepth(
     const float disp[4][2], const RGBA_8888 color[4], const uint16_t flags,
     const float z_depth_adjust, const DRAW_TYPE draw_type)
 {
+    // A billboard comes as four equal points and the size apart, in the
+    // camera's plane (the sun's lens flares, the snow): opened out here.
+    if (disp != nullptr && (flags & VERT_BILLBOARD) != 0) {
+        XYZ_32 corners[4];
+        M_ExpandBillboard(world_pos, disp, corners);
+        OutputSource_PolyFX_StageSpriteQuadWorldDepth(
+            sprite_idx, corners, color, z_depth_adjust, draw_type);
+        return;
+    }
     OutputSource_PolyFX_StageSpriteQuadWorldDepth(
         sprite_idx, world_pos, color, z_depth_adjust, draw_type);
 }
@@ -532,8 +681,104 @@ void OutputSource_PolyFX_StageQuadExt(
     const float disp[4][2], const RGBA_8888 color[4], const uint16_t flags,
     const DRAW_TYPE draw_type)
 {
-    OutputSource_PolyFX_StageSpriteQuadWorldDepth(
-        sprite_idx, world_pos, color, 0.0f, draw_type);
+    OutputSource_PolyFX_StageQuadExtDepth(
+        sprite_idx, world_pos, disp, color, flags, 0.0f, draw_type);
+}
+
+// A triangle with the coordinates of its caller: the unit triangle with the
+// three corners' picture. The meshes are kept by the corners' values (the
+// callers hold only those, and the index is looked up when one is made).
+static OUTPUT_MESH *M_GetUVMesh(
+    M_PRIV *const p, const OUTPUT_UVW uvw[3], const bool blended)
+{
+    int32_t oldest = 0;
+    for (int32_t i = 0; i < (int32_t)ARRAY_SIZE(p->uv_meshes); i++) {
+        if (p->uv_meshes[i].mesh != nullptr
+            && p->uv_meshes[i].blended == blended
+            && memcmp(p->uv_meshes[i].key, uvw, sizeof(OUTPUT_UVW) * 3) == 0) {
+            p->uv_meshes[i].stamp = ++p->uv_stamp;
+            return p->uv_meshes[i].mesh;
+        }
+        if (p->uv_meshes[i].mesh == nullptr) {
+            oldest = i;
+        } else if (
+            p->uv_meshes[oldest].mesh != nullptr
+            && p->uv_meshes[i].stamp < p->uv_meshes[oldest].stamp) {
+            oldest = i;
+        }
+    }
+    int32_t idx[3];
+    for (int32_t j = 0; j < 3; j++) {
+        idx[j] = Output_Textures_FindUVWIndex(&uvw[j]);
+        if (idx[j] < 0) {
+            return nullptr;
+        }
+    }
+    if (p->uv_meshes[oldest].mesh != nullptr) {
+        MeshBatcher_RemoveMesh(p->batcher, p->uv_meshes[oldest].mesh);
+        Output_Mesh_Destroy(p->uv_meshes[oldest].mesh);
+        p->uv_meshes[oldest].mesh = nullptr;
+    }
+    static const float unit[3][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 } };
+    MESH_BUILDER *const builder = MeshBuilder_Create();
+    for (int32_t j = 0; j < 3; j++) {
+        const OUTPUT_MESH_VERTEX vertex = {
+            .pos = { .x = unit[j][0], .y = unit[j][1], .z = 0.0f },
+            .flags = VERT_NO_LIGHTING | VERT_NO_WIBBLE
+                | Output_Textures_GetUVWFlags(idx[j]),
+            .color = { 255, 255, 255, 255 },
+            .uvw_idx = idx[j],
+        };
+        MeshBuilder_AddVertex(builder, &vertex);
+    }
+    MeshBuilder_AddFan(
+        builder, blended ? SCENE_PASS_BLEND_ADD : SCENE_PASS_TRANSPARENT, true,
+        blended);
+    OUTPUT_MESH *const mesh = MeshBuilder_Seal(builder);
+    MeshBuilder_Destroy(builder);
+    MeshBatcher_AddMesh(p->batcher, mesh);
+    memcpy(p->uv_meshes[oldest].key, uvw, sizeof(OUTPUT_UVW) * 3);
+    p->uv_meshes[oldest].blended = blended;
+    p->uv_meshes[oldest].mesh = mesh;
+    p->uv_meshes[oldest].stamp = ++p->uv_stamp;
+    return mesh;
+}
+
+static void M_StageTriExtUV(
+    const XYZ_32 world_pos[3], const OUTPUT_UVW uvw[3], const float disp[3][2],
+    const RGBA_8888 color[3], const uint16_t flags, const float z_depth_adjust,
+    const DRAW_TYPE draw_type)
+{
+    M_PRIV *const p = &m_Priv;
+    if (p->tri_meshes == nullptr) {
+        return;
+    }
+    // A billboard comes as equal points and the size apart: opened out.
+    XYZ_32 pts[3] = { world_pos[0], world_pos[1], world_pos[2] };
+    if (disp != nullptr && (flags & VERT_BILLBOARD) != 0) {
+        const XYZ_32 in[4] = { pts[0], pts[1], pts[2], pts[2] };
+        const float d[4][2] = {
+            { disp[0][0], disp[0][1] },
+            { disp[1][0], disp[1][1] },
+            { disp[2][0], disp[2][1] },
+            { disp[2][0], disp[2][1] },
+        };
+        XYZ_32 out[4];
+        M_ExpandBillboard(in, d, out);
+        pts[0] = out[0];
+        pts[1] = out[1];
+        pts[2] = out[2];
+    }
+    const bool blended = draw_type == DRAW_BLEND_ADD
+        || draw_type == DRAW_REFLECTIVE_BLEND_ADD
+        || draw_type == DRAW_BLEND_SUB;
+    OUTPUT_MESH *const mesh = M_GetUVMesh(p, uvw, blended);
+    if (mesh == nullptr) {
+        // The coordinates are not any texture's: a flat triangle.
+        M_StageTri(-1, pts, 0, color, z_depth_adjust, draw_type);
+        return;
+    }
+    M_StageTriMesh(mesh, pts, color, z_depth_adjust, draw_type);
 }
 
 void OutputSource_PolyFX_StageTriExtUVDepth(
@@ -542,7 +787,8 @@ void OutputSource_PolyFX_StageTriExtUVDepth(
     const RGBA_8888 color[3], const uint16_t flags, const float z_depth_adjust,
     const DRAW_TYPE draw_type)
 {
-    M_StageTri(-1, world_pos, 0, color, z_depth_adjust, draw_type);
+    M_StageTriExtUV(
+        world_pos, uvw, disp, color, flags, z_depth_adjust, draw_type);
 }
 
 void OutputSource_PolyFX_StageTriExtUV(
@@ -550,7 +796,7 @@ void OutputSource_PolyFX_StageTriExtUV(
     const OUTPUT_TEXTURE_SIZE texture_size[3], const float disp[3][2],
     const RGBA_8888 color[3], const uint16_t flags, const DRAW_TYPE draw_type)
 {
-    M_StageTri(-1, world_pos, 0, color, 0.0f, draw_type);
+    M_StageTriExtUV(world_pos, uvw, disp, color, flags, 0.0f, draw_type);
 }
 
 // A strip of half_width on each side, turned to face the camera: two flat

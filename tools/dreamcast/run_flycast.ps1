@@ -22,7 +22,10 @@ param(
     [string]$FlycastArgs = '',
     # Stops as soon as the serial log matches this regular expression (an
     # error, say), instead of waiting out -Seconds.
-    [string]$StopOn = ''
+    [string]$StopOn = '',
+    # Where a hidden run sends its sound: a device nobody listens to, so that
+    # the sound still runs at its full volume. An SDL audio device name.
+    [string]$AudioDevice = 'Realtek Digital Output (Realtek(R) Audio)'
 )
 
 # Runs in a separate process: attaching to another console is only possible
@@ -118,9 +121,14 @@ public static class HiddenDesk {
   }
 }
 '@
-    # A hidden run is a silent one: the emulator's volume at 0.
-    if ($FlycastArgs -notmatch 'audio:volume') {
-        $FlycastArgs = "$FlycastArgs -config audio:volume=0".Trim()
+    # A hidden run is a silent one: its sound goes to the Realtek digital
+    # output (Flycast's SDL2 driver, which SDL points at the device by name)
+    # at the usual volume, not to the speakers and not muted.
+    if ($FlycastArgs -notmatch 'audio:backend') {
+        $FlycastArgs = "$FlycastArgs -config audio:backend=sdl2".Trim()
+    }
+    if ($AudioDevice) {
+        $env:SDL_AUDIO_DEVICE_NAME = $AudioDevice
     }
     $procId = [HiddenDesk]::Start('TRX-DC', $Flycast, "$FlycastArgs `"$cdiPath`"", (Split-Path $Flycast))
     $proc = Get-Process -Id $procId

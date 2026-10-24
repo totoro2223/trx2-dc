@@ -1189,6 +1189,33 @@ int32_t Output_Textures_GetSpriteUVWIndex(int32_t texture_idx, int32_t corner)
     return (m_Priv.uvws.count_objects + texture_idx) * 4 + corner;
 }
 
+#if defined(__DREAMCAST__)
+int32_t Output_Textures_FindUVWIndex(const OUTPUT_UVW *const uvw)
+{
+    if (m_Priv.uvws.data == nullptr) {
+        return -1;
+    }
+    for (int32_t i = 0; i < m_Priv.uvws.count; i++) {
+        for (int32_t j = 0; j < 4; j++) {
+            const OUTPUT_UVW *const c = &m_Priv.uvws.data[i].corners[j];
+            if (c->u == uvw->u && c->v == uvw->v && c->w == uvw->w) {
+                return i * 4 + j;
+            }
+        }
+    }
+    return -1;
+}
+
+uint16_t Output_Textures_GetUVWFlags(const int32_t uvw_idx)
+{
+    if (m_Priv.uvws.flags == nullptr || uvw_idx < 0
+        || uvw_idx / 4 >= m_Priv.uvws.count) {
+        return 0;
+    }
+    return m_Priv.uvws.flags[uvw_idx / 4];
+}
+#endif
+
 OUTPUT_UVW Output_Textures_GetUVW(const int32_t uvw_idx)
 {
 #if defined(__DREAMCAST__)

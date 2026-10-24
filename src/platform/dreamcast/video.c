@@ -28,11 +28,19 @@
 #define M_FRAME_BYTES 18432
 #define M_HEADER_BYTES 24
 // Frames read at a time, and frames the ring keeps.
-#define M_BLOCK_FRAMES 4
-#define M_SLOTS 20
-// The sound is kept this far ahead (bytes), about a third of a second.
-#define M_SOUND_AHEAD 24000
+#define M_BLOCK_FRAMES 2
+#define M_SLOTS 24
+// The sound is kept this far ahead (bytes), about a fifth of a second. The
+// ring must hold what the picture lags the sound by (M_SOUND_RING_BYTES: 16
+// frames of a 30 fps film), what is queued (5) and a block, or the file cannot
+// be read on and the sound runs dry.
+#define M_SOUND_AHEAD 8000
 #define M_SOUND_QUEUE 40960
+// The sound handed to the AICA leads what it plays by what its stream buffer
+// holds (32 KiB of ADPCM, 0.74 s at 44.1 kHz stereo, kept between half full and
+// full): the picture is shown for the sound handed over minus this much
+// (bytes, about 0.55 s).
+#define M_SOUND_RING_BYTES 24000
 
 typedef struct {
     FILE *fp;
@@ -52,6 +60,8 @@ typedef struct {
     uint32_t presented;
     bool used_audio_clock;
     uint64_t sound_start_us;
+    // Bytes of the film's sound handed over or skipped so far.
+    uint64_t sound_pos;
 
     // The sound not yet handed to the AICA.
     uint8_t *queue;
@@ -110,8 +120,8 @@ size_t DC_Video_ReadAudio(
     if (m == nullptr) {
         return 0;
     }
-    // The AICA takes stereo sound in pieces of 32 bytes a channel.
     mutex_lock(&m->queue_lock);
+    // The AICA takes stereo sound in pieces of 32 bytes a channel.
     size_t n = size < m->queue_count ? size : m->queue_count;
     n &= ~(size_t)63;
     const size_t first =
@@ -120,6 +130,7 @@ size_t DC_Video_ReadAudio(
     memcpy(dst + first, m->queue, n - first);
     m->queue_head = (m->queue_head + n) % M_SOUND_QUEUE;
     m->queue_count -= n;
+    m->sound_pos += n;
     *finished = m->eof && m->queue_count < 64;
     mutex_unlock(&m->queue_lock);
     return n;
@@ -136,8 +147,13 @@ static void M_Fill(M_VIDEO *const m)
         const bool need = m->sound_per_frame > 0 && m->used_audio_clock
             ? queued < M_SOUND_AHEAD
             : (int64_t)m->next < m->shown + 8 || m->shown < 0;
-        // The ring must keep what is yet to be shown.
-        if (!need || (int64_t)m->next + M_BLOCK_FRAMES > m->shown + M_SLOTS) {
+        // The ring must keep what is yet to be shown, unless the sound has
+        // run dry: then the film must go on, and the pictures it overwrites
+        // are skipped (waiting would stop the sound, and with it the clock).
+        const bool starving = queued < 4096;
+        if (!need
+            || (!starving
+                && (int64_t)m->next + M_BLOCK_FRAMES > m->shown + M_SLOTS)) {
             return;
         }
         uint32_t count = m->frames - m->next;
@@ -366,21 +382,17 @@ void Video_PumpEvents(VIDEO *const video)
     if (!video->is_playing || m->paused || m->surface == nullptr) {
         return;
     }
-    // The film's own clock. The sound's place is known only in steps of what
-    // the AICA was last handed (half a second), too coarse to time frames
-    // by: the clock runs from the moment the sound begins instead, as the
-    // two hold the same pace.
+    // The picture follows the sound: the sound handed to the AICA, which is
+    // in order and holds still when the sound does (a gap in it, a pause), so
+    // the two cannot drift apart. A clock of its own did, with every gap.
+    // Without sound the film runs by the clock.
     const uint64_t now = timer_us_gettime64();
-    if (m->sound_per_frame > 0 && m->sound_start_us == 0) {
-        if (m->audio_clock > 0.0) {
-            m->sound_start_us = now;
-        }
-    }
     double seconds = 0.0;
     if (m->sound_per_frame == 0) {
         seconds = (double)(now - m->start_us - m->paused_us) / 1e6;
-    } else if (m->sound_start_us != 0) {
-        seconds = (double)(now - m->sound_start_us - m->paused_us) / 1e6;
+    } else {
+        const int64_t handed = (int64_t)m->sound_pos - M_SOUND_RING_BYTES;
+        seconds = handed > 0 ? (double)handed / 44100.0 : 0.0;
     }
     if (seconds < 0.0) {
         seconds = 0.0;

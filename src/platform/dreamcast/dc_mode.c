@@ -44,6 +44,7 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
 };
 
 int32_t g_DC_TestMode = -1;
+int32_t g_DC_TestShadow = -1;
 int32_t g_DC_TestSwitchMode = -1;
 int32_t g_DC_TestSwitchFrame = 0;
 int32_t g_DC_TestLevelStart = 0;
@@ -66,15 +67,21 @@ static bool m_Slow = false;
 static double m_Average = 0.0;
 static int32_t m_Hold = 0;
 
+// The rate asked for: the mode's, or 60 where the switch says so, whatever the
+// mode.
+static int32_t M_BaseFPS(void)
+{
+    return DC_Mode_Get()->fps == 60 || g_Config.rendering.dc_60fps ? 60 : 30;
+}
+
 int32_t DC_Mode_GetFPS(void)
 {
-    const int32_t fps = DC_Mode_Get()->fps;
-    return fps == 60 && m_Slow ? 30 : fps;
+    return M_BaseFPS() == 60 && m_Slow ? 30 : M_BaseFPS();
 }
 
 bool DC_Mode_ReportFrame(const double seconds)
 {
-    if (DC_Mode_Get()->fps != 60 || !g_Config.rendering.dc_adaptive_fps) {
+    if (M_BaseFPS() != 60 || !g_Config.rendering.dc_adaptive_fps) {
         m_Slow = false;
         return false;
     }

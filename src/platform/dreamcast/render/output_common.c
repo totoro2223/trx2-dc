@@ -68,6 +68,10 @@ uint32_t g_DC_FrameCount = 0;
 // And past this many vertices (~0.8 MB with what the batcher keeps per
 // vertex), the ones drawn longest ago go: TR3's jungles keep twice TR2's.
 #define M_MESH_MAX_VERTICES 24000
+// TR3's Jungle has no memory to spare (a mesh built when a piranha first showed
+// found none, and the fish were not drawn; saving aborted): its cache is
+// smaller.
+#define M_MESH_MAX_VERTICES_TR3 12000
 
 int32_t LUA_DC_CollectGarbage(void);
 
@@ -655,7 +659,8 @@ void Output_EndScene(void)
     g_DC_FrameCount++;
     if (g_DC_FrameCount % M_MESH_EVICT_INTERVAL == 0) {
         OutputSource_Objects_EvictUnused(M_MESH_MAX_AGE);
-        OutputSource_Objects_EvictToBudget(M_MESH_MAX_VERTICES);
+        OutputSource_Objects_EvictToBudget(
+            g_TRVersion >= 3 ? M_MESH_MAX_VERTICES_TR3 : M_MESH_MAX_VERTICES);
     }
     if (ClockTimer_CheckElapsedAndTake(&m_FPSTimer, 1.0)) {
         m_FPS = m_DrawnFrames;
@@ -701,10 +706,14 @@ void Output_ApplyLevelSettings(void)
     Output_SetWaterColor(Level_GetWaterColor());
     Output_SetBackgroundColor(Level_GetBackgroundColor());
     // Fixed on the Dreamcast, whatever the level and the player ask: black
-    // fog from 12 blocks, nothing drawn past 20.
+    // fog from 12 blocks, nothing drawn past 20. TR3's levels are bigger and
+    // fuller than the others' (Jungle's foliage fills the punch-through list,
+    // London's rooms the opaque one, and the memory for the lists is the least
+    // there), so it sees less: fog from 10, nothing past 18.
     Output_SetFogColor((RGBA_8888) { .r = 0, .g = 0, .b = 0, .a = 255 });
-    Output_SetFogStart(12 * WALL_L);
-    Output_SetFogEnd(20 * WALL_L);
+    const bool tr3 = g_TRVersion >= 3;
+    Output_SetFogStart((tr3 ? 10 : 12) * WALL_L);
+    Output_SetFogEnd((tr3 ? 18 : 20) * WALL_L);
 }
 
 void Output_DispatchLevelLoad(void)

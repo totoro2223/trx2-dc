@@ -44,9 +44,13 @@ deshace y se anota como FALLIDO.
 Reparto de Londres (graphics, ms por frame): pass ~12,7 (estáticos y sprites
 3,2, emisión 3,0, objetos 1,6, salas 1,5), stage ~7, Lua ~2,6, lógica ~4,2.
 
-7. **`UI_RESERVE_ALL`** (0,07–1,0 ms por llamada): alguna raíz de la UI se
-   recalcula casi cada frame (señal sondeada que cambia cada tick, o un
-   `Tween`). Encontrar cuál.
+7. **`UI_RESERVE_ALL`**: investigado el 23/10/2026 (DC build 439, Londres). Lo que
+   toma una raíz ya se guarda entre escenas y ninguna raíz es volátil (ningún
+   `Tween`). La región 2 se recalcula en rachas (142 de 300 escenas, y luego
+   casi ninguna), por un widget que cambia cada tick; el resto, una vez cada
+   ~30 escenas o menos. No hay un fallo que arreglar; el tope de ganancia es
+   ~0,15 ms. Solo merece la pena si se averigua qué widget de la región 2
+   cambia cada tick.
 8. **`TICK` en Lua** (~0,9 ms): sin medir por listener. Medir antes de agrupar
    las lecturas de roles de `input.lua` (era una suposición).
 9. **30 reservas por frame** de `Memory_Alloc` (`Catalog_CreateKey`,
@@ -117,15 +121,14 @@ Sin cubrir en el código compartido (no hay stub pero tampoco se ha visto en
 pantalla): lens flares y bulbos de niebla de TR3, y el efecto de superficie del
 agua (`Output_Water_*`). Comprobar en un nivel de TR3 con sol y con agua.
 
-## H. Expansiones con datos de Tomb Raider Remastered
+## H. Expansiones
 
-33. **Soportar las expansiones** si la fuente de datos es *Tomb Raider I-III
-    Remastered*: Unfinished Business (TR1), Golden Mask (TR2) y The Lost
-    Artifact (TR3). Hoy se usan los datos clásicos de Steam (TR2 y TR3).
-    Pasos: (a) ver qué trae el remaster y en qué formato están sus niveles y
-    textos frente a los clásicos; (b) ver qué entiende ya TRX (`GAME.TXT`,
-    `make_disc.sh`, el selector de niveles) y qué habría que añadir;
-    (c) cabida en el disco y en memoria (los mapas grandes ya van justos,
-    Jungle ~2 MB libres); (d) añadir las expansiones al selector. TR1 ya arranca
-    en el port (ver PRUEBAS_PENDIENTES.md).
-    El `MAIN.SFX` del remaster ya se lee (builds 269–275).
+Hechas el 23/10/2026 (ver PRUEBAS_PENDIENTES.md): Unfinished Business, Golden
+Mask y The Lost Artifact con los datos del remaster, un disco cada una
+(`TRX_DC_MOD=tr1-ub|tr2-gm|tr3-la` en `make_disc.sh`). Falta verlas jugar.
+
+## I. Efectos de TR3
+
+Hechos (compilados, sin ver): ver T47 a T49 en
+[PRUEBAS_PENDIENTES.md](PRUEBAS_PENDIENTES.md). Si el humo de las pistolas no
+sale tras T47, el registro dirá por qué; no hay más tareas aquí hasta verlo.

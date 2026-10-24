@@ -55,6 +55,13 @@ int32_t Output_Textures_GetSpriteUVWIndex(
     int32_t texture_idx, int32_t face_idx);
 
 OUTPUT_UVW Output_Textures_GetUVW(int32_t uvw_idx);
+#if defined(__DREAMCAST__)
+// The index whose corner has exactly these coordinates, or -1 (what a caller
+// that kept only the values needs to draw them as a mesh), and the flags of
+// the texture an index belongs to.
+int32_t Output_Textures_FindUVWIndex(const OUTPUT_UVW *uvw);
+uint16_t Output_Textures_GetUVWFlags(int32_t uvw_idx);
+#endif
 OUTPUT_TEXTURE_SIZE Output_Textures_GetAtlasSize(int32_t uvw_idx);
 bool Output_Textures_IsObjectTextureAnimated(int32_t texture_idx);
 

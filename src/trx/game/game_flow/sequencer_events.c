@@ -262,10 +262,14 @@ M_GF_HANDLER(M_HandlePlayFMV)
         return OK;
     }
     const GF_FMV *const fmv = &g_GameFlow.fmvs[fmv_id];
+#if !defined(__DREAMCAST__)
+    // The Dreamcast plays the intro at startup and again on a new game, as the
+    // discs do: the player can skip either with Start.
     if (fmv->is_intro && g_Config.gameplay.intro_fmv_mode == INTRO_FMV_LAUNCH) {
         *out_cmd = gf_cmd;
         return OK;
     }
+#endif
     if (fmv->is_legal && !g_Config.gameplay.enable_legal) {
         *out_cmd = gf_cmd;
         return OK;

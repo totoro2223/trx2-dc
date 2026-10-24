@@ -204,8 +204,14 @@ static void M_ReportWork(const Uint64 start)
             "local b = rows.change('rendering.dc_mode', 1) "
             "error(('rows: %s %s mode=%s'):format(tostring(a), tostring(b), "
             "trx.config.get('rendering.dc_mode')))",
+            // The 60 FPS switch's own row, as the menu changes it, and off.
+            "local rows = require('common.ui.settings.rows') "
+            "local a = rows.change('rendering.dc_60fps', 1) "
+            "error(('rows: %s fps60=%s'):format(tostring(a), "
+            "tostring(trx.config.get('rendering.dc_60fps'))))",
+            "trx.config.set('rendering.dc_60fps', false)",
         };
-        LUA_RESULT result = LUA_Eval(codes[g_DC_TestSwitchMode % 4]);
+        LUA_RESULT result = LUA_Eval(codes[g_DC_TestSwitchMode % 6]);
         if (result.message != nullptr) {
             LOG_ERROR("test: %s", result.message);
         }

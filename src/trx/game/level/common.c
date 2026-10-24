@@ -30,6 +30,9 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_level_heap.h>
+    #include <trx/game/output/sources/objects.h>
+
+int32_t LUA_DC_CollectGarbage(void);
 #endif
 
 static bool m_WorldLoaded = false;
@@ -96,6 +99,17 @@ RESULT Level_Initialise(
     // Before the incoming level takes over as the current one, so a script
     // hearing the unload still finds the level it was written for.
     Level_Unload();
+#if defined(__DREAMCAST__)
+    // A clean slate before the next level loads, whatever it costs in time
+    // (about a second): every object mesh built so far goes (they build again
+    // as they are drawn), the scripts' garbage is collected twice (what the
+    // first collection frees may hold others). The loads that aborted in
+    // Jungle, in TR1's levels and on opening the save menu were all at the
+    // end of the memory.
+    OutputSource_Objects_EvictUnused(0);
+    LUA_DC_CollectGarbage();
+    LUA_DC_CollectGarbage();
+#endif
 #if defined(__DREAMCAST__)
     // What the level loads and builds goes in its own memory, empty again
     // now (dc_level_heap.c).

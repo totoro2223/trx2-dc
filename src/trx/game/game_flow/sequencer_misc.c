@@ -17,6 +17,7 @@
 #include <trx/game/objects/links.h>
 #include <trx/game/phase.h>
 #include <trx/game/phase/phase_inventory.h>
+#include <trx/game/phase/phase_picture.h>
 #include <trx/game/savegame.h>
 #include <trx/game/shell/common.h>
 #include <trx/game/ui/menu.h>
@@ -43,8 +44,49 @@ static void M_PlayIntroFMVs(void)
     }
 }
 
+#if defined(__DREAMCAST__)
+// Whether the copyright screen has been shown since the disc started: the
+// frontend sequence shows it, but picking a level in the level list skips that
+// sequence, and the first menu the player then reaches (leaving the level)
+// should show it, as it does on starting up.
+static bool m_LegalShown = false;
+
+static void M_ShowLegalPictures(void)
+{
+    m_LegalShown = true;
+    const GF_LEVEL *const title_level = GF_GetTitleLevel();
+    if (title_level == nullptr || !g_Config.gameplay.enable_legal) {
+        return;
+    }
+    const GF_SEQUENCE *const seq = &title_level->sequence;
+    for (int32_t i = 0; i < seq->length; i++) {
+        const GF_SEQUENCE_EVENT *const ev = &seq->events[i];
+        if (ev->type != GFS_DISPLAY_PICTURE) {
+            continue;
+        }
+        const GF_DISPLAY_PICTURE_DATA *const data = ev->data;
+        if (data == nullptr || data->path == nullptr || !data->is_legal) {
+            continue;
+        }
+        PHASE *const phase = Phase_Picture_Create((PHASE_PICTURE_ARGS) {
+            .file_name = data->path,
+            .display_time = data->display_time,
+            .fade_in_time = data->fade_in_time,
+            .fade_out_time = data->fade_out_time,
+        });
+        PhaseExecutor_Run(phase);
+        Phase_Picture_Destroy(phase);
+    }
+}
+#endif
+
 RESULT GF_RunTitle(GF_COMMAND *const out_cmd)
 {
+#if defined(__DREAMCAST__)
+    if (!m_LegalShown) {
+        M_ShowLegalPictures();
+    }
+#endif
     SG_Manager_UnbindSlot();
     GameStringTable_Apply(nullptr);
     GF_ResetLevelSetup(GFSC_NORMAL);
@@ -225,6 +267,9 @@ RESULT GF_DoFrontendSequence(GF_COMMAND *const out_cmd)
     }
 
     GF_COMMAND gf_cmd;
+#if defined(__DREAMCAST__)
+    m_LegalShown = true;
+#endif
     MUST(GF_InterpretSequence(
         g_GameFlow.title_level, GFSC_NORMAL, nullptr, &gf_cmd));
     if (gf_cmd.action == GF_NOOP || gf_cmd.action == GF_EXIT_TO_TITLE) {

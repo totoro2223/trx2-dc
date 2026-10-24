@@ -73,6 +73,9 @@ typedef struct {
 #define DC_PVR_VIDEO_FRAME_BYTES 18432
 
 void DC_PVR_Init(void);
+// Gives the memory of the polygon lists back (400 KiB), between frames, for
+// something that needs it for a moment; the next frame takes it again.
+void DC_PVR_ReleaseVertexPool(void);
 void DC_PVR_Shutdown(void);
 
 // Texture pages live in video memory only (see renderer.h).

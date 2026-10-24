@@ -510,20 +510,19 @@ static struct {
 static float m_SoftXY[M_SOFT_MAX_VERTICES][2];
 
 // The shadows drawn: the player's choice, with soft ones drawn as volumes
-// where the mode asks, or while Lara is under water: the soft map
-// would cast on the surface and the pool floor seen through it.
+// where the mode asks (a room under water takes none while Lara is above it:
+// the soft map would cast on the surface and the pool floor seen through it).
 #define M_IS_SOFT(type)                                                        \
     ((type) == SHADOW_TYPE_SOFT || (type) == SHADOW_TYPE_SOFT_HIGH)
 
 // The shadow the player chose (a mode sets it as it starts, see
-// Shell_HandleConfigChange); the soft ones cannot be drawn under water.
+// Shell_HandleConfigChange).
 static SHADOW_TYPE M_ShadowType(void)
 {
-    const SHADOW_TYPE type = g_Config.visuals.shadow_type;
-    return M_IS_SOFT(type)
-            && Lara_GetLaraInfo()->water_status == LWS_UNDERWATER
-        ? SHADOW_TYPE_VOLUME
-        : type;
+    // The soft shadows are drawn under water too (they were swapped for
+    // volumes there once); what is not done is to cast one on a room under
+    // water while Lara is above it, the water's own surface (see is_room).
+    return g_Config.visuals.shadow_type;
 }
 // Faces drawn with a soft shadow, for the debug console.
 static int32_t m_SoftFaces = 0;
@@ -688,6 +687,13 @@ typedef struct {
     int32_t num_lights;
     M_POINT_LIGHT lights[M_MAX_POINT_LIGHTS];
     float flicker;
+    // TR1 and TR2 under water: each vertex's shade swings (see M_Caustic).
+    bool caustics;
+    // TR3 rooms with a water scheme (water_effect - 2, or -1): the amplitudes
+    // of the choppy, shimmer and absolute terms, and the time base.
+    int32_t water_scheme;
+    float water_amp[3];
+    float water_time;
 } M_INSTANCE_LIGHT;
 
 M_HOT float M_DynamicLum(
@@ -933,6 +939,90 @@ static void M_ReadInstanceLight(
     }
 }
 
+// TR3's water in a room (the desktop's effectChoppy, effectShimmer and
+// effectAbs, lights_common.glsl): vertices flagged MOVE and GLOW get a light
+// that swings with the game time and a phase of the vertex's place, by the
+// level's water scheme. The amplitudes are the desktop's tables; the phase's
+// lane offsets and the sine are tables too, so a vertex costs a few adds.
+static const float m_WaterChoppy[22] = {
+    16.0f, 0.0f,   0.0f,   0.0f,   0.0f,   16.0f, 16.0f, 16.0f,
+    16.0f, 53.0f,  53.0f,  53.0f,  53.0f,  90.0f, 90.0f, 90.0f,
+    90.0f, 127.0f, 127.0f, 127.0f, 127.0f, 0.0f,
+};
+static const float m_WaterShimmer[22] = {
+    7.875f,   4.0f,     8.0f,     12.0f,    15.875f,  -3.875f,
+    -7.875f,  -11.875f, -15.875f, -3.875f,  -7.875f,  -11.875f,
+    -15.875f, -3.875f,  -7.875f,  -11.875f, -15.875f, -3.875f,
+    -7.875f,  -11.875f, -15.875f, 0.0f,
+};
+static const float m_WaterAbs[22] = {
+    0.0f,  253.0f, 0.0f, 4.0f,  8.0f,  4.0f, 8.0f, 12.0f,
+    16.0f, 4.0f,   8.0f, 12.0f, 16.0f, 4.0f, 8.0f, 12.0f,
+    16.0f, 4.0f,   8.0f, 12.0f, 16.0f, 0.0f,
+};
+#define M_WATER_SINE 64
+static float m_WaterSine[M_WATER_SINE];
+static float m_WaterLane[22][16];
+static bool m_WaterReady = false;
+
+static void M_WaterScheme(const MESH_INSTANCE *const inst, M_INSTANCE_LIGHT *const out)
+{
+    if (!m_WaterReady) {
+        for (int32_t k = 0; k < M_WATER_SINE; k++) {
+            m_WaterSine[k] = sinf(6.2831853f * (float)k / M_WATER_SINE);
+        }
+        for (int32_t sc = 0; sc < 22; sc++) {
+            for (int32_t lane = 0; lane < 16; lane++) {
+                // The desktop's stand-in for the original's random byte.
+                const double v =
+                    sin((double)lane * 12.9898 + (double)sc * 19.19)
+                    * 43758.5453;
+                const double n = v - floor(v);
+                m_WaterLane[sc][lane] = (float)(floor(n * 16.0) / 16.0);
+            }
+        }
+        m_WaterReady = true;
+    }
+    int32_t sc = inst->water_effect - 2;
+    sc = sc < 0 ? 0 : sc > 21 ? 21 : sc;
+    out->water_scheme = sc;
+    out->water_amp[0] = m_WaterChoppy[sc];
+    out->water_amp[1] = m_WaterShimmer[sc];
+    out->water_amp[2] = m_WaterAbs[sc];
+    const float t = m_Frame.time_in_game / 64.0f;
+    out->water_time = t - floorf(t);
+    // The vertices are placed in the world to find their lane.
+    M_WorldMatrix(&inst->wmatrix, out->world);
+}
+
+// The colour a vertex gets added, in bytes (the desktop's effect / 256 of a
+// colour that runs 0 to 1).
+M_HOT float M_WaterAdd(
+    const M_INSTANCE_LIGHT *const il, const OUTPUT_MESH_VERTEX *const vertex,
+    const uint16_t flags)
+{
+    const float(*const w)[4] = il->world;
+    const float px = vertex->pos.x;
+    const float py = vertex->pos.y;
+    const float pz = vertex->pos.z;
+    const float x = w[0][0] * px + w[0][1] * py + w[0][2] * pz + w[0][3];
+    const float y = w[1][0] * px + w[1][1] * py + w[1][2] * pz + w[1][3];
+    const float z = w[2][0] * px + w[2][1] * py + w[2][2] * pz + w[2][3];
+    const float sum = floorf(x / 64.0f) + floorf(y / 64.0f) + floorf(z / 128.0f);
+    const int32_t lane = (int32_t)floorf(sum / 4.0f) & 15;
+    float turns = il->water_time + m_WaterLane[il->water_scheme][lane];
+    turns -= floorf(turns);
+    const float sine = m_WaterSine[(int32_t)(turns * M_WATER_SINE) & (M_WATER_SINE - 1)];
+    float add = 0.0f;
+    if ((flags & VERT_MOVE) != 0) {
+        add += -sine * il->water_amp[0] * 0.5f;
+    }
+    if ((flags & VERT_GLOW) != 0) {
+        add += sine * il->water_amp[1] * 8.0f + il->water_amp[2] * 8.0f;
+    }
+    return add;
+}
+
 static void M_PrepareInstanceLight(
     const MESH_INSTANCE *const inst, const M_BINDING *const bind,
     const float mv[4][4], M_INSTANCE_LIGHT *const out)
@@ -942,6 +1032,12 @@ static void M_PrepareInstanceLight(
     out->adder = 0.0f;
     out->num_rgb = 0;
     out->tr3 = g_TRVersion == 3;
+    out->caustics = inst->water_effect == 1 && g_TRVersion <= 2;
+    out->water_scheme = -1;
+    if (g_TRVersion == 3 && inst->water_effect >= 2 && bind != nullptr
+        && (bind->flags_or & (VERT_MOVE | VERT_GLOW)) != 0) {
+        M_WaterScheme(inst, out);
+    }
     out->tr3_count = 0;
     out->tr3_double =
         g_Config.rendering.lighting_curve == LIGHTING_CURVE_FLAT ? 1.0f : 2.0f;
@@ -1024,6 +1120,33 @@ static void M_PrepareInstanceLight(
         }
         out->has_direction = true;
     }
+}
+
+// The caustics of TR1 and TR2 under water (lights_tr12.glsl's
+// lightWaterCaustics): a vertex's shade moves by sin(phase) * 0x300, the phase
+// a turn over 32 game ticks plus an offset the vertex has of its own. The
+// desktop makes the offset from the vertex's world position with a float hash;
+// here an integer hash of its position, in 32 steps, and a table of the sines.
+#define M_CAUSTIC_SIZE 32
+#define M_CAUSTIC_AMPLITUDE 768.0f
+static float m_CausticSine[M_CAUSTIC_SIZE];
+static bool m_CausticReady = false;
+
+M_HOT float M_Caustic(const OUTPUT_MESH_VERTEX *const vertex)
+{
+    if (!m_CausticReady) {
+        for (int32_t k = 0; k < M_CAUSTIC_SIZE; k++) {
+            m_CausticSine[k] = sinf(6.2831853f * (float)k / M_CAUSTIC_SIZE)
+                * M_CAUSTIC_AMPLITUDE;
+        }
+        m_CausticReady = true;
+    }
+    const uint32_t h = ((uint32_t)(int32_t)vertex->pos.x * 73856093u)
+        ^ ((uint32_t)(int32_t)vertex->pos.y * 19349663u)
+        ^ ((uint32_t)(int32_t)vertex->pos.z * 83492791u);
+    const int32_t at = ((int32_t)m_Frame.time_in_game + (int32_t)(h >> 11))
+        & (M_CAUSTIC_SIZE - 1);
+    return m_CausticSine[at];
 }
 
 M_HOT void M_LightVertex(
@@ -1119,6 +1242,9 @@ M_HOT void M_LightVertex(
     }
 
     float mul = 1.0f;
+    if (il->caustics && m_Frame.lighting && (flags & VERT_NO_LIGHTING) == 0) {
+        shade = M_Clamp(shade + M_Caustic(vertex), 0.0f, M_SHADE_MAX);
+    }
     if ((flags & VERT_NO_LIGHTING) == 0) {
         const float s = shade > m_Frame.min_shade ? shade : m_Frame.min_shade;
         mul = 2.0f - s * (1.0f / M_SHADE_NEUTRAL);
@@ -1457,8 +1583,9 @@ static void M_XformRoom(
     const int32_t flicker = (int32_t)il->flicker;
     const bool fog_on = c->fog;
     // Most rooms' vertices all carry the same flags: then they are not read.
+    const bool water = tr3 && lighting && il->water_scheme >= 0;
     const bool vary = (bind->flags_or & (VERT_NO_FOG | VERT_NO_LIGHTING)) != 0
-        || (bind->flags_and & VERT_USE_DYNAMIC_LIGHT) == 0;
+        || (bind->flags_and & VERT_USE_DYNAMIC_LIGHT) == 0 || water;
     const uint32_t ta = M_TintK(inst->tint.a);
     const uint32_t tr = M_TintK(inst->tint.r);
     const uint32_t tg = M_TintK(inst->tint.g);
@@ -1509,7 +1636,7 @@ static void M_XformRoom(
     }
     const bool fast =
         vref != nullptr && lighting && (tr3 ? !rgb_dyn : !dyn) && !vary
-        && !c->ortho;
+        && !c->ortho && !il->caustics && !water;
     M_XROOM run = {
         .c = c,
         .xverts = xverts,
@@ -1579,6 +1706,13 @@ static void M_XformRoom(
                     color.g = (uint8_t)MIN(255.0f, color.g + add[1] * 255.0f);
                     color.b = (uint8_t)MIN(255.0f, color.b + add[2] * 255.0f);
                 }
+                if (water && (flags & (VERT_MOVE | VERT_GLOW)) != 0
+                    && (flags & VERT_NO_LIGHTING) == 0) {
+                    const float add = M_WaterAdd(il, vertex, flags);
+                    color.r = (uint8_t)M_Clamp(color.r + add, 0.0f, 255.0f);
+                    color.g = (uint8_t)M_Clamp(color.g + add, 0.0f, 255.0f);
+                    color.b = (uint8_t)M_Clamp(color.b + add, 0.0f, 255.0f);
+                }
             } else if ((flags & VERT_NO_LIGHTING) == 0) {
                 int32_t s = M_SHADE_NEUTRAL;
                 if (lighting) {
@@ -1603,6 +1737,9 @@ static void M_XformRoom(
                                 * flicker;
                         }
                     }
+                }
+                if (il->caustics && lighting) {
+                    s += (int32_t)M_Caustic(vertex);
                 }
                 k = M_ShadeK(s, min_shade);
             }
@@ -1955,7 +2092,7 @@ static void M_XformOwn(
         | VERT_USE_OWN_LIGHT | VERT_BILLBOARD | VERT_ABS_SPRITE;
     const uint16_t shared = bind->flags_or;
     const bool fast = ((bind->flags_or ^ bind->flags_and) & decisive) == 0
-        && !c->ortho
+        && !c->ortho && !il->caustics
         && (shared & (VERT_BILLBOARD | VERT_ABS_SPRITE)) == 0
         && (bind->vref == nullptr || count <= 0xFFFF);
     const bool own_coloured = tr3 && lighting
@@ -2035,6 +2172,9 @@ static void M_XformOwn(
                 s = (flags & VERT_USE_OWN_LIGHT) != 0
                     ? (int32_t)(adder + vertex->shade)
                     : (int32_t)vertex->shade;
+            }
+            if (il->caustics && lighting) {
+                s += (int32_t)M_Caustic(vertex);
             }
             k = M_ShadeK(s, min_shade);
         }
@@ -2533,7 +2673,8 @@ static bool M_TransformInstance(
         }
         g_DC_ProbeUs[DC_PROBE_XF_LIT] += transformed; // TEMP
     } else if (
-        bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho) {
+        bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho
+        && !il.caustics) {
         g_DC_ProbeUs[DC_PROBE_XF_PLAIN] += bind->vertex_count; // TEMP
         DC_PROBE(
             DC_PROBE_XT_PLAIN,

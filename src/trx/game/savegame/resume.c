@@ -17,6 +17,10 @@
 #include <trx/game/waypoint.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_level_heap.h>
+#endif
+
 #include <string.h>
 
 // One entry per level of the main table, plus one the demos share.
@@ -83,7 +87,17 @@ void SG_Resume_Shutdown(void)
 
 RESUME_INFO *SG_Resume_Snapshot(void)
 {
+#if defined(__DREAMCAST__)
+    // A copy of 119 KiB that lives for one call (the save and load menus read
+    // the levels reached); the main memory has less than that free in the
+    // fuller levels (opening the save menu in Jungle aborted), and the
+    // level's region has room. Memory_Free finds the block wherever it is.
+    DC_LevelHeap_Enter();
+#endif
     RESUME_INFO *const snapshot = Memory_Alloc(M_GetSize());
+#if defined(__DREAMCAST__)
+    DC_LevelHeap_Leave();
+#endif
     memcpy(snapshot, m_ResumeInfo, M_GetSize());
     return snapshot;
 }

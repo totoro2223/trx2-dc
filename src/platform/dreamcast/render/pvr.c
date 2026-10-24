@@ -16,6 +16,7 @@
 #include <trx/core/utils.h>
 #include <trx/game/output/const.h>
 #include <trx/game/level/texture_pages_16.h>
+#include <trx/game/output/sources/objects.h>
 
 #include <arch/timer.h>
 #include <dc/biosfont.h>
@@ -27,18 +28,33 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Sized by what TR2 levels use: room faces with see-through texels go to the
-// punch-through list, which takes about as much as the opaque one.
-// Measured on the Great Wall with quads sent as strips: the opaque list
-// peaks at about 130 KiB a frame, punch-through at about 70, translucent at
-// under 10; each keeps only a margin. The translucent one also takes the
-// relief of the room faces near the camera (DC_BLEND_BUMP).
-#define M_VERTBUF_OP (160 * 1024)
-#define M_VERTBUF_TR (64 * 1024)
-#define M_VERTBUF_PT (104 * 1024)
-// Shadow volumes: 15 casters of at most 24 triangles of 64 bytes, and their
-// headers, for each of up to 3 lights.
-#define M_VERTBUF_MOD (3 * 24 * 1024)
+#include <trx/version.h>
+
+// The four lists (opaque, translucent, punch-through, shadow volumes) share one
+// pool of main memory, which is full: the whole is what a level can spare (400
+// KiB; TR3's levels are the tightest, 384). What each list needs depends on the
+// scene: London sends 180 KiB to the opaque list, Jungle's foliage fills the
+// punch-through one, the menus the translucent one. A frame is cut up at its
+// start, by what the frames before it asked for (M_Repartition): the peak of
+// each list, taking in the polygons that did not fit, which rises at once
+// and falls slowly, with a margin. A static split once dropped Lara's torso,
+// head and guns in London (160 KiB of opaque) and a room and part of the river
+// in Jungle (48 KiB of punch-through).
+#define M_POOL_BYTES (400 * 1024)
+#define M_POOL_BYTES_TR3 (384 * 1024)
+// What each list keeps whatever the scenes ask (an empty list needs nothing,
+// but a menu or a shadow comes with no warning), and what it is given before
+// any frame has said.
+static const size_t m_ListMin[] = {
+    48 * 1024, 24 * 1024, 8 * 1024, 16 * 1024,
+};
+static const size_t m_ListStart[] = {
+    160 * 1024, 40 * 1024, 60 * 1024, 30 * 1024,
+};
+// A margin over the peak, and how much of it the peak keeps a frame (it
+// halves in about 140 frames).
+#define M_PEAK_MARGIN 1.25f
+#define M_PEAK_DECAY 0.995f
 #define M_LIST_COUNT 4
 // How much of the colour a shadowed pixel keeps.
 #define M_SHADOW_SCALE 0.5f
@@ -69,6 +85,9 @@ typedef struct {
     void *buffer;
     size_t frame_capacity;
     size_t frame_written;
+    // What did not fit this frame, and the most the list has asked for.
+    size_t frame_dropped;
+    float peak;
     bool has_state;
     DC_BLEND blend;
     int32_t page;
@@ -219,13 +238,102 @@ static M_LIST *M_GetList(const DC_BLEND blend)
     }
 }
 
-static void *M_AllocVertbuf(const size_t size)
+static uint8_t *m_Pool = nullptr;
+static size_t m_PoolBytes = 0;
+// What the pool holds now: less than m_PoolBytes when memory was short.
+static size_t m_PoolHave = 0;
+static bool m_PoolSqueezed = false;
+
+// Cuts the pool up for the frame about to start, by the peaks of what each
+// list has asked for.
+static void M_Repartition(void)
 {
-    void *const buffer = memalign(32, size);
-    if (buffer == nullptr) {
-        LOG_ERROR("Cannot allocate a %u byte vertex buffer", (unsigned)size);
+    if (m_Pool == nullptr && m_PoolBytes > 0) {
+        // Let go for a save (DC_PVR_ReleaseVertexPool): taken again now. The
+        // memory it left may have been used since, and a screen with no pool
+        // is a black one for good: a smaller one is taken before none.
+        size_t bytes = m_PoolBytes;
+        const size_t least = 96 * 1024;
+        while (m_Pool == nullptr && bytes >= least) {
+            m_Pool = memalign(32, bytes);
+            if (m_Pool != nullptr) {
+                m_PoolHave = bytes;
+                break;
+            }
+            bytes = (bytes * 3 / 4) & ~(size_t)31;
+            if (bytes < least && !m_PoolSqueezed) {
+                // Nothing fits: what the scene can build again goes (the
+                // meshes of objects, all of them), and the sizes are tried
+                // once more. The game goes on, the meshes come back as drawn.
+                m_PoolSqueezed = true;
+                OutputSource_Objects_EvictUnused(0);
+                OutputSource_Objects_EvictToBudget(0);
+                bytes = m_PoolBytes;
+            }
+        }
+        m_PoolSqueezed = false;
+        if (m_Pool != nullptr && m_PoolHave < m_PoolBytes) {
+            LOG_WARNING(
+                "The vertex pool came back at %u KiB of %u",
+                (unsigned)(m_PoolHave / 1024), (unsigned)(m_PoolBytes / 1024));
+        }
     }
-    return buffer;
+    if (m_Pool == nullptr) {
+        // No pool this frame: nothing is drawn, and nothing is written.
+        for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+            m_Lists[i].frame_capacity = 0;
+        }
+        return;
+    }
+    size_t want[M_LIST_COUNT];
+    size_t wanted = 0;
+    size_t mins = 0;
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        want[i] = (size_t)(m_Lists[i].peak * M_PEAK_MARGIN) + 4096;
+        if (want[i] < m_ListMin[i]) {
+            want[i] = m_ListMin[i];
+        }
+        wanted += want[i];
+        mins += m_ListMin[i];
+    }
+    size_t given[M_LIST_COUNT];
+    size_t used = 0;
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        if (wanted <= m_PoolHave) {
+            // Room over: shared out in proportion to what was asked.
+            given[i] = want[i]
+                + (size_t)((double)(m_PoolHave - wanted) * want[i] / wanted);
+        } else {
+            // Short: each keeps its minimum and takes its share of the rest.
+            const double extra = (double)(want[i] - m_ListMin[i]);
+            const double extra_total = (double)(wanted - mins);
+            given[i] = m_ListMin[i]
+                + (size_t)((double)(m_PoolHave - mins) * extra / extra_total);
+        }
+        given[i] &= ~(size_t)31;
+        used += given[i];
+    }
+    // What the rounding left goes to the opaque list, which holds Lara.
+    given[0] += (m_PoolHave - used) & ~(size_t)31;
+    size_t at = 0;
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        m_Lists[i].buffer = m_Pool + at;
+        m_Lists[i].frame_capacity = given[i];
+        at += given[i];
+    }
+}
+
+void DC_PVR_ReleaseVertexPool(void)
+{
+    if (m_InFrame || m_Pool == nullptr) {
+        return;
+    }
+    free(m_Pool);
+    m_Pool = nullptr;
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        m_Lists[i].frame_capacity = 0;
+        m_Lists[i].frame_written = 0;
+    }
 }
 
 void DC_PVR_Init(void)
@@ -234,13 +342,25 @@ void DC_PVR_Init(void)
         return;
     }
     M_InitHardware();
-    const size_t sizes[M_LIST_COUNT] = {
-        M_VERTBUF_OP, M_VERTBUF_TR, M_VERTBUF_PT, M_VERTBUF_MOD,
-    };
-    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
-        m_Lists[i].buffer = M_AllocVertbuf(sizes[i]);
-        m_Lists[i].frame_capacity = sizes[i];
+    m_PoolBytes = g_TRVersion >= 3 ? M_POOL_BYTES_TR3 : M_POOL_BYTES;
+    m_Pool = memalign(32, m_PoolBytes);
+    m_PoolHave = m_Pool != nullptr ? m_PoolBytes : 0;
+    if (m_Pool == nullptr) {
+        LOG_ERROR(
+            "Cannot allocate the %u byte vertex pool", (unsigned)m_PoolBytes);
     }
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        m_Lists[i].peak = (float)m_ListStart[i];
+        m_Lists[i].frame_dropped = 0;
+    }
+    M_Repartition();
+    LOG_INFO(
+        "Vertex pool for TR%d: %u KiB, first cut OP %u TR %u PT %u MOD %u KiB",
+        (int)g_TRVersion, (unsigned)(m_PoolBytes / 1024),
+        (unsigned)(m_Lists[0].frame_capacity / 1024),
+        (unsigned)(m_Lists[1].frame_capacity / 1024),
+        (unsigned)(m_Lists[2].frame_capacity / 1024),
+        (unsigned)(m_Lists[3].frame_capacity / 1024));
     m_Initialised = true;
     LOG_INFO(
         "PowerVR ready, %u KiB of video memory free",
@@ -871,8 +991,10 @@ void DC_PVR_SetBackgroundColor(const float r, const float g, const float b)
 
 static void M_ResetFrame(void)
 {
+    M_Repartition();
     for (int32_t i = 0; i < M_LIST_COUNT; i++) {
         m_Lists[i].frame_written = 0;
+        m_Lists[i].frame_dropped = 0;
         m_Lists[i].has_state = false;
     }
     m_Depth.floor = 0.0f;
@@ -912,6 +1034,13 @@ void DC_PVR_EndFrame(void)
         pvr_wait_ready();
         m_WaitUs = (uint32_t)(timer_us_gettime64() - start);
         pvr_scene_begin();
+    }
+    // What each list asked for, to cut the pool by the next frame.
+    for (int32_t i = 0; i < M_LIST_COUNT; i++) {
+        const float demand =
+            (float)(m_Lists[i].frame_written + m_Lists[i].frame_dropped);
+        const float kept = m_Lists[i].peak * M_PEAK_DECAY;
+        m_Lists[i].peak = demand > kept ? demand : kept;
     }
     // Each list once, as the tile accelerator wants; KOS sends a blank one
     // for those left empty.
@@ -1624,6 +1753,7 @@ static void *M_Reserve(const size_t size)
     const size_t needed = size + (same_state ? 0 : sizeof(pvr_poly_hdr_t));
     if (list->frame_written + needed > list->frame_capacity) {
         m_Dropped++;
+        list->frame_dropped += needed;
         return nullptr;
     }
     if (!same_state) {
@@ -1643,6 +1773,8 @@ uint8_t *DC_PVR_BeginRun(size_t *const space, bool *const header)
     const size_t used =
         list->frame_written + (*header ? sizeof(pvr_poly_hdr_t) : 0);
     if (used >= list->frame_capacity) {
+        // A run that finds the list full: more than it holds is coming.
+        m_Current->frame_dropped += 4096;
         return nullptr;
     }
     *space = list->frame_capacity - used;
@@ -1673,6 +1805,7 @@ void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *const tris, const int32_t count)
         2 * sizeof(pvr_mod_hdr_t) + count * sizeof(pvr_modifier_vol_t);
     if (list->frame_written + needed > list->frame_capacity) {
         m_Dropped += count;
+        list->frame_dropped += needed;
         return;
     }
     // Every triangle but the last goes under one header; the last one, under

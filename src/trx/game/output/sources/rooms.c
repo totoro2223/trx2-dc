@@ -1,6 +1,7 @@
 #include <trx/game/output/sources/rooms.h>
 
 #include <trx/config.h>
+#include <trx/core/log.h>
 #include <trx/core/memory.h>
 #include <trx/core/utils.h>
 #include <trx/debug.h>
@@ -110,6 +111,16 @@ static void M_AddRoomFace(
 {
     OUTPUT_MESH_VERTEX vertices[4];
 
+#if defined(__DREAMCAST__)
+    // A face of no corners (TR1's St. Francis' Folly has one) took the game
+    // down in the mesh builder as the level finished loading: left out.
+    if (face->vertex_count <= 0) {
+        LOG_WARNING(
+            "a room face has no corners (room %d texture %d): left out",
+            (int)(room - Room_Get(0)), (int)face->texture_idx);
+        return;
+    }
+#endif
     ASSERT(face->vertex_count <= 4);
 
     for (int32_t i = 0; i < face->vertex_count; i++) {

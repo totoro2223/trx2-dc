@@ -15,6 +15,7 @@
 
 #include <trx/av/audio.h>
 
+#include <trx/core/log.h>
 #include <trx/core/memory.h>
 #include <trx/version.h>
 
@@ -548,7 +549,29 @@ int32_t Audio_Sample_Play(
     const int32_t sample_id, const int32_t volume, const float pitch,
     const int32_t pan, const bool is_looped)
 {
+    // How each sample fares, for the log: asked, not in sound RAM, no channel.
+    static uint16_t asked[AUDIO_MAX_SAMPLES];
+    static uint16_t missing[AUDIO_MAX_SAMPLES];
+    static uint16_t no_channel[AUDIO_MAX_SAMPLES];
+    static uint32_t calls;
+    const bool in_range = sample_id >= 0 && sample_id < AUDIO_MAX_SAMPLES;
+    if (in_range) {
+        asked[sample_id]++;
+    }
+    if (++calls % 400 == 0) {
+        for (int32_t k = 0; k < AUDIO_MAX_SAMPLES; k++) {
+            if (missing[k] > 0 || no_channel[k] > 0) {
+                LOG_INFO(
+                    "audio: sample %d asked %u, not loaded %u, no channel %u",
+                    (int)k, (unsigned)asked[k], (unsigned)missing[k],
+                    (unsigned)no_channel[k]);
+            }
+        }
+    }
     if (!m_Ready || !Audio_Sample_IsLoaded(sample_id)) {
+        if (in_range && missing[sample_id] < 0xFFFF) {
+            missing[sample_id]++;
+        }
         return AUDIO_NO_SOUND;
     }
     for (int32_t i = 0; i < AUDIO_MAX_ACTIVE_SAMPLES; i++) {
@@ -567,6 +590,9 @@ int32_t Audio_Sample_Play(
         };
         M_Start(i, 0);
         return i;
+    }
+    if (no_channel[sample_id] < 0xFFFF) {
+        no_channel[sample_id]++;
     }
     return AUDIO_NO_SOUND;
 }

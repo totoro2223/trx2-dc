@@ -107,6 +107,12 @@ if [ -n "${TRX_DC_SWITCH:-}" ]; then
   echo "$TRX_DC_SWITCH" > "$STAGE/SWITCH.TXT"
   echo "mode switch $TRX_DC_SWITCH"
 fi
+if [ -n "${TRX_DC_SHADOW:-}" ]; then
+  # A test disc with that shadow type (the SHADOW_TYPE's number: 3 volume, 4 soft,
+  # 5 soft high), whatever the mode picks.
+  echo "$TRX_DC_SHADOW" > "$STAGE/SHADOW.TXT"
+  echo "shadow type $TRX_DC_SHADOW"
+fi
 if [ -n "${TRX_DC_MODE:-}" ]; then
   # A test disc that starts in that mode (graphics, performance or
   # experimental-60), whatever the settings say (dc_main.c, MODE.TXT).
@@ -146,11 +152,40 @@ for f in "$GAME_DATA"/* "$GAME_DATA"/../cuts/*; do
   esac
 done
 
+# An expansion (TRX_DC_MOD=tr1-ub, tr2-gm or tr3-la) rides on its base game's
+# disc: its gameflow and scripts, and its levels from the UB, GM or LA folder
+# beside the base game's, which the engine runs by name (MOD.TXT).
+MOD="${TRX_DC_MOD:-}"
+if [ -n "$MOD" ]; then
+  case "$MOD" in
+    tr1-ub) MOD_BASE=tr1; MOD_DIR=UB ;;
+    tr2-gm) MOD_BASE=tr2; MOD_DIR=GM ;;
+    tr3-la) MOD_BASE=tr3; MOD_DIR=LA ;;
+    *) echo "TRX_DC_MOD must be tr1-ub, tr2-gm or tr3-la" >&2; exit 1 ;;
+  esac
+  if [ "$MOD_BASE" != "$GAME" ] || [ ! -d "$GAME_DATA/$MOD_DIR" ]; then
+    echo "$MOD needs TRX_DC_GAME=$MOD_BASE and $GAME_DATA/$MOD_DIR" >&2
+    exit 1
+  fi
+  echo "== expansion $MOD"
+  cp -r "$SHIP/games/$MOD" "$STAGE/games/$MOD"
+  mkdir -p "$STAGE/games/$MOD/levels"
+  for f in "$GAME_DATA/$MOD_DIR"/*; do
+    [ -f "$f" ] || continue
+    lower="$(basename "$f" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+      *.tr2 | *.phd) cp "$f" "$STAGE/games/$MOD/levels/$lower" ;;
+    esac
+  done
+  echo "$MOD" > "$STAGE/MOD.TXT"
+  echo "$(ls "$STAGE/games/$MOD/levels" | wc -l) levels of $MOD"
+fi
+
 echo "== texture pages in VQ"
 # Every page of every level and injection on the disc, which the game finds
 # by its contents (see tools/dreamcast/texvq.c); made again only when the
 # tool or the data change.
-VQ="$BUILD_DIR/textures-$GAME.vq"
+VQ="$BUILD_DIR/textures-${MOD:-$GAME}.vq"
 VQ_TOOL="$BUILD_DIR/texvq.exe"
 if [ ! -f "$VQ_TOOL" ] || [ "$ROOT/tools/dreamcast/texvq.c" -nt "$VQ_TOOL" ]; then
   gcc -O2 -fopenmp -o "$VQ_TOOL" "$ROOT/tools/dreamcast/texvq.c" -lz
@@ -158,9 +193,13 @@ fi
 shopt -s nullglob
 VQ_INPUTS=("$STAGE"/games/$GAME/levels/*.tr2 "$STAGE"/games/$GAME/levels/*.phd
   "$STAGE"/games/$GAME/injections/*.bin)
+if [ -n "$MOD" ]; then
+  VQ_INPUTS+=("$STAGE"/games/$MOD/levels/*.tr2 "$STAGE"/games/$MOD/levels/*.phd
+    "$STAGE"/games/$MOD/injections/*.bin)
+fi
 shopt -u nullglob
 if [ ! -f "$VQ" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
-  || [ -n "$(find "$GAME_DATA" "$SHIP/games/$GAME/injections" -newer "$VQ" -print -quit)" ]; then
+  || [ -n "$(find "$GAME_DATA" "$SHIP/games/$GAME/injections" -newer "$VQ" -print -quit)" ]   || [ -n "$MOD" ]; then
   "$VQ_TOOL" "$VQ" "${VQ_INPUTS[@]}"
 fi
 cp "$VQ" "$STAGE/textures.vq"
@@ -223,7 +262,7 @@ fi
 # (peru is aztec.dds, greece greek.dds, atlantis atlan.dds), and its copyright
 # screen (eidos.webp) is the remaster's PIX/LEGAL_1.DDS.
 if [ "$GAME" = tr1 ]; then
-  for pair in peru:aztec greece:greek atlantis:atlan; do
+  for pair in peru:aztec greece:greek atlantis:atlan title:title_eu; do
     [ -f "$STAGE/pix/${pair#*:}.565" ] && cp "$STAGE/pix/${pair#*:}.565" "$STAGE/pix/${pair%:*}.565"
   done
   # The original's EIDOSPC.PCX (TRX_DC_LEGAL) if given, else the remaster's.
@@ -257,7 +296,10 @@ if [ "${TRX_DC_MUSIC:-1}" = 0 ]; then
   # TRX_DC_MUSIC=0: a disc without music.
   MUSIC_FILES=()
 elif [ "$SOURCE" = remastered ]; then
-  MUSIC_FILES=("$GAME_DATA"/../TRACKS/*.OGG)
+  # The cutscenes' voices and some of the music are in the language's own
+  # folder (TRACKS/EN: TR2's tracks 2 to 25, say), which the root lacks.
+  MUSIC_FILES=("$GAME_DATA"/../TRACKS/*.OGG
+    "$GAME_DATA"/../TRACKS/"${TRX_DC_LANG:-EN}"/*.OGG)
 else
   MUSIC_FILES=("$GAME_DATA"/../music/*.mp3 "$GAME_DATA"/../music/*.ogg
     "$GAME_DATA"/../audio/*.ogg "$GAME_DATA"/../audio/*.mp3)

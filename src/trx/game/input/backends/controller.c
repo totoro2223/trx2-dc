@@ -67,6 +67,81 @@
 #define M_NAME_Y              "\\{controller button y}"
 // clang-format on
 
+#if defined(__DREAMCAST__)
+// The Dreamcast pad's own labels, as text (the console has no glyph font for
+// the icons above): SDL's A, B, X and Y are the pad's, Start is Start, the
+// stick clicks and Back are the C, Z and D of the pads that have them, and
+// the shoulder buttons and triggers are its L and R.
+    // clang-format off
+    #undef M_ICON_X
+    #undef M_ICON_CIRCLE
+    #undef M_ICON_SQUARE
+    #undef M_ICON_TRIANGLE
+    #undef M_ICON_UP
+    #undef M_ICON_DOWN
+    #undef M_ICON_LEFT
+    #undef M_ICON_RIGHT
+    #undef M_ICON_L1
+    #undef M_ICON_R1
+    #undef M_ICON_L2
+    #undef M_ICON_R2
+    #undef M_NAME_L_STICK
+    #undef M_NAME_L_ANALOG_UP
+    #undef M_NAME_L_ANALOG_RIGHT
+    #undef M_NAME_L_ANALOG_DOWN
+    #undef M_NAME_L_ANALOG_LEFT
+    #undef M_NAME_R_STICK
+    #undef M_NAME_R_ANALOG_UP
+    #undef M_NAME_R_ANALOG_RIGHT
+    #undef M_NAME_R_ANALOG_DOWN
+    #undef M_NAME_R_ANALOG_LEFT
+    #undef M_NAME_L_TRIGGER
+    #undef M_NAME_R_TRIGGER
+    #undef M_NAME_BACK
+    #undef M_NAME_HOME
+    #undef M_NAME_START
+    #undef M_NAME_L_BUMPER
+    #undef M_NAME_R_BUMPER
+    #undef M_NAME_A
+    #undef M_NAME_B
+    #undef M_NAME_X
+    #undef M_NAME_Y
+    #define M_ICON_X              "A"
+    #define M_ICON_CIRCLE         "B"
+    #define M_ICON_SQUARE         "X"
+    #define M_ICON_TRIANGLE       "Y"
+    #define M_ICON_UP             "UP"
+    #define M_ICON_DOWN           "DOWN"
+    #define M_ICON_LEFT           "LEFT"
+    #define M_ICON_RIGHT          "RIGHT"
+    #define M_ICON_L1             "L"
+    #define M_ICON_R1             "R"
+    #define M_ICON_L2             "L"
+    #define M_ICON_R2             "R"
+    #define M_NAME_L_STICK        "Z"
+    #define M_NAME_L_ANALOG_UP    "STICK UP"
+    #define M_NAME_L_ANALOG_RIGHT "STICK RIGHT"
+    #define M_NAME_L_ANALOG_DOWN  "STICK DOWN"
+    #define M_NAME_L_ANALOG_LEFT  "STICK LEFT"
+    #define M_NAME_R_STICK        "C"
+    #define M_NAME_R_ANALOG_UP    "STICK UP"
+    #define M_NAME_R_ANALOG_RIGHT "STICK RIGHT"
+    #define M_NAME_R_ANALOG_DOWN  "STICK DOWN"
+    #define M_NAME_R_ANALOG_LEFT  "STICK LEFT"
+    #define M_NAME_L_TRIGGER      "L"
+    #define M_NAME_R_TRIGGER      "R"
+    #define M_NAME_BACK           "D"
+    #define M_NAME_HOME           "START"
+    #define M_NAME_START          "START"
+    #define M_NAME_L_BUMPER       "L"
+    #define M_NAME_R_BUMPER       "R"
+    #define M_NAME_A              "A"
+    #define M_NAME_B              "B"
+    #define M_NAME_X              "X"
+    #define M_NAME_Y              "Y"
+    // clang-format on
+#endif
+
 // Per-button/axis tracking for combo prefix deferral.
 // Index: buttons use their enum directly, axes use
 // SDL_CONTROLLER_BUTTON_MAX + axis*2 + (axis_dir == 1 ? 1 : 0).

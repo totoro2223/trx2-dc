@@ -121,6 +121,145 @@ TRX_DC_GAME=tr1 TRX_DC_LEGAL='<TR1 Steam>/LARA_RTX/DATA/EIDOSPC.PCX' TRX_DC_FMV_
 - **Sin comprobar:** el audio de las películas (oído), la imagen del copyright
   de TR1 en pantalla, y los discos de TR3 y TR2 completos tras estos cambios.
 
+## Expansiones (DC builds 430-438)
+
+Unfinished Business (TR1), The Golden Mask (TR2) y The Lost Artifact (TR3), con
+los datos del remaster (`DATA/UB`, `DATA/GM`, `DATA/LA`), cada una en un disco
+que lleva el juego base y la expansión:
+
+```bash
+TRX_DC_GAME=tr2 TRX_DC_MOD=tr2-gm bash tools/dreamcast/make_disc.sh build/dc-minsize '<remaster>/2/DATA' build/dc-minsize/TRX-tr2-gm.cdi
+```
+
+(`TRX_DC_MOD` = `tr1-ub` con `TRX_DC_GAME=tr1`, `tr3-la` con `tr3`.) El disco
+trae un `MOD.TXT`; `dc_main.c` arranca el motor con `--mod <id>` y el selector
+lista los niveles de la expansión (4 de UB, 5 de GM, 6 de LA). Las texturas van
+en VQ (los niveles de la expansión entran en `textures.vq`). Discos hechos, sin
+películas: `TRX-tr1-ub.cdi` (273 MB, build 436), `TRX-tr2-gm.cdi` (264 MB, 437),
+`TRX-tr3-la.cdi` (386 MB, 438).
+
+- **Visto en el log (builds 433-435, discos de prueba con `-l 1`):** el motor
+  dice "Mod: tr2-gm" / "tr1-ub" / "tr3-la" y carga el primer nivel de cada una
+  desde `games/<mod>/levels/` (`level1.tr2`, `egypt.phd`, `scotland.tr2`; 9-10 s
+  de carga); el GM se vio corriendo con sombras y 30+ fps.
+- **Sin comprobar:** jugar los niveles (memoria en los grandes), el selector de
+  las expansiones en pantalla (se arregló el número de nivel: las expansiones
+  cuentan desde 1, sin gimnasio), los finales y créditos, y las imágenes de
+  carga (`gm_level*.webp`, `ub_loading*.webp`, `highland.webp`…, que el remaster
+  no trae con esos nombres). El título cae al del juego base. Sin películas:
+  `TRX_DC_FMV=0` en los discos hechos; con ellas pesarían lo del juego base
+  más ~230–330 MB.
+
+## Lara sin torso, cabeza ni armas en Londres (DC builds 440-443)
+
+**Causa:** la lista opaca del PowerVR (160 KiB) se llenaba en la sala del primer
+enemigo de Londres con las sombras al máximo (`Soft high`): los polígonos que
+no cabían (hasta ~200 por frame) se descartaban, y Lara, que se dibuja la
+última, perdía torso, cabeza y armas. El registro lo decía: "N polygons did not
+fit the vertex buffers" con OP 160K, mientras la lista translúcida llegaba a 16
+KiB de 64 y la de punch-through a 35 de 104.
+
+**Arreglo** (`render/pvr.c`), sin más RAM de la que había (el montón gestionado
+es de 12.025 KiB y en Londres llegó a 11.995: quedan 30 KiB libres como mínimo).
+Los cuatro búferes (OP/TR/PT/MOD, KiB) eran 160/64/104/72 = 400:
+- TR3: 256/24/48/48 = 376 (quita 24 KiB y da 96 KiB más a la opaca).
+- TR1 y TR2: 192/32/88/72 = 384.
+Con el banco de Londres en TR3 (build 444, graphics, sombras 5): 0 descartados,
+pico de la lista opaca 181 de 256 KiB, mínimo libre de RAM igual (30 KiB). Con el banco de Londres (demo 0, sombras 5):
+
+| Build | Modo | Antes: polígonos descartados | Después | fps medio |
+|---|---|---|---|---|
+| 440 → 442 | graphics, 640x480, 30 fps | rachas de 184–199 por frame | 0 | 28,8 → 29,1 |
+| 441 → 443 | experimental 60, 320x240 | rachas de 115–199 por frame | 0 | 41,0 → 41,4 |
+
+(En el 441 las sombras salieron en 3 porque el modo las pisaba; el gancho
+`TRX_DC_SHADOW` ya gana al modo, y el 443 va con sombras 5.) La lista opaca
+llegaba a 180 KiB como pico con 224 KiB de tamaño. **Visto solo en el registro, no en pantalla:**
+falta mirar la sala del primer enemigo en la demo y comprobar que Lara sale
+entera. Sigue sin cumplir los 30 fps con sombras al máximo (mediana 32 ms; 35 %
+de frames por encima de 35 ms). TR2 usaba más punch-through (~70 KiB en la
+Muralla China): 88 KiB le deja ~25 % de margen; comprobar en TR1 y TR2 que
+ninguna lista descarta (el aviso "did not fit" del registro).
+
+## Interruptor de 60 fps por interpolación (DC build 447)
+
+Antes solo había un camino a 60 fps: el modo Experimental 60 (que además baja
+a 320×240 y pone sombras de volumen), y la opción `rendering.fps` de 30/60
+estaba fuera del menú de la consola. Ahora hay un interruptor propio,
+`rendering.dc_60fps` ("60 FPS (interpolated)"), en la pestaña Rendering justo
+bajo el modo:
+
+- **Apagado de serie**, en el modo inicial (Gráficos, 30 fps).
+- **Actúa al momento**, en cualquier modo, sin reiniciar: `DC_Mode_GetFPS` y la
+  interpolación lo leen en cada frame. El modo Experimental 60 lo enciende y los
+  otros lo apagan; después se puede cambiar a mano. El 60 adaptativo va con él.
+- **Visto en el registro** (build 447, Muralla China en modo Gráficos, cambiado
+  por la propia fila del menú a la frame 900, Flycast oculto): el contador pasa
+  de 30 fps a 50–60 fps al instante, y la fila dice `fps60=true`.
+- **Sin comprobar:** con el mando en el menú real, y **cómo se ve en pantalla a
+  640×480**: esa resolución es entrelazada en un televisor, y dibujar 60 imágenes
+  distintas por segundo puede notarse en movimiento (el modo Experimental 60 usa
+  320×240 por eso). Falta ver el apagado desde el menú y lo que cuesta en
+  niveles pesados (el 60 adaptativo baja a 30 donde no llega).
+
+## Memoria, guardado y películas (DC builds 456-463)
+
+Informes del usuario: TR3 abortaba al guardar y al cargar, no mostraba las
+pirañas ni recibía daño, TR1 fallaba al volver al listado la segunda vez, y el
+audio de las películas se cortaba y quedaba desfasado.
+
+- **Limpieza completa al empezar cada nivel** (`level/common.c`): se sueltan
+  todos los modelos de objeto construidos y se recoge dos veces la basura de
+  Lua. Con el recorrido seguido de niveles (`TRX_DC_LEVELS`, Flycast oculto):
+  **TR1 recorre los 15 niveles sin caerse** (antes moría en el 5, Colosseum, por
+  falta de memoria) y **TR3 recorre sus niveles hasta Rapids** (nivel 7) sin
+  abortar.
+- **TR1, nivel 4 (St. Francis' Folly)**: una cara de sala sin esquinas
+  (`room 48`, 13 caras) abortaba en el constructor de mallas; ahora se omite con
+  un aviso.
+- **Guardar y cargar** (`savegame/`): las copias temporales (el árbol JSON, su
+  BSON y el comprimido, ~400 KiB; la copia de 119 KiB de los niveles alcanzados)
+  van a la región del nivel; antes de guardar o cargar se liberan los modelos de
+  objeto que se pueden reconstruir, la basura de Lua y el bloque de las listas
+  de polígonos. **Sin probar en el juego**: es la causa de los abortos del
+  registro (un `malloc` de 118 KiB sin hueco), pero no se ha guardado ni cargado
+  desde el menú tras el arreglo.
+- **Volver al listado de niveles** (`dc_main.c`): al terminar el motor, la
+  consola arranca el disco otra vez (`arch_reboot`), con toda la memoria limpia;
+  antes dependía de la salida de KOS, que funcionó la primera vez y no la
+  segunda. Sin probar.
+- **Audio de las películas** (`video.c`): al vaciarse la cola de sonido se metía
+  silencio y los datos reales quedaban retrasados para siempre. Ahora el sonido
+  sigue al reloj: lo que va atrasado más de ~0,25 s se salta. Sin oír.
+- **Intro al empezar partida**: la Dreamcast la reproduce al arrancar y otra vez
+  al empezar partida nueva (se salta con Start).
+- **Pirañas de Jungle** (no se dibujaban ni hacían daño): se supone la misma falta
+  de memoria (un modelo se construye al aparecer y falló); sin comprobar. La
+  caché de modelos de TR3 baja a 12.000 vértices.
+
+## Muerte, cinemáticas, sombras, efectos y menús (24/10/2026, compilado, sin ver)
+
+Todo compilado con `build.sh minsize`; **ningún disco generado ni ejecutado**.
+
+| # | Cambio | Qué comprobar |
+|---|---|---|
+| T41 | **TR2: morir** congelaba la imagen y bajaba el framerate a 0. Causa: mis instantáneas (T24) volvían a dibujar la escena entera en una textura y luego la pintaban opaca encima de la animación. `Output_Overlay_CaptureSnapshotSlot` vuelve a dar un hueco sin capturar, y `DrawSnapshotSlot` no dibuja (como el stub original). Las pantallas de fundido a color siguen. | Morir en TR2: se ve la animación de muerte, sin pérdida de fps. Los fundidos entre pantallas ya no cruzan el último fotograma. |
+| T42 | **Cinemáticas sin sonido**: las pistas de las cinemáticas (TR2: 2 a 25 y 58) están en la carpeta de idioma del remaster (`TRACKS/EN`) y `make_disc.sh` solo convertía la raíz. Ahora añade `TRACKS/<TRX_DC_LANG, EN por defecto>`. Los discos crecen: más pistas en ADPCM (TR3 tiene 58 en `EN`). | `cut1`..`cut4` de TR2, y las cinemáticas de TR1 y TR3, con voz. Tamaño de cada disco (TR3 ya rozaba los 800 MB). |
+| T43 | **Películas desfasadas**: el vídeo seguía un reloj propio y cada corte del audio lo desplazaba. Ahora sigue los bytes de sonido entregados al AICA menos lo que guarda su búfer (24.000 bytes, ~0,55 s): si el sonido se corta, el vídeo espera. Cola de sonido por delante: 16.000 bytes. | Intro de TR2/TR3 entera: sincronía de principio a fin, también tras un corte. Ajustar `M_SOUND_RING_BYTES` si queda adelantado o atrasado. |
+| T44 | **Sombras suaves bajo el agua**: ya no se cambian por volúmenes con Lara sumergida (`M_ShadowType`). Sigue sin proyectarse sombra sobre un cuarto bajo el agua mientras Lara está encima (la superficie). | Sombras suaves nadando y sobre la superficie. |
+| T45 | **"Saving to VMU..."**: antes de escribir en la VMU (`DC_VMU_StoreSave`) se dibuja un fotograma de carga con el texto abajo ("Do not remove the memory card"), porque la escritura bloquea el juego. Cubre la pantalla con la imagen de carga mientras dura. | Guardar con una VMU puesta: el texto sale y desaparece. |
+| T46 | **Etiquetas del mando**: en Dreamcast la entrada por defecto es el mando (`input.backend`), y sus botones se nombran en mayúsculas y texto (`controller.c`): A, B, X, Y, START, L, R, UP/DOWN/LEFT/RIGHT, Z y C (clics de los sticks), D (Back), STICK UP/... | Controles, la ayuda del anillo y los avisos: ya no salen Enter, Espacio ni Esc. Comprobar `START` en el anillo. |
+| T34 | **Reflejos de lente del sol** (TR3): `StageQuadExt(Depth)` abre cada billboard (cuatro puntos iguales y `disp`) por los ejes de la cámara; el empuje hacia la cámara de `M_StageTri` queda acotado a tres planos cercanos. | Niveles con sol en TR3: reflejo y fantasmas, y que no los tapen las paredes cuando no deben. |
+| T35 | **Nieve** (TR3, Aldwych y Antártida): mismo cambio. | Nieve cayendo, de tamaño razonable. |
+| T38 | **Chispas** (`StageSpark`): ahora son cuadriláteros del mundo con el ancho y alto propios (ya no un cuadrado de su media) y giran con `SPARK_F_ROTATE` (humo, explosiones). | Humo, sangre, chispas de disparo, bengalas. Coste con muchas chispas. |
+| T36 | **Humo de las pistolas** (TR3): los colores de las chispas de sprite se doblan (escala de 128 como neutro). **Es una hipótesis.** | Disparar las pistolas de TR3: el humo se ve. Si no, ver TAREAS.md I. |
+| T37 | **Cáusticas bajo el agua** (TR1 y TR2): `il->caustics` (`water_effect == 1`) suma `sin(fase) × 0x300` al sombreado de cada vértice con una tabla de 32 senos y un hash entero de la posición; las rutas en ensamblador de salas y objetos se saltan bajo el agua (la generic, en C, lo hace). | Nadar en TR1 y TR2: luz que ondula en el fondo y las paredes. Coste de fps bajo el agua. |
+| T47 | **Humo de las pistolas (TR3), registro**: `StageSpark` cuenta las chispas de humo vistas, dibujadas y descartadas (fuera de profundidad, demasiado pequeñas, sprite fuera de rango) y lo escribe en el registro cada 240 (`smoke sparks: seen ...`). La hipótesis del color doblado (T36) sigue puesta. | Disparar las pistolas en TR3 y leer el registro: si `seen` sube y `drawn` también, y no se ve, el problema es de dibujo; si `seen` no sube, no se crean. |
+| T48 | **Triángulos con textura propia** (restos al romper, partículas de agua, murciélagos): `StageTriExtUV` busca el índice de cada UV (`Output_Textures_FindUVWIndex`), arma un triángulo unidad con esas coordenadas y lo guarda en 16 huecos por clave (el más antiguo se sustituye). Las partículas de agua (billboard) se abren con `disp`. Si las UV no son de ninguna textura, vuelve al triángulo plano. | Romper cristal o un cuarto de restos, cascadas con partículas, murciélagos: ya tienen dibujo, no color liso. Coste de fps con muchos restos. |
+| T49 | **Efecto de agua de TR3** en salas (`water_effect >= 2`): los vértices `VERT_MOVE` (olas) y `VERT_GLOW` (brillo) reciben un color añadido que oscila con el tiempo y un desfase por carril de posición, con las mismas tablas de amplitud del escritorio (`M_WaterAdd`). Con ese esquema la ruta en ensamblador de salas se salta. No se mueve la geometría. | Niveles de TR3 con agua: brillo que ondula en la superficie y el fondo. Coste de fps en la sala. |
+| T50 | **Ninguna chispa se dibujaba en TR3** (fuego, humo de pistolas, sangre, bengalas, explosiones): `Sparks_Draw` volvía al principio en Dreamcast desde que no había PolyFX (un atajo con "quitar cuando dibuje") y nunca se quitó, así que `StageSpark` no se llamaba nunca. Quitado. Los demás efectos (anillos, estelas, nieve, láseres, rayos, salpicaduras, huellas, restos, murciélagos) sí tienen llamadas y no estaban cortados. | Fuego de trampas y de Lara ardiendo, humo y chispas de pistolas, sangre, bengalas: todos visibles. Coste de fps con mucho fuego (hasta 32 fuegos × 20 chispas, cada una dos veces). |
+| T51 | **Aviso al guardar en la VMU**, ahora una caja del estilo del menú (`requester.message`) sobre la misma pantalla, en la parte baja; el guardado se hace dos ticks después (`Passport:save_with_notice`, solo en Dreamcast). Sustituye a la pantalla de carga completa. | Guardar desde el pasaporte: la caja "Saving to VMU... Do not remove the card" aparece sobre el fondo del juego, el guardado se hace y el pasaporte se cierra. |
+
 ## Para medir
 
 Las sondas `DC_PROBE` ya **no se compilan por defecto** (costaban ~0,5 ms por

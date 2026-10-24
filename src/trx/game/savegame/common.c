@@ -15,6 +15,10 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/vmu.h>
+    #include <trx/game/output/sources/objects.h>
+
+int32_t LUA_DC_CollectGarbage(void);
+void DC_PVR_ReleaseVertexPool(void);
 #endif
 
 static SAVEGAME_VERSION m_InitialVersion = SG_VERSION_LEGACY;
@@ -119,11 +123,29 @@ void Savegame_ProcessItemsBeforeLoad(void)
     }
 }
 
+#if defined(__DREAMCAST__)
+// The saved game's copies of the game's state take up to 400 KiB at once, and
+// the fuller levels (Jungle) have none free: what a scene can build again goes
+// first (the object meshes it drew some frames ago, the cache down to a few
+// thousand vertices), and the scripts' garbage.
+static void M_FreeMemoryForSaving(void)
+{
+    OutputSource_Objects_EvictUnused(1);
+    OutputSource_Objects_EvictToBudget(6000);
+    LUA_DC_CollectGarbage();
+    // And the polygon lists' pool, 384 KiB idle between frames.
+    DC_PVR_ReleaseVertexPool();
+}
+#endif
+
 bool Savegame_Save(const SAVEGAME_SLOT_REF slot)
 {
     if (!SG_Manager_IsValidSlotRef(slot)) {
         return false;
     }
+#if defined(__DREAMCAST__)
+    M_FreeMemoryForSaving();
+#endif
     SG_Manager_BindSlot(slot);
 
     const GF_LEVEL *const current_level = Game_GetCurrentLevel();
@@ -135,6 +157,9 @@ bool Savegame_Save(const SAVEGAME_SLOT_REF slot)
 
 RESULT Savegame_Load(const SAVEGAME_SLOT_REF slot)
 {
+#if defined(__DREAMCAST__)
+    M_FreeMemoryForSaving();
+#endif
     const SAVEGAME_INFO *const savegame_info = SG_Manager_GetSavegameInfo(slot);
     FAIL_IF(savegame_info == nullptr, "the slot holds no saved game");
     ASSERT(savegame_info->full_path != nullptr);
@@ -202,6 +227,9 @@ RESULT Savegame_LoadOnlyResumeInfo(const SAVEGAME_SLOT_REF slot)
 RESULT Savegame_ReadReachedLevels(
     const SAVEGAME_SLOT_REF slot, VECTOR *const levels)
 {
+#if defined(__DREAMCAST__)
+    M_FreeMemoryForSaving();
+#endif
     RESUME_INFO *const snapshot = SG_Resume_Snapshot();
     const SAVEGAME_VERSION initial_version = m_InitialVersion;
     SG_Resume_ClearEntries();

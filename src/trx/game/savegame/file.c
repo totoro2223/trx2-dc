@@ -12,6 +12,10 @@
 #include <trx/game/sparks/manager.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_level_heap.h>
+#endif
+
 #include <string.h>
 #include <time.h>
 #include <zconf.h>
@@ -163,7 +167,18 @@ RESULT SG_File_LoadFromFile(TRX_FILE *const fp)
 {
     int32_t sg_version = -1;
     JSON_VALUE *root = nullptr;
-    MUST(M_ReadRaw(fp, &sg_version, &root));
+#if defined(__DREAMCAST__)
+    // The file, its decompressed copy and the tree they parse into are 400
+    // KiB at once, and the main memory of the fuller levels has none: they go
+    // in the level's region (the tree lives until it is freed below, before
+    // any other level loads).
+    DC_LevelHeap_Enter();
+#endif
+    const RESULT read_result = M_ReadRaw(fp, &sg_version, &root);
+#if defined(__DREAMCAST__)
+    DC_LevelHeap_Leave();
+#endif
+    MUST(read_result);
     JSON_READ_IO *const io =
         JSON_ReadIO_Create(root, sg_version, File_GetPath(fp));
     const RESULT result = M_Load(io);
@@ -175,6 +190,13 @@ RESULT SG_File_LoadFromFile(TRX_FILE *const fp)
 RESULT SG_File_SaveToFile(TRX_FILE *const fp, SAVEGAME_INFO *const info)
 {
     const GF_LEVEL *const current_level = Game_GetCurrentLevel();
+#if defined(__DREAMCAST__)
+    // The tree of the game's state, its BSON and the compressed copy are
+    // 400 KiB at once, and the main memory has a hundred or two in the fuller
+    // levels (Jungle aborted on saving): they are all gone when this returns,
+    // so they go in the level's region, where the room is.
+    DC_LevelHeap_Enter();
+#endif
     JSON_WRITE_IO *const io = JSON_WriteIO_Create();
 
     SG_File_DumpResumeInfoList(io);
@@ -195,6 +217,9 @@ RESULT SG_File_SaveToFile(TRX_FILE *const fp, SAVEGAME_INFO *const info)
         fp, JSON_WriteIO_GetRoot(io), current_level->num,
         info != nullptr && info->is_quick);
     JSON_WriteIO_Destroy(io);
+#if defined(__DREAMCAST__)
+    DC_LevelHeap_Leave();
+#endif
     return result;
 }
 
@@ -268,7 +293,14 @@ RESULT SG_File_LoadOnlyResumeInfo(TRX_FILE *const fp)
 {
     int32_t sg_version = -1;
     JSON_VALUE *root = nullptr;
-    MUST(M_ReadRaw(fp, &sg_version, &root));
+#if defined(__DREAMCAST__)
+    DC_LevelHeap_Enter();
+#endif
+    const RESULT read_result = M_ReadRaw(fp, &sg_version, &root);
+#if defined(__DREAMCAST__)
+    DC_LevelHeap_Leave();
+#endif
+    MUST(read_result);
     JSON_READ_IO *const io =
         JSON_ReadIO_Create(root, sg_version, File_GetPath(fp));
     const RESULT result = SG_File_LoadResumeInfoList(io);

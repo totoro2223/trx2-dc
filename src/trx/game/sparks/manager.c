@@ -769,13 +769,6 @@ void Sparks_Control(void)
 
 void Sparks_Draw(void)
 {
-#if defined(__DREAMCAST__)
-    // The Dreamcast stages no PolyFX yet (render/stubs.c): a spark would go
-    // through its position and depth, in 64-bit arithmetic, to be dropped at
-    // the end. Walking them cost 0.7 to 1.4 ms a frame in the London demo.
-    // shortcut: take this out when the PolyFX staging draws.
-    return;
-#endif
     for (int32_t i = 0; i < M_MAX_SPARKS; i++) {
         SPARK *const spark = &m_Sparks[i];
         if (!spark->on) {

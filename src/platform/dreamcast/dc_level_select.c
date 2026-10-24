@@ -64,6 +64,34 @@ static const char *const m_LevelsTR1[] = {
     "Atlantis",
     "The Great Pyramid",
 };
+// The expansions' levels, in their gameflows' order (data/trx/ship/games/
+// tr1-ub, tr2-gm and tr3-la).
+static const char *const m_LevelsUB[] = {
+    "Title screen",
+    "Return to Egypt",
+    "Temple of the Cat",
+    "Atlantean Stronghold",
+    "The Hive",
+};
+static const char *const m_LevelsGM[] = {
+    "Title screen",
+    "The Cold War",
+    "Fool's Gold",
+    "Furnace of the Gods",
+    "Kingdom",
+    "Nightmare in Vegas",
+};
+static const char *const m_LevelsLA[] = {
+    "Title screen",
+    "Highland Fling",
+    "Willard's Lair",
+    "Shakespeare Cliff",
+    "Sleeping with the Fishes",
+    "It's a Madhouse!",
+    "Reunion",
+};
+static const char *const m_NoEntries[] = { "(none)" };
+
 static const char *const m_LevelsTR3[] = {
     "Normal flow (logos, title, menu)",
     "Lara's Home",
@@ -204,8 +232,9 @@ static uint32_t M_Buttons(void)
     return state != nullptr ? state->buttons : 0;
 }
 
-int32_t DC_LevelSelect_Run(const int32_t engine)
+int32_t DC_LevelSelect_Run(const int32_t engine, const char *const mod)
 {
+    const bool expansion = mod != nullptr && mod[0] != '\0';
     const bool tr3 = engine == 3;
     const bool tr1 = engine == 1;
     const int32_t demo_count = tr1 ? M_DEMO_COUNT_TR1 : M_DEMO_COUNT_TR23;
@@ -216,6 +245,14 @@ int32_t DC_LevelSelect_Run(const int32_t engine)
             : tr3    ? M_LEN(m_LevelsTR3)
                      : M_LEN(m_LevelsTR2),
     };
+    if (expansion) {
+        // An expansion's levels, and no cutscenes or demos of its own.
+        m_Pages[M_PAGE_LEVELS].names =
+            tr1 ? m_LevelsUB : tr3 ? m_LevelsLA : m_LevelsGM;
+        m_Pages[M_PAGE_LEVELS].count = tr1 ? M_LEN(m_LevelsUB)
+            : tr3                          ? M_LEN(m_LevelsLA)
+                                           : M_LEN(m_LevelsGM);
+    }
     m_Pages[M_PAGE_CUTSCENES] = (M_PAGE) {
         .title = "Cutscenes",
         .names = tr1 ? m_CutscenesTR1 : tr3 ? m_CutscenesTR3 : m_CutscenesTR2,
@@ -230,6 +267,12 @@ int32_t DC_LevelSelect_Run(const int32_t engine)
             : tr3    ? M_LEN(m_DemosTR3)
                      : M_LEN(m_DemosTR2),
     };
+    if (expansion) {
+        m_Pages[M_PAGE_CUTSCENES].names = m_NoEntries;
+        m_Pages[M_PAGE_CUTSCENES].count = 1;
+        m_Pages[M_PAGE_DEMOS].names = m_NoEntries;
+        m_Pages[M_PAGE_DEMOS].count = 1;
+    }
     M_PAGE_ID page_id = M_PAGE_LEVELS;
     M_Draw(engine, page_id);
     // Buttons count from their press, so one held from the boot does nothing.
@@ -259,6 +302,9 @@ int32_t DC_LevelSelect_Run(const int32_t engine)
     }
     vid_clear(0, 0, 0);
     const int32_t selected = m_Pages[page_id].selected;
+    if (expansion && page_id != M_PAGE_LEVELS) {
+        return -1;
+    }
     switch (page_id) {
     case M_PAGE_CUTSCENES:
         g_DC_StartCutscene = selected;
@@ -270,6 +316,11 @@ int32_t DC_LevelSelect_Run(const int32_t engine)
             : selected;
         return -1;
     default:
+        // An expansion has no gym: its levels are numbered from 1, as the
+        // entries are (0 is the title).
+        if (expansion) {
+            return selected > 0 ? selected : -1;
+        }
         // Entry 0 is the title; the rest are levels 0 and on.
         return selected - 1;
     }

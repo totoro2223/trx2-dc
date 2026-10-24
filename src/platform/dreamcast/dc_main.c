@@ -15,6 +15,7 @@
 #include "dc_watchdog.h"
 #include "vmu.h"
 
+#include <arch/arch.h>
 #include <arch/mmu.h>
 #include <kos/dbgio.h>
 #include <kos/init.h>
@@ -105,6 +106,16 @@ int __wrap_main(int argc, char *argv[])
         }
         fclose(game);
     }
+    // An expansion on the disc (make_disc.sh's TRX_DC_MOD): the engine runs
+    // it by name, as --mod does.
+    static char mod_id[32];
+    FILE *const mod_file = fopen("/cd/MOD.TXT", "r");
+    if (mod_file != nullptr) {
+        if (fscanf(mod_file, "%31s", mod_id) != 1) {
+            mod_id[0] = '\0';
+        }
+        fclose(mod_file);
+    }
     // A test disc that starts in one of the title's demos (make_disc.sh's
     // TRX_DC_DEMO).
     FILE *const demo = fopen("/cd/DEMO.TXT", "r");
@@ -136,6 +147,16 @@ int __wrap_main(int argc, char *argv[])
             g_DC_TestMode = number;
         }
         fclose(mode);
+    }
+    // A test disc that fixes the shadow type (make_disc.sh's TRX_DC_SHADOW):
+    // the SHADOW_TYPE's number.
+    FILE *const shadow = fopen("/cd/SHADOW.TXT", "r");
+    if (shadow != nullptr) {
+        int number = -1;
+        if (fscanf(shadow, "%d", &number) == 1) {
+            g_DC_TestShadow = number;
+        }
+        fclose(shadow);
     }
     // A test disc that changes the mode on a frame (make_disc.sh's
     // TRX_DC_SWITCH): the mode's number and the frame.
@@ -175,7 +196,7 @@ int __wrap_main(int argc, char *argv[])
         }
         fclose(start);
     } else if (g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0) {
-        level = DC_LevelSelect_Run(engine);
+        level = DC_LevelSelect_Run(engine, mod_id);
     }
     g_DC_TestLevelStart = level;
     static char engine_arg[12];
@@ -184,7 +205,14 @@ int __wrap_main(int argc, char *argv[])
         "trx", "-e", engine_arg, "-l", level_arg, nullptr,
     };
     snprintf(engine_arg, sizeof(engine_arg), "%d", engine);
-    if (level >= 0) {
+    if (mod_id[0] != '\0') {
+        static char *mod_argv[] = {
+            "trx", "--mod", mod_id, "-l", level_arg, nullptr,
+        };
+        snprintf(level_arg, sizeof(level_arg), "%d", (int)level);
+        argc = level >= 0 ? 5 : 3;
+        argv = mod_argv;
+    } else if (level >= 0) {
         snprintf(level_arg, sizeof(level_arg), "%d", (int)level);
         argc = 5;
         argv = level_argv;
@@ -218,5 +246,15 @@ int __wrap_main(int argc, char *argv[])
     DC_Watchdog_Start(thread);
 #endif
     thd_join(thread, nullptr);
+#if !defined(TRX_DC_START_LEVEL)
+    if (args.result == 0) {
+        // The game ended (the player left to the list of levels): the console
+        // starts the disc over, so the list comes with all the memory clean,
+        // however the last game used it. Leaving it to the exit path worked
+        // the first time and not the second.
+        printf("TRX: the game ended; starting the disc over\n");
+        arch_reboot();
+    }
+#endif
     return args.result;
 }

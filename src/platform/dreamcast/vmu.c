@@ -10,6 +10,7 @@
 // payload begins with the name it has in the saves directory.
 
 #include "vmu.h"
+#include "render/pvr.h"
 
 #include <trx/core/log.h>
 
@@ -195,6 +196,8 @@ bool DC_VMU_StoreSave(const char *const path, const char *const title)
         return false;
     }
 
+    // The passport has drawn a box that says the card is being written (see
+    // Passport:save_with_notice) before it asks for this.
     FILE *const fp = fopen(path, "rb");
     if (fp == nullptr) {
         return false;
