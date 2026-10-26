@@ -13,6 +13,10 @@ BUILD_TYPE="${1:-debugoptimized}"
 DEPS="$(cd "${2:-../deps}" && pwd)/dc"
 ROOT="$(pwd)"
 BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE"
+# DC_STRICT=1 builds in a directory of its own with the memory filled with
+# garbage as the console has it (dc_strict option); DC_TEST_HANG=N also hangs
+# the game at frame N, to try the hang report.
+[ "${DC_STRICT:-0}" = 1 ] && BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE-strict"
 CROSS="$ROOT/build/dc-cross.ini"
 
 win() { cygpath -m "$1"; }
@@ -92,5 +96,8 @@ want=false
 [ "${DC_PROBES:-0}" = 1 ] && want=true
 if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk '$1 == "dc_probes" { print $2 }')" != "$want" ]; then
   meson configure "$BUILD_DIR" -Ddc_probes="$want"
+fi
+if [ "${DC_STRICT:-0}" = 1 ]; then
+  meson configure "$BUILD_DIR" -Ddc_strict=true -Ddc_test_hang="${DC_TEST_HANG:-0}"
 fi
 ninja -C "$BUILD_DIR" "${@:3}"

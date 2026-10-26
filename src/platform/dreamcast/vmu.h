@@ -21,3 +21,7 @@ int DC_VMU_LastResult(void);
 
 // Removes a saved game's copy from the memory card.
 void DC_VMU_DeleteSave(const char *path);
+
+// Writes a text file to the memory card (the hang report of dc_strict.c).
+// False if there is no card or no room left on it.
+bool DC_VMU_WriteLog(const char *card_name, const char *text);

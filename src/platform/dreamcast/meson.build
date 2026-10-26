@@ -84,6 +84,15 @@ add_project_arguments('-fno-math-errno', '-ffp-contract=fast', language: 'c')
 if get_option('buildtype') != 'release'
   add_project_arguments('-DTRX_DC_WATCHDOG', language: 'c')
 endif
+if get_option('dc_strict')
+  # What is not written stays garbage, as on the console: the heap at the
+  # start, blocks as malloc gives and free takes them (dc_strict.c) and the
+  # locals.
+  add_project_arguments('-DTRX_DC_STRICT', '-ftrivial-auto-var-init=pattern', language: 'c')
+endif
+if get_option('dc_test_hang') > 0
+  add_project_arguments('-DTRX_DC_TEST_HANG_FRAMES=@0@'.format(get_option('dc_test_hang')), language: 'c')
+endif
 if get_option('dc_profile')
   add_project_arguments('-DTRX_DC_PROFILE', language: 'c')
 endif
@@ -114,7 +123,24 @@ dc_kos_overrides = static_library(
   override_options: ['c_std=gnu11', 'warning_level=0'],
   c_args: ['-w'],
 )
-dc_link_whole = [dc_kos_overrides]
+
+# What the code of the strict build and the hang report is held to: new code
+# compiles with these as errors; the rest of the platform layer is only
+# checked with them on request (ninja dc_lint), as listing what they find in
+# it takes more than the build should.
+dc_strict_warnings = [
+  '-Wextra',
+  '-Wshadow',
+  '-Wuninitialized',
+  '-Wmaybe-uninitialized',
+  '-Wconversion',
+]
+dc_strict_lib = static_library(
+  'dc_strict_checks',
+  'dc_strict.c',
+  c_args: dc_strict_warnings + ['-Werror'],
+)
+dc_link_whole = [dc_kos_overrides, dc_strict_lib]
 
 # dc_main.c runs ahead of the engine's main.
 dc_link_args = ['-Wl,--wrap=main']

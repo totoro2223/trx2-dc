@@ -12,6 +12,7 @@
 #include "dc_bench.h"
 #include "dc_games.h"
 #include "dc_settings.h"
+#include "dc_strict.h"
 #include "dc_level_select.h"
 #include "dc_mode.h"
 #include "dc_watchdog.h"
@@ -29,6 +30,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+// Newlib declares it only for POSIX builds.
+int setenv(const char *name, const char *value, int overwrite);
 
 #define DC_MAIN_STACK_SIZE (128 * 1024)
 
@@ -104,6 +108,7 @@ typedef struct {
 static void *M_MainThread(void *const param)
 {
     M_MAIN_ARGS *const args = param;
+    DC_Crumb(DC_CRUMB_ENGINE, "engine thread");
     args->result = __real_main(args->argc, args->argv);
     return nullptr;
 }
@@ -368,7 +373,11 @@ int __wrap_main(int argc, char *argv[])
     // Until the renderer owns the screen, show the log on it.
     dbgio_dev_select("fb");
 #endif
+    DC_Crumb(DC_CRUMB_BOOT, "boot");
+    DC_Crumb_StartWatch();
+    DC_Strict_PoisonRAM();
     DC_Games_Init();
+    DC_Crumb(DC_CRUMB_GAMES, "games ready");
     M_InstallRecovery();
 #if defined(TRX_DC_MMU_NULL_TRAP)
     // Without the MMU a null pointer reads the boot ROM and a null call runs

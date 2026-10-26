@@ -807,3 +807,40 @@ Ajustes posteriores a la versión óptima (DC build 755): el brillo se apaga ant
 sombreado cerca de la normal (`shine_smooth`, quita la vibración del suelo donde la luz
 mira a la cámara); el relieve solo se apaga por debajo de 15 fps (`M_BUMP_MIN_FPS`, antes
 20); intensidad general un 15 % menor (`M_BUMP_DEPTH` 0,765 y `M_BUMP_GLOW` 0,425).
+
+## 26/10/2026: build y desarrollo estrictos (para trabajar con la consola real)
+
+Flycast no emula varias cosas que la consola sí (RAM con basura, listas de la PVR con
+límites, el caché del SH-4) y no hay cable serie. Lo que se añadió:
+
+1. **Memoria con basura** (`DC_STRICT=1 bash tools/dreamcast/build.sh minsize`, en
+   `build/dc-minsize-strict`): `-ftrivial-auto-var-init=pattern` para los locales, el montón
+   libre relleno con 0xCD al arrancar, cada bloque de `malloc` relleno con 0xCD y cada
+   `free` con 0xDD (`dc_strict.c`, ganchos en `dc_alloc_trace.c`). Lo que lee memoria sin
+   escribirla falla igual en Flycast. En TR2 nivel 1 arranca y juega bien.
+2. **Migas de pan y cuelgues** (`DC_Crumb` en `dc_strict.c`, siempre activo): el color del
+   borde de la pantalla marca la etapa (rojo arranque, naranja juegos, amarillo lista de
+   niveles, verde motor, cian cargando, azul cargado, magenta primer fotograma, negro
+   jugando). Un hilo vigila los fotogramas; con 20 s sin ninguno escribe el informe en
+   serie, lo dibuja en pantalla (sin comprobar: Flycast no muestra escrituras directas a
+   la VRAM) y, a los 40 s, lo guarda en la VMU como `TRXLOG` (comprobado). Para probarlo:
+   `DC_STRICT=1 DC_TEST_HANG=300 ...` cuelga el juego en el fotograma 300.
+3. **Auditorías de límites de la PVR** (`M_AuditBins` en `pvr.c`, cada 60 fotogramas; cada
+   10 en el build estricto): punteros por tesela y lista (`[bins]`), vértices no finitos,
+   con profundidad no positiva o fuera de la pantalla (`[audit]` en aviso), memoria de vídeo
+   libre y bytes de cada lista. La marca de uso de la pila ya estaba en `dc_watchdog.c`.
+   **Hallazgo**: en el primer fotograma de TR2 nivel 1 hay hasta 76 punteros por tesela en la
+   lista opaca (9 teselas sobre 16) y 109 en la de punch-through (10 sobre 16), con bloques
+   de 16 palabras. Si la consola recorta por ahí, Lara (la última en dibujarse) sería lo
+   primero en perderse.
+4. **Avisos del compilador** (`dc_strict_warnings` en `platform/dreamcast/meson.build`):
+   `dc_strict.c` compila con `-Wextra -Wshadow -Wuninitialized -Wmaybe-uninitialized
+   -Wconversion -Werror`. El resto de la capa se mira a petición con
+   `bash tools/dreamcast/build.sh minsize ../deps libdc_lint.a`: hoy 233 avisos (222 de
+   conversiones; los demás: `strdup`, `strcasecmp` y `sbrk` sin declarar, tres formatos
+   `%d` con `int32_t`, una comparación con signo).
+
+Bloques de la PVR (DC build 765): `opb_sizes` sube a 32 palabras en la lista opaca y en la de
+punch-through (translúcida sigue en 16), por los 76 y 109 punteros por tesela que dio la
+auditoría. Cuesta unos 40 KB de memoria de vídeo. Sin comprobar en la consola: si Lara
+vuelve a salir, era el desbordamiento; si no, mirar el color del borde y `TRXLOG` en la VMU.

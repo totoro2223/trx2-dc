@@ -10,6 +10,7 @@
 #include "pvr.h"
 
 #include <platform/dreamcast/dc_games.h>
+#include <platform/dreamcast/dc_strict.h>
 #include <platform/dreamcast/dc_mode.h>
 
 #include <trx/core/log.h>
@@ -434,11 +435,11 @@ static void M_InitHardware(void)
 {
     pvr_init_params_t params = {
         .opb_sizes = {
-            PVR_BINSIZE_16, // opaque polygons
+            PVR_BINSIZE_32, // opaque polygons
             PVR_BINSIZE_16, // opaque modifiers (shadow volumes)
             PVR_BINSIZE_16, // translucent polygons
             PVR_BINSIZE_0, // translucent modifiers
-            PVR_BINSIZE_16, // punch-through polygons
+            PVR_BINSIZE_32, // punch-through polygons
         },
         .vertex_buf_size = 512 * 1024,
         .dma_enabled = 0,
@@ -556,6 +557,7 @@ void DC_PVR_DrawLoadingScreen(
             return;
         }
     }
+    DC_Crumb_Beat();
     // The previous frame may still be drawing from the text; let it finish.
     pvr_wait_ready();
     uint32_t *const words = (uint32_t *)m_LoadingText;
@@ -1025,11 +1027,134 @@ void DC_PVR_BeginFrame(void)
     m_ScreenScale = m_LowRes ? 0.5f : 1.0f;
 }
 
+#if defined(TRX_DC_WATCHDOG)
+// The tile accelerator sorts what it is given into the 32x32 pixel tiles of
+// the screen, and keeps for each tile and list a block of object
+// pointers (opb_sizes in M_InitHardware): one per strip that touches the
+// tile. What does not fit the block goes to a small overflow buffer, and
+// when that is full, it is lost, or the scene stalls. The emulator draws every
+// polygon whatever the tiles hold, so this counts them from the lists as they
+// are built, once every M_AUDIT_EVERY frames, to show what the real chip
+// would be given. A strip counts for every tile its bounding box touches,
+// which is the most it can take.
+#define M_TILE_SIZE 32
+// The block size of each list (opb_sizes in M_InitHardware): OP, TR, PT.
+static const int32_t m_BinWords[3] = { 32, 16, 32 };
+#if defined(TRX_DC_STRICT)
+#define M_AUDIT_EVERY 10
+#else
+#define M_AUDIT_EVERY 60
+#endif
+// Past this a coordinate is not on any screen the chip can draw.
+#define M_AUDIT_FAR 4096.0f
+#define M_AUDIT_TILES_X 20
+#define M_AUDIT_TILES_Y 15
+static void M_AuditBins(void)
+{
+    static int32_t frame = 0;
+    if (++frame % M_AUDIT_EVERY != 0) {
+        return;
+    }
+    const float width = m_LowRes ? 320.0f : 640.0f;
+    const float height = m_LowRes ? 240.0f : 480.0f;
+    const int32_t tiles_x = (int32_t)(width / M_TILE_SIZE);
+    const int32_t tiles_y = (int32_t)(height / M_TILE_SIZE);
+    int32_t most[3] = {};
+    int32_t over[3] = {};
+    int32_t strips[3] = {};
+    int32_t not_finite[3] = {};
+    int32_t no_depth[3] = {};
+    int32_t far_off[3] = {};
+    uint16_t bins[M_AUDIT_TILES_X * M_AUDIT_TILES_Y];
+    for (int32_t i = 0; i < 3; i++) {
+        memset(bins, 0, sizeof(bins));
+        const uint8_t *const base = m_Lists[i].buffer;
+        const size_t written = m_Lists[i].frame_written;
+        float x_min = 0.0f;
+        float x_max = 0.0f;
+        float y_min = 0.0f;
+        float y_max = 0.0f;
+        bool open = false;
+        for (size_t at = 0; at + sizeof(pvr_vertex_t) <= written;
+             at += sizeof(pvr_vertex_t)) {
+            const pvr_vertex_t *const v = (const pvr_vertex_t *)(base + at);
+            if ((v->flags >> 29) != 7) {
+                continue; // a header
+            }
+            // What the chip may hang on, or draw as it likes, that the emulator
+            // takes in its stride.
+            if (!__builtin_isfinite(v->x) || !__builtin_isfinite(v->y)
+                || !__builtin_isfinite(v->z) || !__builtin_isfinite(v->u)
+                || !__builtin_isfinite(v->v)) {
+                not_finite[i]++;
+            } else if (v->z <= 0.0f) {
+                no_depth[i]++;
+            } else if (
+                v->x < -M_AUDIT_FAR || v->x > M_AUDIT_FAR || v->y < -M_AUDIT_FAR
+                || v->y > M_AUDIT_FAR) {
+                far_off[i]++;
+            }
+            if (!open) {
+                x_min = x_max = v->x;
+                y_min = y_max = v->y;
+                open = true;
+            } else {
+                x_min = MIN(x_min, v->x);
+                x_max = MAX(x_max, v->x);
+                y_min = MIN(y_min, v->y);
+                y_max = MAX(y_max, v->y);
+            }
+            if ((v->flags & 0x10000000u) == 0) {
+                continue;
+            }
+            open = false;
+            strips[i]++;
+            const int32_t tx0 = MAX(0, (int32_t)(x_min / M_TILE_SIZE));
+            const int32_t tx1 = MIN(tiles_x - 1, (int32_t)(x_max / M_TILE_SIZE));
+            const int32_t ty0 = MAX(0, (int32_t)(y_min / M_TILE_SIZE));
+            const int32_t ty1 = MIN(tiles_y - 1, (int32_t)(y_max / M_TILE_SIZE));
+            for (int32_t ty = ty0; ty <= ty1; ty++) {
+                for (int32_t tx = tx0; tx <= tx1; tx++) {
+                    bins[ty * M_AUDIT_TILES_X + tx]++;
+                }
+            }
+        }
+        for (int32_t t = 0; t < M_AUDIT_TILES_X * M_AUDIT_TILES_Y; t++) {
+            most[i] = MAX(most[i], (int32_t)bins[t]);
+            over[i] += bins[t] > m_BinWords[i];
+        }
+    }
+    LOG_INFO(
+        "[bins] pointers per tile (blocks OP %d TR %d PT %d): OP max %d over %d, TR max %d "
+        "over %d, PT max %d over %d; strips OP %d TR %d PT %d",
+        m_BinWords[0], m_BinWords[1], m_BinWords[2], most[0], over[0], most[1],
+        over[1], most[2], over[2],
+        strips[0], strips[1], strips[2]);
+    const int32_t bad = not_finite[0] + not_finite[1] + not_finite[2]
+        + no_depth[0] + no_depth[1] + no_depth[2] + far_off[0] + far_off[1]
+        + far_off[2];
+    if (bad > 0) {
+        LOG_WARNING(
+            "[audit] vertices the chip may hang on (OP/TR/PT): not finite "
+            "%d/%d/%d, depth not over 0 %d/%d/%d, off the screen %d/%d/%d",
+            not_finite[0], not_finite[1], not_finite[2], no_depth[0],
+            no_depth[1], no_depth[2], far_off[0], far_off[1], far_off[2]);
+    }
+    LOG_INFO(
+        "[audit] video memory free %u KiB; lists written OP %u TR %u PT %u KiB",
+        (unsigned)(pvr_mem_available() / 1024),
+        (unsigned)(m_Lists[0].frame_written / 1024),
+        (unsigned)(m_Lists[1].frame_written / 1024),
+        (unsigned)(m_Lists[2].frame_written / 1024));
+}
+#endif
+
 void DC_PVR_EndFrame(void)
 {
     if (!m_InFrame) {
         return;
     }
+    DC_Crumb_Frame();
     if (m_ScreenPending) {
         m_ScreenPending = false;
         const uint64_t start = timer_us_gettime64();
@@ -1044,6 +1169,9 @@ void DC_PVR_EndFrame(void)
         const float kept = m_Lists[i].peak * M_PEAK_DECAY;
         m_Lists[i].peak = demand > kept ? demand : kept;
     }
+#if defined(TRX_DC_WATCHDOG)
+    M_AuditBins();
+#endif
     // Each list once, as the tile accelerator wants; KOS sends a blank one
     // for those left empty.
     for (int32_t i = 0; i < M_LIST_COUNT; i++) {

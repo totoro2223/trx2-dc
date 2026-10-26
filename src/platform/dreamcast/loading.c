@@ -6,6 +6,7 @@
 #include "loading.h"
 
 #include "dc_games.h"
+#include "dc_strict.h"
 
 #include "render/pvr.h"
 
@@ -97,6 +98,7 @@ static void M_OnRead(const char *const name, const size_t bytes)
 void DC_Loading_Begin(const uint64_t total_bytes, const char *const picture)
 {
     // Read before the disc reads are watched: reading it would draw again.
+    DC_Crumb(DC_CRUMB_LOADING, "loading");
     M_GetVersion();
     DC_PVR_SetPicture(picture);
     m_Priv = (typeof(m_Priv)) {
@@ -123,6 +125,7 @@ void DC_Loading_End(void)
         return;
     }
     trx_iso_read_observer = nullptr;
+    DC_Crumb(DC_CRUMB_LOADED, "loaded");
     m_Priv.done = m_Priv.total;
     strncpy(m_Priv.name, "", sizeof(m_Priv.name));
     char line1[96];

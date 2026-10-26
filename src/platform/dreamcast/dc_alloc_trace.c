@@ -9,6 +9,7 @@
 
 #include "dc_alloc_trace.h"
 
+#include "dc_strict.h"
 #include "dc_watchdog.h"
 
 #include <malloc.h>
@@ -237,6 +238,9 @@ void DC_AllocTrace_DumpKept(const char *const label)
 void *__wrap_malloc(const size_t size)
 {
     void *const result = __real_malloc(size);
+#if defined(TRX_DC_STRICT)
+    DC_Strict_FillNew(result, size);
+#endif
     if (size >= DC_ALLOC_TRACE_MIN || result == nullptr) {
         M_Report("malloc", size, result, __builtin_return_address(0));
     }
@@ -258,7 +262,15 @@ void *__wrap_calloc(const size_t count, const size_t size)
 
 void *__wrap_realloc(void *const ptr, const size_t size)
 {
+#if defined(TRX_DC_STRICT)
+    const size_t old_size = ptr != nullptr ? malloc_usable_size(ptr) : 0;
+#endif
     void *const result = __real_realloc(ptr, size);
+#if defined(TRX_DC_STRICT)
+    if (result != nullptr && size > old_size) {
+        DC_Strict_FillNew((uint8_t *)result + old_size, size - old_size);
+    }
+#endif
     if (size >= DC_ALLOC_TRACE_MIN || result == nullptr) {
         M_Report("realloc", size, result, __builtin_return_address(0));
     }
@@ -275,6 +287,9 @@ void __wrap_free(void *const ptr)
 {
     M_Forget(ptr);
     M_Unkeep(ptr);
+#if defined(TRX_DC_STRICT)
+    DC_Strict_FillFreed(ptr);
+#endif
     __real_free(ptr);
 }
 

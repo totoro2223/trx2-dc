@@ -1117,6 +1117,25 @@ executable(
   name_suffix: trx_name_suffix,
 )
 
+# ninja dc_lint: the platform layer's sources compiled with the strict
+# warnings, to list what they find. Not part of the build.
+if is_dreamcast
+  dc_lint_sources = []
+  foreach source : dc_sources
+    if not source.full_path().endswith('.S')
+      dc_lint_sources += [source]
+    endif
+  endforeach
+  static_library(
+    'dc_lint',
+    dc_lint_sources,
+    dependencies: dependencies,
+    c_args: ['-I.'] + dc_strict_warnings,
+    include_directories: trx_include_directories,
+    build_by_default: false,
+  )
+endif
+
 if host_machine.system() == 'darwin'
   mac_install_tree = files('../tools/shared/mac/install_tree')
 

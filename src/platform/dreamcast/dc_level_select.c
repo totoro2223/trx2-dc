@@ -11,6 +11,7 @@
 
 #include "dc_bench.h"
 #include "dc_games.h"
+#include "dc_strict.h"
 
 #include <dc/biosfont.h>
 #include <dc/maple.h>
@@ -271,6 +272,7 @@ static uint32_t M_Buttons(void)
 
 int32_t DC_LevelSelect_Run(const int32_t engine, const char *const mod)
 {
+    DC_Crumb(DC_CRUMB_SELECTOR, "level list");
     const bool expansion = mod != nullptr && mod[0] != '\0';
     const bool tr3 = engine == 3;
     const bool tr1 = engine == 1;
@@ -348,6 +350,8 @@ int32_t DC_LevelSelect_Run(const int32_t engine, const char *const mod)
     uint32_t held = M_Buttons();
     while (true) {
         thd_sleep(16);
+        // Waiting for the player is not a hang.
+        DC_Crumb_Beat();
         if (picked) {
             break;
         }

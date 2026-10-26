@@ -280,3 +280,34 @@ void DC_VMU_DeleteSave(const char *const path)
     M_GetCardName(name, card_name);
     vmufs_delete(card, card_name);
 }
+
+bool DC_VMU_WriteLog(const char *const card_name, const char *const text)
+{
+    maple_device_t *const card = M_GetCard();
+    if (card == nullptr) {
+        return false;
+    }
+    const size_t length = strlen(text);
+    uint8_t *const payload = malloc(length + 1);
+    if (payload == nullptr) {
+        return false;
+    }
+    memcpy(payload, text, length + 1);
+    vmu_pkg_t pkg = {};
+    snprintf(pkg.desc_short, sizeof(pkg.desc_short), "TRX LOG");
+    snprintf(pkg.desc_long, sizeof(pkg.desc_long), "Where the game stopped");
+    snprintf(pkg.app_id, sizeof(pkg.app_id), M_APP_ID);
+    pkg.icon_cnt = 0;
+    pkg.eyecatch_type = VMUPKG_EC_NONE;
+    pkg.data_len = (int)length + 1;
+    pkg.data = payload;
+    uint8_t *file = nullptr;
+    int file_size = 0;
+    bool ok = vmu_pkg_build(&pkg, &file, &file_size) == 0;
+    if (ok) {
+        ok = vmufs_write(card, card_name, file, file_size, VMUFS_OVERWRITE) == 0;
+    }
+    free(file);
+    free(payload);
+    return ok;
+}
