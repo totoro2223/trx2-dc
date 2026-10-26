@@ -261,11 +261,11 @@ _Static_assert(
 // How far off the sun is taken to lie, for the direction its relief is lit from.
 #define M_BUMP_SUN_DISTANCE (64.0f * WALL_L)
 // How deep the relief's shade runs, of the whole colour.
-#define M_BUMP_DEPTH 0.9f
+#define M_BUMP_DEPTH 0.765f
 // How much of the colour a flat texel of the relief loses, of the whole.
 #define M_BUMP_DIM 0.0f
 // How bright the slopes turned to the light shine, of the whole.
-#define M_BUMP_GLOW 0.5f
+#define M_BUMP_GLOW 0.425f
 // The lowest a light stands over a face, in radians: one level with it or
 // behind it would shade every slope.
 #define M_BUMP_MIN_ELEVATION 0.35f
@@ -274,7 +274,7 @@ _Static_assert(
 // comes back once it is this much over it again in a scene this much lighter
 // (in vertices) than the one it went off in: back in the same scene, it would
 // only go off again.
-#define M_BUMP_MIN_FPS 20
+#define M_BUMP_MIN_FPS 15
 #define M_BUMP_SLOW_FPS 2
 // A rate under this is a stall (a level loading, a save), not a load too heavy
 // for the relief; and it tries again after this many seconds off.
@@ -3816,6 +3816,11 @@ static uint32_t M_BumpAt(
     const float off = sqrtf(MAX(1.0f - lz * lz, 0.0f));
     const float steady = M_Clamp((off - 0.30f) * (1.0f / 0.45f), 0.0f, 1.0f);
     const float steady_smooth = steady * steady * (3.0f - 2.0f * steady);
+    // The shine is let go sooner than the shade: where the light, the eye and
+    // the face line up it is the one that shimmers most.
+    const float shine_steady = M_Clamp((off - 0.5f) * (1.0f / 0.4f), 0.0f, 1.0f);
+    const float shine_smooth =
+        shine_steady * shine_steady * (3.0f - 2.0f * shine_steady);
     lz = M_Clamp(lz, M_BUMP_MIN_SIN, 1.0f);
     float q = M_Atan2(ly, lx);
     if (q < 0.0f) {
@@ -3824,7 +3829,7 @@ static uint32_t M_BumpAt(
     const uint32_t q8 =
         (uint32_t)(q * (256.0f / (2.0f * (float)M_PI))) & 0xFF;
     if (glow) {
-        return (M_PackUnit(depth * steady_smooth) << 8) | q8;
+        return (M_PackUnit(depth * shine_smooth) << 8) | q8;
     }
     // A flat texel keeps this much of the colour, so that the slopes turned
     // to the light can be lighter than it and the rest darker: only then does

@@ -802,3 +802,8 @@ partida si algo del relieve se rompe más adelante (etiqueta `bump-optimo-b755`)
 - Valores: `M_BUMP_DEPTH` 0,9, `M_BUMP_GLOW` 0,5, alcance 5 sectores (x3 con luz de paso).
 - Pendiente: la zona del suelo donde la luz mira a la cámara sigue vibrando (el brillo
   cuando la dirección intermedia coincide con la normal).
+
+Ajustes posteriores a la versión óptima (DC build 755): el brillo se apaga antes que el
+sombreado cerca de la normal (`shine_smooth`, quita la vibración del suelo donde la luz
+mira a la cámara); el relieve solo se apaga por debajo de 15 fps (`M_BUMP_MIN_FPS`, antes
+20); intensidad general un 15 % menor (`M_BUMP_DEPTH` 0,765 y `M_BUMP_GLOW` 0,425).
