@@ -225,8 +225,10 @@ que un nivel, fuera, en el montón de newlib**. En cada carga el registro dice
 `game heap: <tamaño>K, <usado>K in <n> blocks, largest free <x>K`: el usado
 debe quedar plano de un nivel a otro; si crece, hay una fuga.
 
-Para ver quién tiene lo que queda: compilar con `-DTRX_DC_HEAP_CENSUS` y
-`TRX_DC_WATCHDOG` (la región anota quién pidió cada bloque y vuelca la lista y
+Para ver quién tiene lo que queda: `meson configure build/dc-minsize
+-Ddc_heap_census=true` (define `TRX_DC_HEAP_CENSUS`; hace falta también
+`TRX_DC_WATCHDOG`, que llevan todas las compilaciones que no son `release`;
+`false` para volver; la región anota quién pidió cada bloque y vuelca la lista y
 su disposición en cada carga) y pasar el registro de un disco de prueba con
 `TRX_DC_LEVELS="<último> 200"` por
 `tools/dreamcast/live_census.py <registro> TRX.elf sh-elf-addr2line.exe`.

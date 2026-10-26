@@ -6,7 +6,7 @@ sin un dato nuevo (otro hardware, otro nivel). Los detalles y las cifras
 completas, en [REGISTRO.md](REGISTRO.md) (cronológico). Lo que falta por hacer,
 en [TAREAS.md](TAREAS.md).
 
-Actualizado el 23/10/2026. Todo se midió en **Flycast** (no modela las cachés
+Actualizado el 26/10/2026. Todo se midió en **Flycast** (no modela las cachés
 del SH-4) y nada se ha probado en consola real. "Venecia" = `venice.tr2`,
 "Londres" = demo de Aldwych de TR3 (benchmark). Estados:
 
@@ -78,6 +78,7 @@ del SH-4) y nada se ha probado en consola real. "Venecia" = `venice.tr2`,
 | Lógica de juego a 15 Hz | FALLIDO | el usuario lo rechazó (ticks fijos de 1/30 s) | — |
 | 60 fps adaptativo (baja a 30 si el trabajo > 33 ms, vuelve < 20 ms, 240 frames de espera) | SIN VER | compilado; umbrales sin ajustar en un nivel pesado | 281 local |
 | Opción "Adaptive 60 FPS" en el menú, ligada al modo gráfico | SIN VER | compilado | 281 local |
+| Relieve con brillo (Blinn), pasada aditiva `DC_BLEND_BUMP_GLOW`, mezcla de luces por alcance y fuerza, luces de paso 8× | SIN VER | valores a ojo (`M_BUMP_DEPTH` 0,9, `M_BUMP_GLOW` 0,5); se apaga bajo 20 fps | `f3b6f427d` |
 
 ## Sombras
 
@@ -138,7 +139,8 @@ Por defecto, el modo Gráficos usa Soft (high).
 Reflejos de pistolas con intensidad baja, sombra del cel según la luz, relieve
 más intenso y su apagado por fps, culling por portal y borde (buscar caras que
 faltan en los bordes), sombras Soft (high) y Hard nuevas, Adaptive 60 FPS,
-sombra bajo el agua, UI reutilizada entre ticks.
+sombra bajo el agua, UI reutilizada entre ticks, relieve con brillo y luces de
+paso, sombras Hard de largo fijo, texturas de TR3 en VQ.
 
 ## Visto en juego (24/10/2026)
 

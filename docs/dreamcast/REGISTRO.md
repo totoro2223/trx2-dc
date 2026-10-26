@@ -745,6 +745,11 @@ anterior cada vez. Piscina a **384 K** (`M_POOL_SIZE`), compilada (DC builds
 3. La VMU de Flycast (`D:\Flycast\data\T-TRX00_vmu_save_A1.bin`) tiene las
    partidas de prueba (ranuras 1–5 de los tres juegos); la copia previa es
    `T-TRX00_vmu_save_A1.bin.user-backup-20261024`.
+4. Los discos `*-run2.cdi` son de antes de `e139434fb` y `f3b6f427d` (cambio
+   de juego en el mismo proceso, relieve nuevo): compilar y hacerlos de nuevo.
+   (La fila T63 de la otra sesión pasó a T71 en PRUEBAS_PENDIENTES.md: chocaba
+   con la de este bloque.)
+
 ## 24/10/2026 (tarde): avisos de juegos, expansión en el selector, resultado del guardado
 
 - Cambiar de juego ya no reinicia la consola (ver T70): el motor acaba su hilo en vez de
