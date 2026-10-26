@@ -2,7 +2,7 @@
 # The window is brought to the front and copied from the screen, since
 # PrintWindow cannot see what Direct3D draws.
 #   .\tools\dreamcast\flycast_shot.ps1 -Out build\shot.png
-param([string]$Out = 'build\flycast.png')
+param([string]$Out = 'build\flycast.png', [string]$Path = '')
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
@@ -46,7 +46,7 @@ public class FlyShot {
 }
 "@
 [FlyShot]::SetProcessDPIAware() | Out-Null
-$p = Get-Process flycast -ErrorAction Stop | Select-Object -First 1
+$p = Get-Process flycast -ErrorAction Stop | Where-Object { $Path -eq '' -or $_.Path -eq $Path } | Select-Object -First 1
 $h = [FlyShot]::Find([uint32]$p.Id)
 if ($h -eq [IntPtr]::Zero) { throw 'Flycast game window not found' }
 # The serial console window would cover the game; it is minimised.

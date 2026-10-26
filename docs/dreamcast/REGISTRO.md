@@ -774,3 +774,31 @@ anterior cada vez. Piscina a **384 K** (`M_POOL_SIZE`), compilada (DC builds
   lejos de la cámara. Alcance 5 sectores, entrada suave sobre 3.
 - El relieve solo se apaga por debajo de 20 fps (`M_BUMP_MIN_FPS`).
 - Valores a ajustar a ojo: `M_BUMP_DEPTH` 0,9, `M_BUMP_GLOW` 0,5. Sin probar en consola real.
+
+## 26/10/2026: relieve (bump) — versión óptima (DC build 755)
+
+El usuario la dio por buena ("mucho mejor") tras probar la fogata de TR3. Es el punto de
+partida si algo del relieve se rompe más adelante (etiqueta `bump-optimo-b755`).
+
+- Dirección y fuerza **por vértice** (`M_BumpAt`, `M_BumpVertex`): la PVR interpola el
+  relieve por la cara, así que un lado de un suelo se ilumina distinto del otro.
+- **Rejilla 4×4** (`M_EmitBumpGrid`) en los quads que alcanza una luz de paso (fogata,
+  bengala, fogonazo): da el degradado radial. Dos fallos que costaron tiempo: las UV de
+  los vértices nuevos sin inicializar (ruido granulado en todas las paredes) y la
+  profundidad de los trozos igual a la de la cara de abajo (parpadeo píxel a píxel al
+  mover la cámara; se arregla con `M_BUMP_GRID_NEAR` 1,002).
+- Q (la dirección) es un byte que da la vuelta: un trozo cuyas esquinas quedan muy
+  separadas toma la de su esquina más fuerte (`M_BUMP_SPLIT_Q` 96).
+- El relieve se apaga con suavidad cuando la dirección se acerca a la normal de la cara
+  (luz casi encima): ahí Q giraba a cada parpadeo de la llama y vibraba (`steady`).
+- Luces: mezcla ponderada por alcance y fuerza; las de paso pesan 8 veces más y alcanzan
+  1,5 veces más lejos; una cara cerca de una luz de paso recibe relieve aunque esté lejos
+  de la cámara. Soles de sala de TR3 incluidos (el sentido de la dirección no está
+  comprobado).
+- Brillo (`DC_BLEND_BUMP_GLOW`): suma luz blanca por la alfa del relieve; sigue la luz de
+  la cara al cuadrado para no verse en zonas oscuras.
+- Se apaga solo por debajo de 20 fps; un parón (<6 fps, una carga) no cuenta, y vuelve a
+  probar a los 5 s.
+- Valores: `M_BUMP_DEPTH` 0,9, `M_BUMP_GLOW` 0,5, alcance 5 sectores (x3 con luz de paso).
+- Pendiente: la zona del suelo donde la luz mira a la cámara sigue vibrando (el brillo
+  cuando la dirección intermedia coincide con la normal).

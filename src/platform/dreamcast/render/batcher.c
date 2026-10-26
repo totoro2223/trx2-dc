@@ -249,8 +249,8 @@ _Static_assert(
 // them, fading out over the last stretch.
 #define M_BUMP_RANGE (5.0f * WALL_L)
 #define M_BUMP_FADE (3.0f * WALL_L)
-// A face a flash or other passing light reaches takes the relief this many
-// times as far from the camera.
+// The relief is looked for in rooms and faces up to this many times the
+// range from the camera, where a flash or other passing light may reach.
 #define M_BUMP_LIGHT_REACH 3.0f
 // How far a room's light is taken to reach, and how much stronger a passing
 // one counts than it where both do.
@@ -258,6 +258,8 @@ _Static_assert(
 #define M_BUMP_PASSING_POWER 8.0f
 // A passing light moves the relief this much farther than it lights.
 #define M_BUMP_PASSING_REACH 1.5f
+// How far off the sun is taken to lie, for the direction its relief is lit from.
+#define M_BUMP_SUN_DISTANCE (64.0f * WALL_L)
 // How deep the relief's shade runs, of the whole colour.
 #define M_BUMP_DEPTH 0.9f
 // How much of the colour a flat texel of the relief loses, of the whole.
@@ -274,6 +276,10 @@ _Static_assert(
 // only go off again.
 #define M_BUMP_MIN_FPS 20
 #define M_BUMP_SLOW_FPS 2
+// A rate under this is a stall (a level loading, a save), not a load too heavy
+// for the relief; and it tries again after this many seconds off.
+#define M_BUMP_STALL_FPS 6
+#define M_BUMP_RETRY_SECONDS 5
 #define M_BUMP_LIGHTER 0.85f
 
 // Reflections: the faces marked reflective take the environment map
@@ -430,7 +436,12 @@ typedef struct {
     // What the faces going out stand for (M_EMIT_*), and the offset colour
     // that lights the relief's.
     int32_t emit;
+    // The relief offset colour of the corners of the face going out (by the
+    // index of the vertex), and the one for any other.
     uint32_t bump_k;
+    uint32_t bump_vk[6];
+    OUTPUT_MESH_INDEX bump_idx[6];
+    int32_t bump_n;
     // The mode draws the relief.
     bool bump;
     // The cel shading is on: the player's setting, where the mode allows it.
@@ -2752,6 +2763,12 @@ M_HOT void M_Colours(
     case M_EMIT_BUMP:
         *argb = 0xFFFFFFFFu;
         *oargb = m_Frame.bump_k;
+        for (int32_t c = 0; c < m_Frame.bump_n; c++) {
+            if (m_Frame.bump_idx[c] == idx) {
+                *oargb = m_Frame.bump_vk[c];
+                break;
+            }
+        }
         return;
     default: {
         const M_XVERT *const xv = &batcher->xverts[idx];
@@ -3698,17 +3715,21 @@ M_HOT float M_Atan2(const float y, const float x)
 // The lowest a light stands over a face, as the sine of M_BUMP_MIN_ELEVATION.
 #define M_BUMP_MIN_SIN 0.342898f
 
-// The offset colour that lights a face's relief (DC_BLEND_BUMP) from eye
-// space point light, or 0 when the face takes none: K1, K2 and K3 so that a
-// flat texel keeps the colour (K1 + K2 whole) and a slope turned from the
-// light loses up to depth of it, and Q the way the light lies across the
-// face, from u towards v. No trigonometry: K2 is depth times the sine of
-// the elevation, which is the light's height over the face as it is, and K3
-// depth times its cosine, the root of what is left.
-static uint32_t M_BumpLight(
+// A face's relief is lit in this frame: which way u and v run across it, and
+// its normal turned towards the camera, with their lengths squared.
+typedef struct {
+    float t[3];
+    float bt[3];
+    float n[3];
+    float tl;
+    float bl;
+    float nl;
+} M_BUMP_FRAME;
+
+// The frame of the face of the three vertices idx, or false when it has none.
+static bool M_BumpFrame(
     const M_BINDING *const bind, const M_XVERT *const xv,
-    const OUTPUT_MESH_INDEX *const idx, const float light[3], const float depth,
-    const bool glow)
+    const OUTPUT_MESH_INDEX *const idx, M_BUMP_FRAME *const out)
 {
     const M_XVERT *const a = &xv[idx[0]];
     const M_XVERT *const b = &xv[idx[1]];
@@ -3724,88 +3745,98 @@ static uint32_t M_BumpLight(
     const float dv2 = bind->uv[idx[2] * 2 + 1] * uv_scale - v0;
     const float det = du1 * dv2 - du2 * dv1;
     if (fabsf(det) < 1.0e-9f) {
-        return 0;
+        return false;
     }
-    // Which way u and v run across the face, and the face's normal, turned
-    // towards the camera.
-    float t[3];
-    float bt[3];
     for (int32_t k = 0; k < 3; k++) {
-        t[k] = e1[k] * dv2 - e2[k] * dv1;
-        bt[k] = e2[k] * du1 - e1[k] * du2;
+        out->t[k] = e1[k] * dv2 - e2[k] * dv1;
+        out->bt[k] = e2[k] * du1 - e1[k] * du2;
     }
     if (det < 0.0f) {
         for (int32_t k = 0; k < 3; k++) {
-            t[k] = -t[k];
-            bt[k] = -bt[k];
+            out->t[k] = -out->t[k];
+            out->bt[k] = -out->bt[k];
         }
     }
-    float n[3] = {
-        e1[1] * e2[2] - e1[2] * e2[1],
-        e1[2] * e2[0] - e1[0] * e2[2],
-        e1[0] * e2[1] - e1[1] * e2[0],
-    };
+    out->n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+    out->n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+    out->n[2] = e1[0] * e2[1] - e1[1] * e2[0];
     const float a_pos[3] = { a->x, a->y, a->z };
-    if (M_Dot3(n, a_pos) > 0.0f) {
-        n[0] = -n[0];
-        n[1] = -n[1];
-        n[2] = -n[2];
+    if (M_Dot3(out->n, a_pos) > 0.0f) {
+        for (int32_t k = 0; k < 3; k++) {
+            out->n[k] = -out->n[k];
+        }
     }
-    const float centre[3] = {
-        (a->x + b->x + c->x) * (1.0f / 3.0f),
-        (a->y + b->y + c->y) * (1.0f / 3.0f),
-        (a->z + b->z + c->z) * (1.0f / 3.0f),
-    };
-    float l[3] = {
-        light[0] - centre[0], light[1] - centre[1], light[2] - centre[2],
-    };
+    out->tl = M_Dot3(out->t, out->t);
+    out->bl = M_Dot3(out->bt, out->bt);
+    out->nl = M_Dot3(out->n, out->n);
+    return out->tl > 0.0f && out->bl > 0.0f && out->nl > 0.0f;
+}
+
+// The offset colour that lights a face's relief (DC_BLEND_BUMP) at the point
+// pos (eye space) from an eye space point light: K1, K2 and K3 so that a flat
+// texel keeps the colour (K1 + K2 whole) and a slope turned from the light
+// loses up to depth of it, and Q the way the light lies across the face,
+// from u towards v. No trigonometry: K2 is depth times the sine of the
+// elevation, which is the light's height over the face as it is, and K3 depth
+// times its cosine, the root of what is left. Given at each vertex, the
+// PowerVR carries it across the face, so that the light is seen to lie
+// differently on the two sides of a face.
+static uint32_t M_BumpAt(
+    const M_BUMP_FRAME *const f, const float pos[3], const float light[3],
+    const float depth, const bool glow)
+{
+    float l[3] = { light[0] - pos[0], light[1] - pos[1], light[2] - pos[2] };
     // The slopes are lit as if for a shine: the way they must face to throw
     // the light at the camera is half way between the light and the eye (the
     // camera is the origin of eye space), so the relief moves as the camera
     // does.
     const float l_sq = M_Dot3(l, l);
-    const float c_sq = M_Dot3(centre, centre);
+    const float c_sq = M_Dot3(pos, pos);
     if (l_sq > 0.0f && c_sq > 0.0f) {
         const float li = M_InvSqrt(l_sq);
         const float ci = M_InvSqrt(c_sq);
         float h[3];
         for (int32_t k = 0; k < 3; k++) {
-            h[k] = l[k] * li - centre[k] * ci;
+            h[k] = l[k] * li - pos[k] * ci;
         }
         if (M_Dot3(h, h) > 1.0e-4f) {
             memcpy(l, h, sizeof(l));
         }
     }
-    const float tl = M_Dot3(t, t);
-    const float bl = M_Dot3(bt, bt);
-    const float nl = M_Dot3(n, n);
     const float ll = M_Dot3(l, l);
-    if (tl <= 0.0f || bl <= 0.0f || nl <= 0.0f || ll <= 0.0f) {
+    if (ll <= 0.0f) {
         return 0;
     }
-    const float lx = M_Dot3(l, t) * M_InvSqrt(tl * ll);
-    const float ly = M_Dot3(l, bt) * M_InvSqrt(bl * ll);
-    float lz = M_Dot3(l, n) * M_InvSqrt(nl * ll);
+    const float lx = M_Dot3(l, f->t) * M_InvSqrt(f->tl * ll);
+    const float ly = M_Dot3(l, f->bt) * M_InvSqrt(f->bl * ll);
+    float lz = M_Dot3(l, f->n) * M_InvSqrt(f->nl * ll);
+    // How far the light lies off the face's normal: with it near the normal
+    // the direction it lies across the face (Q) turns about at a breath, and
+    // the relief would shimmer, so it is let go as that nears.
+    const float off = sqrtf(MAX(1.0f - lz * lz, 0.0f));
+    const float steady = M_Clamp((off - 0.30f) * (1.0f / 0.45f), 0.0f, 1.0f);
+    const float steady_smooth = steady * steady * (3.0f - 2.0f * steady);
     lz = M_Clamp(lz, M_BUMP_MIN_SIN, 1.0f);
     float q = M_Atan2(ly, lx);
     if (q < 0.0f) {
         q += 2.0f * (float)M_PI;
     }
+    const uint32_t q8 =
+        (uint32_t)(q * (256.0f / (2.0f * (float)M_PI))) & 0xFF;
+    if (glow) {
+        return (M_PackUnit(depth * steady_smooth) << 8) | q8;
+    }
     // A flat texel keeps this much of the colour, so that the slopes turned
     // to the light can be lighter than it and the rest darker: only then does
     // the relief read as raised and not as dents. It is the whole colour as
     // the face leaves the relief's range.
-    if (glow) {
-        return (M_PackUnit(depth) << 8)
-            | ((uint32_t)(q * (256.0f / (2.0f * (float)M_PI))) & 0xFF);
-    }
     const float flat = 1.0f - M_BUMP_DIM * (depth * (1.0f / M_BUMP_DEPTH));
     const float k2 = MIN(depth * lz, flat);
-    const float k3 = depth * sqrtf(1.0f - lz * lz);
+    const float k3 = depth * sqrtf(1.0f - lz * lz) * steady_smooth;
     return (M_PackUnit(flat - k2) << 24) | (M_PackUnit(k2) << 16)
-        | (M_PackUnit(k3) << 8)
-        | ((uint32_t)(q * (256.0f / (2.0f * (float)M_PI))) & 0xFF);
+        | (M_PackUnit(k3) << 8) | q8;
 }
+
 // The relief's lights: a room's own, and the passing ones, in eye space, each
 // with how far it reaches and how strong it is.
 typedef struct {
@@ -3816,13 +3847,197 @@ typedef struct {
     int32_t count;
 } M_BUMP_LIGHTS;
 
+// The relief's offset colour at one vertex of a face (see M_BumpAt), and how
+// much of the relief the vertex takes in *fade. The light is the blend of
+// the lights that reach the vertex, by how near it stands to their reach and
+// how strong they are, so that the relief turns smoothly as a flash comes and
+// goes; with none, one high above it. Near the camera the relief is eased in
+// over a long stretch, so that none starts suddenly; and wherever a flash or
+// other passing light reaches the vertex, however far from the camera, by how
+// near it stands to that light.
+static uint32_t M_BumpVertex(
+    const M_BUMP_LIGHTS *const lights, const M_BUMP_FRAME *const frame,
+    const M_XVERT *const vert, const bool glow, float *const fade,
+    float *const by_light)
+{
+    const float(*const v)[4] = m_Frame.view;
+    const float pos[3] = { vert->x, vert->y, vert->z };
+    float light[3] = {};
+    float total = 0.0f;
+    float passing = 0.0f;
+    for (int32_t l = 0; l < lights->count; l++) {
+        const float *const p = lights->pos[l];
+        const float d[3] = { p[0] - pos[0], p[1] - pos[1], p[2] - pos[2] };
+        const float dist_sq = M_Dot3(d, d);
+        const float radius = lights->radius[l];
+        if (dist_sq >= radius * radius) {
+            continue;
+        }
+        const float ratio_sq = dist_sq / (radius * radius);
+        const float near = 1.0f - sqrtf(ratio_sq);
+        const float weight =
+            lights->power[l] * near * near / (1.0f + ratio_sq);
+        for (int32_t r = 0; r < 3; r++) {
+            light[r] += p[r] * weight;
+        }
+        total += weight;
+        if (lights->passing[l]) {
+            passing += weight;
+        }
+    }
+    float scale = 1.0f;
+    if (total > 0.0f) {
+        for (int32_t r = 0; r < 3; r++) {
+            light[r] /= total;
+        }
+        scale = M_Clamp(total * 4.0f, 0.0f, 1.0f);
+    } else {
+        // TR's y axis points down.
+        for (int32_t r = 0; r < 3; r++) {
+            light[r] = pos[r] - v[1][r] * (8.0f * WALL_L);
+        }
+    }
+    const float near = M_Clamp(
+        (M_BUMP_RANGE - vert->z) * (1.0f / M_BUMP_FADE), 0.0f, 1.0f);
+    const float lit_by_light = M_Clamp(passing * 4.0f, 0.0f, 1.0f);
+    *fade = MAX(near * near * (3.0f - 2.0f * near) * scale, lit_by_light);
+    *by_light = lit_by_light;
+    float strength = (glow ? M_BUMP_GLOW : M_BUMP_DEPTH) * *fade;
+    if (glow) {
+        // The shine adds light, so it follows how lit the vertex is: none
+        // where it stands in the dark.
+        const uint32_t c = vert->argb;
+        float lit = (float)MAX((c >> 16) & 0xFF, MAX((c >> 8) & 0xFF, c & 0xFF))
+            * (1.0f / 255.0f);
+        strength *= lit * lit;
+    }
+    return M_BumpAt(frame, pos, light, strength, glow);
+}
+
+// How much of a face's relief must come from a passing light for the face to
+// be cut up so that the light shows across it (see M_EmitBumpGrid), and into
+// how many strips each way.
+#define M_BUMP_SPLIT_LIGHT 0.05f
+#define M_BUMP_SPLIT 4
+// How far apart the directions at a face's corners may lie (of 256), for each
+// to keep its own.
+#define M_BUMP_SPLIT_Q 96
+#define M_BUMP_GRID_NEAR 1.002f
+
+// Draws a quad's relief in M_BUMP_SPLIT squared pieces, with the offset
+// colour found at every corner of every piece: the light's nearness to the
+// middle of a big face then shows, which the four corners alone cannot give.
+// For a quad wholly in front of the camera; false when it is not one.
+static bool M_EmitBumpGrid(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const M_BUMP_LIGHTS *const lights, const M_BUMP_FRAME *const frame,
+    const OUTPUT_MESH_INDEX *const tri, const bool glow)
+{
+    const OUTPUT_MESH_INDEX strip[4] = { tri[0], tri[1], tri[2], tri[5] };
+    const M_XVERT *const xv = batcher->xverts;
+    for (int32_t c = 0; c < 4; c++) {
+        if ((xv[strip[c]].clip & M_CLIP_NEAR) != 0) {
+            return false;
+        }
+    }
+    if (m_Frame.cull
+        && M_IsBackFacing(&xv[strip[0]], &xv[strip[1]], &xv[strip[2]])) {
+        return true;
+    }
+    float uv[4][2];
+    M_GetFaceUVs(batcher, bind, strip, 4, uv);
+    enum { M_N = M_BUMP_SPLIT + 1 };
+    M_XVERT grid[M_N * M_N];
+    float grid_uv[M_N * M_N][2] = {};
+    uint32_t grid_k[M_N * M_N];
+    for (int32_t row = 0; row < M_N; row++) {
+        const float t = (float)row / M_BUMP_SPLIT;
+        for (int32_t col = 0; col < M_N; col++) {
+            const float s = (float)col / M_BUMP_SPLIT;
+            // The strip's corners 0, 1, 2, 3 lie at (0,0), (1,0), (0,1), (1,1).
+            const float w[4] = {
+                (1.0f - s) * (1.0f - t), s * (1.0f - t), (1.0f - s) * t,
+                s * t,
+            };
+            M_XVERT *const g = &grid[row * M_N + col];
+            memset(g, 0, sizeof(*g));
+            for (int32_t c = 0; c < 4; c++) {
+                g->x += xv[strip[c]].x * w[c];
+                g->y += xv[strip[c]].y * w[c];
+                g->z += xv[strip[c]].z * w[c];
+                grid_uv[row * M_N + col][0] += uv[c][0] * w[c];
+                grid_uv[row * M_N + col][1] += uv[c][1] * w[c];
+            }
+            g->inv_z = 1.0f / g->z;
+            g->sx = m_Frame.proj_x * g->x * g->inv_z;
+            g->sy = m_Frame.proj_y * g->y * g->inv_z;
+            // A hair nearer than the face under it: the pieces do not lie at
+            // exactly the depth its whole does, and would win and lose to it
+            // pixel by pixel, shimmering as the camera moves.
+            g->inv_z *= M_BUMP_GRID_NEAR;
+            const int32_t ti = (int32_t)(s * 256.0f + 0.5f);
+            g->argb = M_LerpARGB(
+                M_LerpARGB(xv[strip[0]].argb, xv[strip[1]].argb, ti),
+                M_LerpARGB(xv[strip[2]].argb, xv[strip[3]].argb, ti),
+                (int32_t)(t * 256.0f + 0.5f));
+            float fade;
+            float by_light;
+            grid_k[row * M_N + col] =
+                M_BumpVertex(lights, frame, g, glow, &fade, &by_light);
+        }
+    }
+    for (int32_t row = 0; row < M_BUMP_SPLIT; row++) {
+        for (int32_t col = 0; col < M_BUMP_SPLIT; col++) {
+            const int32_t at[4] = {
+                row * M_N + col, row * M_N + col + 1, (row + 1) * M_N + col,
+                (row + 1) * M_N + col + 1,
+            };
+            uint32_t k[4];
+            for (int32_t c = 0; c < 4; c++) {
+                k[c] = grid_k[at[c]];
+            }
+            // Q is one byte that comes round from 255 to 0, and would run
+            // through every direction in between: a piece whose corners lie
+            // too far apart (right under the light, where the relief is let
+            // go in any case) has the direction of its strongest corner.
+            uint32_t q_min = 255;
+            uint32_t q_max = 0;
+            int32_t strongest = 0;
+            for (int32_t c = 0; c < 4; c++) {
+                q_min = MIN(q_min, k[c] & 0xFF);
+                q_max = MAX(q_max, k[c] & 0xFF);
+                if (((k[c] >> 8) & 0xFF) > ((k[strongest] >> 8) & 0xFF)) {
+                    strongest = c;
+                }
+            }
+            if (q_max - q_min > M_BUMP_SPLIT_Q) {
+                const uint32_t q = k[strongest] & 0xFF;
+                for (int32_t c = 0; c < 4; c++) {
+                    k[c] = (k[c] & ~0xFFu) | q;
+                }
+            }
+            pvr_vertex_t *const out = DC_PVR_ReservePoly(4);
+            if (out == nullptr) {
+                return true;
+            }
+            for (int32_t c = 0; c < 4; c++) {
+                M_Project(
+                    &grid[at[c]], grid_uv[at[c]][0], grid_uv[at[c]][1],
+                    0xFFFFFFFFu, k[c],
+                    c == 3 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[c]);
+            }
+            DC_PVR_CommitPoly(4);
+        }
+    }
+    return true;
+}
+
 // Draws the relief of the faces of one range near the camera over them.
 static void M_EmitBumpRange(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const M_BUMP_LIGHTS *const lights, const OUTPUT_MESH_INDEX *const indices,
     const int32_t count, int32_t *const page, const bool glow)
 {
-    const float(*const v)[4] = m_Frame.view;
     const M_XVERT *const xv = batcher->xverts;
     int32_t i = 0;
     while (i + 2 < count) {
@@ -3833,89 +4048,79 @@ static void M_EmitBumpRange(
         const int32_t tri_page = bind->page[tri[0]];
         const float z_min =
             MIN(xv[tri[0]].z, MIN(xv[tri[1]].z, xv[tri[2]].z));
+        M_BUMP_FRAME frame;
         if (tri_page == M_NO_PAGE || z_min >= M_BUMP_RANGE * M_BUMP_LIGHT_REACH
             || (xv[tri[0]].clip & xv[tri[1]].clip & xv[tri[2]].clip
                 & M_CLIP_CULL)
-                != 0) {
+                != 0
+            || !M_BumpFrame(bind, xv, tri, &frame)) {
             i += step;
             continue;
         }
-        // Where the face's light comes from: the lights that reach it, each
-        // by how near it stands to its reach and how strong it is, blended so
-        // that the relief turns smoothly as a flash comes and goes. With none,
-        // from high above it.
-        float light[3] = {};
-        const M_XVERT *const a = &xv[tri[0]];
-        float total = 0.0f;
-        float passing = 0.0f;
-        for (int32_t l = 0; l < lights->count; l++) {
-            const float *const p = lights->pos[l];
-            const float d[3] = { p[0] - a->x, p[1] - a->y, p[2] - a->z };
-            const float dist_sq = M_Dot3(d, d);
-            const float radius = lights->radius[l];
-            if (dist_sq >= radius * radius) {
-                continue;
-            }
-            const float ratio_sq = dist_sq / (radius * radius);
-            const float near = 1.0f - sqrtf(ratio_sq);
-            const float weight =
-                lights->power[l] * near * near / (1.0f + ratio_sq);
-            for (int32_t r = 0; r < 3; r++) {
-                light[r] += p[r] * weight;
-            }
-            total += weight;
-            if (lights->passing[l]) {
-                passing += weight;
-            }
+        // The relief at each corner.
+        uint32_t k[6];
+        bool any = false;
+        uint32_t q_min = 255;
+        uint32_t q_max = 0;
+        float max_by_light = 0.0f;
+        for (int32_t c = 0; c < step; c++) {
+            float fade;
+            float by_light;
+            k[c] = M_BumpVertex(
+                lights, &frame, &xv[tri[c]], glow, &fade, &by_light);
+            any |= fade > 0.0f;
+            max_by_light = MAX(max_by_light, by_light);
+            q_min = MIN(q_min, k[c] & 0xFF);
+            q_max = MAX(q_max, k[c] & 0xFF);
         }
-        float scale = 1.0f;
-        if (total > 0.0f) {
-            for (int32_t r = 0; r < 3; r++) {
-                light[r] /= total;
-            }
-            scale = M_Clamp(total * 4.0f, 0.0f, 1.0f);
-        } else {
-            // TR's y axis points down.
-            for (int32_t r = 0; r < 3; r++) {
-                light[r] = (&a->x)[r] - v[1][r] * (8.0f * WALL_L);
-            }
-        }
-        // A face a flash or other passing light reaches takes the relief
-        // three times as far from the camera.
-        const float reach =
-            1.0f
-            + (M_BUMP_LIGHT_REACH - 1.0f) * M_Clamp(passing * 4.0f, 0.0f, 1.0f);
-        // Eased in over a long stretch, so that no face's relief starts
-        // suddenly.
-        const float near = M_Clamp(
-            (M_BUMP_RANGE * reach - z_min) * (1.0f / (M_BUMP_FADE * reach)),
-            0.0f, 1.0f);
-        const float fade = near * near * (3.0f - 2.0f * near) * scale;
-        if (fade <= 0.0f) {
+        if (!any) {
             i += step;
             continue;
         }
-        float strength = (glow ? M_BUMP_GLOW : M_BUMP_DEPTH) * fade;
-        if (glow) {
-            // The shine adds light, so it follows how lit the face is: none
-            // where it stands in the dark.
-            float lit = 0.0f;
-            for (int32_t k = 0; k < 3; k++) {
-                const uint32_t c = xv[tri[k]].argb;
-                lit += MAX((c >> 16) & 0xFF, MAX((c >> 8) & 0xFF, c & 0xFF));
+        // Q is one byte that comes round from 255 to 0: a face whose corners
+        // lie either side of that, (as the one right under a light does)
+        // would run through every direction in between. It takes the middle's
+        // direction for all its corners, and keeps their own strength: the
+        // relief at a corner it shares with the next face stays what that
+        // face has there, so that the two meet.
+        if (q_max - q_min > 128) {
+            const int32_t corners = quad ? 4 : 3;
+            const OUTPUT_MESH_INDEX at[4] = {
+                tri[0], tri[1], tri[2], quad ? tri[5] : tri[2],
+            };
+            M_XVERT mid = xv[tri[0]];
+            mid.x = mid.y = mid.z = 0.0f;
+            for (int32_t c = 0; c < corners; c++) {
+                mid.x += xv[at[c]].x * (1.0f / corners);
+                mid.y += xv[at[c]].y * (1.0f / corners);
+                mid.z += xv[at[c]].z * (1.0f / corners);
             }
-            lit *= 1.0f / (3.0f * 255.0f);
-            strength *= lit * lit;
+            float fade;
+            float by_light;
+            const uint32_t mid_q = M_BumpVertex(
+                lights, &frame, &mid, glow, &fade, &by_light)
+                & 0xFF;
+            for (int32_t c = 0; c < step; c++) {
+                k[c] = (k[c] & ~0xFFu) | mid_q;
+            }
         }
-        m_Frame.bump_k = M_BumpLight(bind, xv, tri, light, strength, glow);
-        if (m_Frame.bump_k == 0) {
-            i += step;
-            continue;
+        m_Frame.bump_n = step;
+        for (int32_t c = 0; c < step; c++) {
+            m_Frame.bump_idx[c] = tri[c];
+            m_Frame.bump_vk[c] = k[c];
         }
         if (tri_page != *page) {
             *page = tri_page;
             DC_PVR_SetState(
                 glow ? DC_BLEND_BUMP_GLOW : DC_BLEND_BUMP, tri_page, true);
+        }
+        // A face a passing light lies near is cut up, so that the light is
+        // seen to lie nearer one part of it.
+        if (quad && max_by_light > M_BUMP_SPLIT_LIGHT
+            && M_EmitBumpGrid(batcher, bind, lights, &frame, tri, glow)) {
+            m_BumpFaces++;
+            i += step;
+            continue;
         }
         if (!quad || !M_TryEmitQuad(batcher, bind, tri, tri + 3)) {
             M_EmitTriangle(batcher, bind, tri[0], tri[1], tri[2]);
@@ -3948,8 +4153,34 @@ static void M_EmitBump(
          && lights.count < M_BUMP_MAX_LIGHTS;
          i++) {
         const LIGHT *const light = &room->lights[i];
-        if (light->type == LIGHT_TYPE_SUN
-            || light->type == LIGHT_TYPE_FOG_BULB) {
+        if (light->type == LIGHT_TYPE_FOG_BULB
+            || light->type == LIGHT_TYPE_SHADOW) {
+            continue;
+        }
+        if (light->type == LIGHT_TYPE_SUN) {
+            // A sun has a direction only: a far point that way, towards the
+            // light, whose reach takes in everything.
+            if (light->layout != LIGHT_LAYOUT_LEGACY) {
+                continue;
+            }
+            const float d[3] = {
+                (float)light->u.legacy.dir.x,
+                (float)light->u.legacy.dir.y,
+                (float)light->u.legacy.dir.z,
+            };
+            const float len_sq = M_Dot3(d, d);
+            if (len_sq <= 0.0f) {
+                continue;
+            }
+            const float dist = M_BUMP_SUN_DISTANCE * M_InvSqrt(len_sq);
+            for (int32_t r = 0; r < 3; r++) {
+                lights.pos[lights.count][r] =
+                    (v[0][r] * d[0] + v[1][r] * d[1] + v[2][r] * d[2]) * dist;
+            }
+            lights.radius[lights.count] = M_BUMP_SUN_DISTANCE * 64.0f;
+            lights.power[lights.count] = 1.0f;
+            lights.passing[lights.count] = false;
+            lights.count++;
             continue;
         }
         const float x = light->pos.x;
@@ -5703,21 +5934,29 @@ static void M_UpdateBumpLoad(void)
     // stalls its frame: the next two seconds' rate says nothing of the load.
     static uint32_t made = 0;
     static int32_t quiet = 0;
+    static int32_t off_frames = 0;
     if (DC_PVR_GetBumpPagesMade() != made) {
         made = DC_PVR_GetBumpPagesMade();
         quiet = 2 * target;
     }
     if (quiet > 0) {
         quiet--;
-    } else if (m_BumpOn && fps > 0 && fps < M_BUMP_MIN_FPS) {
+    } else if (
+        m_BumpOn && fps >= M_BUMP_STALL_FPS && fps < M_BUMP_MIN_FPS) {
         m_BumpOn = false;
         m_BumpOffVertices = m_FrameVertices;
+        off_frames = 0;
         LOG_INFO(
             "relief off: %d fps, %u vertices", (int)fps,
             (unsigned)m_BumpOffVertices);
     } else if (
-        !m_BumpOn && fps >= M_BUMP_MIN_FPS + M_BUMP_SLOW_FPS
-        && m_FrameVertices < m_BumpOffVertices * M_BUMP_LIGHTER) {
+        !m_BumpOn && ++off_frames > 0
+        && ((fps >= M_BUMP_MIN_FPS + M_BUMP_SLOW_FPS
+             && m_FrameVertices < m_BumpOffVertices * M_BUMP_LIGHTER)
+            || (off_frames > M_BUMP_RETRY_SECONDS * target
+                && fps >= target - M_BUMP_SLOW_FPS))) {
+        // Lighter, or after a while and with the frame rate whole again: a
+        // load that took the rate down leaves the same scene to try again.
         m_BumpOn = true;
         LOG_INFO("relief on: %u vertices", (unsigned)m_FrameVertices);
     }

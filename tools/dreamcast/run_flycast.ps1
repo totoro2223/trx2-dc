@@ -91,7 +91,7 @@ while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
 }
 '@
 
-Get-Process flycast -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process flycast -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Resolve-Path $Flycast).Path } | Stop-Process -Force
 $cdiPath = (Resolve-Path $Cdi).Path
 $outPath = Join-Path (Get-Location) $Out
 $readerPath = Join-Path $env:TEMP 'trx-dc-console-reader.ps1'
