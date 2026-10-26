@@ -6,6 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__DREAMCAST__)
+    #include <malloc.h>
+    #include <platform/dreamcast/dc_level_heap.h>
+#endif
+
 static MEMORY_ARENA_CHUNK *M_ArenaAllocChunk(
     MEMORY_ARENA_ALLOCATOR *const allocator, const size_t size)
 {
@@ -91,9 +96,25 @@ void *Memory_Realloc(void *const memory, const size_t size)
 #endif
     void *result = realloc(memory, size);
 #if defined(__DREAMCAST__)
+    // realloc returned nullptr, so the block is still ours; GCC 13 reads the
+    // retries below as uses of a block it believes was given back.
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wuse-after-free"
+    // The fuller levels leave newlib's top pinned while the level's region has
+    // megabytes free (TR3's mines: 4.6 MB); a big block newlib cannot grow is
+    // moved there whole, and lives in the region from then on.
+    if (result == nullptr && size >= 128 * 1024) {
+        void *const moved = DC_LevelHeap_Alloc(size);
+        if (moved != nullptr) {
+            memcpy(moved, memory, MIN(size, malloc_usable_size(memory)));
+            free(memory);
+            return moved;
+        }
+    }
     if (result == nullptr && size > 0 && Memory_HandleLowMemory()) {
         result = realloc(memory, size);
     }
+    #pragma GCC diagnostic pop
 #endif
     ASSERT(result != nullptr);
     return result;

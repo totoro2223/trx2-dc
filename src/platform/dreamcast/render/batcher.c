@@ -2375,6 +2375,40 @@ static void M_GrowVertexBuffers(MESH_BATCHER *const batcher, const int32_t count
     batcher->eargb = calloc(n, sizeof(*batcher->eargb));
 }
 
+// Per vertex of the frame being drawn, and up to a few megabytes in the
+// fullest levels: a save lets it go so that the saved game's tree fits, and the
+// next frame takes back what it needs (M_GrowVertexBuffers).
+void MeshBatcher_ReleaseScratch(MESH_BATCHER *const batcher)
+{
+    if (batcher == nullptr) {
+        return;
+    }
+    Memory_Free(batcher->xverts);
+    batcher->xverts = nullptr;
+    Memory_Free(batcher->soft);
+    batcher->soft = nullptr;
+    Memory_Free(batcher->soft_off);
+    batcher->soft_off = nullptr;
+    Memory_Free(batcher->oargb);
+    batcher->oargb = nullptr;
+    Memory_Free(batcher->sargb);
+    batcher->sargb = nullptr;
+    Memory_Free(batcher->env_uv);
+    batcher->env_uv = nullptr;
+    Memory_Free(batcher->eargb);
+    batcher->eargb = nullptr;
+    Memory_Free(batcher->share_slot);
+    batcher->share_slot = nullptr;
+    Memory_Free(batcher->cel_buf);
+    batcher->cel_buf = nullptr;
+    batcher->xverts_capacity = 0;
+    batcher->share_capacity = 0;
+    batcher->share_gen = 0;
+    Vector_Clear(batcher->cel_runs);
+    batcher->cel_count = 0;
+    batcher->cel_capacity = 0;
+}
+
 // The instance just transformed goes out with its opaque runs whole.
 static void M_WholeRanges(
     MESH_BATCHER *const batcher, const OUTPUT_MESH *const mesh)

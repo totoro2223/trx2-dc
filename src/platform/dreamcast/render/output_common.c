@@ -74,6 +74,9 @@ uint32_t g_DC_FrameCount = 0;
 #define M_MESH_MAX_VERTICES_TR3 12000
 
 int32_t LUA_DC_CollectGarbage(void);
+// The DC batcher (platform/dreamcast/render/batcher.c): its per-frame vertex
+// scratch, let go when a save needs the room.
+void MeshBatcher_ReleaseScratch(MESH_BATCHER *batcher);
 
 // An allocation is about to fail: the object meshes not drawn this frame and
 // the Lua state's garbage go, and the allocation is tried again.
@@ -82,6 +85,14 @@ static bool M_HandleLowMemory(void)
     OutputSource_Objects_EvictUnused(1);
     LUA_DC_CollectGarbage();
     return true;
+}
+
+// The per-vertex scratch of the frame being drawn, up to a few megabytes in the
+// fullest levels: a save lets it go before it builds its tree (the next frame
+// grows back what it needs).
+void DC_Render_FreeSavingRoom(void)
+{
+    MeshBatcher_ReleaseScratch(m_Batcher);
 }
 
 static void M_Shutdown(void)

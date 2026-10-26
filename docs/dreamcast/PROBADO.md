@@ -110,6 +110,9 @@ Por defecto, el modo Gráficos usa Soft (high).
 | Texturas de TR3 en VQ (`texvq.c` leía solo TR1 y TR2) | OK | 30 páginas en VQ; VRAM libre 2916 → 4126 K (build 315) |
 | Censo de la región (`-Ddc_heap_census=true`, `live_census.py`) | OK | TR1 level3a ~2,5 MB cargado, TR3 Jungle ~3,6 MB; pico de carga 5,4 / 6,0 MB (inyecciones y conversión de texturas conviven con el nivel) |
 | Montón de newlib fuera de la región | Medido | TR2 al cargar Barkhang: región 6592 K + Lua 2304 K + **~2,2 MB en bloques < 24 K** de larga vida; `brk` a 124 K del final de la RAM |
+| Región antes que newlib, `realloc` grande movido a la región y reintento con desalojo de mallas y Lua | OK | P1 TR3: los 19 niveles con `[levels] done` (build 784); en el 771 moría cargando el 18 con `brk` a 384 K |
+| Guardado por trozos (zlib en bloques de 16 K) y árbol construido sección a sección con arena reutilizada | OK | P2 TR2: 17 niveles; Barkhang guarda con la región 6020/6591 K, hueco 556 K, BSON 196 K y 34 bloques de VMU (build 794); TR1 repite 45 guardados y 8 cargas (795) |
+| Árbol BSON leído en trozos con la arena del guardado (`DC_SaveArena_IsOpen`) | OK en corto | TR3: árbol de 154 K → ~67 000 nodos en 6 trozos, 448 K de la región + 484–496 K de newlib; ya no hay petición de 700 K; 5 niveles `[levels] done` (build 805) |
 
 ## Sonido, entrada y juego
 

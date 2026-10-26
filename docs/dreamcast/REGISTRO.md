@@ -844,3 +844,47 @@ Bloques de la PVR (DC build 765): `opb_sizes` sube a 32 palabras en la lista opa
 punch-through (translúcida sigue en 16), por los 76 y 109 punteros por tesela que dio la
 auditoría. Cuesta unos 40 KB de memoria de vídeo. Sin comprobar en la consola: si Lara
 vuelve a salir, era el desbordamiento; si no, mirar el color del borde y `TRXLOG` en la VMU.
+
+## 26/10/2026 (tarde): memoria en sesiones largas, P1 y P2 en Flycast
+
+Batería de [PLAN_MEMORIA_SESIONES_LARGAS.md](PLAN_MEMORIA_SESIONES_LARGAS.md) hecha sin
+hardware ni teclas. El informe con todas las cifras está en
+[REPORTE_MEMORIA.md](REPORTE_MEMORIA.md); aquí queda lo que se cambió en el código.
+
+1. **Región antes que newlib en cada reserva** (`memory.c`): `Memory_Alloc` y
+   `Memory_Realloc` prueban primero la región del nivel (`DC_LevelHeap_Alloc`) y solo
+   después newlib. Un `realloc` grande que newlib no puede crecer se **mueve entero** a la
+   región. Con la región y `brk` secos, `M_HandleLowMemory` (`render/output_common.c`, nuevo)
+   tira las mallas de objetos no dibujadas y hace basura de Lua y se reintenta una vez.
+   P1 TR3 pasó de morir al cargar `mines.tr2` con `brk` a 384 K (build 771) a hacer los 19
+   niveles con `[levels] done` (build 784). Sin cambios fuera de `__DREAMCAST__`.
+2. **Guardado por trozos y por secciones** (`savegame/file.c`, `dc_save_arena.c/.h`, nuevo):
+   en Dreamcast `M_SaveBSON` construye el árbol **sección a sección** y solo mantiene vivos el
+   árbol y el BSON de la sección en curso; los trozos de la arena se reutilizan entre
+   secciones. La compresión escribe **bloques de 16 K** según los produce zlib
+   (`deflateInit2` con ventana 13, nivel 6) y parchea las tallas de la cabecera al final, así
+   que no hay bloque del tamaño del BSON. El árbol del guardado sale del **estado del juego**
+   (`sg_Game`), no de la partida cargada. El camino de escritorio y el resto de plataformas
+   siguen con el bloque único.
+   Resultado: P2 TR2 (build 794) hace 17 niveles; Barkhang (12) guarda con la región a
+   6020 K de 6591 K, hueco mayor 556 K, BSON 196 K y 34 bloques de VMU, con las mismas
+   tallas que antes. P2 TR1 (build 795) repite 45 guardados y 8 cargas.
+3. **Árbol BSON leído en trozos** (`core/json/base.c`, `core/bson/parse.c`): con un guardado
+   abierto (`DC_SaveArena_IsOpen`), `M_Alloc`/`M_Free` del parser pasan por la arena; los 18
+   puntos que avanzaban el búfer se convirtieron para reservar nodo a nodo en trozos (que
+   `M_Grow` parte por la mitad hasta que uno entra). El BSON de 154 K de TR3 son ~67 000
+   nodos en 6 trozos: 448 K de la región y 484–496 K de newlib, devueltos al terminar. Sin
+   arena, `BSON_Parse` sigue pidiendo el bloque único de antes (escritorio incluido).
+   Antes pedía 713–718 K con el hueco mayor en 606 K y newlib con 65 K en la cima, y
+   abortaba (`BSON_ParseEx`). Los 5 niveles de comprobación (build 805) llegan a
+   `[levels] done` con 17 guardados y 3 cargas y sin ninguna petición de 700 K.
+4. **Herramientas**: `tools/dreamcast/mem_summary.py` resume los `[save]`, `[region]` y
+   `[frame]` de un log en una tabla por carga (región, pico, hueco mayor, `spilled`, BSON).
+
+Sondas TEMP que quedan a propósito hasta cerrar la batería: `[save]` (una línea por sección
+del guardado y el tamaño del BSON) y `[arena]` (nodos y KB por sección y por trozo). Se
+quitan junto con la pasada completa de TR3.
+
+Pendiente: P2 TR3 completo (19 niveles, disco `T-mem-P2-tr3e.cdi`, build 804), que es
+también P5, y después P3, P4, P8 y P11. P6/P7/P9/P10/P12/P13 y la decisión sobre M12
+necesitan consola, teclas o los ojos del usuario.

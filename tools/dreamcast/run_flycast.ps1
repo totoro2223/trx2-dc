@@ -1,4 +1,4 @@
-﻿# Boots a CDI in Flycast and saves the Dreamcast serial console to a file.
+# Boots a CDI in Flycast and saves the Dreamcast serial console to a file.
 # Flycast must have Debug.SerialConsoleEnabled = yes in emu.cfg; it then shows
 # the serial output in a console window, which this script reads.
 #
@@ -181,10 +181,19 @@ while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
         }
     }
 }
-if ($proc.HasExited) {
-    "Flycast exited (code $($proc.ExitCode))"
-} elseif (-not $KeepRunning) {
+$exitedOnItsOwn = $proc.HasExited
+if (-not $exitedOnItsOwn -and -not $KeepRunning) {
     Stop-Process -Id $proc.Id -Force
+}
+$proc.WaitForExit(10000) | Out-Null
+# The exit code says whether Flycast closed or was taken down: a negative one
+# is a native crash (0xC0000005 is an access violation).
+$code = $null
+try { $code = $proc.ExitCode } catch { $code = $null }
+if ($exitedOnItsOwn) {
+    "Flycast exited by itself (code $(if ($null -eq $code) { 'unknown' } else { $code }))"
+} else {
+    "Flycast stopped by the script"
 }
 $readerProc.WaitForExit(5000) | Out-Null
 "Serial output written to $Out"
@@ -195,4 +204,6 @@ $log = Join-Path (Split-Path $Flycast) 'flycast.log'
 if ((Test-Path $log) -and (Get-Item $log).LastWriteTime -ge $logStart) {
     Get-Content $log | Select-String 'Fatal|exception|stopped' |
         Select-Object -Last 1 | ForEach-Object { "flycast: $($_.Line)" }
+} else {
+    "flycast wrote nothing to its log: it did not shut down on its own"
 }

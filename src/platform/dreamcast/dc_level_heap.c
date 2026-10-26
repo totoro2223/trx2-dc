@@ -39,7 +39,9 @@
 #include <string.h>
 
 // What newlib's heap keeps for its own users: KOS's file buffers, Lua's
-// spills, the PowerVR's scratch.
+// spills, the PowerVR's scratch. Half a megabyte was tried for the save's sake
+// (DC build 791) and a level load died for the lack of it: a megabyte is what a
+// load needs at its peak.
 #define M_HEAP_RESERVE (1024 * 1024)
 #define M_PROBE_MAX (12 * 1024 * 1024)
 #define M_PROBE_STEP (64 * 1024)

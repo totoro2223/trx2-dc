@@ -7,12 +7,60 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_save_arena.h>
+#endif
+
+// A savegame's tree is built in an arena of its own (dc_save_arena.c): its
+// nodes are tiny and there are tens of thousands of them. While none is open
+// these are the plain memory calls.
+static void *M_Alloc(const size_t size)
+{
+#if defined(__DREAMCAST__)
+    void *const from_arena = DC_SaveArena_Alloc(size);
+    if (from_arena != nullptr) {
+        memset(from_arena, 0, size);
+        return from_arena;
+    }
+#endif
+    return Memory_Alloc(size);
+}
+
+static void M_Free(void *const ptr)
+{
+#if defined(__DREAMCAST__)
+    if (DC_SaveArena_Free(ptr)) {
+        return;
+    }
+#endif
+    Memory_Free(ptr);
+}
+
+static char *M_DupStr(const char *const string)
+{
+    if (string == nullptr) {
+        return nullptr;
+    }
+    char *const memory = M_Alloc(strlen(string) + 1);
+    strcpy(memory, string);
+    return memory;
+}
+
+static void M_FreePointer(void *const arg)
+{
+    void *memory;
+    memcpy(&memory, arg, sizeof(void *));
+    memcpy(arg, &(void *) { nullptr }, sizeof(void *));
+    M_Free(memory);
+}
+
+
 static JSON_NUMBER *M_NumberNewInt(const int number)
 {
     const size_t size = snprintf(nullptr, 0, "%d", number) + 1;
-    char *const buf = Memory_Alloc(size);
+    char *const buf = M_Alloc(size);
     sprintf(buf, "%d", number);
-    JSON_NUMBER *const elem = Memory_Alloc(sizeof(JSON_NUMBER));
+    JSON_NUMBER *const elem = M_Alloc(sizeof(JSON_NUMBER));
     elem->number = buf;
     elem->number_size = strlen(buf);
     return elem;
@@ -21,9 +69,9 @@ static JSON_NUMBER *M_NumberNewInt(const int number)
 static JSON_NUMBER *M_NumberNewInt64(const int64_t number)
 {
     const size_t size = snprintf(nullptr, 0, "%" PRId64, number) + 1;
-    char *const buf = Memory_Alloc(size);
+    char *const buf = M_Alloc(size);
     sprintf(buf, "%" PRId64, number);
-    JSON_NUMBER *const elem = Memory_Alloc(sizeof(JSON_NUMBER));
+    JSON_NUMBER *const elem = M_Alloc(sizeof(JSON_NUMBER));
     elem->number = buf;
     elem->number_size = strlen(buf);
     return elem;
@@ -32,7 +80,7 @@ static JSON_NUMBER *M_NumberNewInt64(const int64_t number)
 static JSON_NUMBER *M_NumberNewDouble(const double number)
 {
     const size_t size = snprintf(nullptr, 0, "%f", number) + 3;
-    char *const buf = Memory_Alloc(size);
+    char *const buf = M_Alloc(size);
     sprintf(buf, "%f", number);
 
     // Remove trailing zeros, keeping at least one digit after the decimal point
@@ -54,7 +102,7 @@ static JSON_NUMBER *M_NumberNewDouble(const double number)
         }
     }
 
-    JSON_NUMBER *const elem = Memory_Alloc(sizeof(JSON_NUMBER));
+    JSON_NUMBER *const elem = M_Alloc(sizeof(JSON_NUMBER));
     elem->number = buf;
     elem->number_size = strlen(buf);
     return elem;
@@ -65,8 +113,8 @@ static JSON_NUMBER *M_NumberNewDouble(const double number)
 // spelled the way it came in.
 static JSON_NUMBER *M_NumberNewRaw(const char *const text)
 {
-    JSON_NUMBER *const elem = Memory_Alloc(sizeof(JSON_NUMBER));
-    elem->number = Memory_DupStr(text);
+    JSON_NUMBER *const elem = M_Alloc(sizeof(JSON_NUMBER));
+    elem->number = M_DupStr(text);
     elem->number_size = strlen(text);
     return elem;
 }
@@ -74,15 +122,15 @@ static JSON_NUMBER *M_NumberNewRaw(const char *const text)
 static void M_NumberFree(JSON_NUMBER *const num)
 {
     if (num->ref_count == 0) {
-        Memory_Free(num->number);
-        Memory_Free(num);
+        M_Free(num->number);
+        M_Free(num);
     }
 }
 
 static JSON_STRING *M_StringNew(const char *const string)
 {
-    JSON_STRING *const str = Memory_Alloc(sizeof(JSON_STRING));
-    str->string = Memory_DupStr(string);
+    JSON_STRING *const str = M_Alloc(sizeof(JSON_STRING));
+    str->string = M_DupStr(string);
     str->string_size = strlen(string);
     return str;
 }
@@ -90,14 +138,14 @@ static JSON_STRING *M_StringNew(const char *const string)
 static void M_StringFree(JSON_STRING *const str)
 {
     if (str->ref_count == 0) {
-        Memory_Free(str->string);
-        Memory_Free(str);
+        M_Free(str->string);
+        M_Free(str);
     }
 }
 
 static JSON_VALUE *M_ValueFromNumber(JSON_NUMBER *const num)
 {
-    JSON_VALUE *const value = Memory_Alloc(sizeof(JSON_VALUE));
+    JSON_VALUE *const value = M_Alloc(sizeof(JSON_VALUE));
     value->type = JSON_TYPE_NUMBER;
     value->payload = num;
     return value;
@@ -106,20 +154,20 @@ static JSON_VALUE *M_ValueFromNumber(JSON_NUMBER *const num)
 static void M_ArrayElementFree(JSON_ARRAY_ELEMENT *const element)
 {
     if (element->ref_count == 0) {
-        Memory_Free(element);
+        M_Free(element);
     }
 }
 
 static void M_ObjectElementFree(JSON_OBJECT_ELEMENT *element)
 {
     if (element->ref_count == 0) {
-        Memory_FreePointer(&element);
+        M_FreePointer(&element);
     }
 }
 
 JSON_VALUE *JSON_ValueFromBool(const int b)
 {
-    JSON_VALUE *const value = Memory_Alloc(sizeof(JSON_VALUE));
+    JSON_VALUE *const value = M_Alloc(sizeof(JSON_VALUE));
     value->type = b ? JSON_TYPE_TRUE : JSON_TYPE_FALSE;
     value->payload = nullptr;
     return value;
@@ -142,7 +190,7 @@ JSON_VALUE *JSON_ValueFromDouble(const double number)
 
 JSON_VALUE *JSON_ValueFromString(const char *const string)
 {
-    JSON_VALUE *const value = Memory_Alloc(sizeof(JSON_VALUE));
+    JSON_VALUE *const value = M_Alloc(sizeof(JSON_VALUE));
     value->type = JSON_TYPE_STRING;
     value->payload = M_StringNew(string);
     return value;
@@ -150,7 +198,7 @@ JSON_VALUE *JSON_ValueFromString(const char *const string)
 
 JSON_VALUE *JSON_ValueFromArray(JSON_ARRAY *const arr)
 {
-    JSON_VALUE *const value = Memory_Alloc(sizeof(JSON_VALUE));
+    JSON_VALUE *const value = M_Alloc(sizeof(JSON_VALUE));
     value->type = JSON_TYPE_ARRAY;
     value->payload = arr;
     return value;
@@ -158,7 +206,7 @@ JSON_VALUE *JSON_ValueFromArray(JSON_ARRAY *const arr)
 
 JSON_VALUE *JSON_ValueFromObject(JSON_OBJECT *const obj)
 {
-    JSON_VALUE *const value = Memory_Alloc(sizeof(JSON_VALUE));
+    JSON_VALUE *const value = M_Alloc(sizeof(JSON_VALUE));
     value->type = JSON_TYPE_OBJECT;
     value->payload = obj;
     return value;
@@ -190,7 +238,7 @@ void JSON_ValueFree(JSON_VALUE *const value)
     }
 
     if (value->ref_count == 0) {
-        Memory_Free(value);
+        M_Free(value);
     }
 }
 
@@ -236,7 +284,7 @@ JSON_VALUE *JSON_ValueCopy(const JSON_VALUE *const value)
         break;
     }
 
-    JSON_VALUE *const copy = Memory_Alloc(sizeof(JSON_VALUE));
+    JSON_VALUE *const copy = M_Alloc(sizeof(JSON_VALUE));
     copy->type = value->type;
     copy->payload = nullptr;
     return copy;
@@ -341,7 +389,7 @@ JSON_OBJECT *JSON_ValueAsObject_Impl(const JSON_VALUE *const value)
 
 JSON_ARRAY *JSON_ArrayNew(void)
 {
-    JSON_ARRAY *const arr = Memory_Alloc(sizeof(JSON_ARRAY));
+    JSON_ARRAY *const arr = M_Alloc(sizeof(JSON_ARRAY));
     arr->start = nullptr;
     arr->length = 0;
     return arr;
@@ -357,13 +405,13 @@ void JSON_ArrayFree(JSON_ARRAY *const arr)
         elem = next;
     }
     if (arr->ref_count == 0) {
-        Memory_Free(arr);
+        M_Free(arr);
     }
 }
 
 void JSON_ArrayAppend(JSON_ARRAY *const arr, JSON_VALUE *const value)
 {
-    JSON_ARRAY_ELEMENT *elem = Memory_Alloc(sizeof(JSON_ARRAY_ELEMENT));
+    JSON_ARRAY_ELEMENT *elem = M_Alloc(sizeof(JSON_ARRAY_ELEMENT));
     elem->value = value;
     elem->next = nullptr;
     if (arr->start) {
@@ -463,7 +511,7 @@ JSON_OBJECT *JSON_ArrayGetObject_Impl(
 
 JSON_OBJECT *JSON_ObjectNew(void)
 {
-    JSON_OBJECT *const obj = Memory_Alloc(sizeof(JSON_OBJECT));
+    JSON_OBJECT *const obj = M_Alloc(sizeof(JSON_OBJECT));
     obj->start = nullptr;
     obj->length = 0;
     return obj;
@@ -480,14 +528,14 @@ void JSON_ObjectFree(JSON_OBJECT *const obj)
         elem = next;
     }
     if (obj->ref_count == 0) {
-        Memory_Free(obj);
+        M_Free(obj);
     }
 }
 
 void JSON_ObjectAppend(
     JSON_OBJECT *const obj, const char *const key, JSON_VALUE *const value)
 {
-    JSON_OBJECT_ELEMENT *elem = Memory_Alloc(sizeof(JSON_OBJECT_ELEMENT));
+    JSON_OBJECT_ELEMENT *elem = M_Alloc(sizeof(JSON_OBJECT_ELEMENT));
     elem->name = M_StringNew(key);
     elem->value = value;
     elem->next = nullptr;

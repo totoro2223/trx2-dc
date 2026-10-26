@@ -19,6 +19,7 @@
 
 int32_t LUA_DC_CollectGarbage(void);
 void DC_PVR_ReleaseVertexPool(void);
+void DC_Render_FreeSavingRoom(void);
 #endif
 
 static SAVEGAME_VERSION m_InitialVersion = SG_VERSION_LEGACY;
@@ -127,9 +128,11 @@ void Savegame_ProcessItemsBeforeLoad(void)
 // The saved game's copies of the game's state take up to 400 KiB at once, and
 // the fuller levels (Jungle) have none free: what a scene can build again goes
 // first (the object meshes it drew some frames ago, the cache down to a few
-// thousand vertices), and the scripts' garbage.
+// thousand vertices), the scripts' garbage, and the batcher's per-vertex
+// scratch of the frame (a couple of megabytes in Catacombs).
 static void M_FreeMemoryForSaving(void)
 {
+    DC_Render_FreeSavingRoom();
     OutputSource_Objects_EvictUnused(1);
     OutputSource_Objects_EvictToBudget(6000);
     LUA_DC_CollectGarbage();

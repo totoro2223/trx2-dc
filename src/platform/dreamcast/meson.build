@@ -57,6 +57,7 @@ dc_sources = files(
   'dc_main.c',
   'dc_settings.c',
   'dc_mode.c',
+  'dc_save_arena.c',
   'dc_watchdog.c',
   'gl_facade.c',
   'loading.c',

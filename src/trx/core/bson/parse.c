@@ -4,6 +4,10 @@
 #include <trx/core/memory.h>
 #include <trx/debug.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_save_arena.h>
+#endif
+
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -44,6 +48,44 @@ static double M_ReadDouble(const char *const src)
     double value = 0.0;
     memcpy(&value, src, sizeof(value));
     return value;
+}
+
+// A savegame's tree is a few hundred kilobytes of small nodes, and it is read
+// just after a level has filled the region (TR3's level 12 asked for 716K at
+// once while the region's largest hole was 606K and newlib had 65K at its
+// top). When a save arena is open the tree is parsed straight into its chunks,
+// a node at a time; anywhere else, and for every other BSON, it still goes in
+// one block.
+static void *M_AllocDom(M_STATE *const state, const size_t size)
+{
+#if defined(__DREAMCAST__)
+    {
+        void *const memory = DC_SaveArena_Alloc(size);
+        if (memory != nullptr) {
+            return memory;
+        }
+    }
+#endif
+    void *const memory = state->dom;
+    ASSERT(memory != nullptr);
+    state->dom += size;
+    return memory;
+}
+
+static char *M_AllocData(M_STATE *const state, const size_t size)
+{
+#if defined(__DREAMCAST__)
+    {
+        char *const memory = DC_SaveArena_Alloc(size);
+        if (memory != nullptr) {
+            return memory;
+        }
+    }
+#endif
+    char *const memory = state->data;
+    ASSERT(memory != nullptr);
+    state->data += size;
+    return memory;
 }
 
 static bool M_GetObjectKeySize(M_STATE *state)
@@ -309,14 +351,16 @@ static void M_HandleObjectKey(M_STATE *state, JSON_STRING *string)
     ASSERT(state != nullptr);
     ASSERT(string != nullptr);
     size_t size = 0;
-    string->ref_count = 1;
-    string->string = state->data;
-    while (state->src[state->offset]) {
-        state->data[size++] = state->src[state->offset++];
+    while (state->src[state->offset + size]) {
+        size++;
     }
-    string->string_size = size;
-    state->data[size++] = state->src[state->offset++];
-    state->data += size;
+    size++; // the key's own terminator
+    char *const memory = M_AllocData(state, size);
+    memcpy(memory, state->src + state->offset, size);
+    state->offset += size;
+    string->ref_count = 1;
+    string->string = memory;
+    string->string_size = size - 1;
 }
 
 static void M_HandleNullValue(M_STATE *state, JSON_VALUE *value)
@@ -356,14 +400,14 @@ static void M_HandleInt32Value(M_STATE *state, JSON_VALUE *value)
     int32_t num = M_ReadI32(&state->src[state->offset]);
     state->offset += sizeof(int32_t);
 
-    JSON_NUMBER *number = (JSON_NUMBER *)state->dom;
+    JSON_NUMBER *const number = M_AllocDom(state, sizeof(JSON_NUMBER));
     number->ref_count = 1;
-    state->dom += sizeof(JSON_NUMBER);
 
-    number->number = state->data;
-    sprintf(state->data, "%d", num);
-    number->number_size = strlen(number->number);
-    state->data += number->number_size + 1;
+    const int length = snprintf(nullptr, 0, "%d", (int)num);
+    char *const memory = M_AllocData(state, length + 1);
+    sprintf(memory, "%d", (int)num);
+    number->number = memory;
+    number->number_size = length;
 
     value->type = JSON_TYPE_NUMBER;
     value->payload = number;
@@ -378,14 +422,14 @@ static void M_HandleInt64Value(M_STATE *state, JSON_VALUE *value)
     int64_t num = M_ReadI64(&state->src[state->offset]);
     state->offset += sizeof(int64_t);
 
-    JSON_NUMBER *number = (JSON_NUMBER *)state->dom;
+    JSON_NUMBER *const number = M_AllocDom(state, sizeof(JSON_NUMBER));
     number->ref_count = 1;
-    state->dom += sizeof(JSON_NUMBER);
 
-    number->number = state->data;
-    sprintf(state->data, "%" PRId64, num);
-    number->number_size = strlen(number->number);
-    state->data += number->number_size + 1;
+    const int length = snprintf(nullptr, 0, "%" PRId64, num);
+    char *const memory = M_AllocData(state, length + 1);
+    sprintf(memory, "%" PRId64, num);
+    number->number = memory;
+    number->number_size = length;
 
     value->type = JSON_TYPE_NUMBER;
     value->payload = number;
@@ -400,14 +444,14 @@ static void M_HandleDoubleValue(M_STATE *state, JSON_VALUE *value)
     double num = M_ReadDouble(&state->src[state->offset]);
     state->offset += sizeof(double);
 
-    JSON_NUMBER *number = (JSON_NUMBER *)state->dom;
+    JSON_NUMBER *const number = M_AllocDom(state, sizeof(JSON_NUMBER));
     number->ref_count = 1;
-    state->dom += sizeof(JSON_NUMBER);
 
-    number->number = state->data;
-    sprintf(state->data, "%f", num);
-    number->number_size = strlen(number->number);
-    state->data += number->number_size + 1;
+    const int length = snprintf(nullptr, 0, "%f", num);
+    char *const memory = M_AllocData(state, length + 1);
+    sprintf(memory, "%f", num);
+    number->number = memory;
+    number->number_size = length;
 
     // strip trailing zeroes after decimal point
     if (strchr(number->number, '.')) {
@@ -431,16 +475,15 @@ static void M_HandleStringValue(M_STATE *state, JSON_VALUE *value)
     int32_t size = M_ReadI32(&state->src[state->offset]);
     state->offset += sizeof(int32_t);
 
-    JSON_STRING *string = (JSON_STRING *)state->dom;
+    JSON_STRING *const string = M_AllocDom(state, sizeof(JSON_STRING));
     string->ref_count = 1;
-    state->dom += sizeof(JSON_STRING);
 
-    memcpy(state->data, state->src + state->offset, size);
+    char *const memory = M_AllocData(state, size);
+    memcpy(memory, state->src + state->offset, size);
     state->offset += size;
 
-    string->string = state->data;
+    string->string = memory;
     string->string_size = size;
-    state->data += size;
 
     value->type = JSON_TYPE_STRING;
     value->payload = string;
@@ -457,14 +500,12 @@ static void M_HandleArrayElementWrapped(
     state->offset++;
 
     // BSON arrays always use keys
-    JSON_STRING *key = (JSON_STRING *)state->dom;
+    JSON_STRING *const key = M_AllocDom(state, sizeof(JSON_STRING));
     key->ref_count = 1;
-    state->dom += sizeof(JSON_STRING);
     M_HandleObjectKey(state, key);
 
-    JSON_VALUE *value = (JSON_VALUE *)state->dom;
+    JSON_VALUE *const value = M_AllocDom(state, sizeof(JSON_VALUE));
     value->ref_count = 1;
-    state->dom += sizeof(JSON_VALUE);
 
     element->value = value;
 
@@ -484,9 +525,9 @@ static void M_HandleArray(M_STATE *state, JSON_ARRAY *array)
     JSON_ARRAY_ELEMENT *previous = nullptr;
     int count = 0;
     while (state->offset < start_offset + size - 1) {
-        JSON_ARRAY_ELEMENT *element = (JSON_ARRAY_ELEMENT *)state->dom;
+        JSON_ARRAY_ELEMENT *const element =
+            M_AllocDom(state, sizeof(JSON_ARRAY_ELEMENT));
         element->ref_count = 1;
-        state->dom += sizeof(JSON_ARRAY_ELEMENT);
         if (!previous) {
             array->start = element;
         } else {
@@ -514,9 +555,8 @@ static void M_HandleArrayValue(M_STATE *state, JSON_VALUE *value)
     ASSERT(state != nullptr);
     ASSERT(value != nullptr);
 
-    JSON_ARRAY *array = (JSON_ARRAY *)state->dom;
+    JSON_ARRAY *const array = M_AllocDom(state, sizeof(JSON_ARRAY));
     array->ref_count = 1;
-    state->dom += sizeof(JSON_ARRAY);
 
     M_HandleArray(state, array);
 
@@ -534,14 +574,12 @@ static void M_HandleObjectElementWrapped(
     uint8_t marker = state->src[state->offset];
     state->offset++;
 
-    JSON_STRING *key = (JSON_STRING *)state->dom;
+    JSON_STRING *const key = M_AllocDom(state, sizeof(JSON_STRING));
     key->ref_count = 1;
-    state->dom += sizeof(JSON_STRING);
     M_HandleObjectKey(state, key);
 
-    JSON_VALUE *value = (JSON_VALUE *)state->dom;
+    JSON_VALUE *const value = M_AllocDom(state, sizeof(JSON_VALUE));
     value->ref_count = 1;
-    state->dom += sizeof(JSON_VALUE);
 
     element->name = key;
     element->value = value;
@@ -562,9 +600,9 @@ static void M_HandleObject(M_STATE *state, JSON_OBJECT *object)
     JSON_OBJECT_ELEMENT *previous = nullptr;
     int count = 0;
     while (state->offset < start_offset + size - 1) {
-        JSON_OBJECT_ELEMENT *element = (JSON_OBJECT_ELEMENT *)state->dom;
+        JSON_OBJECT_ELEMENT *const element =
+            M_AllocDom(state, sizeof(JSON_OBJECT_ELEMENT));
         element->ref_count = 1;
-        state->dom += sizeof(JSON_OBJECT_ELEMENT);
         if (!previous) {
             object->start = element;
         } else {
@@ -592,9 +630,8 @@ static void M_HandleObjectValue(M_STATE *state, JSON_VALUE *value)
     ASSERT(state != nullptr);
     ASSERT(value != nullptr);
 
-    JSON_OBJECT *object = (JSON_OBJECT *)state->dom;
+    JSON_OBJECT *const object = M_AllocDom(state, sizeof(JSON_OBJECT));
     object->ref_count = 1;
-    state->dom += sizeof(JSON_OBJECT);
 
     M_HandleObject(state, object);
 
@@ -691,16 +728,32 @@ JSON_VALUE *BSON_ParseEx(
 
     total_size = state.dom_size + state.data_size;
 
-    allocation = Memory_Alloc(total_size);
+#if defined(__DREAMCAST__)
+    // Read into the save arena's chunks when a savegame is being loaded: its
+    // tree is the one thing here that does not fit one block.
+    const bool chunked = DC_SaveArena_IsOpen();
+#else
+    const bool chunked = false;
+#endif
+    if (chunked) {
+        state.dom = nullptr;
+        state.data = nullptr;
+    } else {
+        allocation = Memory_Alloc(total_size);
+        state.dom = (char *)allocation;
+        state.data = state.dom + state.dom_size;
+    }
+
     state.offset = 0;
-    state.dom = (char *)allocation;
-    state.data = state.dom + state.dom_size;
 
     // assume the root element to be an object
-    value = (JSON_VALUE *)state.dom;
+    value = (JSON_VALUE *)M_AllocDom(&state, sizeof(JSON_VALUE));
     value->ref_count = 0;
-    state.dom += sizeof(JSON_VALUE);
     M_HandleObjectValue(&state, value);
+
+    if (chunked) {
+        return value;
+    }
 
     ASSERT(state.dom == (char *)allocation + state.dom_size);
     ASSERT(state.data == (char *)allocation + state.dom_size + state.data_size);
