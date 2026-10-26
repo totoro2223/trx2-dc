@@ -1,9 +1,8 @@
 #include "dc_games.h"
 
-#include "vmu.h"
-
 #include <trx/core/log.h>
 
+#include <arch/arch.h>
 #include <arch/cache.h>
 
 #include <stdint.h>
@@ -36,8 +35,14 @@ static int m_Index = 0;
 static bool m_Expansion = false;
 static uint32_t m_Crashes = 0;
 static int m_StartLevel = -2;
-// A choice is waiting for the next boot: leaving the game must not undo it.
-static bool m_Chosen = false;
+// The game chosen to run next, as the title or the level list asked for it:
+// the main loop (dc_main.c) starts it in place when this game ends.
+typedef struct {
+    int game; // 0 for none
+    bool expansion;
+    int level; // -1 the title, -2 the list of levels, from 0 a level
+} M_PENDING;
+static M_PENDING m_Pending = {};
 
 static volatile M_NOTE *M_Note(void)
 {
@@ -53,21 +58,6 @@ static uint32_t M_Sum(const volatile M_NOTE *const note)
 {
     return M_MAGIC ^ note->game ^ note->expansion ^ note->crashes ^ note->level
         ^ M_CHECK;
-}
-
-// The note as the card keeps it, for a choice of game (RAM may not outlive
-// the reboot on every console, or emulator).
-static void M_Park(const volatile M_NOTE *const note)
-{
-    M_NOTE copy = {
-        .magic = note->magic,
-        .game = note->game,
-        .expansion = note->expansion,
-        .crashes = note->crashes,
-        .level = note->level,
-        .check = note->check,
-    };
-    DC_VMU_PutNote(&copy, sizeof(copy));
 }
 
 static void M_Leave(
@@ -89,22 +79,6 @@ void DC_Games_Init(void)
     // What the last boot left, once (a cold start finds RAM with anything in
     // it, which the check rejects).
     volatile M_NOTE *const note = M_Note();
-    // The card's note, where the console's RAM did not keep one.
-    if (!(note->magic == M_MAGIC && note->check == M_Sum(note))) {
-        M_NOTE parked = {};
-        if (DC_VMU_TakeNote(&parked, sizeof(parked))) {
-            note->game = parked.game;
-            note->expansion = parked.expansion;
-            note->crashes = parked.crashes;
-            note->level = parked.level;
-            note->check = M_Sum(note);
-            note->magic = parked.magic;
-        }
-    } else {
-        // The RAM kept it: the card's copy is stale.
-        M_NOTE parked = {};
-        DC_VMU_TakeNote(&parked, sizeof(parked));
-    }
     const bool noted = note->magic == M_MAGIC && note->check == M_Sum(note);
     m_Crashes = noted ? note->crashes : 0;
     const uint32_t noted_game = note->game;
@@ -216,7 +190,7 @@ int DC_Games_TakeStartLevel(void)
     return level;
 }
 
-bool DC_Games_Choose(const int delta)
+bool DC_Games_Choose(const int delta, const bool title)
 {
     if (m_Count == 0) {
         return false;
@@ -226,9 +200,8 @@ bool DC_Games_Choose(const int delta)
         return false;
     }
     LOG_INFO("next boot: TR%d", m_Ids[index]);
-    M_Leave(m_Ids[index], false, 0, 0);
-    M_Park(M_Note());
-    m_Chosen = true;
+    // The level is stored plus 2, so the title (-1) is 1.
+    m_Pending = (M_PENDING) { .game = m_Ids[index], .level = title ? -1 : -2 };
     return true;
 }
 
@@ -238,17 +211,37 @@ bool DC_Games_ChooseExpansion(const int level)
         return false;
     }
     LOG_INFO("next boot: the expansion of TR%d", DC_Games_CurrentId());
-    M_Leave(DC_Games_CurrentId(), true, 0, (uint32_t)(level + 2));
-    M_Park(M_Note());
-    m_Chosen = true;
+    m_Pending = (M_PENDING) {
+        .game = DC_Games_CurrentId(), .expansion = true, .level = level
+    };
     return true;
 }
 
 void DC_Games_Remember(void)
 {
-    if (m_Count > 0 && !m_Chosen) {
+    if (m_Count > 0) {
         M_Leave(DC_Games_CurrentId(), false, 0, 0);
     }
+}
+
+bool DC_Games_ApplyPending(void)
+{
+    if (m_Pending.game == 0) {
+        return false;
+    }
+    for (int i = 0; i < m_Count; i++) {
+        if (m_Ids[i] == m_Pending.game) {
+            m_Index = i;
+        }
+    }
+    m_Expansion = m_Pending.expansion;
+    m_StartLevel = m_Pending.level;
+    m_Pending = (M_PENDING) {};
+    snprintf(g_DC_Root, sizeof(g_DC_Root), "/cd/g%d", m_Ids[m_Index]);
+    LOG_INFO(
+        "changing in place to TR%d%s", m_Ids[m_Index],
+        m_Expansion ? " expansion" : "");
+    return true;
 }
 
 bool DC_Games_Recover(void)

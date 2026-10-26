@@ -410,6 +410,8 @@ if pcall(trx.config.describe, "rendering.dc_mode") then
     "rendering.dither_mode",
     "rendering.enable_palette_quantize",
     "rendering.screenshot_format",
+    -- Left out of the render menu on the console.
+    "rendering.lighting_contrast",
   }) do
     unused[key] = true
   end

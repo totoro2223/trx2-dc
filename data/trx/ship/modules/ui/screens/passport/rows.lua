@@ -109,7 +109,9 @@ function M.new_game_rows()
       choice = "play_prev",
     }
   end
-  if story then
+  -- The Dreamcast (the only game with rendering.dc_mode) leaves "Story so
+  -- far..." out of every title's menu.
+  if story and not pcall(trx.config.describe, "rendering.dc_mode") then
     extras[#extras + 1] = {
       text = trx.locale.get("general/passport/story_so_far"),
       choice = "story",

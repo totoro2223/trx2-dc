@@ -190,3 +190,19 @@ sombra bajo el agua, UI reutilizada entre ticks.
   "Expansion levels" en los discos con expansión y cajas "Press L/R to go to TRn".
   Elegir "Return to Egypt" reinicia el disco dentro de la expansión y carga
   `egypt.phd` (Flycast oculto, `TRX_DC_ALL_PICK`).
+- **Arriba/Abajo en el título va al título del otro juego** (no a su selector de
+  niveles): `DC_Games_Choose(delta, true)` deja el título (nivel -1) en la nota.
+  Flycast oculto, disco de tres juegos: de TR1 a TR2 carga `g2/.../title.tr2` sin
+  selector. Los L/R del selector previo al motor siguen yendo al selector del otro.
+- **Sombras Hard (volúmenes)**: el volumen ya no se acorta con la distancia a la luz
+  (largo fijo `M_SHADOW_LENGTH`, salvo el tope de dos veces el tamaño de Lara de
+  `M_BuildVolume`); la oscuridad sigue bajando con ella (`M_VOLUME_STRENGTH_MIN`
+  0,2 a `MAX` 0,8 según la luz más cercana). No visto en pantalla.
+- **Cambio de juego sin reiniciar** (Flycast aparte, disco de tres juegos sin vídeos):
+  TR1→TR2→TR3 y TR2↔TR3 siete cambios seguidos; la expansión de TR1 desde el selector
+  arranca `egypt.phd`; memoria retenida plana (287/299 K).
+- **Menús de la consola sin "Story so far..." ni "Lighting contrast"**: la fila de la
+  historia hasta ahora sale de la página de Nueva partida del pasaporte en la Dreamcast
+  (`rows.lua`, para los tres juegos) y "Lighting contrast" sale de la pestaña Rendering
+  (`tabs.lua`). Compila y el menú de render arranca en Flycast; no vi la página de Nueva
+  partida con partidas que tengan historia. "Lighting model" sigue.

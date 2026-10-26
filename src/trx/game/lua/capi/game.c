@@ -320,7 +320,7 @@ static int M_L_GameDCSwitch(lua_State *const L)
     const lua_Integer delta = luaL_checkinteger(L, 1);
     bool ok = false;
 #if defined(__DREAMCAST__)
-    ok = delta == 0 ? DC_Games_ChooseExpansion(-2) : DC_Games_Choose((int)delta);
+    ok = delta == 0 ? DC_Games_ChooseExpansion(-2) : DC_Games_Choose((int)delta, true);
     if (ok) {
         GF_OverrideCommand((GF_COMMAND) { .action = GF_EXIT_GAME }, true);
     }

@@ -34,6 +34,9 @@ typedef enum {
     // the alpha, times what is there.
     // A flat texel keeps the colour when K1 + K2 is whole.
     DC_BLEND_BUMP,
+    // The same relief, its alpha added as white light: the slopes turned to
+    // the light shine (K1 and K2 nought, K3 the strength).
+    DC_BLEND_BUMP_GLOW,
     DC_BLEND_COUNT,
 } DC_BLEND;
 

@@ -204,7 +204,9 @@ _Static_assert(
 #define M_SOFT_STRENGTH_MAX 0.9f
 // How strong a shadow is without a light near, as a light's weight.
 #define M_SOFT_NO_LIGHT_WEIGHT 0.3f
-// The same for the shadow volumes, which the PowerVR darkens all as much.
+// The same for the shadow volumes (the hard shadows), which the PowerVR
+// darkens all as much: they fade with the light's distance by this, and keep
+// their length (see M_BuildVolume).
 #define M_VOLUME_STRENGTH_MIN 0.2f
 #define M_VOLUME_STRENGTH_MAX 0.8f
 // How much of Lara's colour her own shadow takes away.
@@ -245,18 +247,32 @@ _Static_assert(
 // Relief (bump mapping): the room faces nearer the camera than this take
 // their page's relief (DC_BLEND_BUMP), lit from the room's light nearest
 // them, fading out over the last stretch.
-#define M_BUMP_RANGE (2.5f * WALL_L)
-#define M_BUMP_FADE (1.0f * WALL_L)
+#define M_BUMP_RANGE (5.0f * WALL_L)
+#define M_BUMP_FADE (3.0f * WALL_L)
+// A face a flash or other passing light reaches takes the relief this many
+// times as far from the camera.
+#define M_BUMP_LIGHT_REACH 3.0f
+// How far a room's light is taken to reach, and how much stronger a passing
+// one counts than it where both do.
+#define M_BUMP_ROOM_RADIUS (8.0f * WALL_L)
+#define M_BUMP_PASSING_POWER 8.0f
+// A passing light moves the relief this much farther than it lights.
+#define M_BUMP_PASSING_REACH 1.5f
 // How deep the relief's shade runs, of the whole colour.
-#define M_BUMP_DEPTH 0.45f
+#define M_BUMP_DEPTH 0.9f
+// How much of the colour a flat texel of the relief loses, of the whole.
+#define M_BUMP_DIM 0.0f
+// How bright the slopes turned to the light shine, of the whole.
+#define M_BUMP_GLOW 0.5f
 // The lowest a light stands over a face, in radians: one level with it or
 // behind it would shade every slope.
 #define M_BUMP_MIN_ELEVATION 0.35f
 #define M_BUMP_MAX_LIGHTS 16
-// The relief goes off while the frame rate falls this far under the mode's,
-// and comes back once it is whole again in a scene this much lighter (in
-// vertices) than the one it went off in: back in the same scene, it would
+// The relief goes off while the frame rate falls under this, in any mode, and
+// comes back once it is this much over it again in a scene this much lighter
+// (in vertices) than the one it went off in: back in the same scene, it would
 // only go off again.
+#define M_BUMP_MIN_FPS 20
 #define M_BUMP_SLOW_FPS 2
 #define M_BUMP_LIGHTER 0.85f
 
@@ -526,6 +542,10 @@ static SHADOW_TYPE M_ShadowType(void)
 }
 // Faces drawn with a soft shadow, for the debug console.
 static int32_t m_SoftFaces = 0;
+#if defined(TRX_DC_WATCHDOG)
+static int32_t m_ShadowReceivers = 0;
+static int32_t m_ShadowRooms = 0;
+#endif
 
 // Running totals, for the watchdog.
 int32_t g_DC_BatcherMeshCount = 0;
@@ -3687,7 +3707,8 @@ M_HOT float M_Atan2(const float y, const float x)
 // depth times its cosine, the root of what is left.
 static uint32_t M_BumpLight(
     const M_BINDING *const bind, const M_XVERT *const xv,
-    const OUTPUT_MESH_INDEX *const idx, const float light[3], const float depth)
+    const OUTPUT_MESH_INDEX *const idx, const float light[3], const float depth,
+    const bool glow)
 {
     const M_XVERT *const a = &xv[idx[0]];
     const M_XVERT *const b = &xv[idx[1]];
@@ -3735,9 +3756,26 @@ static uint32_t M_BumpLight(
         (a->y + b->y + c->y) * (1.0f / 3.0f),
         (a->z + b->z + c->z) * (1.0f / 3.0f),
     };
-    const float l[3] = {
+    float l[3] = {
         light[0] - centre[0], light[1] - centre[1], light[2] - centre[2],
     };
+    // The slopes are lit as if for a shine: the way they must face to throw
+    // the light at the camera is half way between the light and the eye (the
+    // camera is the origin of eye space), so the relief moves as the camera
+    // does.
+    const float l_sq = M_Dot3(l, l);
+    const float c_sq = M_Dot3(centre, centre);
+    if (l_sq > 0.0f && c_sq > 0.0f) {
+        const float li = M_InvSqrt(l_sq);
+        const float ci = M_InvSqrt(c_sq);
+        float h[3];
+        for (int32_t k = 0; k < 3; k++) {
+            h[k] = l[k] * li - centre[k] * ci;
+        }
+        if (M_Dot3(h, h) > 1.0e-4f) {
+            memcpy(l, h, sizeof(l));
+        }
+    }
     const float tl = M_Dot3(t, t);
     const float bl = M_Dot3(bt, bt);
     const float nl = M_Dot3(n, n);
@@ -3753,16 +3791,28 @@ static uint32_t M_BumpLight(
     if (q < 0.0f) {
         q += 2.0f * (float)M_PI;
     }
-    const float k2 = depth * lz;
+    // A flat texel keeps this much of the colour, so that the slopes turned
+    // to the light can be lighter than it and the rest darker: only then does
+    // the relief read as raised and not as dents. It is the whole colour as
+    // the face leaves the relief's range.
+    if (glow) {
+        return (M_PackUnit(depth) << 8)
+            | ((uint32_t)(q * (256.0f / (2.0f * (float)M_PI))) & 0xFF);
+    }
+    const float flat = 1.0f - M_BUMP_DIM * (depth * (1.0f / M_BUMP_DEPTH));
+    const float k2 = MIN(depth * lz, flat);
     const float k3 = depth * sqrtf(1.0f - lz * lz);
-    return (M_PackUnit(1.0f - k2) << 24) | (M_PackUnit(k2) << 16)
+    return (M_PackUnit(flat - k2) << 24) | (M_PackUnit(k2) << 16)
         | (M_PackUnit(k3) << 8)
         | ((uint32_t)(q * (256.0f / (2.0f * (float)M_PI))) & 0xFF);
 }
-
-// The relief's lights: a room's own, and the passing ones, in eye space.
+// The relief's lights: a room's own, and the passing ones, in eye space, each
+// with how far it reaches and how strong it is.
 typedef struct {
     float pos[M_BUMP_MAX_LIGHTS][3];
+    float radius[M_BUMP_MAX_LIGHTS];
+    float power[M_BUMP_MAX_LIGHTS];
+    bool passing[M_BUMP_MAX_LIGHTS];
     int32_t count;
 } M_BUMP_LIGHTS;
 
@@ -3770,7 +3820,7 @@ typedef struct {
 static void M_EmitBumpRange(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const M_BUMP_LIGHTS *const lights, const OUTPUT_MESH_INDEX *const indices,
-    const int32_t count, int32_t *const page)
+    const int32_t count, int32_t *const page, const bool glow)
 {
     const float(*const v)[4] = m_Frame.view;
     const M_XVERT *const xv = batcher->xverts;
@@ -3783,42 +3833,89 @@ static void M_EmitBumpRange(
         const int32_t tri_page = bind->page[tri[0]];
         const float z_min =
             MIN(xv[tri[0]].z, MIN(xv[tri[1]].z, xv[tri[2]].z));
-        const float fade =
-            M_Clamp((M_BUMP_RANGE - z_min) * (1.0f / M_BUMP_FADE), 0.0f, 1.0f);
-        if (tri_page == M_NO_PAGE || fade <= 0.0f
+        if (tri_page == M_NO_PAGE || z_min >= M_BUMP_RANGE * M_BUMP_LIGHT_REACH
             || (xv[tri[0]].clip & xv[tri[1]].clip & xv[tri[2]].clip
                 & M_CLIP_CULL)
                 != 0) {
             i += step;
             continue;
         }
-        // The room's light nearest the face, or one high above it.
+        // Where the face's light comes from: the lights that reach it, each
+        // by how near it stands to its reach and how strong it is, blended so
+        // that the relief turns smoothly as a flash comes and goes. With none,
+        // from high above it.
         float light[3] = {};
         const M_XVERT *const a = &xv[tri[0]];
-        float best = -1.0f;
+        float total = 0.0f;
+        float passing = 0.0f;
         for (int32_t l = 0; l < lights->count; l++) {
             const float *const p = lights->pos[l];
             const float d[3] = { p[0] - a->x, p[1] - a->y, p[2] - a->z };
             const float dist_sq = M_Dot3(d, d);
-            if (best < 0.0f || dist_sq < best) {
-                best = dist_sq;
-                memcpy(light, p, sizeof(light));
+            const float radius = lights->radius[l];
+            if (dist_sq >= radius * radius) {
+                continue;
+            }
+            const float ratio_sq = dist_sq / (radius * radius);
+            const float near = 1.0f - sqrtf(ratio_sq);
+            const float weight =
+                lights->power[l] * near * near / (1.0f + ratio_sq);
+            for (int32_t r = 0; r < 3; r++) {
+                light[r] += p[r] * weight;
+            }
+            total += weight;
+            if (lights->passing[l]) {
+                passing += weight;
             }
         }
-        if (best < 0.0f) {
+        float scale = 1.0f;
+        if (total > 0.0f) {
+            for (int32_t r = 0; r < 3; r++) {
+                light[r] /= total;
+            }
+            scale = M_Clamp(total * 4.0f, 0.0f, 1.0f);
+        } else {
             // TR's y axis points down.
             for (int32_t r = 0; r < 3; r++) {
                 light[r] = (&a->x)[r] - v[1][r] * (8.0f * WALL_L);
             }
         }
-        m_Frame.bump_k = M_BumpLight(bind, xv, tri, light, M_BUMP_DEPTH * fade);
+        // A face a flash or other passing light reaches takes the relief
+        // three times as far from the camera.
+        const float reach =
+            1.0f
+            + (M_BUMP_LIGHT_REACH - 1.0f) * M_Clamp(passing * 4.0f, 0.0f, 1.0f);
+        // Eased in over a long stretch, so that no face's relief starts
+        // suddenly.
+        const float near = M_Clamp(
+            (M_BUMP_RANGE * reach - z_min) * (1.0f / (M_BUMP_FADE * reach)),
+            0.0f, 1.0f);
+        const float fade = near * near * (3.0f - 2.0f * near) * scale;
+        if (fade <= 0.0f) {
+            i += step;
+            continue;
+        }
+        float strength = (glow ? M_BUMP_GLOW : M_BUMP_DEPTH) * fade;
+        if (glow) {
+            // The shine adds light, so it follows how lit the face is: none
+            // where it stands in the dark.
+            float lit = 0.0f;
+            for (int32_t k = 0; k < 3; k++) {
+                const uint32_t c = xv[tri[k]].argb;
+                lit += MAX((c >> 16) & 0xFF, MAX((c >> 8) & 0xFF, c & 0xFF));
+            }
+            lit *= 1.0f / (3.0f * 255.0f);
+            strength *= lit * lit;
+        }
+        m_Frame.bump_k = M_BumpLight(bind, xv, tri, light, strength, glow);
         if (m_Frame.bump_k == 0) {
             i += step;
             continue;
         }
         if (tri_page != *page) {
             *page = tri_page;
-            DC_PVR_SetState(DC_BLEND_BUMP, tri_page, true);
+            DC_PVR_SetState(
+                glow ? DC_BLEND_BUMP_GLOW : DC_BLEND_BUMP, tri_page, true);
         }
         if (!quad || !M_TryEmitQuad(batcher, bind, tri, tri + 3)) {
             M_EmitTriangle(batcher, bind, tri[0], tri[1], tri[2]);
@@ -3839,8 +3936,8 @@ static void M_EmitBump(
     const MESH_INSTANCE *const inst)
 {
     // Most rooms lie wholly past the relief's reach: their faces are not
-    // looked at.
-    if (batcher->z_near > M_BUMP_RANGE) {
+    // looked at (a passing light takes it three times as far).
+    if (batcher->z_near > M_BUMP_RANGE * M_BUMP_LIGHT_REACH) {
         return;
     }
     const float(*const v)[4] = m_Frame.view;
@@ -3862,32 +3959,60 @@ static void M_EmitBump(
             lights.pos[lights.count][r] =
                 v[0][r] * x + v[1][r] * y + v[2][r] * z + v[3][r];
         }
+        lights.radius[lights.count] = M_BUMP_ROOM_RADIUS;
+        lights.power[lights.count] = 1.0f;
+        lights.passing[lights.count] = false;
         lights.count++;
     }
     // The passing ones (a muzzle flash, a flare), as the room's lighting has
-    // them this frame.
+    // them this frame, with the reach the lighting gives them.
     const DC_UNIFORM_LIGHTS *const passing = m_Frame.lights;
+    bool any_passing = false;
     for (int32_t i = 0; passing != nullptr && i < passing->num_lights
          && lights.count < M_BUMP_MAX_LIGHTS;
          i++) {
-        const float *const p = passing->lights[i].pos;
+        const DC_UNIFORM_LIGHT *const light = &passing->lights[i];
+        float radius;
+        if (light->kind == OUTPUT_DYNAMIC_LIGHT_RGB) {
+            radius = light->falloff * 0.5f * M_BUMP_PASSING_REACH;
+        } else if (light->kind == OUTPUT_DYNAMIC_LIGHT_LUM) {
+            radius = M_Exp2(light->falloff) * M_BUMP_PASSING_REACH;
+        } else {
+            continue;
+        }
+        if (radius < 1.0f) {
+            continue;
+        }
+        const float *const p = light->pos;
         for (int32_t r = 0; r < 3; r++) {
             lights.pos[lights.count][r] =
                 v[0][r] * p[0] + v[1][r] * p[1] + v[2][r] * p[2] + v[3][r];
         }
+        lights.radius[lights.count] = radius;
+        lights.power[lights.count] = M_BUMP_PASSING_POWER;
+        lights.passing[lights.count] = true;
         lights.count++;
+        any_passing = true;
+    }
+    const float limit =
+        any_passing ? M_BUMP_RANGE * M_BUMP_LIGHT_REACH : M_BUMP_RANGE;
+    if (batcher->z_near > limit) {
+        return;
     }
 
     const OUTPUT_MESH_INDEX *const indices =
         Vector_GetData(bind->mesh->opaque_vertex_indices);
-    int32_t page = INT32_MIN;
     m_Frame.emit = M_EMIT_BUMP;
-    for (int32_t i = 0; i < batcher->range_count; i++) {
-        const M_RANGE *const range = &batcher->ranges[i];
-        if (range->z_near <= M_BUMP_RANGE) {
-            M_EmitBumpRange(
-                batcher, bind, &lights, indices + range->start, range->count,
-                &page);
+    // The shade first, then the shine.
+    for (int32_t pass = 0; pass < 2; pass++) {
+        int32_t page = INT32_MIN;
+        for (int32_t i = 0; i < batcher->range_count; i++) {
+            const M_RANGE *const range = &batcher->ranges[i];
+            if (range->z_near <= limit) {
+                M_EmitBumpRange(
+                    batcher, bind, &lights, indices + range->start,
+                    range->count, &page, pass == 1);
+            }
         }
     }
     m_Frame.emit = M_EMIT_PLAIN;
@@ -4021,6 +4146,10 @@ static void M_DrawInstance(
             || Lara_GetLaraInfo()->water_status == LWS_UNDERWATER);
     DC_PVR_SetShadowReceiver(
         is_room && M_ShadowType() == SHADOW_TYPE_VOLUME);
+#if defined(TRX_DC_WATCHDOG)
+    m_ShadowReceivers += is_room && M_ShadowType() == SHADOW_TYPE_VOLUME;
+    m_ShadowRooms += bind->needs_room_lights;
+#endif
     if (m_Soft.active && pass == SCENE_PASS_OPAQUE) {
         if (is_caster) {
             DC_PROBE(DC_PROBE_SOFT, M_EmitSelfShadow(batcher, bind, caster));
@@ -5198,12 +5327,10 @@ static int32_t M_BuildVolume(
             }
             const float len_sq = M_Dot3(push[i], push[i]);
             const float inv = len_sq > 1.0f ? M_InvSqrt(len_sq) : 1.0f;
-            // The volume widens from the light as (d + length) / d: no more
-            // than twice the caster's size, so the length stays within the
-            // corner's own distance from the light.
-            if (len_sq > 1.0f && length > len_sq * inv) {
-                length = len_sq * inv;
-            }
+            // The volume widens from the light as (d + length) / d. A cap on
+            // the length by each corner's distance cut the volumes of the parts
+            // nearest a light (a flare in the hand) short of the floor, and
+            // left only the feet's shadow.
             for (int32_t k = 0; k < 3; k++) {
                 push[i][k] = len_sq > 1.0f ? push[i][k] * inv : dir[k];
             }
@@ -5562,7 +5689,7 @@ static void M_DrawSilhouettes(const int32_t l)
 }
 
 // Turns the relief off when the frame rate falls short, and back on (see
-// M_BUMP_SLOW_FPS). Once a frame, before it starts.
+// M_BUMP_MIN_FPS). Once a frame, before it starts.
 static void M_UpdateBumpLoad(void)
 {
     if (!m_FrameRooms) {
@@ -5582,14 +5709,14 @@ static void M_UpdateBumpLoad(void)
     }
     if (quiet > 0) {
         quiet--;
-    } else if (m_BumpOn && fps > 0 && fps < target - M_BUMP_SLOW_FPS) {
+    } else if (m_BumpOn && fps > 0 && fps < M_BUMP_MIN_FPS) {
         m_BumpOn = false;
         m_BumpOffVertices = m_FrameVertices;
         LOG_INFO(
             "relief off: %d fps, %u vertices", (int)fps,
             (unsigned)m_BumpOffVertices);
     } else if (
-        !m_BumpOn && fps >= target
+        !m_BumpOn && fps >= M_BUMP_MIN_FPS + M_BUMP_SLOW_FPS
         && m_FrameVertices < m_BumpOffVertices * M_BUMP_LIGHTER) {
         m_BumpOn = true;
         LOG_INFO("relief on: %u vertices", (unsigned)m_FrameVertices);
@@ -5712,11 +5839,7 @@ void DC_Shadow_DrawVolumes(void)
             const bool point = lights[l].reach > 0.0f;
             const int32_t count = M_BuildVolume(
                 &m_Casters[i], lights[l].dir, point ? origin : nullptr,
-                point ? M_Clamp(
-                            lights[l].reach - lights[l].dist, M_PERSP_MIN_FADE,
-                            M_SHADOW_LENGTH)
-                      : M_SHADOW_LENGTH,
-                tris);
+                M_SHADOW_LENGTH, tris);
             DC_PVR_ShadowVolume(tris, count);
             volumes += count > 0;
         }
@@ -5728,13 +5851,16 @@ void DC_Shadow_DrawVolumes(void)
     const DC_UNIFORM_LIGHTS *const passing = m_Frame.lights;
     if (++frame % 120 == 0) {
         LOG_DEBUG(
-            "shadow: %d casters, %d volumes, lit %d/120, room lights %d, "
-            "passing %d, dir %.2f %.2f %.2f",
-            m_CasterCount, volumes, lit_frames,
+            "shadow: %d casters, %d volumes, receivers %d/%d, lit %d/120, "
+            "room lights %d, passing %d, dir %.2f %.2f %.2f",
+            m_CasterCount, volumes, m_ShadowReceivers, m_ShadowRooms,
+            lit_frames,
             m_Casters[0].room != nullptr ? m_Casters[0].room->num_lights : -1,
             passing != nullptr ? (int)passing->num_lights : -1, dir[0], dir[1],
             dir[2]);
         lit_frames = 0;
+        m_ShadowReceivers = 0;
+        m_ShadowRooms = 0;
     }
 #endif
     m_CasterCount = 0;

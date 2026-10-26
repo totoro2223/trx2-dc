@@ -269,40 +269,6 @@ bool DC_VMU_StoreSave(const char *const path, const char *const title)
     return ok;
 }
 
-#define M_NOTE_FILE "DCNEXT"
-
-bool DC_VMU_PutNote(const void *const data, const size_t size)
-{
-    maple_device_t *const card = M_GetCard();
-    if (card == nullptr || size > 512) {
-        return false;
-    }
-    uint8_t block[512] = {};
-    memcpy(block, data, size);
-    return vmufs_write(card, M_NOTE_FILE, block, sizeof(block), VMUFS_OVERWRITE)
-        == 0;
-}
-
-bool DC_VMU_TakeNote(void *const data, const size_t size)
-{
-    maple_device_t *const card = M_GetCard();
-    if (card == nullptr || size > 512) {
-        return false;
-    }
-    void *raw = nullptr;
-    int raw_size = 0;
-    if (vmufs_read(card, M_NOTE_FILE, &raw, &raw_size) < 0) {
-        return false;
-    }
-    const bool ok = raw_size >= (int)size;
-    if (ok) {
-        memcpy(data, raw, size);
-    }
-    free(raw);
-    vmufs_delete(card, M_NOTE_FILE);
-    return ok;
-}
-
 void DC_VMU_DeleteSave(const char *const path)
 {
     const char *const name = M_GetRelativeName(path);

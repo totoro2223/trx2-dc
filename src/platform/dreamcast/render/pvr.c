@@ -1556,10 +1556,12 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
 {
     const pvr_list_t list = m_Current->list;
     pvr_poly_cxt_t cxt;
-    const pvr_ptr_t bump = m_Blend == DC_BLEND_BUMP && m_Page >= 0
+    const bool is_bump =
+        m_Blend == DC_BLEND_BUMP || m_Blend == DC_BLEND_BUMP_GLOW;
+    const pvr_ptr_t bump = is_bump && m_Page >= 0
         ? M_GetBumpPage(m_Page)
         : nullptr;
-    if (m_Blend == DC_BLEND_BUMP) {
+    if (is_bump) {
         // Without its relief the face is drawn white: what is there stays.
         if (bump != nullptr) {
             pvr_poly_cxt_txr(
@@ -1682,6 +1684,12 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
         // The relief comes out in the alpha, the colour white.
         cxt.blend.src = PVR_BLEND_ZERO;
         cxt.blend.dst = PVR_BLEND_SRCALPHA;
+        break;
+    case DC_BLEND_BUMP_GLOW:
+        // The relief's alpha as white light; a face without its relief adds
+        // nothing.
+        cxt.blend.src = bump != nullptr ? PVR_BLEND_SRCALPHA : PVR_BLEND_ZERO;
+        cxt.blend.dst = PVR_BLEND_ONE;
         break;
     case DC_BLEND_MUL:
         // As a source factor, "dest colour" is the colour already there.

@@ -34,7 +34,9 @@ bool DC_Games_ExpansionAvailable(void);
 
 // Leave a choice for the next boot: the game before (-1) or after (+1) this
 // one, or its expansion. The caller ends the game; the console starts over.
-bool DC_Games_Choose(int delta);
+// With `title`, the next boot goes to that game's title screen, not to its
+// list of levels.
+bool DC_Games_Choose(int delta, bool title);
 // The expansion starts in a level (-1: its title) with no list in between.
 bool DC_Games_ChooseExpansion(int level);
 
@@ -45,6 +47,15 @@ int DC_Games_TakeStartLevel(void);
 // The game that is running stays the choice across the reboot that follows
 // leaving it (the list of levels of the same game comes back).
 void DC_Games_Remember(void);
+
+// The engine's thread ends here once it has shut down, with its result: the
+// main loop (dc_main.c) goes on, to the game chosen or to the disc's restart.
+// Does not return.
+void DC_Main_EndGame(int result);
+
+// The game that ended asked for another (Choose, ChooseExpansion): makes it
+// the one running (the root, the expansion, where it starts) and says so.
+bool DC_Games_ApplyPending(void);
 
 // A crash is about to start the disc over (see dc_main.c): leaves the game
 // where it was and counts the restart. False after three in a row.

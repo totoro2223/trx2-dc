@@ -18,6 +18,12 @@
 #include <libavutil/log.h>
 #include <stdio.h>
 
+#if defined(__DREAMCAST__)
+    #include <trx/game/phase/executor.h>
+
+    #include <platform/dreamcast/dc_games.h>
+#endif
+
 // Limits the fatal error dialog width, in characters.
 #define M_DIALOG_COLUMNS 80
 
@@ -86,6 +92,14 @@ void Shell_Terminate(int32_t exit_code)
     } else {
         SDL_Quit();
     }
+#if defined(__DREAMCAST__)
+    // The engine's thread ends and dc_main goes on, to the next game or the
+    // disc's restart: exit() from here crashed the console in TR2. What the
+    // exit left set is cleared for the game that may follow.
+    m_IsExiting = false;
+    PhaseExecutor_Reset();
+    DC_Main_EndGame(exit_code);
+#endif
     exit(exit_code);
 }
 

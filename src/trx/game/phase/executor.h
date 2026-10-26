@@ -9,4 +9,8 @@ GF_COMMAND PhaseExecutor_Run(PHASE *phase);
 // this every frame and gives up the loop once it reports false.
 bool PhaseExecutor_BeginExit(void);
 
+// Gives the executor the state it has at start-up, for a game started in place
+// of another (Dreamcast).
+void PhaseExecutor_Reset(void);
+
 PHASE *PhaseExecutor_GetOuterPhase(void);

@@ -87,7 +87,7 @@ static void M_SetupEnvironment(void)
     M_EnsureDir("/ram/trx/saves");
     M_EnsureDir("/ram/trx/screenshots");
 
-    setenv("TRX_DIR", g_DC_Root, 0);
+    setenv("TRX_DIR", g_DC_Root, 1);
     setenv("TRX_CACHE_DIR", "/ram/trx/cache", 0);
     // The RAM disk cannot make directories (no mkdir), so the saves sit at its root.
     setenv("TRX_SAVES_DIR", "/ram", 0);
@@ -108,22 +108,41 @@ static void *M_MainThread(void *const param)
     return nullptr;
 }
 
-int __wrap_main(int argc, char *argv[])
+// Where the engine's thread says how it ended (see DC_Main_EndGame).
+static M_MAIN_ARGS *m_Running = nullptr;
+
+void DC_Main_EndGame(const int result)
 {
-#if defined(TRX_DC_FB_CONSOLE)
-    // Until the renderer owns the screen, show the log on it.
-    dbgio_dev_select("fb");
-#endif
-    DC_Games_Init();
-    M_InstallRecovery();
-    M_SetupEnvironment();
-#if defined(TRX_DC_MMU_NULL_TRAP)
-    // Without the MMU a null pointer reads the boot ROM and a null call runs
-    // it, which crashes far from the cause. With it on and nothing mapped in
-    // P0 (the engine runs in P1), both raise a TLB miss that KOS reports.
-    mmu_init_basic();
-#endif
-    printf("TRX: Dreamcast platform layer ready\n");
+    if (m_Running != nullptr) {
+        m_Running->result = result;
+    }
+    // The engine has shut down: its thread ends here, and dc_main goes on
+    // (exit() from this thread crashed the console in TR2).
+    thd_exit(nullptr);
+}
+
+// Runs the game of the disc's folder once, from the choice of level to the
+// engine's end. Returns what the engine returned.
+static int M_RunGame(int argc, char *argv[])
+{
+    // A run begins with none of the last one's test switches.
+    g_DC_Run++;
+    g_DC_TestMode = -1;
+    g_DC_TestShadow = -1;
+    g_DC_TestSwitchMode = -1;
+    g_DC_TestSwitchFrame = 0;
+    g_DC_TestLevelStart = 0;
+    g_DC_TestLevelLast = -1;
+    g_DC_TestLevelFrames = 0;
+    g_DC_TestFire = 0;
+    g_DC_TestGive = 0;
+    g_DC_TestExit = 0;
+    g_DC_TestSave = 0;
+    g_DC_DemoQueueCount = 0;
+    g_DC_DemoQueueNext = 0;
+    g_DC_StartDemo = -1;
+    g_DC_StartCutscene = -1;
+    g_DC_BenchRequested = false;
 
     // The KOS main thread has a 64 KiB stack; the engine was written for
     // desktop stacks of a megabyte or more, so it runs on a thread of its own.
@@ -283,11 +302,9 @@ int __wrap_main(int argc, char *argv[])
         const int picked = DC_Games_TakeStartLevel();
         level = picked >= -1 ? picked : DC_LevelSelect_Run(engine, mod_id);
         if (level == DC_LEVEL_SELECT_RESTART) {
-            // Another game or the expansion: the disc starts over, as when
-            // the game ends (the choice waits in the note).
-            printf("TRX: starting the disc over for the choice\n");
-            DC_Games_Remember();
-            arch_reboot();
+            // Another game or the expansion: the main loop starts it (the
+            // choice is waiting in dc_games.c).
+            return 1;
         }
     }
     g_DC_TestLevelStart = level;
@@ -308,7 +325,7 @@ int __wrap_main(int argc, char *argv[])
         snprintf(level_arg, sizeof(level_arg), "%d", (int)level);
         argc = 5;
         argv = level_argv;
-    } else if (engine != 2) {
+    } else if (engine != 2 || g_DC_Run > 1) {
         // The title of the game on the disc.
         static char *title_argv[] = { "trx", "-e", engine_arg, nullptr };
         argc = 3;
@@ -337,18 +354,49 @@ int __wrap_main(int argc, char *argv[])
 #if defined(TRX_DC_WATCHDOG)
     DC_Watchdog_Start(thread);
 #endif
+    m_Running = &args;
     thd_join(thread, nullptr);
+    m_Running = nullptr;
+    // The thread is over: its stack goes back.
+    free(stack);
+    return args.result;
+}
+
+int __wrap_main(int argc, char *argv[])
+{
+#if defined(TRX_DC_FB_CONSOLE)
+    // Until the renderer owns the screen, show the log on it.
+    dbgio_dev_select("fb");
+#endif
+    DC_Games_Init();
+    M_InstallRecovery();
+#if defined(TRX_DC_MMU_NULL_TRAP)
+    // Without the MMU a null pointer reads the boot ROM and a null call runs
+    // it, which crashes far from the cause. With it on and nothing mapped in
+    // P0 (the engine runs in P1), both raise a TLB miss that KOS reports.
+    mmu_init_basic();
+#endif
+    int result;
+    while (true) {
+        M_SetupEnvironment();
+        printf("TRX: Dreamcast platform layer ready\n");
+        result = M_RunGame(argc, argv);
+        // The title or the level list asked for another game: it starts here,
+        // in the same run of the console, with the last one's memory given
+        // back.
+        if (!DC_Games_ApplyPending()) {
+            break;
+        }
+    }
 #if !defined(TRX_DC_START_LEVEL)
-    if (args.result == 0) {
+    if (result == 0) {
         // The game ended (the player left to the list of levels): the console
-        // starts the disc over, so the list comes with all the memory clean,
-        // however the last game used it. Leaving it to the exit path worked
-        // the first time and not the second.
+        // starts the disc over, so the list comes with all the memory clean.
         printf("TRX: the game ended; starting the disc over\n");
-        DC_Settings_Save();
+        fflush(stdout);
         DC_Games_Remember();
         arch_reboot();
     }
 #endif
-    return args.result;
+    return result;
 }

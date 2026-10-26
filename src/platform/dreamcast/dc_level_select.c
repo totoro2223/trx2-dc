@@ -367,7 +367,8 @@ int32_t DC_LevelSelect_Run(const int32_t engine, const char *const mod)
             const bool right = pad_state->rtrig > 128 && m_RTrigHeld == false;
             m_LTrigHeld = pad_state->ltrig > 128;
             m_RTrigHeld = pad_state->rtrig > 128;
-            if ((left && DC_Games_Choose(-1)) || (right && DC_Games_Choose(1))) {
+            if ((left && DC_Games_Choose(-1, false))
+                || (right && DC_Games_Choose(1, false))) {
                 vid_clear(0, 0, 0);
                 return DC_LEVEL_SELECT_RESTART;
             }

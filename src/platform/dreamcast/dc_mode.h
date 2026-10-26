@@ -49,6 +49,8 @@ extern int32_t g_DC_TestExit;
 // A test disc saves the game to the next slot every this many frames, and
 // loads the first one back after each fifth (0: never).
 extern int32_t g_DC_TestSave;
+// How many games have run since the console started.
+extern int32_t g_DC_Run;
 
 const DC_MODE_PARAMS *DC_Mode_Get(void);
 

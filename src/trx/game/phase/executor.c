@@ -21,6 +21,7 @@
 #include <trx/game/gun/misc.h>
 #include <trx/game/gun/smoke.h>
 #include <trx/game/inventory.h>
+#include <trx/game/lara/common.h>
 #include <trx/game/lua/common.h>
 #include <trx/game/lua/events.h>
 #include <trx/game/lua/events/ui.h>
@@ -167,6 +168,18 @@ static void M_LogTickRate(const int32_t ticks)
 #endif
 
 #if defined(__DREAMCAST__)
+// The counters of the test hooks below, which a game started in place (the
+// title's Up and Down) begins afresh.
+static int32_t m_TestRun = 0;
+static int32_t level_frames = 0;
+static int32_t level_next = -1;
+static int32_t save_frames = 0;
+static int32_t saved = 0;
+static int32_t exit_frames = 0;
+static int32_t give_frames = 0;
+static int32_t fire_frames = 0;
+static int32_t frames = 0;
+
 // Feeds the time a frame took to the mode, which drops from 60 to 30 fps in
 // scenes too heavy for 60; the clock starts afresh at the change.
 static void M_ReportWork(const Uint64 start)
@@ -176,9 +189,18 @@ static void M_ReportWork(const Uint64 start)
     if (DC_Mode_ReportFrame(seconds)) {
         Clock_SyncTick();
     }
+    if (m_TestRun != g_DC_Run) {
+        m_TestRun = g_DC_Run;
+        level_frames = 0;
+        level_next = -1;
+        save_frames = 0;
+        saved = 0;
+        exit_frames = 0;
+        give_frames = 0;
+        fire_frames = 0;
+        frames = 0;
+    }
     // A test that visits the levels in turn, from the one the disc starts in.
-    static int32_t level_frames = 0;
-    static int32_t level_next = -1;
     if (g_DC_TestLevelFrames > 0 && ++level_frames >= g_DC_TestLevelFrames) {
         level_frames = 0;
         if (level_next < 0) {
@@ -195,8 +217,6 @@ static void M_ReportWork(const Uint64 start)
             g_DC_TestLevelFrames = 0;
         }
     }
-    static int32_t save_frames = 0;
-    static int32_t saved = 0;
     if (g_DC_TestSave > 0 && ++save_frames % g_DC_TestSave == 0) {
         // The scripts count the slots from 1 (trx.savegame.SlotNum): slots 1
         // to 5, then the first back.
@@ -220,25 +240,25 @@ static void M_ReportWork(const Uint64 start)
         }
         LUA_FreeResult(&result);
     }
-    static int32_t exit_frames = 0;
     if (g_DC_TestExit > 0 && ++exit_frames == g_DC_TestExit) {
         LOG_INFO("test: leaving the game");
         GF_OverrideCommand((GF_COMMAND) { .action = GF_EXIT_GAME }, true);
     }
-    static int32_t give_frames = 0;
-    if (g_DC_TestGive > 0 && ++give_frames == 60) {
+    if (g_DC_TestGive == 99 && ++give_frames == 60) {
+        // Lara lights a flare (test discs: TRX_DC_GIVE=99).
+        Inv_AddItem(O_FLARES_BOX_ITEM);
+        Lara_GetLaraInfo()->request_gun_type = Gun_GetFlareType();
+    } else if (g_DC_TestGive > 0 && g_DC_TestGive != 99 && ++give_frames == 60) {
         const OBJECT_ID gun = Gun_GetGunObject((LARA_GUN_TYPE)g_DC_TestGive);
         LOG_INFO("test: Lara is given weapon %d (object %d)", (int)g_DC_TestGive, (int)gun);
         Inv_AddItem(gun);
         Gun_UpdateLaraMeshes(gun);
     }
-    static int32_t fire_frames = 0;
     const int32_t fire_every = g_DC_TestFire < 0 ? -g_DC_TestFire : g_DC_TestFire;
     if (fire_every > 0 && ++fire_frames % fire_every == 0) {
         Gun_Smoke_OnFire(LGT_PISTOLS, true);
         Gun_Smoke_OnFire(LGT_PISTOLS, false);
     }
-    static int32_t frames = 0;
     if (g_DC_TestSwitchMode >= 0 && ++frames == g_DC_TestSwitchFrame) {
         LOG_INFO("test: the mode is now %d", (int)g_DC_TestSwitchMode);
         // Through the scripts, as the settings menu does.
@@ -272,8 +292,10 @@ static void M_ReportWork(const Uint64 start)
             "trx.savegame.delete(3, trx.savegame.Pool.NORMAL) "
             "trx.savegame.delete(4, trx.savegame.Pool.NORMAL)",
             "trx.savegame.delete(0, trx.savegame.Pool.NORMAL)",
+            // The main menu's Up on a disc of several games.
+            "trx.game.dc_switch(-1)",
         };
-        LUA_RESULT result = LUA_Eval(codes[g_DC_TestSwitchMode % 13]);
+        LUA_RESULT result = LUA_Eval(codes[g_DC_TestSwitchMode % 14]);
         if (result.message != nullptr) {
             LOG_ERROR("test: %s", result.message);
         }
@@ -664,6 +686,14 @@ PHASE *PhaseExecutor_GetOuterPhase(void)
         return nullptr;
     }
     return m_PhaseStack[m_PhaseStackSize - 2];
+}
+
+void PhaseExecutor_Reset(void)
+{
+    m_CurrentFrame = 0;
+    m_Exiting = false;
+    m_PhaseStackSize = 0;
+    m_PendingFadeToBlack = false;
 }
 
 bool PhaseExecutor_BeginExit(void)

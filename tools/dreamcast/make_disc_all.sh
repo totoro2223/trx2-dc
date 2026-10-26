@@ -7,6 +7,11 @@
 #
 #   tools/dreamcast/make_disc_all.sh <build-dir> [output.cdi]
 #
+# TRX_DC_ALL_GAMES says which games the disc holds ("1 2 3" by default): a
+# disc of one game ("2") has no neighbours to go to, and keeps that game and its
+# expansion in the same layout, so that its main menu offers the expansion the
+# same way.
+#
 # TRX_DC_REMASTER is the remastered collection's folder (the one that holds 1,
 # 2 and 3); the default is where the other discs take theirs. The disc has all
 # the games' films (~1.8 GB); TRX_DC_FMV=0 leaves them out (1 GB), or names
@@ -33,7 +38,8 @@ LEGAL3="$STEAM/TombRaider (III)/pix/LEGAL.BMP"
 EXTRA1="/h/SteamLibrary/steamapps/common/Tomb Raider (I)/LARA_RTX/FMV"
 EXTRA2="$STEAM/Tomb Raider (II)/fmv"
 
-for n in 1 2 3; do
+GAMES="${TRX_DC_ALL_GAMES:-1 2 3}"
+for n in $GAMES; do
   case "$n" in
     1) MOD=tr1-ub; LEGAL="$LEGAL1"; EXTRA="$EXTRA1" ;;
     2) MOD=tr2-gm; LEGAL="$LEGAL2"; EXTRA="$EXTRA2" ;;
@@ -53,16 +59,27 @@ echo "=== root"
 /opt/toolchains/dc/kos/utils/makeip/makeip -f \
   -g "TRX" -c "TRX PORT" -n "T-TRX00" \
   "$TMP/IP.BIN" > /dev/null
-echo "1 2 3" > "$STAGE/GAMES.TXT"
+echo "$GAMES" > "$STAGE/GAMES.TXT"
 # A test disc that starts every game at its title (the level select needs the
-# pad): TRX_DC_ALL_START=-1.
+# pad): TRX_DC_ALL_START=-1 (in the games of TRX_DC_ALL_START_GAMES, all by
+# default).
 if [ -n "${TRX_DC_ALL_START:-}" ]; then
-  for n in 1 2 3; do echo "$TRX_DC_ALL_START" > "$STAGE/g$n/START.TXT"; done
+  for n in ${TRX_DC_ALL_START_GAMES:-1 2 3}; do
+    echo "$TRX_DC_ALL_START" > "$STAGE/g$n/START.TXT"
+  done
 fi
 # A test disc that changes the game from the title (TRX_DC_ALL_SWITCH="7 300":
 # the code of executor.c's list and the frame; in TR1's folder only).
 if [ -n "${TRX_DC_ALL_SWITCH:-}" ]; then
   echo "$TRX_DC_ALL_SWITCH" > "$STAGE/g1/SWITCH.TXT"
+fi
+# The same in TR2's and TR3's folders (TRX_DC_ALL_SWITCH2, TRX_DC_ALL_SWITCH3),
+# to go on from one game to another.
+if [ -n "${TRX_DC_ALL_SWITCH2:-}" ]; then
+  echo "$TRX_DC_ALL_SWITCH2" > "$STAGE/g2/SWITCH.TXT"
+fi
+if [ -n "${TRX_DC_ALL_SWITCH3:-}" ]; then
+  echo "$TRX_DC_ALL_SWITCH3" > "$STAGE/g3/SWITCH.TXT"
 fi
 
 # A test disc that picks an entry of the level list by itself

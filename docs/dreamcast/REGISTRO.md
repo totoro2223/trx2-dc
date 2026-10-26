@@ -747,13 +747,25 @@ anterior cada vez. Piscina a **384 K** (`M_POOL_SIZE`), compilada (DC builds
    `T-TRX00_vmu_save_A1.bin.user-backup-20261024`.
 ## 24/10/2026 (tarde): avisos de juegos, expansión en el selector, resultado del guardado
 
-- La nota con la elección de juego (RAM alta, `0xACFF0100`) **no sobrevivía al reinicio
-  hecho desde el selector previo al motor** (sí desde el juego). Causa no aclarada
-  (el arranque muy temprano la perdía en Flycast). Ahora la elección también se deja
-  en la tarjeta (`DCNEXT`, un bloque) y el arranque la lee y la borra: sirve también
-  donde la RAM no aguante el reinicio. `DC_Games_Remember` ya no pisa una elección
-  pendiente (antes, salir del juego tras elegir otro juego la sobrescribía).
+- Cambiar de juego ya no reinicia la consola (ver T70): el motor acaba su hilo en vez de
+  llamar a `exit()` (que caía en TR2) y `__wrap_main` lanza el juego elegido en el mismo
+  proceso. Se quitó la nota que se dejaba en la tarjeta (`DCNEXT`): no hace falta; la nota
+  de RAM queda solo para la recuperación tras una caída. Una ejecución dejaba puestas cosas
+  que la siguiente heredaba (`m_IsExiting`, el ejecutor de fases, los interruptores de las
+  pruebas, `TRX_DIR`), y eso es lo que hubo que limpiar.
 - El selector previo al motor ofrece los niveles de la expansión (página 4), con el
   nivel pasado por la nota (`DC_Games_TakeStartLevel`), y L/R cambian de juego.
 - El pasaporte dice cómo fue el guardado (`trx.game.dc_vmu_result()`), sin cerrar
   hasta un segundo después.
+
+## 25/10/2026: relieve (bump) con brillo y luces de paso
+
+- El relieve usa la dirección intermedia entre la luz y la cámara (Blinn), así que se
+  mueve al mover la cámara. Una segunda pasada (`DC_BLEND_BUMP_GLOW`, suma luz blanca con
+  la alfa del relieve) da el brillo; sigue la luz de la cara (cuadrado) para no verse en
+  zonas oscuras. Lo plano ya no se oscurece (`M_BUMP_DIM` 0).
+- Cada cara mezcla las luces que la alcanzan, por cercanía a su alcance y fuerza; las de
+  paso (fogonazos, bengalas) pesan 8 veces más y llevan el relieve hasta 3 veces más
+  lejos de la cámara. Alcance 5 sectores, entrada suave sobre 3.
+- El relieve solo se apaga por debajo de 20 fps (`M_BUMP_MIN_FPS`).
+- Valores a ajustar a ojo: `M_BUMP_DEPTH` 0,9, `M_BUMP_GLOW` 0,5. Sin probar en consola real.
