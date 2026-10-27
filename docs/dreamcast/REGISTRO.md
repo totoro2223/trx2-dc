@@ -934,3 +934,42 @@ usó `sh-elf-objdump` de DreamSDK sobre una imagen de memoria del ejecutable.
 
 Conclusión: sin consola no queda nada que sacar de TR4. Solo la tarea 71 y el
 orden de instrucciones del bucle de `ftrv`, que también dependen del SH-4 real.
+
+## 27/10/2026: relieve pregenerado en el disco (sin probar en Flycast)
+
+Hasta ahora cada página de relieve se hacía en juego, la primera vez que una
+sala la mostraba: CPU en el peor momento y ~48 KB de `malloc` temporales en
+plena partida. Ahora se hace al generar el disco, como las texturas VQ.
+
+1. **Cálculo común**: `src/platform/dreamcast/render/bump_page.h` (C sin
+   KallistiOS) reúne lo que hacía `pvr.c`: media página (`DC_Bump_HalfTexel`),
+   altura por brillo y estirado, dueños de cada texel (`DC_Bump_Own`),
+   pendientes que no cruzan a otra textura, y la codificación del texel del
+   PVR con el `atan` polinómico. `pvr.c` y la herramienta lo usan igual.
+2. **Herramienta**: `texvq -b <salida.bump>` recorre cada nivel de TR1, TR2 y
+   TR3 hasta sus texturas de objeto (como las sondas de `format_tr*.c`), anota
+   qué texturas usan las caras de sala y hace el relieve solo de las páginas
+   que usan las salas (el juego no pone relieve en otra cosa). Fichero
+   `TBP1`: el mismo índice `{hash, posición}` que `textures.vq` y 32 KB por
+   página, ya entrelazados (twiddled) para la VRAM.
+3. **Juego**: cada página ARGB1555 guarda su huella al almacenarse
+   (`m_Pages.hash`). Al cerrar la carga (`DC_PVR_CommitTexturePages`),
+   `M_LoadDiscBumps` lee del disco los relieves de las páginas del nivel, si el
+   relieve está activado, dejando siempre 1 MB de VRAM libre. Una página que
+   cambia suelta su relieve; las que el disco no tiene se siguen haciendo en
+   juego (`M_GetBumpPage`), con el mismo código.
+4. **`make_disc.sh`**: compila `texvq` con flotantes SSE (como los del SH-4) y
+   copia `textures.bump` junto a `textures.vq`.
+5. **Comprobado en el host**: compila sin avisos; todos los niveles de los tres
+   juegos se leen sin error (81, 101 y 117 páginas: 2,6, 3,3 y 3,8 MB de
+   disco). Los relieves de Venecia y de la Jungla de TR3, decodificados, salen
+   como los del juego y sin costuras entre texturas.
+
+Atajos anotados en `texvq.c`: una página idéntica en dos niveles lleva el
+relieve del primero; y una textura que solo usa un triángulo de una malla de
+objeto, con cuarta esquina, conserva las cuatro esquinas (el juego descarta la
+cuarta).
+
+Pendiente: probarlo en Flycast. El registro debe decir "N page reliefs from
+the disc" al cargar, `DC_PVR_GetBumpPagesMade` debe quedarse a 0 al recorrer
+salas, y el relieve debe verse igual que antes.

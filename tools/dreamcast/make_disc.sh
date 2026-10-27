@@ -208,14 +208,20 @@ if [ -n "$MOD" ]; then
   echo "$(ls "$STAGE/games/$MOD/levels" | wc -l) levels of $MOD"
 fi
 
-echo "== texture pages in VQ"
+echo "== texture pages in VQ, and their relief"
 # Every page of every level and injection on the disc, which the game finds
-# by its contents (see tools/dreamcast/texvq.c); made again only when the
-# tool or the data change.
+# by its contents, and the relief of the level pages the rooms use (see
+# tools/dreamcast/texvq.c); made again only when the tool or the data change.
 VQ="$BUILD_DIR/textures-${MOD:-$GAME}.vq"
+BUMP="$BUILD_DIR/textures-${MOD:-$GAME}.bump"
 VQ_TOOL="$BUILD_DIR/texvq.exe"
-if [ ! -f "$VQ_TOOL" ] || [ "$ROOT/tools/dreamcast/texvq.c" -nt "$VQ_TOOL" ]; then
-  gcc -O2 -fopenmp -o "$VQ_TOOL" "$ROOT/tools/dreamcast/texvq.c" -lz
+BUMP_HEADER="$ROOT/src/platform/dreamcast/render/bump_page.h"
+if [ ! -f "$VQ_TOOL" ] || [ "$ROOT/tools/dreamcast/texvq.c" -nt "$VQ_TOOL" ] \
+  || [ "$BUMP_HEADER" -nt "$VQ_TOOL" ]; then
+  # SSE floats, as the Dreamcast's: x87's wider ones would round the relief
+  # otherwise.
+  gcc -O2 -fopenmp -msse2 -mfpmath=sse -o "$VQ_TOOL" \
+    "$ROOT/tools/dreamcast/texvq.c" -lz -lm
 fi
 shopt -s nullglob
 VQ_INPUTS=("$STAGE"/games/$GAME/levels/*.tr2 "$STAGE"/games/$GAME/levels/*.phd
@@ -225,11 +231,12 @@ if [ -n "$MOD" ]; then
     "$STAGE"/games/$MOD/injections/*.bin)
 fi
 shopt -u nullglob
-if [ ! -f "$VQ" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
+if [ ! -f "$VQ" ] || [ ! -f "$BUMP" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
   || [ -n "$(find "$GAME_DATA" "$SHIP/games/$GAME/injections" -newer "$VQ" -print -quit)" ]   || [ -n "$MOD" ]; then
-  "$VQ_TOOL" "$VQ" "${VQ_INPUTS[@]}"
+  "$VQ_TOOL" -b "$BUMP" "$VQ" "${VQ_INPUTS[@]}"
 fi
 cp "$VQ" "$STAGE/textures.vq"
+cp "$BUMP" "$STAGE/textures.bump"
 
 echo "== loading pictures"
 # The game's original 640x480 pictures (the middle of the remaster's 856x480

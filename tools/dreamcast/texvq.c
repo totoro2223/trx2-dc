@@ -1,8 +1,8 @@
 // Compresses the texture pages of TR2 levels and TRX injections to the
-// PowerVR's VQ format, for the disc (make_disc.sh). Built and run on the
-// host:
+// PowerVR's VQ format, for the disc (make_disc.sh), and with -b makes the
+// relief of the level pages the rooms use. Built and run on the host:
 //
-//   texvq <output.vq> <file.tr2|file.bin>...
+//   texvq [-b <output.bump>] <output.vq> <file.tr2|file.bin>...
 //
 // Each ARGB1555 page becomes a 2 KiB codebook of 256 2x2 texel blocks and a
 // byte per block (18 KiB instead of 128). The game finds a page here by the
@@ -15,6 +15,13 @@
 // hash, then count x 18432 bytes in the order the pages first came (a
 // level's pages one after another, so that loading it reads ahead, not back
 // and forth); position counts those.
+//
+// The relief (pvr.c's M_LoadDiscBumps): "TBP1" and the same index, then
+// count x 32768 bytes, each page's relief as the PowerVR takes it (bump
+// texels, twiddled), made by bump_page.h as the game makes it, only for the
+// pages some room face uses (the game puts relief on room faces only).
+
+#include "../../src/platform/dreamcast/render/bump_page.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -42,6 +49,36 @@ typedef struct {
 
 static PAGE *m_Pages = NULL;
 static int m_Count = 0;
+
+#define BUMP_TEXELS (DC_BUMP_SIZE * DC_BUMP_SIZE)
+#define MAX_TEXTURES 32768
+
+typedef struct {
+    uint32_t hash;
+    uint16_t texels[BUMP_TEXELS];
+} BUMP;
+
+static const char *m_BumpPath = NULL;
+static BUMP *m_Bumps = NULL;
+static int m_BumpCount = 0;
+
+// An object texture as the game holds it once the level is loaded.
+typedef struct {
+    uint16_t page;
+    uint16_t u[4];
+    uint16_t v[4];
+    int corners;
+} TEXTURE;
+
+// What the relief needs of a level: which textures its rooms use (1 on a
+// quad, 2 on a triangle) and the object textures.
+typedef struct {
+    uint8_t used[MAX_TEXTURES];
+    TEXTURE *textures;
+    int32_t count;
+} LEVEL;
+
+static LEVEL m_Level;
 
 // FNV-1a a 32-bit word at a time (little-endian, as on the Dreamcast).
 static uint32_t Hash(const void *const data, const size_t size)
@@ -125,29 +162,7 @@ static int32_t S32(const uint8_t *const p)
     return v;
 }
 
-// TR2: version, 8-bit palette, 16-bit palette, page count, 8-bit pages, then
-// the 16-bit pages the game keeps.
-static void ReadLevel(const uint8_t *const data, const size_t size)
-{
-    const size_t at = 4 + 768 + 1024;
-    if (size < at + 4) {
-        return;
-    }
-    const int32_t count = S32(data + at);
-    const size_t pages_16 = at + 4 + (size_t)count * PAGE_SIZE;
-    if (count <= 0 || size < pages_16 + (size_t)count * PAGE_SIZE * 2) {
-        return;
-    }
-    for (int32_t i = 0; i < count; i++) {
-        uint16_t texels[PAGE_SIZE];
-        memcpy(texels, data + pages_16 + (size_t)i * PAGE_SIZE * 2, sizeof(texels));
-        AddPage(texels, 0);
-    }
-}
-
-// TR1: version 32, the 8-bit pages, and further on the palette, which the game
-// needs to make the pages 16-bit before it keys them (level/format/format_tr1.c
-// walks the same layout; sections/textures.c does the conversion).
+// A level read from the start, as level/format/format_tr*.c walk it.
 typedef struct {
     const uint8_t *data;
     size_t size;
@@ -197,30 +212,245 @@ static void SkipArrU16(CURSOR *const c, const int64_t item)
     CursorSkip(c, (int64_t)CursorU16(c) * item);
 }
 
+// The rooms, noting the textures their faces use (sections/rooms.c): each
+// room's mesh is vertices (8 bytes in TR1, 12 after), quads and triangles
+// (their vertices and a texture, whose top bit is double-sidedness), and
+// sprites.
+static void ReadRooms(CURSOR *const c, const int version)
+{
+    memset(m_Level.used, 0, sizeof(m_Level.used));
+    const int32_t rooms = CursorU16(c);
+    for (int32_t i = 0; i < rooms && !c->bad; i++) {
+        CursorSkip(c, 16);
+        const int64_t mesh_size = (int64_t)CursorS32(c) * 2;
+        if (mesh_size < 0 || c->at + (uint64_t)mesh_size > c->size) {
+            c->bad = 1;
+            return;
+        }
+        CURSOR mesh = { c->data, c->at + (size_t)mesh_size, c->at, 0 };
+        CursorSkip(&mesh, (int64_t)CursorU16(&mesh) * (version == 1 ? 8 : 12));
+        for (int corners = 4; corners >= 3; corners--) {
+            const int32_t faces = CursorU16(&mesh);
+            for (int32_t j = 0; j < faces && !mesh.bad; j++) {
+                CursorSkip(&mesh, corners * 2);
+                m_Level.used[CursorU16(&mesh) & 0x7FFF] |= corners == 4 ? 1 : 2;
+            }
+        }
+        c->bad |= mesh.bad;
+        CursorSkip(c, mesh_size);
+        SkipArrU16(c, 32); // portals
+        const int32_t size_z = (int16_t)CursorU16(c);
+        const int32_t size_x = (int16_t)CursorU16(c);
+        CursorSkip(c, (int64_t)size_z * size_x * 8); // sectors
+        if (version == 1) {
+            CursorSkip(c, 2);
+            SkipArrU16(c, 18); // lights
+            SkipArrU16(c, 18); // static meshes
+            CursorSkip(c, 4);
+        } else {
+            CursorSkip(c, version == 2 ? 6 : 4);
+            SkipArrU16(c, 24); // lights
+            SkipArrU16(c, 20); // static meshes
+            CursorSkip(c, version == 2 ? 4 : 7);
+        }
+    }
+}
+
+// As sections/textures.c's M_DecodeTR3ObjectTextureUVs.
+static void DecodeTR3UVs(int16_t *const uv)
+{
+    uint8_t flags = 0;
+    for (int i = 0; i < 8; i++) {
+        if ((uv[i] & 0x80) != 0) {
+            uv[i] |= 0x00FF;
+            flags |= 1 << i;
+        } else {
+            uv[i] &= 0xFF00;
+        }
+    }
+    for (int i = 0; i < 8; i++) {
+        uv[i] += (flags & 1) != 0 ? -256 : 256;
+        flags >>= 1;
+    }
+}
+
+// The object textures (sections/textures.c). A texture is a triangle's
+// (three corners) when a room triangle uses it, as finalize/render_assets.c
+// makes it, or when its fourth corner is nil, as the triangles of the
+// objects' meshes, which are not read here, leave it.
+// shortcut: a texture with a fourth corner that only an object mesh's
+// triangle uses keeps four corners here (the game drops the fourth); read the
+// meshes if a relief ever looks off at such a texture's edge.
+static void ReadTextures(CURSOR *const c, const int version)
+{
+    const int32_t count = CursorS32(c);
+    if (count < 0 || count > MAX_TEXTURES
+        || c->at + (uint64_t)count * 20 > c->size) {
+        c->bad = 1;
+        return;
+    }
+    m_Level.textures = realloc(m_Level.textures, sizeof(TEXTURE) * (count + 1));
+    m_Level.count = count;
+    for (int32_t i = 0; i < count; i++) {
+        TEXTURE *const texture = &m_Level.textures[i];
+        CursorSkip(c, 2); // draw type
+        texture->page = (uint16_t)CursorU16(c);
+        int16_t uv[8];
+        for (int k = 0; k < 8; k++) {
+            uv[k] = (int16_t)CursorU16(c);
+        }
+        texture->corners =
+            (m_Level.used[i] & 2) != 0 || (uv[6] == 0 && uv[7] == 0) ? 3 : 4;
+        if (version == 3) {
+            DecodeTR3UVs(uv);
+        }
+        for (int k = 0; k < 4; k++) {
+            texture->u[k] = (uint16_t)uv[k * 2];
+            texture->v[k] = (uint16_t)uv[k * 2 + 1];
+        }
+    }
+}
+
+static int Twiddle(int x, int y);
+
+// The relief of one of the level's pages, if its rooms use it and no page
+// alike has one yet (by the hash the game keys pages by), as pvr.c's
+// M_GetBumpPage makes it.
+// shortcut: a page alike in two levels gets the relief of the first, made
+// with that level's textures; key by the textures too if they ever differ.
+static void AddBump(const int32_t page, const uint16_t *const texels)
+{
+    if (m_BumpPath == NULL) {
+        return;
+    }
+    int used = 0;
+    for (int32_t i = 0; i < m_Level.count && !used; i++) {
+        used = m_Level.textures[i].page == page && m_Level.used[i] != 0;
+    }
+    const uint32_t hash = Hash(texels, PAGE_SIZE * 2);
+    for (int i = 0; used && i < m_BumpCount; i++) {
+        used = m_Bumps[i].hash != hash;
+    }
+    if (!used) {
+        return;
+    }
+    static uint8_t height[BUMP_TEXELS];
+    static uint16_t owner[BUMP_TEXELS];
+    int32_t lo = 255;
+    int32_t hi = 0;
+    for (int y = 0; y < DC_BUMP_SIZE; y++) {
+        for (int x = 0; x < DC_BUMP_SIZE; x++) {
+            const uint16_t *const t = &texels[y * 2 * PAGE_W + x * 2];
+            const uint16_t block[4] = { t[0], t[PAGE_W], t[1], t[PAGE_W + 1] };
+            int32_t luma;
+            const uint8_t h =
+                DC_Bump_Height(DC_Bump_HalfTexel(block, false), false, &luma);
+            height[y * DC_BUMP_SIZE + x] = h;
+            if (h != 0) {
+                lo = luma < lo ? luma : lo;
+                hi = luma > hi ? luma : hi;
+            }
+        }
+    }
+    DC_Bump_Stretch(height, lo, hi);
+    memset(owner, 0, sizeof(owner));
+    for (int32_t i = 0; i < m_Level.count; i++) {
+        const TEXTURE *const texture = &m_Level.textures[i];
+        if (texture->page == page) {
+            DC_Bump_Own(
+                owner, (uint16_t)(i + 1), texture->u, texture->v,
+                texture->corners);
+        }
+    }
+    m_Bumps = realloc(m_Bumps, sizeof(BUMP) * (m_BumpCount + 1));
+    BUMP *const bump = &m_Bumps[m_BumpCount++];
+    bump->hash = hash;
+    for (int y = 0; y < DC_BUMP_SIZE; y++) {
+        for (int x = 0; x < DC_BUMP_SIZE; x++) {
+            float nx;
+            float ny;
+            bump->texels[Twiddle(x, y)] =
+                DC_Bump_Slope(height, owner, x, y, &nx, &ny)
+                ? DC_Bump_Encode(nx, ny)
+                : DC_BUMP_FLAT;
+        }
+    }
+}
+
+// TR2 and TR3: version, 8-bit palette, 16-bit palette, page count, 8-bit
+// pages, then the 16-bit pages the game keeps; for the relief, on to the
+// object textures (format_tr2.c and format_tr3.c's probes).
+static void ReadLevel(
+    const uint8_t *const data, const size_t size, const int version)
+{
+    const size_t at = 4 + 768 + 1024;
+    if (size < at + 4) {
+        return;
+    }
+    const int32_t count = S32(data + at);
+    const size_t pages_16 = at + 4 + (size_t)count * PAGE_SIZE;
+    if (count <= 0 || size < pages_16 + (size_t)count * PAGE_SIZE * 2) {
+        return;
+    }
+    m_Level.count = 0;
+    if (m_BumpPath != NULL) {
+        CURSOR c = { data, size, pages_16 + (size_t)count * PAGE_SIZE * 2 + 4,
+                     0 };
+        ReadRooms(&c, version);
+        // From the floor data to the static objects.
+        static const int items[] = { 2, 2, 4, 32, 6, 8, 2, 4, 2, 18, 32 };
+        for (size_t i = 0; i < sizeof(items) / sizeof(items[0]); i++) {
+            SkipArrS32(&c, items[i]);
+        }
+        if (version == 3) {
+            SkipArrS32(&c, 16); // sprite textures
+            SkipArrS32(&c, 8); // sprite sequences
+            SkipArrS32(&c, 16); // cameras
+            SkipArrS32(&c, 16); // sound sources
+            const int32_t boxes = CursorS32(&c);
+            CursorSkip(&c, (int64_t)boxes * 8);
+            SkipArrS32(&c, 2); // overlaps
+            CursorSkip(&c, (int64_t)boxes * 20); // zones
+            SkipArrS32(&c, 2); // animated textures
+        }
+        ReadTextures(&c, version);
+        if (c.bad) {
+            fprintf(
+                stderr, "texvq: a TR%d level that does not add up; no relief\n",
+                version);
+            m_Level.count = 0;
+        }
+    }
+    for (int32_t i = 0; i < count; i++) {
+        uint16_t texels[PAGE_SIZE];
+        memcpy(texels, data + pages_16 + (size_t)i * PAGE_SIZE * 2, sizeof(texels));
+        AddPage(texels, 0);
+        AddBump(i, texels);
+    }
+}
+
+// TR1: version 32, the 8-bit pages, and further on the palette, which the game
+// needs to make the pages 16-bit before it keys them (level/format/format_tr1.c
+// walks the same layout; sections/textures.c does the conversion).
 static void ReadLevelTR1(const uint8_t *const data, const size_t size)
 {
     CURSOR c = { data, size, 4, 0 };
+    m_Level.count = 0;
     const int32_t count = CursorS32(&c);
     const size_t tiles = c.at;
     CursorSkip(&c, (int64_t)count * PAGE_SIZE);
     CursorSkip(&c, 4);
-    const int32_t rooms = CursorU16(&c);
-    for (int32_t i = 0; i < rooms && !c.bad; i++) {
-        CursorSkip(&c, 16);
-        SkipArrS32(&c, 2);
-        SkipArrU16(&c, 32);
-        const int32_t size_z = (int16_t)CursorU16(&c);
-        const int32_t size_x = (int16_t)CursorU16(&c);
-        CursorSkip(&c, (int64_t)size_z * size_x * 8);
-        CursorSkip(&c, 2);
-        SkipArrU16(&c, 18);
-        SkipArrU16(&c, 18);
-        CursorSkip(&c, 4);
-    }
+    ReadRooms(&c, 1);
+    // From the floor data to the sound sources; the object textures are the
+    // twelfth.
     static const int items[] = { 2, 2, 4, 32, 6, 8, 2, 4, 2, 18, 32, 20, 16, 8,
                                  16, 16 };
     for (size_t i = 0; i < sizeof(items) / sizeof(items[0]) && !c.bad; i++) {
-        SkipArrS32(&c, items[i]);
+        if (i == 11) {
+            ReadTextures(&c, 1);
+        } else {
+            SkipArrS32(&c, items[i]);
+        }
     }
     const int32_t boxes = CursorS32(&c);
     CursorSkip(&c, (int64_t)boxes * 20);
@@ -252,6 +482,7 @@ static void ReadLevelTR1(const uint8_t *const data, const size_t size)
             texels[j] = ToARGB1555(rgba);
         }
         AddPage(texels, 0);
+        AddBump(i, texels);
     }
 }
 
@@ -494,10 +725,46 @@ static int CompareHash(const void *const a, const void *const b)
     return x < y ? -1 : x > y;
 }
 
-int main(const int argc, char **const argv)
+// The reliefs, in the order the pages first came, under the VQ file's index.
+static int WriteBumps(void)
 {
+    uint32_t (*const index)[2] = malloc(sizeof(*index) * (m_BumpCount + 1));
+    for (int i = 0; i < m_BumpCount; i++) {
+        index[i][0] = m_Bumps[i].hash;
+        index[i][1] = i;
+    }
+    qsort(index, m_BumpCount, sizeof(*index), CompareHash);
+    FILE *const fp = fopen(m_BumpPath, "wb");
+    if (fp == NULL) {
+        fprintf(stderr, "texvq: cannot write %s\n", m_BumpPath);
+        free(index);
+        return 1;
+    }
+    const uint32_t count = m_BumpCount;
+    fwrite("TBP1", 1, 4, fp);
+    fwrite(&count, 4, 1, fp);
+    fwrite(index, sizeof(*index), m_BumpCount, fp);
+    for (int i = 0; i < m_BumpCount; i++) {
+        fwrite(m_Bumps[i].texels, 2, BUMP_TEXELS, fp);
+    }
+    fclose(fp);
+    free(index);
+    printf("texvq: %d page reliefs\n", m_BumpCount);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc >= 3 && strcmp(argv[1], "-b") == 0) {
+        m_BumpPath = argv[2];
+        argc -= 2;
+        argv += 2;
+    }
     if (argc < 3) {
-        fprintf(stderr, "usage: texvq <output.vq> <file.tr2|file.bin>...\n");
+        fprintf(
+            stderr,
+            "usage: texvq [-b <output.bump>] <output.vq> "
+            "<file.tr2|file.bin>...\n");
         return 1;
     }
     for (int i = 2; i < argc; i++) {
@@ -516,7 +783,7 @@ int main(const int argc, char **const argv)
             // TR2, and TR3 (level/format/format_tr3.c), which lays its pages
             // out the same way. DC build 313 shipped TR3 with only its
             // injections' pages in VQ.
-            ReadLevel(data, size);
+            ReadLevel(data, size, S32(data) == 0x2D ? 2 : 3);
         } else if (S32(data) == 32) {
             ReadLevelTR1(data, size);
         }
@@ -555,5 +822,5 @@ int main(const int argc, char **const argv)
         fwrite(m_Pages[i].vq, 1, VQ_BYTES, fp);
     }
     fclose(fp);
-    return 0;
+    return m_BumpPath != NULL ? WriteBumps() : 0;
 }

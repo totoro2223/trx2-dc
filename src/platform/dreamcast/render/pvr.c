@@ -9,10 +9,13 @@
 
 #include "pvr.h"
 
+#include "bump_page.h"
+
 #include <platform/dreamcast/dc_games.h>
 #include <platform/dreamcast/dc_strict.h>
 #include <platform/dreamcast/dc_mode.h>
 
+#include <trx/config.h>
 #include <trx/core/log.h>
 #include <trx/core/math/const.h>
 #include <trx/core/utils.h>
@@ -131,6 +134,9 @@ static struct {
     // Pages made so far: making one stalls the frame it happens in.
     uint32_t made;
 } m_Bump = {};
+#define M_BUMP_BYTES (DC_BUMP_SIZE * DC_BUMP_SIZE * sizeof(uint16_t))
+// The video memory the disc's reliefs leave free (M_LoadDiscBumps).
+#define M_BUMP_DISC_RESERVE (1024 * 1024)
 static bool m_InFrame = false;
 // The state was set since M_Reserve last matched a list to it.
 static bool m_StateDirty = true;
@@ -211,6 +217,10 @@ static struct {
     pvr_ptr_t ptr[M_MAX_TEXTURE_PAGES];
     uint8_t format[M_MAX_TEXTURE_PAGES];
     bool vq[M_MAX_TEXTURE_PAGES];
+    // The texels' FNV-1a hash (M_HashPage) as stored, ARGB1555 pages only: how
+    // the disc's files key a page.
+    bool hashed[M_MAX_TEXTURE_PAGES];
+    uint32_t hash[M_MAX_TEXTURE_PAGES];
 } m_Pages = {};
 // A VQ page: a codebook of 256 2x2 blocks, then a byte per block of the page,
 // twiddled (tools/dreamcast/texvq.c makes them).
@@ -890,42 +900,51 @@ static uint32_t M_HashPage(const uint16_t *const texels)
     return h;
 }
 
-// The page in VQ, an eighth of the size, if the disc has it so: its index is
-// {hash, position} pairs sorted by hash, ARGB1555 pages only. A level's own
-// pages lie one after another in the file, so mostly no seek is needed.
-static pvr_ptr_t M_LoadVQ(const uint16_t *const texels)
+// Where a page lies in one of the disc's files (textures.vq, textures.bump):
+// their index is {hash, position} pairs sorted by hash. -1 if it is not there.
+static int32_t M_FindIndexed(
+    const uint32_t *const index, const uint32_t count, const uint32_t hash)
+{
+    int32_t lo = 0;
+    int32_t hi = (int32_t)count - 1;
+    while (lo <= hi) {
+        const int32_t mid = (lo + hi) / 2;
+        if (index[mid * 2] < hash) {
+            lo = mid + 1;
+        } else if (index[mid * 2] > hash) {
+            hi = mid - 1;
+        } else {
+            return (int32_t)index[mid * 2 + 1];
+        }
+    }
+    return -1;
+}
+
+// The page in VQ, an eighth of the size, if the disc has it so (ARGB1555
+// pages only). A level's own pages lie one after another in the file, so
+// mostly no seek is needed.
+static pvr_ptr_t M_LoadVQ(const uint32_t hash)
 {
     if (m_VQ.fp == nullptr) {
         return nullptr;
     }
-    const uint32_t hash = M_HashPage(texels);
-    int32_t lo = 0;
-    int32_t hi = (int32_t)m_VQ.count - 1;
-    while (lo <= hi) {
-        const int32_t mid = (lo + hi) / 2;
-        if (m_VQ.index[mid * 2] < hash) {
-            lo = mid + 1;
-        } else if (m_VQ.index[mid * 2] > hash) {
-            hi = mid - 1;
-        } else {
-            const long at =
-                8 + m_VQ.count * 8 + (long)m_VQ.index[mid * 2 + 1] * M_VQ_BYTES;
-            pvr_ptr_t ptr = pvr_mem_malloc(M_VQ_BYTES);
-            if (ptr != nullptr
-                && ((at != m_VQ.at && fseek(m_VQ.fp, at, SEEK_SET) != 0)
-                    || fread(m_VQ.data, 1, M_VQ_BYTES, m_VQ.fp)
-                        != M_VQ_BYTES)) {
-                pvr_mem_free(ptr);
-                ptr = nullptr;
-            }
-            m_VQ.at = ptr != nullptr ? at + M_VQ_BYTES : -1;
-            if (ptr != nullptr) {
-                M_WriteTexels(ptr, (const uint16_t *)m_VQ.data, M_VQ_BYTES / 2);
-            }
-            return ptr;
-        }
+    const int32_t pos = M_FindIndexed(m_VQ.index, m_VQ.count, hash);
+    if (pos < 0) {
+        return nullptr;
     }
-    return nullptr;
+    const long at = 8 + m_VQ.count * 8 + (long)pos * M_VQ_BYTES;
+    pvr_ptr_t ptr = pvr_mem_malloc(M_VQ_BYTES);
+    if (ptr != nullptr
+        && ((at != m_VQ.at && fseek(m_VQ.fp, at, SEEK_SET) != 0)
+            || fread(m_VQ.data, 1, M_VQ_BYTES, m_VQ.fp) != M_VQ_BYTES)) {
+        pvr_mem_free(ptr);
+        ptr = nullptr;
+    }
+    m_VQ.at = ptr != nullptr ? at + M_VQ_BYTES : -1;
+    if (ptr != nullptr) {
+        M_WriteTexels(ptr, (const uint16_t *)m_VQ.data, M_VQ_BYTES / 2);
+    }
+    return ptr;
 }
 
 void DC_PVR_StoreTexturePage(
@@ -937,10 +956,18 @@ void DC_PVR_StoreTexturePage(
     if (m_Pages.ptr[page] != nullptr) {
         pvr_mem_free(m_Pages.ptr[page]);
     }
+    // A page that changes has its relief made again, from its new texels.
+    if (m_Bump.ptr[page] != nullptr) {
+        pvr_mem_free(m_Bump.ptr[page]);
+        m_Bump.ptr[page] = nullptr;
+    }
+    m_Bump.failed[page] = false;
     m_HeaderGen++;
     m_Pages.format[page] = format;
+    m_Pages.hashed[page] = format == TEXTURE_PAGE_ARGB1555;
+    m_Pages.hash[page] = m_Pages.hashed[page] ? M_HashPage(texels) : 0;
     m_Pages.ptr[page] =
-        format == TEXTURE_PAGE_ARGB1555 ? M_LoadVQ(texels) : nullptr;
+        m_Pages.hashed[page] ? M_LoadVQ(m_Pages.hash[page]) : nullptr;
     m_Pages.vq[page] = m_Pages.ptr[page] != nullptr;
     if (m_Pages.vq[page]) {
         return;
@@ -958,9 +985,74 @@ void DC_PVR_StoreTexturePage(
         TEXTURE_PAGE_HEIGHT, PVR_TXRLOAD_16BPP);
 }
 
+// The disc's reliefs (textures.bump, made by tools/dreamcast/texvq.c) of the
+// pages the level's rooms use, read as the level loads so that none is made
+// in play; it holds them as they go to video memory. A page it lacks (an
+// injection's, or one an injection edited) is still made the first time it is
+// drawn so (M_GetBumpPage). Not with the relief switched off: turned on later,
+// the pages are made.
+static void M_LoadDiscBumps(void)
+{
+    if (!DC_Mode_Get()->bump_mapping || !g_Config.rendering.dc_bump_mapping) {
+        return;
+    }
+    char path[64];
+    DC_Games_Path(path, sizeof(path), "textures.bump");
+    FILE *const fp = fopen(path, "rb");
+    if (fp == nullptr) {
+        return;
+    }
+    uint32_t head[2];
+    uint32_t *index = nullptr;
+    uint16_t *data = nullptr;
+    bool ok = fread(head, 4, 2, fp) == 2 && memcmp(head, "TBP1", 4) == 0;
+    if (ok) {
+        index = malloc(head[1] * 8);
+        data = memalign(32, M_BUMP_BYTES);
+        ok = index != nullptr && data != nullptr
+            && fread(index, 8, head[1], fp) == head[1];
+    }
+    int32_t loaded = 0;
+    long at_now = -1;
+    for (int32_t page = 0; ok && page < m_Pages.count; page++) {
+        if (!m_Pages.hashed[page] || m_Bump.ptr[page] != nullptr) {
+            continue;
+        }
+        const int32_t pos = M_FindIndexed(index, head[1], m_Pages.hash[page]);
+        if (pos < 0) {
+            continue;
+        }
+        // Room kept for what the level still makes in play (half pages,
+        // shadows, the screen capture).
+        if (pvr_mem_available() < M_BUMP_DISC_RESERVE + M_BUMP_BYTES) {
+            LOG_WARNING("No video memory for more of the disc's reliefs");
+            break;
+        }
+        const long at = 8 + head[1] * 8 + (long)pos * M_BUMP_BYTES;
+        const pvr_ptr_t ptr = pvr_mem_malloc(M_BUMP_BYTES);
+        if (ptr == nullptr
+            || (at != at_now && fseek(fp, at, SEEK_SET) != 0)
+            || fread(data, 1, M_BUMP_BYTES, fp) != M_BUMP_BYTES) {
+            if (ptr != nullptr) {
+                pvr_mem_free(ptr);
+            }
+            break;
+        }
+        at_now = at + M_BUMP_BYTES;
+        M_WriteTexels(ptr, data, M_BUMP_BYTES / 2);
+        m_Bump.ptr[page] = ptr;
+        loaded++;
+    }
+    free(index);
+    free(data);
+    fclose(fp);
+    LOG_INFO("%d page reliefs from the disc", loaded);
+}
+
 void DC_PVR_CommitTexturePages(void)
 {
     M_CloseVQ();
+    M_LoadDiscBumps();
     m_Pages.committed = true;
     m_HeaderGen++;
     char formats_text[M_MAX_TEXTURE_PAGES + 1] = {};
@@ -1294,46 +1386,6 @@ void DC_PVR_SetHalfPages(const bool half)
     m_HalfPages = half;
 }
 
-// One texel of the half page from the 2x2 it covers: the colour of the solid
-// ones, and as alpha the most solid. Strokes a texel wide keep all their
-// length so (an average would cut the thin ones and the diagonals).
-static uint16_t M_HalfTexel(const uint16_t *const t, const bool argb4444)
-{
-    uint32_t r = 0;
-    uint32_t g = 0;
-    uint32_t b = 0;
-    uint32_t weight = 0;
-    if (argb4444) {
-        uint32_t a = 0;
-        for (int32_t k = 0; k < 4; k++) {
-            const uint32_t ta = t[k] >> 12;
-            a = ta > a ? ta : a;
-            weight += ta;
-            r += ((t[k] >> 8) & 15) * ta;
-            g += ((t[k] >> 4) & 15) * ta;
-            b += (t[k] & 15) * ta;
-        }
-        if (weight == 0) {
-            return 0;
-        }
-        return (uint16_t)((a << 12) | ((r / weight) << 8)
-                          | ((g / weight) << 4) | (b / weight));
-    }
-    for (int32_t k = 0; k < 4; k++) {
-        if ((t[k] & 0x8000) != 0) {
-            weight++;
-            r += (t[k] >> 10) & 31;
-            g += (t[k] >> 5) & 31;
-            b += t[k] & 31;
-        }
-    }
-    if (weight == 0) {
-        return 0;
-    }
-    return (uint16_t)(0x8000 | ((r / weight) << 10) | ((g / weight) << 5)
-                      | (b / weight));
-}
-
 // The four texels of a committed page's 2x2 block i. The page is twiddled,
 // and a square twiddled texture lays out each 2x2 block as four texels in a
 // row, in the order the texel it makes lies in the half page; a VQ page
@@ -1403,7 +1455,7 @@ static pvr_ptr_t M_GetHalfPage(const int32_t page)
     }
     const bool argb4444 = m_Pages.format[page] == TEXTURE_PAGE_ARGB4444;
     for (int32_t i = 0; i < texels; i++) {
-        half[i] = M_HalfTexel(M_PageBlock(page, i), argb4444);
+        half[i] = DC_Bump_HalfTexel(M_PageBlock(page, i), argb4444);
     }
     m_Half.ptr[page] = half;
     m_HeaderGen++;
@@ -1412,14 +1464,9 @@ static pvr_ptr_t M_GetHalfPage(const int32_t page)
 }
 
 
-// The pages' relief, for DC_BLEND_BUMP: at half their size, as the PowerVR's
-// bump maps take it, each texel the way its surface faces, made the first
-// time a page is asked for so. A texture's brightness stands for its height,
-// which is about right for rock, brick and earth; see-through texels lie
-// flat.
-// How steep a step of the whole brightness range makes the surface.
-#define M_BUMP_SLOPE 8.0f
-#define M_BUMP_SIZE (TEXTURE_PAGE_WIDTH / 2)
+// The pages' relief, for DC_BLEND_BUMP (see bump_page.h): from the disc if
+// it has the page's (M_LoadDiscBumps), else made the first time a page is
+// asked for so.
 
 // Where texel (x, y) of a square twiddled texture lies: the bits of y and x
 // in turn, y's lowest first.
@@ -1437,88 +1484,26 @@ static int32_t M_Twiddle(const int32_t x, const int32_t y)
     return (int32_t)(sy | (sx << 1));
 }
 
-// A texel's height in a relief being made; one that is see-through, off the
-// page or of another texture on it (owner) stands at the height of the texel
-// asking, h: the step to the next texture on the page is no slope of this
-// one's, and showed as a dark rim round it when a flash lit it (TR1's snow).
-static int32_t M_HeightAt(
-    const uint8_t *const height, const uint16_t *const owner, const int32_t x,
-    const int32_t y, const int32_t h, const uint16_t own)
-{
-    if (x < 0 || x >= M_BUMP_SIZE || y < 0 || y >= M_BUMP_SIZE
-        || owner[y * M_BUMP_SIZE + x] != own) {
-        return h;
-    }
-    const int32_t at = height[y * M_BUMP_SIZE + x];
-    return at != 0 ? at : h;
-}
-
 // Which of the level's textures each texel of a page's relief belongs to
 // (its number plus one; 0 for none).
 static void M_FillBumpOwners(const int32_t page, uint16_t *const owner)
 {
-    memset(owner, 0, M_BUMP_SIZE * M_BUMP_SIZE * sizeof(uint16_t));
+    memset(owner, 0, DC_BUMP_SIZE * DC_BUMP_SIZE * sizeof(uint16_t));
     const int32_t count = Output_GetObjectTextureCount();
     for (int32_t i = 0; i < count; i++) {
         const OBJECT_TEXTURE *const texture = Output_GetObjectTexture(i);
         if (texture->tex_page != page || texture->uv_count <= 0) {
             continue;
         }
-        // The coordinates are 1/256 of a texel of the whole page; the relief
-        // is at half its size.
-        int32_t x0 = M_BUMP_SIZE;
-        int32_t y0 = M_BUMP_SIZE;
-        int32_t x1 = -1;
-        int32_t y1 = -1;
-        for (int32_t j = 0; j < texture->uv_count; j++) {
-            x0 = MIN(x0, texture->uv[j].u >> 9);
-            y0 = MIN(y0, texture->uv[j].v >> 9);
-            x1 = MAX(x1, texture->uv[j].u >> 9);
-            y1 = MAX(y1, texture->uv[j].v >> 9);
+        uint16_t u[4];
+        uint16_t v[4];
+        const int32_t corners = MIN(texture->uv_count, 4);
+        for (int32_t j = 0; j < corners; j++) {
+            u[j] = texture->uv[j].u;
+            v[j] = texture->uv[j].v;
         }
-        x1 = MIN(x1, M_BUMP_SIZE - 1);
-        y1 = MIN(y1, M_BUMP_SIZE - 1);
-        for (int32_t y = y0; y <= y1; y++) {
-            for (int32_t x = x0; x <= x1; x++) {
-                owner[y * M_BUMP_SIZE + x] = (uint16_t)(i + 1);
-            }
-        }
+        DC_Bump_Own(owner, (uint16_t)(i + 1), u, v, corners);
     }
-}
-
-// atan on 0 to 1, to about 1e-5: the relief of a page (16384 texels) wants an
-// angle and an elevation of each, and the library's asinf and atan2f made a
-// page cost 100 ms, a hitch each time a room showed a new one.
-static float M_AtanUnit(const float x)
-{
-    const float x2 = x * x;
-    return x
-        * (0.9998660f
-           + x2 * (-0.3302995f + x2 * (0.1801410f + x2 * (-0.0851330f + x2 * 0.0208351f))));
-}
-
-static float M_AtanFast(const float x)
-{
-    return x > 1.0f ? (float)(M_PI * 0.5) - M_AtanUnit(1.0f / x) : M_AtanUnit(x);
-}
-
-// atan2 of (y, x) by turns: 0 to 2 pi.
-static float M_Atan2Turn(const float y, const float x)
-{
-    const float ax = fabsf(x);
-    const float ay = fabsf(y);
-    float a = 0.0f;
-    if (ax != 0.0f || ay != 0.0f) {
-        a = ay > ax ? (float)(M_PI * 0.5) - M_AtanUnit(ax / ay)
-                    : M_AtanUnit(ay / ax);
-    }
-    if (x < 0.0f) {
-        a = (float)M_PI - a;
-    }
-    if (y < 0.0f) {
-        a = (float)(2.0 * M_PI) - a;
-    }
-    return a;
 }
 
 static pvr_ptr_t M_GetBumpPage(const int32_t page)
@@ -1527,7 +1512,7 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
         return m_Bump.ptr[page];
     }
     m_Bump.failed[page] = true;
-    const int32_t size = M_BUMP_SIZE;
+    const int32_t size = DC_BUMP_SIZE;
     uint8_t *const height = malloc(size * size);
     uint16_t *const owner = malloc(size * size * sizeof(uint16_t));
     if (height == nullptr || owner == nullptr) {
@@ -1535,7 +1520,7 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
         free(owner);
         return nullptr;
     }
-    uint16_t *const bump = pvr_mem_malloc(size * size * sizeof(uint16_t));
+    uint16_t *const bump = pvr_mem_malloc(M_BUMP_BYTES);
     if (bump == nullptr) {
         LOG_WARNING("No video memory for page %d's relief", page);
         free(height);
@@ -1549,75 +1534,36 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
         owned += owner[i] != 0;
         seams += (i % size) + 1 < size && owner[i] != owner[i + 1];
     }
-    // Heights by row, from the page's 2x2 groups (see M_HalfTexel); 0 for
-    // see-through, as no texel is wholly black and solid.
+    // Heights by row, from the page's 2x2 groups.
     int32_t lo = 255;
     int32_t hi = 0;
     const bool argb4444 = m_Pages.format[page] == TEXTURE_PAGE_ARGB4444;
     for (int32_t y = 0; y < size; y++) {
         for (int32_t x = 0; x < size; x++) {
-            const uint16_t t =
-                M_HalfTexel(M_PageBlock(page, M_Twiddle(x, y)), argb4444);
-            int32_t r, g, b;
-            bool solid;
-            if (argb4444) {
-                solid = (t >> 12) >= 8;
-                r = ((t >> 8) & 15) * 17;
-                g = ((t >> 4) & 15) * 17;
-                b = (t & 15) * 17;
-            } else {
-                solid = (t & 0x8000) != 0;
-                r = ((t >> 10) & 31) * 255 / 31;
-                g = ((t >> 5) & 31) * 255 / 31;
-                b = (t & 31) * 255 / 31;
-            }
-            const int32_t luma = (r * 77 + g * 151 + b * 28) >> 8;
-            height[y * size + x] = solid ? (uint8_t)MAX(luma, 1) : 0;
-            if (solid) {
+            int32_t luma;
+            const uint8_t h = DC_Bump_Height(
+                DC_Bump_HalfTexel(M_PageBlock(page, M_Twiddle(x, y)), argb4444),
+                argb4444, &luma);
+            height[y * size + x] = h;
+            if (h != 0) {
                 lo = MIN(lo, luma);
                 hi = MAX(hi, luma);
             }
         }
     }
-    // Stretched to the whole range: TR2's rock is dark and low in contrast,
-    // and would come out all but flat.
-    if (hi > lo) {
-        for (int32_t i = 0; i < size * size; i++) {
-            if (height[i] != 0) {
-                height[i] = (uint8_t)(
-                    1 + (MAX(height[i], lo) - lo) * 254 / (hi - lo));
-            }
-        }
-    }
-    // The PowerVR's bump texel: the surface's elevation off its plane in
-    // the high byte (0 to 90 degrees), the way it leans about the normal in
-    // the low one (a whole turn, from u towards v).
+    DC_Bump_Stretch(height, lo, hi);
     for (int32_t y = 0; y < size; y++) {
         for (int32_t x = 0; x < size; x++) {
-            const int32_t h = height[y * size + x];
-            uint16_t texel = 0xFF00;
-            if (h != 0) {
-                const uint16_t own = owner[y * size + x];
-                const float dx = (M_HeightAt(height, owner, x + 1, y, h, own)
-                                  - M_HeightAt(height, owner, x - 1, y, h, own))
-                    * (0.5f / 255.0f);
-                const float dy = (M_HeightAt(height, owner, x, y + 1, h, own)
-                                  - M_HeightAt(height, owner, x, y - 1, h, own))
-                    * (0.5f / 255.0f);
-                const float nx = -dx * M_BUMP_SLOPE;
-                const float ny = -dy * M_BUMP_SLOPE;
-                // The elevation: asin(1 / len) with len = sqrt(n^2 + 1) is
-                // atan(1 / n), a quarter turn less atan(n).
-                const float s =
-                    (float)(M_PI * 0.5) - M_AtanFast(sqrtf(nx * nx + ny * ny));
-                const float r = M_Atan2Turn(ny, nx);
-                const uint32_t sb =
-                    (uint32_t)(s * (255.0f / ((float)M_PI * 0.5f)) + 0.5f);
-                const uint32_t rb =
-                    (uint32_t)(r * (256.0f / (2.0f * (float)M_PI))) & 0xFF;
+            uint16_t texel = DC_BUMP_FLAT;
+            float nx;
+            float ny;
+            if (DC_Bump_Slope(height, owner, x, y, &nx, &ny)) {
+                texel = DC_Bump_Encode(nx, ny);
 #if defined(DC_EMIT_VERIFY)
                 {
                     // Against the library's, for the relief made at all.
+                    const int32_t sb = texel >> 8;
+                    const int32_t rb = texel & 0xFF;
                     const float ls = asinf(
                         1.0f / sqrtf(nx * nx + ny * ny + 1.0f));
                     float lr = atan2f(ny, nx);
@@ -1630,7 +1576,7 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
                     const int32_t lrb =
                         (int32_t)((uint32_t)(lr * (256.0f / (2.0f * (float)M_PI)))
                                   & 0xFF);
-                    int32_t drb = (int32_t)rb - lrb;
+                    int32_t drb = rb - lrb;
                     if (drb > 128) {
                         drb -= 256;
                     }
@@ -1643,7 +1589,7 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
                     static int32_t worst_s = 0;
                     static int32_t worst_r = 0;
                     checked++;
-                    const int32_t ds = abs((int32_t)MIN(sb, 255u) - lsb);
+                    const int32_t ds = abs(sb - lsb);
                     off_s += ds > 1;
                     // A flat texel (straight up) has no angle to speak of: the
                     // library gives it -pi from a pair of negative zeros.
@@ -1661,7 +1607,6 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
                     }
                 }
 #endif
-                texel = (uint16_t)((MIN(sb, 255u) << 8) | rb);
             }
             ((volatile uint16_t *)bump)[M_Twiddle(x, y)] = texel;
         }
@@ -1748,7 +1693,7 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
         if (bump != nullptr) {
             pvr_poly_cxt_txr(
                 &cxt, list, PVR_TXRFMT_BUMP | PVR_TXRFMT_TWIDDLED,
-                M_BUMP_SIZE, M_BUMP_SIZE, bump,
+                DC_BUMP_SIZE, DC_BUMP_SIZE, bump,
                 m_Bilinear ? PVR_FILTER_BILINEAR : PVR_FILTER_NEAREST);
             // The texture as it is: KOS's decal keeps the vertex alpha.
             cxt.txr.env = PVR_TXRENV_REPLACE;

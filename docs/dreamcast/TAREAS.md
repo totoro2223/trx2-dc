@@ -82,8 +82,11 @@ Reparto de Londres (graphics, ms por frame): pass ~12,7 (estáticos y sprites
     menos caras miradas o vértices ya listos para el PowerVR. Sin pista barata.
 12. **Mezcla de matrices de Lara** (`lblend` 0,33 ms): solo vale ~0,16 ms y
     exige saber qué relación guardan las dos pilas (vista y mundo) en DC.
-13. **Página de relieve**: el primer bucle (`M_HalfTexel`/`M_PageBlock`) sigue
-    siendo por texel.
+13. **Página de relieve hecha en juego**: con `textures.bump` solo queda para
+    las páginas que el disco no tiene (las de las inyecciones y las que
+    editan); su primer bucle (`DC_Bump_HalfTexel`/`M_PageBlock`) sigue siendo
+    por texel. Antes, comprobar en Flycast el relieve del disco (PROBADO, fila
+    del 27/10/2026).
 
 ## D. Memoria
 
