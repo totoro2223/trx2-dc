@@ -79,6 +79,7 @@ del SH-4) y nada se ha probado en consola real. "Venecia" = `venice.tr2`,
 | 60 fps adaptativo (baja a 30 si el trabajo > 33 ms, vuelve < 20 ms, 240 frames de espera) | SIN VER | compilado; umbrales sin ajustar en un nivel pesado | 281 local |
 | Opción "Adaptive 60 FPS" en el menú, ligada al modo gráfico | SIN VER | compilado | 281 local |
 | Relieve con brillo (Blinn), pasada aditiva `DC_BLEND_BUMP_GLOW`, mezcla de luces por alcance y fuerza, luces de paso 8× | SIN VER | valores a ojo (`M_BUMP_DEPTH` 0,9, `M_BUMP_GLOW` 0,5); se apaga bajo 20 fps | `f3b6f427d` |
+| Relieve sin borde negro entre texturas de la página: las pendientes ya no miran texeles de otra textura (`M_FillBumpOwners`, `pvr.c`); el borde salía alrededor de la nieve de Caves al disparar | SIN VER | prueba oculta en Caves: páginas 0 y 1 hechas, 2 % de sus texeles en bordes, 30 fps, sin errores | TR1 27/10/2026 |
 
 ## Sombras
 

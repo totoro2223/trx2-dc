@@ -19,6 +19,7 @@
 #include <trx/game/output/const.h>
 #include <trx/game/level/texture_pages_16.h>
 #include <trx/game/output/sources/objects.h>
+#include <trx/game/output/textures.h>
 
 #include <arch/timer.h>
 #include <dc/biosfont.h>
@@ -1436,17 +1437,53 @@ static int32_t M_Twiddle(const int32_t x, const int32_t y)
     return (int32_t)(sy | (sx << 1));
 }
 
-// A texel's height in a relief being made; one that is see-through or off
-// the page stands at the height of the texel asking, h.
+// A texel's height in a relief being made; one that is see-through, off the
+// page or of another texture on it (owner) stands at the height of the texel
+// asking, h: the step to the next texture on the page is no slope of this
+// one's, and showed as a dark rim round it when a flash lit it (TR1's snow).
 static int32_t M_HeightAt(
-    const uint8_t *const height, const int32_t x, const int32_t y,
-    const int32_t h)
+    const uint8_t *const height, const uint16_t *const owner, const int32_t x,
+    const int32_t y, const int32_t h, const uint16_t own)
 {
-    if (x < 0 || x >= M_BUMP_SIZE || y < 0 || y >= M_BUMP_SIZE) {
+    if (x < 0 || x >= M_BUMP_SIZE || y < 0 || y >= M_BUMP_SIZE
+        || owner[y * M_BUMP_SIZE + x] != own) {
         return h;
     }
     const int32_t at = height[y * M_BUMP_SIZE + x];
     return at != 0 ? at : h;
+}
+
+// Which of the level's textures each texel of a page's relief belongs to
+// (its number plus one; 0 for none).
+static void M_FillBumpOwners(const int32_t page, uint16_t *const owner)
+{
+    memset(owner, 0, M_BUMP_SIZE * M_BUMP_SIZE * sizeof(uint16_t));
+    const int32_t count = Output_GetObjectTextureCount();
+    for (int32_t i = 0; i < count; i++) {
+        const OBJECT_TEXTURE *const texture = Output_GetObjectTexture(i);
+        if (texture->tex_page != page || texture->uv_count <= 0) {
+            continue;
+        }
+        // The coordinates are 1/256 of a texel of the whole page; the relief
+        // is at half its size.
+        int32_t x0 = M_BUMP_SIZE;
+        int32_t y0 = M_BUMP_SIZE;
+        int32_t x1 = -1;
+        int32_t y1 = -1;
+        for (int32_t j = 0; j < texture->uv_count; j++) {
+            x0 = MIN(x0, texture->uv[j].u >> 9);
+            y0 = MIN(y0, texture->uv[j].v >> 9);
+            x1 = MAX(x1, texture->uv[j].u >> 9);
+            y1 = MAX(y1, texture->uv[j].v >> 9);
+        }
+        x1 = MIN(x1, M_BUMP_SIZE - 1);
+        y1 = MIN(y1, M_BUMP_SIZE - 1);
+        for (int32_t y = y0; y <= y1; y++) {
+            for (int32_t x = x0; x <= x1; x++) {
+                owner[y * M_BUMP_SIZE + x] = (uint16_t)(i + 1);
+            }
+        }
+    }
 }
 
 // atan on 0 to 1, to about 1e-5: the relief of a page (16384 texels) wants an
@@ -1492,14 +1529,25 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
     m_Bump.failed[page] = true;
     const int32_t size = M_BUMP_SIZE;
     uint8_t *const height = malloc(size * size);
-    if (height == nullptr) {
+    uint16_t *const owner = malloc(size * size * sizeof(uint16_t));
+    if (height == nullptr || owner == nullptr) {
+        free(height);
+        free(owner);
         return nullptr;
     }
     uint16_t *const bump = pvr_mem_malloc(size * size * sizeof(uint16_t));
     if (bump == nullptr) {
         LOG_WARNING("No video memory for page %d's relief", page);
         free(height);
+        free(owner);
         return nullptr;
+    }
+    M_FillBumpOwners(page, owner);
+    int32_t owned = 0;
+    int32_t seams = 0;
+    for (int32_t i = 0; i < size * size; i++) {
+        owned += owner[i] != 0;
+        seams += (i % size) + 1 < size && owner[i] != owner[i + 1];
     }
     // Heights by row, from the page's 2x2 groups (see M_HalfTexel); 0 for
     // see-through, as no texel is wholly black and solid.
@@ -1549,11 +1597,12 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
             const int32_t h = height[y * size + x];
             uint16_t texel = 0xFF00;
             if (h != 0) {
-                const float dx = (M_HeightAt(height, x + 1, y, h)
-                                  - M_HeightAt(height, x - 1, y, h))
+                const uint16_t own = owner[y * size + x];
+                const float dx = (M_HeightAt(height, owner, x + 1, y, h, own)
+                                  - M_HeightAt(height, owner, x - 1, y, h, own))
                     * (0.5f / 255.0f);
-                const float dy = (M_HeightAt(height, x, y + 1, h)
-                                  - M_HeightAt(height, x, y - 1, h))
+                const float dy = (M_HeightAt(height, owner, x, y + 1, h, own)
+                                  - M_HeightAt(height, owner, x, y - 1, h, own))
                     * (0.5f / 255.0f);
                 const float nx = -dx * M_BUMP_SLOPE;
                 const float ny = -dy * M_BUMP_SLOPE;
@@ -1618,11 +1667,16 @@ static pvr_ptr_t M_GetBumpPage(const int32_t page)
         }
     }
     free(height);
+    free(owner);
     m_Bump.ptr[page] = bump;
     m_HeaderGen++;
     m_Bump.failed[page] = false;
     m_Bump.made++;
-    LOG_INFO("Page %d's relief made", page);
+    LOG_INFO(
+        "Page %d's relief made (%d%% of it in the level's textures, %d%% at "
+        "their edges)",
+        page, (int)(owned * 100 / (size * size)),
+        (int)(seams * 100 / (size * size)));
     return bump;
 }
 
