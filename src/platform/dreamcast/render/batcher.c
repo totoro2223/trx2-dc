@@ -264,8 +264,10 @@ _Static_assert(
 #define M_BUMP_DEPTH 0.765f
 // How much of the colour a flat texel of the relief loses, of the whole.
 #define M_BUMP_DIM 0.0f
+// The least of the colour a slope turned from the light keeps (M_BumpAt).
+#define M_BUMP_FLOOR 0.45f
 // How bright the slopes turned to the light shine, of the whole.
-#define M_BUMP_GLOW 0.425f
+#define M_BUMP_GLOW 0.5f
 // The lowest a light stands over a face, in radians: one level with it or
 // behind it would shade every slope.
 #define M_BUMP_MIN_ELEVATION 0.35f
@@ -3820,13 +3822,15 @@ static uint32_t M_BumpAt(
     const float depth, const bool glow)
 {
     float l[3] = { light[0] - pos[0], light[1] - pos[1], light[2] - pos[2] };
-    // The slopes are lit as if for a shine: the way they must face to throw
-    // the light at the camera is half way between the light and the eye (the
-    // camera is the origin of eye space), so the relief moves as the camera
-    // does.
+    // The shine lights the slopes that throw the light at the camera: they
+    // face half way between the light and the eye (the camera is the origin
+    // of eye space), so it moves as the camera does. The shade takes the
+    // light alone: half way to the eye, a muzzle flash (near the camera)
+    // turned the shade about with every sway of the gun, and the texture
+    // seemed to slide.
     const float l_sq = M_Dot3(l, l);
     const float c_sq = M_Dot3(pos, pos);
-    if (l_sq > 0.0f && c_sq > 0.0f) {
+    if (glow && l_sq > 0.0f && c_sq > 0.0f) {
         const float li = M_InvSqrt(l_sq);
         const float ci = M_InvSqrt(c_sq);
         float h[3];
@@ -3872,8 +3876,12 @@ static uint32_t M_BumpAt(
     const float flat = 1.0f - M_BUMP_DIM * (depth * (1.0f / M_BUMP_DEPTH));
     const float k2 = MIN(depth * lz, flat);
     const float k3 = depth * sqrtf(1.0f - lz * lz) * steady_smooth;
-    return (M_PackUnit(flat - k2) << 24) | (M_PackUnit(k2) << 16)
-        | (M_PackUnit(k3) << 8) | q8;
+    // The PowerVR's intensity is K1 + K2 sin S + K3 cos S cos(R - Q), linear
+    // in the K: squeezed into M_BUMP_FLOOR to 1, a slope turned from the
+    // light is shaded and no longer black, and a flat texel stays as it was.
+    const float keep = 1.0f - M_BUMP_FLOOR;
+    return (M_PackUnit(M_BUMP_FLOOR + keep * (flat - k2)) << 24)
+        | (M_PackUnit(keep * k2) << 16) | (M_PackUnit(keep * k3) << 8) | q8;
 }
 
 // The relief's lights: a room's own, and the passing ones, in eye space, each
@@ -3994,10 +4002,24 @@ static bool M_EmitBumpGrid(
         for (int32_t col = 0; col < M_N; col++) {
             const float s = (float)col / M_BUMP_SPLIT;
             // The strip's corners 0, 1, 2, 3 lie at (0,0), (1,0), (0,1), (1,1).
-            const float w[4] = {
-                (1.0f - s) * (1.0f - t), s * (1.0f - t), (1.0f - s) * t,
-                s * t,
-            };
+            // The face under it is drawn as two triangles either side of the
+            // 1-2 diagonal, each flat in its coordinates: a point takes its
+            // place in its own triangle, and not the blend of all four corners,
+            // which on a face that is no parallelogram lay elsewhere on the
+            // texture and made the relief slide as a flash came and went. The
+            // pieces' own diagonals run along that one, so they meet it.
+            float w[4];
+            if (s + t <= 1.0f) {
+                w[0] = 1.0f - s - t;
+                w[1] = s;
+                w[2] = t;
+                w[3] = 0.0f;
+            } else {
+                w[0] = 0.0f;
+                w[1] = 1.0f - t;
+                w[2] = 1.0f - s;
+                w[3] = s + t - 1.0f;
+            }
             M_XVERT *const g = &grid[row * M_N + col];
             memset(g, 0, sizeof(*g));
             for (int32_t c = 0; c < 4; c++) {
@@ -4014,11 +4036,17 @@ static bool M_EmitBumpGrid(
             // exactly the depth its whole does, and would win and lose to it
             // pixel by pixel, shimmering as the camera moves.
             g->inv_z *= M_BUMP_GRID_NEAR;
-            const int32_t ti = (int32_t)(s * 256.0f + 0.5f);
-            g->argb = M_LerpARGB(
-                M_LerpARGB(xv[strip[0]].argb, xv[strip[1]].argb, ti),
-                M_LerpARGB(xv[strip[2]].argb, xv[strip[3]].argb, ti),
-                (int32_t)(t * 256.0f + 0.5f));
+            float argb[4] = {};
+            for (int32_t c = 0; c < 4; c++) {
+                const uint32_t k = xv[strip[c]].argb;
+                for (int32_t b = 0; b < 4; b++) {
+                    argb[b] += (float)((k >> (b * 8)) & 0xFF) * w[c];
+                }
+            }
+            g->argb = 0;
+            for (int32_t b = 0; b < 4; b++) {
+                g->argb |= (uint32_t)(argb[b] + 0.5f) << (b * 8);
+            }
             float fade;
             float by_light;
             grid_k[row * M_N + col] =

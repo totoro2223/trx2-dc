@@ -1,4 +1,4 @@
-﻿// The PowerVR side of the Dreamcast renderer (see pvr.h).
+// The PowerVR side of the Dreamcast renderer (see pvr.h).
 //
 // Each list has a buffer in main memory that the frame's polygons are written
 // into in whatever order the engine's passes produce them; when the frame
@@ -1418,7 +1418,7 @@ static pvr_ptr_t M_GetHalfPage(const int32_t page)
 // which is about right for rock, brick and earth; see-through texels lie
 // flat.
 // How steep a step of the whole brightness range makes the surface.
-#define M_BUMP_SLOPE 6.0f
+#define M_BUMP_SLOPE 8.0f
 #define M_BUMP_SIZE (TEXTURE_PAGE_WIDTH / 2)
 
 // Where texel (x, y) of a square twiddled texture lies: the bits of y and x

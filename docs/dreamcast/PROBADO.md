@@ -80,6 +80,7 @@ del SH-4) y nada se ha probado en consola real. "Venecia" = `venice.tr2`,
 | Opción "Adaptive 60 FPS" en el menú, ligada al modo gráfico | SIN VER | compilado | 281 local |
 | Relieve con brillo (Blinn), pasada aditiva `DC_BLEND_BUMP_GLOW`, mezcla de luces por alcance y fuerza, luces de paso 8× | SIN VER | valores a ojo (`M_BUMP_DEPTH` 0,9, `M_BUMP_GLOW` 0,5); se apaga bajo 20 fps | `f3b6f427d` |
 | Relieve sin borde negro entre texturas de la página: las pendientes ya no miran texeles de otra textura (`M_FillBumpOwners`, `pvr.c`); el borde salía alrededor de la nieve de Caves al disparar | SIN VER | prueba oculta en Caves: páginas 0 y 1 hechas, 2 % de sus texeles en bordes, 30 fps, sin errores | TR1 27/10/2026 |
+| Relieve al disparar: la sombra mira solo la luz (el vector medio con el ojo queda para el brillo); la cuadrícula de la luz de paso sigue los dos triángulos de la cara y no la mezcla de las cuatro esquinas (se deslizaba sobre la textura); piso de claridad `M_BUMP_FLOOR` 0,45; `M_BUMP_GLOW` 0,5, `M_BUMP_SLOPE` 8, `M_BUMP_DEPTH` 0,765 | MEJOR | el usuario lo vio en Caves: menos negro, aún parecía deslizarse antes del arreglo de la cuadrícula (sin ver después) | TR1 27/10/2026 |
 
 ## Sombras
 
