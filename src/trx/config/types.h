@@ -304,6 +304,7 @@ typedef struct {
         ASPECT_MODE aspect_mode;
         DC_MODE dc_mode;
         bool dc_cel_shading;
+        bool dc_bump_mapping;
         bool dc_adaptive_fps;
         bool dc_60fps;
         int32_t fps;

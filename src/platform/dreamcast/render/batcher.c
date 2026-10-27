@@ -4529,7 +4529,9 @@ static void M_PrepareFrame(void)
 
     m_Frame.lighting = general->lighting_enabled != 0;
     m_Frame.cel = M_CelOn();
-    m_Frame.bump = DC_Mode_Get()->bump_mapping && m_BumpOn && !m_Frame.ortho;
+    m_Frame.bump = DC_Mode_Get()->bump_mapping
+        && g_Config.rendering.dc_bump_mapping
+        && m_BumpOn && !m_Frame.ortho;
     m_Frame.min_shade = general->min_shade;
     m_Frame.time_in_game = general->time_in_game;
     m_Frame.sunset_duration = general->sunset_duration;

@@ -125,6 +125,7 @@ X_CFG_BOOL(rendering.enable_affine_mapping,              false)
 X_CFG_BOOL(rendering.enable_lighting,                    true)
 #if defined(__DREAMCAST__)
 X_CFG_BOOL(rendering.dc_cel_shading,                     true)
+X_CFG_BOOL(rendering.dc_bump_mapping,                    true)
 X_CFG_BOOL(rendering.dc_adaptive_fps,                    false)
 X_CFG_BOOL(rendering.dc_60fps,                           false)
 #endif

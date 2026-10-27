@@ -27,7 +27,8 @@ static char m_Path[160] = "";
 static char m_Stored[256] = "";
 
 // The options, as a line of numbers: the mode, the 60 fps and cel shading and
-// adaptive switches, the fps counter, the two filters and the shadow type.
+// adaptive switches, the fps counter, the two filters, the shadow type and the
+// bump mapping switch.
 static void M_Format(char *const out, const size_t size)
 {
     snprintf(
@@ -37,7 +38,8 @@ static void M_Format(char *const out, const size_t size)
         (int)g_Config.rendering.dc_adaptive_fps,
         (int)g_Config.ui.enable_fps_counter,
         (int)g_Config.rendering.texture_filter,
-        (int)g_Config.rendering.ui_filter, (int)g_Config.visuals.shadow_type);
+        (int)g_Config.rendering.ui_filter, (int)g_Config.visuals.shadow_type,
+        (int)g_Config.rendering.dc_bump_mapping);
 }
 
 void DC_Settings_Load(const char *const saves_dir)
@@ -48,12 +50,16 @@ void DC_Settings_Load(const char *const saves_dir)
         return; // never saved: the options stay as they start
     }
     int version = 0;
-    int v[8] = {};
+    int v[9] = {};
     const int read = fscanf(
-        fp, "%d %d %d %d %d %d %d %d %d", &version, &v[0], &v[1], &v[2], &v[3],
-        &v[4], &v[5], &v[6], &v[7]);
+        fp, "%d %d %d %d %d %d %d %d %d %d", &version, &v[0], &v[1], &v[2], &v[3],
+        &v[4], &v[5], &v[6], &v[7], &v[8]);
     fclose(fp);
-    if (read != 9 || version != 1 || v[0] < 0 || v[0] >= DC_MODE_NUMBER_OF
+    if (version == 1) {
+        v[8] = 1; // the first file format had no bump mapping switch
+    }
+    if (read < 9 || (version == 1 && read != 9) || (version == 2 && read != 10)
+        || version < 1 || version > 2 || v[0] < 0 || v[0] >= DC_MODE_NUMBER_OF
         || v[5] < 0 || v[5] >= TEXTURE_FILTER_NUMBER_OF || v[6] < 0
         || v[6] >= TEXTURE_FILTER_NUMBER_OF || v[7] < 0
         || v[7] >= SHADOW_TYPE_NUMBER_OF) {
@@ -68,6 +74,7 @@ void DC_Settings_Load(const char *const saves_dir)
     CONFIG_SET(g_Config.rendering.texture_filter, (TEXTURE_FILTER)v[5]);
     CONFIG_SET(g_Config.rendering.ui_filter, (TEXTURE_FILTER)v[6]);
     CONFIG_SET(g_Config.visuals.shadow_type, (SHADOW_TYPE)v[7]);
+    CONFIG_SET(g_Config.rendering.dc_bump_mapping, v[8] != 0);
     M_Format(m_Stored, sizeof(m_Stored));
     LOG_INFO("render options loaded from the memory card");
 }
