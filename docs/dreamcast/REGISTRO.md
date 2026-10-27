@@ -888,3 +888,49 @@ quitan junto con la pasada completa de TR3.
 Pendiente: P2 TR3 completo (19 niveles, disco `T-mem-P2-tr3e.cdi`, build 804), que es
 también P5, y después P3, P4, P8 y P11. P6/P7/P9/P10/P12/P13 y la decisión sobre M12
 necesitan consola, teclas o los ojos del usuario.
+
+## 27/10/2026: análisis de Tomb Raider IV de Dreamcast (sin cambios de código)
+
+Se desensambló el TR4 de Dreamcast del usuario (Redump bin/cue; nada del disco
+entra en git) para buscar técnicas aprovechables. REA no abre SH-4, así que se
+usó `sh-elf-objdump` de DreamSDK sobre una imagen de memoria del ejecutable.
+
+1. **Qué es**: un juego Windows CE. `WCETOMB4.EXE` (PE SH-4, base 0x10000)
+   arranca sobre `0WINCEOS.BIN` y dibuja con Direct3D, pero lo caliente está en
+   una sección `asmcode` de 12 KB escrita a mano: transformación y emisión.
+2. **Transformación**: `ftrv` con el bucle solapado (transforma un vértice
+   mientras carga el siguiente), `pref` 64 bytes por delante y XMTRX recargada
+   solo cuando una marca dice que la matriz cambió. Una segunda rutina
+   transforma también las normales para las UV del reflejo. Lo nuestro
+   (`xform_*_sh4.S`) ya es equivalente.
+3. **Emisión**: las caras salen por índice desde los vértices ya transformados
+   a grupos por textura (seis juegos de grupos reservados al cargar el nivel),
+   que se vacían al llenarse. Los quads van como dos triángulos de 3 vértices;
+   nosotros usamos tiras de 4, que envían menos.
+4. **Lo único nuevo**: los vértices se escriben en esos grupos **por las store
+   queues hacia la RAM** (QACR apuntando a RAM, `ocbi` en las líneas de destino
+   y un `pref` por vértice de 32 bytes), sin pasar por la caché. Es la idea de
+   la fila "`movca.l` al escribir cada vértice" (no medible en Flycast); que un
+   juego comercial lo haga es el dato nuevo. Queda como tarea 71 de
+   TAREAS.md, para la consola.
+5. **Luz**: no está en el código del juego; las cadenas ("CreateD3DLights",
+   "Room Light", "Dynamic Light") apuntan al runtime de Direct3D. La suma de
+   luces dinámicas por objeto (hasta 32: descarte por caja eje a eje,
+   distancia al cuadrado con `fipr`, caída `1 − d²/r²` con tabla de `1/r²`,
+   corte al saturar) es la misma que la nuestra de TR1/2 (`tr12.c`); la de TR3
+   usa raíz y caída lineal, como el original. Todo `ilight` cuesta 0,14 ms:
+   no hay nada que ganar.
+6. **Relieve**: TR4 lo genera al cargar desde mapas de altura de los artistas
+   ("Converting HeightMap to Bump"); no se localizó el código y TR2/TR3 no
+   tienen esos mapas.
+7. **Niveles**: el `.TR4` es el formato de PC sin cambios (páginas en 32 y
+   16 bits, 2 páginas extra y geometría, en bloques zlib) y aparte va un `.TEX`
+   con las texturas listas para el PVR (15 páginas VQ de 256×256 y 7 de
+   16 bits, ~1,2 MB de VRAM). El juego se salta las texturas del `.TR4`.
+   Nuestro cargador ya sube las páginas una a una (`Level_Section_ReadTexturePages`
+   con lectura por ventana): en el pico de carga ocupan ~146 KB. Imitarlo solo
+   ahorraría lectura de CD, no memoria.
+8. **Sonido**: ADPCM y música en streaming, como ya hacemos.
+
+Conclusión: sin consola no queda nada que sacar de TR4. Solo la tarea 71 y el
+orden de instrucciones del bucle de `ftrv`, que también dependen del SH-4 real.

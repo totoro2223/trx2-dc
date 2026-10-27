@@ -53,6 +53,12 @@ deshace y se anota como FALLIDO.
    se puede dar por bueno ni por malo: `M_EmitChunk`, `movca.l`, descarte de
    espaldas por plano, datos calientes/fríos del vértice de sala. Con
    `dc_profile` y `prof_report.py` solo hay una cota optimista.
+71. **Vértices por store queues hacia la RAM** (visto en TR4 de Dreamcast,
+    REGISTRO 27/10/2026): escribir cada vértice de 32 bytes en el búfer de la
+    lista a través de las store queues (QACR0/1 apuntando a la RAM del búfer,
+    `ocbi` de las líneas de destino y un `pref` por vértice) en vez de con
+    stores que pasan por la caché. Solo se mide en consola: hacerlo como opción
+    de compilación y comparar `emit` y `[frame]` en GDEMU con y sin ella.
 
 ## C. Optimización del render (lo que de verdad queda)
 
