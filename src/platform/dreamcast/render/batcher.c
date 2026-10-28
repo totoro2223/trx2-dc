@@ -44,6 +44,9 @@
 #include <dc/fmath.h>
 #include <dc/pvr.h>
 #include <dc/matrix.h>
+#if defined(TRX_DC_SQ_VERTICES)
+    #include <dc/sq.h>
+#endif
 #include <float.h>
 #include <malloc.h>
 #include <math.h>
@@ -3432,8 +3435,12 @@ typedef struct {
     // A room's cel shading (M_CelKeeps): 1 to keep no shaded side of a face
     // with all its corners in the shade.
     int32_t cel_dark;
+    // The store queue address of out less out, with dc_sq_vertices (0: the
+    // vertices go through the cache).
+    int32_t sq_delta;
 } M_EMIT_RUN;
 _Static_assert(offsetof(M_EMIT_RUN, cel_dark) == 96, "emit_sh4.S layout");
+_Static_assert(offsetof(M_EMIT_RUN, sq_delta) == 100, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, indices) == 32, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, page_id) == 64, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, sargb) == 72, "emit_sh4.S layout");
@@ -3618,7 +3625,22 @@ static int32_t M_EmitRunFast(
     }
     return 0;
 #else
+#if defined(TRX_DC_SQ_VERTICES)
+    // shortcut: the cel copies read back what the run wrote, which a store
+    // queue cannot give, so runs with them keep the cache.
+    const bool sq = !cel;
+    if (sq) {
+        run.out = (uint8_t *)sq_lock(at);
+        run.sq_delta = (int32_t)((uintptr_t)run.out - (uintptr_t)at);
+    }
+#endif
     dc_emit_run(&run);
+#if defined(TRX_DC_SQ_VERTICES)
+    if (sq) {
+        sq_wait();
+        sq_unlock();
+    }
+#endif
     DC_PVR_EndRun((size_t)run.written, run.polys, header);
     if (cel) {
         const int32_t made = (int32_t)(run.cel_end - run.cel_out);

@@ -25,13 +25,14 @@
 !   fr12 depth lo     fr13 depth scale fr14 1/65535       fr15 1.0
 ! The frame on the stack: 0 the run, 4 polygons made, 8 cull, 12 the page, 32 the
 ! cel colours, 36 the cel cursor, 40..52 the shaded colours of a face,
-! 16..28 the four corners' xverts, advanced to their sx, 56 cel_dark.
+! 16..28 the four corners' xverts, advanced to their sx, 56 cel_dark, 60 the
+! store queue's distance from the list (0: the cache).
 !
 ! Struct layout, DC_EMIT_RUN (batcher.c):
 !    0 centre_x 4 centre_y 8 screen_scale 12 near_z 16 depth_lo 20 depth_scale
 !   24 uv_scale 28 one 32 indices 36 count 40 xverts 44 uv 48 page 52 oargb
 !   56 out 60 space 64 page_id 68 cull 72 sargb 76 cel_out | 80 used
-!   84 written 88 polys 92 cel_end | 96 cel_dark
+!   84 written 88 polys 92 cel_end | 96 cel_dark 100 sq_delta
 
     .text
     .align 2
@@ -129,6 +130,18 @@
     fmov.s  fr6,@-r11
     fmov.s  fr5,@-r11
     mov.l   \flag,@-r11
+#if defined(TRX_DC_SQ_VERTICES)
+    ! Through a store queue (r11 its address): the real line out of the cache,
+    ! then the queue's 32 bytes to the RAM.
+    mov.l   @(60,r15),r0
+    tst     r0,r0
+    bt      5f
+    mov     r11,r5
+    sub     r0,r5
+    ocbi    @r5
+    pref    @r11
+5:
+#endif
     .endm
 
 ! Whether the face of the corners in slots \a, \b, \c (as M_IsBackFacing) turns
@@ -262,7 +275,7 @@ _dc_emit_run:
     fmov.s  fr9,@-r15
     fmov.s  fr10,@-r15
     fmov.s  fr11,@-r15
-    add     #-60,r15
+    add     #-64,r15
     mov.l   r4,@(0,r15)
     mov     r4,r5
     fmov.s  @r5+,fr8
@@ -291,6 +304,8 @@ _dc_emit_run:
     mov.l   r1,@(36,r15)            ! where the cel copies go, or 0
     mov.l   @(16,r5),r1             ! cel_dark, at 96
     mov.l   r1,@(56,r15)
+    mov.l   @(20,r5),r1             ! sq_delta, at 100
+    mov.l   r1,@(60,r15)
     mov     #-32,r2
     shll16  r2
     shll8   r2                      ! 0xE0000000
@@ -461,7 +476,7 @@ done:
     mov.l   r11,@(4,r4)
     mov.l   r0,@(8,r4)
     mov.l   r5,@(12,r4)
-    add     #60,r15
+    add     #64,r15
     fmov.s  @r15+,fr11
     fmov.s  @r15+,fr10
     fmov.s  @r15+,fr9

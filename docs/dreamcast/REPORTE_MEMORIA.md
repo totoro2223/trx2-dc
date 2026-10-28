@@ -17,12 +17,12 @@ otra cosa son de esos builds. Los logs serie de toda la tanda están en
 | 0.1 Compilar | OK | `minsize` compila sin errores (ELF de build 805) |
 | 0.2 `mem_summary.py` | OK | lee los logs y saca una tabla por carga |
 | 0.3 Línea base P1 | **OK** | TR1, TR2 y TR3 llegan a `[levels] done` (TR3 en el build 784) |
-| 0.3 Línea base P2 | **TR3 pendiente** | TR1 (build 795) y TR2 (build 794) pasan; en TR3 el arreglo de la carga está probado en 5 niveles (build 805) |
+| 0.3 Línea base P2 | **OK** | TR1, TR2 y TR3 pasan con guardados/cargas (`[levels] done`) |
 | P1 Niveles seguidos | **OK** | los tres juegos (detalle abajo) |
-| P2 Niveles + guardados | **TR1/TR2 OK, TR3 pendiente** | ver abajo |
+| P2 Niveles + guardados | **OK** | los tres juegos (TR3 completo 0-18) |
 | P3 Cargas repetidas | pendiente | — |
 | P4 Pico de Barkhang | pendiente | la carga de Barkhang ya se midió (6240 K de 6591 K); falta el pico con guardados |
-| P5 TR3 entero | pendiente | es la pasada larga de P2 TR3 |
+| P5 TR3 entero | **OK** | 19 niveles con guardados/cargas, `[levels] done` |
 | P8 Reiniciar / cambiar modo | pendiente | — |
 | P11 Sesión larga | pendiente | — |
 | P6/P7/P13 | no ejecutable aún | necesitan ganchos M10/M13 o teclas |
@@ -110,7 +110,7 @@ repetición del fallo de TR2, idéntica).
 | TR1 (repetición) | `T-mem-P2-tr1b.cdi` | 795 | 0–15 (16) | 45 / 8 | **Pasa**: `[levels] done` |
 | TR3 (corto, 11→12) | `T-mem-tr3-short2.cdi` | 798 | 11–12 | 3 / — | **Pasa**; BSON de 244 K, arena toda de la región |
 | TR3 (5 niveles) | `T-mem-tr3-l5e.cdi` | 805 | 0–4 (5) | 17 / 3 | **Pasa**: `[levels] done`; carga en 6 trozos, sin petición de 700 K |
-| TR3 (pasada completa) | `T-mem-P2-tr3e.cdi` | 804 | 0–18 (19) | — | **Pendiente**: disco hecho, sin ejecutar |
+| TR3 (pasada completa) | `T-mem-P2-tr3e.cdi` | 804 | 0–18 (19) | 66 / 19 | **Pasa**: `[levels] done` (run desde 0 con VMU fresca: `dc-mem-P2-tr3e-fresh.txt`) |
 
 Cifras:
 
@@ -237,11 +237,7 @@ vídeos que empiece en el gimnasio se cuelga.
   zlib** y el árbol se construye sección a sección (`dc_save_arena.c`,
   `savegame/file.c`; el camino de escritorio queda igual). TR2 hace 17 niveles y
   TR1 repite con 45 guardados.
-- **P2 TR3, aplicar la partida (arreglado en corto, builds 800–805):** el árbol
-  del BSON se pedía entero (713–718 K). Ahora se lee en trozos con la arena del
-  guardado; el árbol de 154 K son 6 trozos de 448 K de la región y 484–496 K de
-  newlib. Los 5 niveles de comprobación pasan. **Falta la pasada de 19 niveles**
-  (`T-mem-P2-tr3e.cdi`, build 804) para dar P2 TR3 por cerrado.
+- **P2 TR3, aplicar la partida (arreglado, builds 800–805):** el árbol del BSON se pedía entero (713–718 K). Ahora se lee en trozos con la arena del guardado; el árbol de 154 K son 6 trozos de 448 K de la región y 484–496 K de newlib. Los 5 niveles pasan y la pasada completa de 19 niveles pasa con `[levels] done` (build 804, `dc-mem-P2-tr3e-fresh.txt`, 66 guardados / 19 cargas). Al cargar el nivel 19 hay `Out of memory` de newlib y watchdog, pero acaba pasando gracias a la región antes que newlib, `realloc` a la región, desalojo y el árbol en trozos.
 - **TR3 se caía sin mensaje (build 774):** las dos caídas de la primera pasada
   no dejaban nada en el serie ni en `flycast.log`. Los repros con más detalle
   dieron aserto en `BSON_ParseEx` en el mismo punto (arriba), que encaja; las
@@ -258,20 +254,16 @@ Hecho en esta tanda (sin hardware, sin teclas):
 
 - Fase 0 completa: `minsize` compila y `mem_summary.py` resume los logs.
 - **P1** OK en TR1, TR2 y TR3 (TR3 en el build 784).
-- **P2** OK en TR1 (build 795) y TR2 (build 794); TR3 probado en corto y en 5
-  niveles (build 805), con el arreglo del guardado y de la carga.
-- Tres arreglos en el camino: región antes que newlib + `realloc` a la región +
-  reintento con desalojo (P1 TR3); guardado por trozos y por secciones (P2 TR2);
-  árbol BSON leído en trozos con la arena (P2 TR3).
+- **P2** OK en TR1 (build 795), TR2 (build 794) y TR3 completo (build 804, 0–18).
+- **P5** OK en TR3 entero.
+- Tres arreglos en el camino: región antes que newlib + `realloc` a la región + reintento con desalojo (P1 TR3); guardado por trozos y por secciones (P2 TR2); árbol BSON leído en trozos con la arena (P2 TR3).
 
 Pendiente, en este orden:
 
-1. **P2 TR3 completo**: `T-mem-P2-tr3e.cdi` (build 804), 19 niveles con
-   `TRX_DC_SAVE=90`; es también P5. Confirmar que no vuelve la desaparición.
-2. **P3** cargas repetidas, **P4** pico de Barkhang con guardados, **P8**
+1. **P3** cargas repetidas, **P4** pico de Barkhang con guardados, **P8**
    reiniciar/cambiar de juego, **P11** sesión larga (todo en Flycast).
-3. **Quitar las sondas `[save]` y `[arena]`** (TEMP) cuando la batería cierre;
+2. **Quitar las sondas `[save]` y `[arena]`** (TEMP) cuando la batería cierre;
    son la evidencia que queda en los logs.
-4. Con hardware/teclas/ojos del usuario: **P6, P7, P9, P10, P12** (consola y
+3. Con hardware/teclas/ojos del usuario: **P6, P7, P9, P10, P12** (consola y
    GDEMU), **P13** y la decisión sobre **M12**.
 

@@ -5,6 +5,8 @@ option('dc_profile', type: 'boolean', value: false, description: 'Dreamcast: sam
 option('dc_emit_verify', type: 'boolean', value: false, description: 'Dreamcast: run the face-emission assembly beside the C code and log where they differ (the C result is drawn).')
 option('dc_start_level', type: 'integer', value: -1, description: 'Dreamcast development builds: start straight in this level of the base game (-1: the title).')
 option('lua_compiler', type: 'string', value: '', description: 'A luac built as the target\'s Lua is: the engine\'s scripts are embedded as its stripped bytecode instead of source.')
+option('dc_sq_vertices', type: 'boolean', value: false, description: 'Dreamcast: the face-emission assembly writes vertices to the polygon lists through the store queues, as TR4 does, not through the cache (only measurable on a console).')
+option('dc_xform_pref', type: 'boolean', value: false, description: 'Dreamcast: the vertex transform loops prefetch the vertices ahead (pref), as TR4 does (only measurable on a console).')
 option('dc_probes', type: 'boolean', value: false, description: 'Dreamcast: time the parts of a frame with the DC_PROBE timers (they cost about 0.5 ms a frame); the benchmark reports need them.')
 option('dc_heap_census', type: 'boolean', value: false, description: 'Dreamcast: list the blocks the level region keeps between levels with their callers at each load (tools/dreamcast/live_census.py reads the log).')
 option('dc_strict', type: 'boolean', value: false, description: 'Dreamcast: fill uninitialised memory with garbage as the console has it (heap at the start, new and freed blocks, locals) so that what reads it fails in the emulator too. Slower; for testing.')

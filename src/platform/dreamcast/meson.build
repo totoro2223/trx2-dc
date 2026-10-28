@@ -100,6 +100,12 @@ endif
 if get_option('dc_probes')
   add_project_arguments('-DTRX_DC_PROBES', language: 'c')
 endif
+if get_option('dc_sq_vertices')
+  add_project_arguments('-DTRX_DC_SQ_VERTICES', language: 'c')
+endif
+if get_option('dc_xform_pref')
+  add_project_arguments('-DTRX_DC_XFORM_PREF', language: 'c')
+endif
 if get_option('dc_heap_census')
   add_project_arguments('-DTRX_DC_HEAP_CENSUS', language: 'c')
 endif

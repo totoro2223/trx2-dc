@@ -7,7 +7,7 @@ con Flycast: [TRASPASO.md](TRASPASO.md).
 
 Lo hecho sin medir o sin ver está en [PRUEBAS_PENDIENTES.md](PRUEBAS_PENDIENTES.md).
 
-Actualizado el 26/10/2026 (tras `f3b6f427d`).
+Actualizado el 28/10/2026 (tras cerrar P1/P2/P5 de memoria).
 
 **Memoria en sesiones largas** (niveles seguidos, cargar/guardar, cambio de
 juego, reinicio de nivel): plan completo de pruebas P1–P13 y correcciones
@@ -57,8 +57,14 @@ deshace y se anota como FALLIDO.
     REGISTRO 27/10/2026): escribir cada vértice de 32 bytes en el búfer de la
     lista a través de las store queues (QACR0/1 apuntando a la RAM del búfer,
     `ocbi` de las líneas de destino y un `pref` por vértice) en vez de con
-    stores que pasan por la caché. Solo se mide en consola: hacerlo como opción
-    de compilación y comparar `emit` y `[frame]` en GDEMU con y sin ella.
+    stores que pasan por la caché. Solo se mide en consola. **Hecho como
+    opciones** (28/10/2026, DC build 823 en Flycast: se ve bien):
+    `dc_sq_vertices` y `dc_xform_pref` (`pref` en los bucles de
+    transformación); cómo encenderlas en TRASPASO. Falta medir en GDEMU con y
+    sin ellas: los fps en el mismo sitio (en `release` no hay `[frame]`; para
+    los tiempos, `minsize` con las mismas opciones). No hecho: encadenar el
+    `ftrv` de un vértice con el siguiente (la transformación entera es
+    ~0,5 ms por frame).
 
 ## C. Optimización del render (lo que de verdad queda)
 
@@ -179,8 +185,8 @@ nivel, se resolvieron: T59 y T60 en PRUEBAS_PENDIENTES.md.)
 | 59 | **Sombra suave sobre la superficie del agua (TR2)** | No se pudo reproducir: el código ya salta las salas bajo el agua mientras Lara no está sumergida (`is_room` en `batcher.c`). Hace falta una captura con el sitio exacto (nivel y postura de Lara). |
 | 62 | **Armas largas en la espalda: lanzagranadas, arpón (TR2), MP5 y cohete (TR3), escopeta de TR1** | El modelo del inventario puede faltar en el nivel, o salir mal girado. Probar con `TRX_DC_GIVE`. |
 | 63 | **Disco de tres juegos en consola real** | El cambio de juego ya no reinicia (T70) y la elección queda en la VMU; falta verlo en consola. Salir al selector de niveles tras el juego sigue reiniciando el disco (`arch_reboot`). Tamaño 1,0 GB sin películas. |
-| 64 | **Memoria en sesiones largas: cerrar la batería** (P2 TR3 completo y P3/P4/P8/P11). El guardado de Barkhang y la carga de TR3 ya están arreglados y el detalle está en [REPORTE_MEMORIA.md](REPORTE_MEMORIA.md). | Falta ejecutar la pasada de 19 niveles de TR3 (`build/dc-minsize/T-mem-P2-tr3e.cdi`, build 804: `TRX_DC_GAME=tr3 TRX_DC_LEVELS='19 300' TRX_DC_SAVE=90`), que es también P5, y luego P3 (cargas repetidas), P4 (pico de Barkhang con guardados), P8 (reiniciar/cambiar de juego) y P11 (sesión larga). Antes de dar el commit por bueno, quitar las sondas TEMP `[save]` (`savegame/file.c`) y `[arena]` (`dc_save_arena.c`). |
-| 65 | **Flycast se cierra solo** en Lud's Gate (TR3, nivel 11) y en la pasada de niveles, sin excepción ni aserto en el registro serie (VRAM libre 2,4 MB). | Los repros con más detalle dieron aserto en `BSON_ParseEx` al aplicar la partida (árbol de 713 K con el hueco mayor en 606 K), ya arreglado leyendo el árbol en trozos (builds 800–805). Las pasadas cortas no lo reproducen: confirmar con la pasada completa de 19 niveles (tarea 64). Si vuelve, descartar puntero salvaje con `TRX_DC_MMU_NULL_TRAP` (M6) y mirar el lado del emulador: las dos caídas fueron junto a una escritura/lectura de la VMU. |
+| 64 | **Memoria en sesiones largas: batería cerrada** (P1, P2, P5 OK). El guardado de Barkhang y la carga de TR3 ya están arreglados y el detalle está en [REPORTE_MEMORIA.md](REPORTE_MEMORIA.md). | P2 TR3 completo 0–18 pasa con `[levels] done` (build 804, 66 guardados / 19 cargas, log `build/logs/2026-10-28/dc-mem-P2-tr3e-fresh.txt`). Al cargar el nivel 19 hay `Out of memory` de newlib y watchdog pero acaba pasando. Falta P3 (cargas repetidas), P4 (pico de Barkhang con guardados), P8 (reiniciar/cambiar de juego), P11 (sesión larga). Antes de dar el commit por bueno, quitar las sondas TEMP `[save]` (`savegame/file.c`) y `[arena]` (`dc_save_arena.c`). |
+| 65 | **Flycast se cierra solo** en Lud's Gate (TR3, nivel 11) y en la pasada de niveles, sin excepción ni aserto en el registro serie (VRAM libre 2,4 MB). | El fallo era al aplicar la partida (árbol BSON de 713 K). Arreglado leyendo el árbol en trozos con la arena (builds 800–805). La pasada completa de 19 niveles pasa ahora; queda como observado en el pico del nivel 19 (hay reintentos de newlib) pero sin caída. |
 | 66 | **Caché de transparencia de objetos** (`object_transparency_*.cache.dat`): el disco RAM no tiene directorios y nunca se escribe, así que cada carga vuelve a dibujar todas las mallas para hallarla (y hace crecer las matrices del batcher en el pico). | Generarla al hacer el disco (`make_disc.sh`) o guardarla en `/ram` a secas. |
 | 67 | **MIGRACIÓN IMPORTANTE DE LÓGICA: memoria por arenas con época y zona estática acotada** (anotada el 24/10/2026; no empezada, para hacer en otra ocasión). Es la única vía sistemática para "esterilizar" la RAM al cargar un nivel, salir al menú o cambiar de juego sin reiniciar la consola: un limpiador general no existe porque el motor guarda punteros directos (no se puede compactar), y limpiar solo libera lo que alguien liberó. Pasos: **(1)** que todo el motor reserve desde arenas con "época" (permanente, partida y nivel; hoy solo el nivel lo hace) para soltar la arena entera al terminar una partida o cambiar de juego; **(2)** que todas las variables estáticas del motor queden en una zona de memoria acotada con el enlazador (secciones de datos y bss propias), para ponerla a cero o restaurarla entera al cambiar de juego (hoy cada módulo se limpia a mano: `m_IsExiting`, `PhaseExecutor_Reset`, los interruptores de las pruebas, `TRX_DIR`; se escapan los que no se conocen); **(3)** dejar fuera de esa zona lo de KallistiOS y newlib, porque sus drivers siguen vivos (sonido, vídeo, mandos) y tocar su estado los rompe. Esfuerzo de varios días y riesgo alto: un puntero estático que se escape queda colgando. **Lo que queda aparte y no resuelve esta migración:** el pico de carga de TR2 Barkhang y TR3 (tareas 64), las 287–299 K que cada juego deja retenidas, la fragmentación del montón de newlib por objetos pequeños (Lua, cadenas) y salir al selector de niveles, que todavía reinicia el disco. | Decidirlo con un caso real delante (qué falla, en qué juego y nivel). Medir antes con `live_census.py` qué retiene cada juego. |
 | 68 | **Sin efectos de sonido tras cambiar de juego** (solo suenan los de fondo) al ir cambiando de juego con los títulos y entrar y salir de niveles o cargar partidas; ya no se cuelga. Observado por el usuario el 24/10/2026, sin investigar. Hipótesis (sin comprobar): al apagarse, `Audio_Shutdown` (`audio.c`) no libera los canales de efectos que `Audio_Init` reserva con `snd_sfx_chn_alloc`, y el segundo arranque en el mismo proceso se queda sin ellos. | Mirar `Audio_Init`/`Audio_Shutdown` y repetir el cambio de juego con el registro serie. |

@@ -72,6 +72,20 @@ Desde PowerShell, en la raíz del repo:
 
 - `build.sh [debug|debugoptimized|minsize|release]`: la build que se usa es
   **`minsize`** (`build/dc-minsize`).
+- **Discos para GDEMU**: `build.sh release` (`build/dc-release`, sin
+  watchdog ni las líneas `[frame]`/`[probe]`/`[bins]` por el puerto serie, que
+  en consola paran el juego) y `make_disc.sh build/dc-release …` sin variables
+  `TRX_DC_*`. En TR1 hay que pasar `TRX_DC_LEGAL` con el `EIDOSPC.PCX` del
+  original: ffmpeg no lee el `LEGAL_1.DDS` del remaster.
+  - Dos optimizaciones vistas en TR4, solo medibles en consola (tarea 71),
+    apagadas por defecto: `dc_sq_vertices` (la emisión en ensamblador escribe
+    los vértices en las listas por las store queues: `ocbi` de la línea real
+    y `pref` de la cola; no en las tandas con copia de cel shading) y
+    `dc_xform_pref` (`pref` dos vértices por delante en los tres bucles de
+    transformación). Encenderlas: `.\tools\dreamcast\dcsh.ps1 "meson configure
+    build/dc-release -Ddc_sq_vertices=true -Ddc_xform_pref=true && bash
+    tools/dreamcast/build.sh release"`; `=false` para volver. Se quedan puestas
+    en `build/dc-release` hasta cambiarlas.
 - `make_disc.sh <build> <DATA TR2> [salida.cdi] [nivel]`:
   - Sin 4º argumento: disco del usuario (`TRX.cdi`) con selector de nivel al
     arrancar.

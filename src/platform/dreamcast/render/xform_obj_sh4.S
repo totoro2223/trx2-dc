@@ -303,6 +303,11 @@ untwinned:
     mov.w   @r2+,r1
     lds     r1,fpul
     float   fpul,fr2
+#if defined(TRX_DC_XFORM_PREF)
+    mov     r2,r1                   ! two vertices on: into the cache meanwhile
+    add     #50,r1
+    pref    @r1
+#endif
     fldi1   fr3
     ftrv    xmtrx,fv0
 
