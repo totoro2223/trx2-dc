@@ -103,6 +103,16 @@ Reparto de Londres (graphics, ms por frame): pass ~12,7 (estáticos y sprites
     640×480. (El define `TRX_DC_MMU_NULL_TRAP` ya no está en `meson.build`.)
 19. **Inventario**: 9 → 22 fps, no se ha vuelto a medir tras la arena de Lua.
 20. **Audio**: reverb y filtro bajo el agua (programa propio del DSP del AICA).
+72. **FMV antes de cargar el nivel** (aparcada el 27/10/2026): hoy
+    `GF_InterpretSequence` (`sequencer.c`) carga el nivel antes de su
+    secuencia, así que se ve barra de carga → FMV → imagen de carga → juego;
+    los discos originales hacen FMV → carga → juego. En DC, reproducir las
+    `play_fmv` que abren la secuencia antes de `Level_Initialise` (como los
+    eventos de `M_IsPreLoadEvent`), saltándolas después. Riesgo: el nivel
+    anterior sigue en memoria mientras el reproductor pide ~480 KB; probarlo
+    en el nivel más pesado de cada juego. Las cinemáticas de TR1–3 son niveles
+    completos (TR4 las reproduce sobre el nivel cargado desde `cutseq.pak`,
+    REGISTRO 27/10/2026), así que sus dos cargas no se quitan así.
 21. **Deseos del usuario**: gatillo L como modificador (bengala con L+Y), textura
     del cielo, efectos, Sonido/Controles/Juego en el menú. (Hechos: FMV, armas
     largas a la espalda, todos los niveles de TR1, TR2 y TR3.) Aparcado: pantalla Rendering mínima de DC, mipmaps del mundo,

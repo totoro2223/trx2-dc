@@ -993,7 +993,7 @@ void DC_PVR_StoreTexturePage(
 // the pages are made.
 static void M_LoadDiscBumps(void)
 {
-    if (!DC_Mode_Get()->bump_mapping || !g_Config.rendering.dc_bump_mapping) {
+    if (!g_Config.rendering.dc_bump_mapping) {
         return;
     }
     char path[64];

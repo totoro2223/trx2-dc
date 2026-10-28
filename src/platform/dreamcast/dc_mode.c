@@ -3,6 +3,7 @@
 #include "dc_mode.h"
 
 #include <trx/config.h>
+#include <trx/config/common.h>
 #include <trx/version.h>
 
 static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
@@ -14,7 +15,7 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
         .self_shadow = true,
         .cel_shading = true,
         .bump_mapping = true,
-        .fps = 30,
+        .fps = DC_FPS_30,
         .low_res = false,
         .bilinear = true,
     },
@@ -26,9 +27,18 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
         .volume_shadows = true,
         .self_shadow = false,
         .cel_shading = true,
-        .fps = 30,
+        .fps = DC_FPS_30,
         .low_res = false,
         .bilinear = true,
+    },
+    // The game as the first discs drew it: its own shadow, unfiltered.
+    [DC_MODE_ORIGINAL] = {
+        .shadow_lights = 1,
+        .game_shadow = true,
+        .self_shadow = false,
+        .fps = DC_FPS_30,
+        .low_res = false,
+        .bilinear = false,
     },
     // shortcut: the SH-4 needs more than 16 ms a frame for TR2's levels even
     // so, and the fewer pixels only spare the PowerVR; the frame rate shakes
@@ -37,7 +47,7 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
         .shadow_lights = 1,
         .volume_shadows = true,
         .self_shadow = false,
-        .fps = 60,
+        .fps = DC_FPS_60_ADAPTIVE,
         .low_res = true,
         .bilinear = false,
     },
@@ -62,6 +72,26 @@ const DC_MODE_PARAMS *DC_Mode_Get(void)
     return &m_Modes[mode >= 0 && mode < DC_MODE_NUMBER_OF ? mode : 0];
 }
 
+void DC_Mode_ApplyDefaults(void)
+{
+    const DC_MODE_PARAMS *const mode = DC_Mode_Get();
+    CONFIG_SET(g_Config.rendering.dc_fps, (DC_FPS)mode->fps);
+    CONFIG_SET(g_Config.rendering.dc_cel_shading, mode->cel_shading);
+    CONFIG_SET(g_Config.rendering.dc_bump_mapping, mode->bump_mapping);
+    CONFIG_SET(
+        g_Config.rendering.texture_filter,
+        mode->bilinear ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT);
+    // The game's own shadow: TR1 and TR2's octagon, TR3's sprite.
+    SHADOW_TYPE shadow = mode->volume_shadows ? SHADOW_TYPE_VOLUME
+        : !mode->game_shadow                  ? SHADOW_TYPE_SOFT_HIGH
+        : g_TRVersion >= 3                    ? SHADOW_TYPE_SPRITE
+                                              : SHADOW_TYPE_OCTAGON;
+    if (g_DC_TestShadow >= 0 && g_DC_TestShadow < SHADOW_TYPE_NUMBER_OF) {
+        shadow = (SHADOW_TYPE)g_DC_TestShadow;
+    }
+    CONFIG_SET(g_Config.visuals.shadow_type, shadow);
+}
+
 // Below about 30 frames a second there is no frame between two ticks to
 // interpolate, and the interpolation only adds to the cost of each one.
 #define M_SLOW_SECONDS 0.033
@@ -72,11 +102,10 @@ static bool m_Slow = false;
 static double m_Average = 0.0;
 static int32_t m_Hold = 0;
 
-// The rate asked for: the mode's, or 60 where the switch says so, whatever the
-// mode.
+// The rate asked for, whatever the mode.
 static int32_t M_BaseFPS(void)
 {
-    return DC_Mode_Get()->fps == 60 || g_Config.rendering.dc_60fps ? 60 : 30;
+    return g_Config.rendering.dc_fps == DC_FPS_30 ? 30 : 60;
 }
 
 int32_t DC_Mode_GetFPS(void)
@@ -86,7 +115,7 @@ int32_t DC_Mode_GetFPS(void)
 
 bool DC_Mode_ReportFrame(const double seconds)
 {
-    if (M_BaseFPS() != 60 || !g_Config.rendering.dc_adaptive_fps) {
+    if (g_Config.rendering.dc_fps != DC_FPS_60_ADAPTIVE) {
         m_Slow = false;
         return false;
     }

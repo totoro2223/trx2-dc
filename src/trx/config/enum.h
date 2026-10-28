@@ -193,9 +193,19 @@ typedef enum {
 typedef enum {
     DC_MODE_GRAPHICS,
     DC_MODE_PERFORMANCE,
+    DC_MODE_ORIGINAL,
     DC_MODE_EXPERIMENTAL_60,
     DC_MODE_NUMBER_OF,
 } DC_MODE;
+
+// Dreamcast: the frame rate, 30, or 60 by interpolating the world between the
+// game's 30 ticks, always or only while the scene is light enough.
+typedef enum {
+    DC_FPS_30,
+    DC_FPS_60,
+    DC_FPS_60_ADAPTIVE,
+    DC_FPS_NUMBER_OF,
+} DC_FPS;
 
 typedef enum {
     BLOOD_EFFECTS_DISABLED,

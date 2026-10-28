@@ -305,8 +305,8 @@ typedef struct {
         DC_MODE dc_mode;
         bool dc_cel_shading;
         bool dc_bump_mapping;
-        bool dc_adaptive_fps;
-        bool dc_60fps;
+        bool dc_room_cel;
+        DC_FPS dc_fps;
         int32_t fps;
         bool enable_trapezoid_filter;
         bool enable_affine_mapping;

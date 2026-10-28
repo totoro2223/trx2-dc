@@ -272,12 +272,12 @@ static void M_ReportWork(const Uint64 start)
             "local b = rows.change('rendering.dc_mode', 1) "
             "error(('rows: %s %s mode=%s'):format(tostring(a), tostring(b), "
             "trx.config.get('rendering.dc_mode')))",
-            // The 60 FPS switch's own row, as the menu changes it, and off.
+            // The frame rate's own row, as the menu changes it, and back.
             "local rows = require('common.ui.settings.rows') "
-            "local a = rows.change('rendering.dc_60fps', 1) "
-            "error(('rows: %s fps60=%s'):format(tostring(a), "
-            "tostring(trx.config.get('rendering.dc_60fps'))))",
-            "trx.config.set('rendering.dc_60fps', false)",
+            "local a = rows.change('rendering.dc_fps', 1) "
+            "error(('rows: %s fps=%s'):format(tostring(a), "
+            "tostring(trx.config.get('rendering.dc_fps'))))",
+            "trx.config.set('rendering.dc_fps', 'off')",
             // The passport's book loads (a syntax error shows here).
             "local b = require('common.ui.screens.passport.book') "
             "error('book loaded: ' .. type(b))",
@@ -294,8 +294,11 @@ static void M_ReportWork(const Uint64 start)
             "trx.savegame.delete(0, trx.savegame.Pool.NORMAL)",
             // The main menu's Up on a disc of several games.
             "trx.game.dc_switch(-1)",
+            // Last, so that the numbers above stay as they were.
+            "trx.config.set('rendering.dc_mode', 'original')",
         };
-        LUA_RESULT result = LUA_Eval(codes[g_DC_TestSwitchMode % 14]);
+        LUA_RESULT result = LUA_Eval(
+            codes[g_DC_TestSwitchMode % (sizeof(codes) / sizeof(codes[0]))]);
         if (result.message != nullptr) {
             LOG_ERROR("test: %s", result.message);
         }

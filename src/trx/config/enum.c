@@ -121,7 +121,12 @@ static __attribute__((constructor)) void M_Init(void)
 
     ENUM_MAP(DC_MODE, DC_MODE_GRAPHICS, "graphics");
     ENUM_MAP(DC_MODE, DC_MODE_PERFORMANCE, "performance");
+    ENUM_MAP(DC_MODE, DC_MODE_ORIGINAL, "original");
     ENUM_MAP(DC_MODE, DC_MODE_EXPERIMENTAL_60, "experimental-60");
+
+    ENUM_MAP(DC_FPS, DC_FPS_30, "off");
+    ENUM_MAP(DC_FPS, DC_FPS_60, "interpolated");
+    ENUM_MAP(DC_FPS, DC_FPS_60_ADAPTIVE, "adaptive");
 #if defined(__DREAMCAST__)
     ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_VOLUME, "volume");
     ENUM_MAP(SHADOW_TYPE, SHADOW_TYPE_SOFT, "soft");

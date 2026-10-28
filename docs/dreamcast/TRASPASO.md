@@ -141,9 +141,13 @@ Desde PowerShell, en la raíz del repo:
     (volúmenes modificadores).
   - Cel shading (punch-through con alpha test), reflejos en las pistolas
     (env map), bump mapping en caras cercanas.
-- `dc_mode.c`: modos Gráficos (por defecto) / Rendimiento / Experimental 60
-  (320×240). Menú: Opciones > Gráficos > pestaña Rendering, fila "Mode" y
-  luego "Restart level" (`data/trx/ship/modules/ui/dc_restart.lua`).
+- `dc_mode.c`: modos Gráficos (por defecto) / Rendimiento / Original /
+  Experimental 60 (320×240). Al elegir uno, `DC_Mode_ApplyDefaults` pone
+  "Frame rate" (`rendering.dc_fps`: 30 / 60 interpolado / 60 adaptativo), cel
+  shading, relieve, filtro de texturas y sombra; el jugador puede cambiarlos
+  después (el render solo lee las opciones). Menú: Opciones > Gráficos >
+  pestaña Rendering, fila "Mode" y luego "Restart level"
+  (`data/trx/ship/modules/ui/dc_restart.lua`).
 - `dc_lua_alloc.c`: Lua en su propia región (2,5 MB) para no fragmentar el
   heap. Scripts embebidos como bytecode `luac -s` (`tools/embed_trx_lua.py`,
   opción `lua_compiler`).

@@ -139,13 +139,14 @@ if [ -n "${TRX_DC_SHADOW:-}" ]; then
   echo "shadow type $TRX_DC_SHADOW"
 fi
 if [ -n "${TRX_DC_MODE:-}" ]; then
-  # A test disc that starts in that mode (graphics, performance or
+  # A test disc that starts in that mode (graphics, performance, original or
   # experimental-60), whatever the settings say (dc_main.c, MODE.TXT).
   case "$TRX_DC_MODE" in
     graphics) echo 0 > "$STAGE/MODE.TXT" ;;
     performance) echo 1 > "$STAGE/MODE.TXT" ;;
-    experimental-60) echo 2 > "$STAGE/MODE.TXT" ;;
-    *) echo "TRX_DC_MODE must be graphics, performance or experimental-60" >&2; exit 1 ;;
+    original) echo 2 > "$STAGE/MODE.TXT" ;;
+    experimental-60) echo 3 > "$STAGE/MODE.TXT" ;;
+    *) echo "TRX_DC_MODE must be graphics, performance, original or experimental-60" >&2; exit 1 ;;
   esac
   echo "mode $TRX_DC_MODE"
 fi

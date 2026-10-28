@@ -181,26 +181,9 @@ void Shell_HandleConfigChange(const CONFIG_CHANGE *const change)
     }
 
 #if defined(__DREAMCAST__)
-    if (L_CHANGED(rendering.dc_60fps)) {
-        // The switch alone: the adaptive rate goes with it.
-        CONFIG_SET(
-            g_Config.rendering.dc_adaptive_fps,
-            (bool)g_Config.rendering.dc_60fps);
-    }
     if (L_CHANGED(rendering.dc_mode)) {
-        // The 60 FPS mode turns the switch on, the others off, and the
-        // adaptive rate belongs to it.
-        CONFIG_SET(
-            g_Config.rendering.dc_60fps, (bool)(DC_Mode_Get()->fps == 60));
-        CONFIG_SET(
-            g_Config.rendering.dc_adaptive_fps,
-            (bool)(DC_Mode_Get()->fps == 60));
-        // And the mode's shadow, which the player may then change.
-        CONFIG_SET(
-            g_Config.visuals.shadow_type,
-            g_DC_TestShadow >= 0 ? (SHADOW_TYPE)g_DC_TestShadow
-                : DC_Mode_Get()->volume_shadows ? SHADOW_TYPE_VOLUME
-                                                : SHADOW_TYPE_SOFT_HIGH);
+        // The mode's options, which the player may then change.
+        DC_Mode_ApplyDefaults();
     }
 #endif
 

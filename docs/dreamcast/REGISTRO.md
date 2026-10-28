@@ -973,3 +973,85 @@ cuarta).
 Pendiente: probarlo en Flycast. El registro debe decir "N page reliefs from
 the disc" al cargar, `DC_PVR_GetBumpPagesMade` debe quedarse a 0 al recorrer
 salas, y el relieve debe verse igual que antes.
+
+## 27/10/2026: cel shading de salas, prueba (sin ver)
+
+Opción "Room cel shading" en la página Rendering del menú
+(`rendering.dc_room_cel`), apagada por defecto; solo actúa con Cel shading
+activado y, apagada, no cuesta nada. Va a la VMU con las demás: el fichero de
+opciones pasa al formato 3 (los de formato 1 y 2 siguen cargando, con la opción
+apagada). De paso se corrige `M_Format`, que escribía la cabecera del formato 1
+con un valor de menos y nunca guardaba el interruptor de relieve.
+
+1. **Sin normales**: los vértices de sala de TR1–3 traen la luz hecha, así que
+   el corte es en su brillo (`M_RoomCel`, tras `M_XformRoom`, trozo a trozo
+   antes de emitir). Bajo `M_ROOM_CEL_EDGE` (100 de 255) un vértice está en
+   sombra: su color sale ya oscurecido tanto como la sombra de Lara
+   (`m_CelShade`) y su alfa crece
+   con lo que le falta de brillo, a media pendiente para no recortarse; el
+   borde cae donde la luz de la cara cruza el umbral.
+2. **Segunda pasada solo en las caras que cruzan**: las del todo en sombra ya
+   salieron oscuras. `M_CelKeeps` (C) y `CEL_FACE` en `emit_sh4.S` (campo
+   nuevo `cel_dark` en el desplazamiento 96 de `M_EMIT_RUN`, hueco 56 de la
+   pila, que crece a 60) no guardan copia si el AND de las alfas tiene el bit
+   alto. Lara y los enemigos no cambian (`cel_dark` 0).
+3. **Alcance**: hasta 15 casillas de la cámara, con la sombra aclarándose en
+   las 3 últimas (`M_ROOM_CEL_RANGE`, `M_ROOM_CEL_FADE`); solo en la ruta rápida de
+   salas (niebla negra, sin reflejos) y nunca en una sala que se desvanece.
+4. **Atajo conocido**: en una cara que cruza el borde, la parte iluminada se
+   interpola hacia la esquina ya oscurecida, así que se apaga un poco antes del
+   corte.
+
+Pendiente: verlo en Flycast (umbral y oscuridad a ojo, convivencia con el
+relieve y las sombras) y medir `emit`/`pass` en Venecia y Londres con la
+opción encendida y apagada.
+
+## 27/10/2026: modo Original, "Frame rate" único y opciones por modo (sin ver)
+
+1. **Modo Original** (`DC_MODE_ORIGINAL`, entre Performance y Experimental
+   60): 640×480, 30 fps, sin cel shading, sin relieve, sin filtro de texturas
+   y la sombra del juego (octágono en TR1/TR2, sprite en TR3). Experimental 60
+   pasa del número 2 al 3: `TRX_DC_MODE=original` escribe 2 en `MODE.TXT`, y
+   `TRX_DC_SWITCH` añade `original` al final (código 14) para no mover los
+   demás.
+2. **Frame rate**: `rendering.dc_60fps` y `rendering.dc_adaptive_fps` se
+   juntan en el enum `rendering.dc_fps` (`off` / `interpolated` /
+   `adaptive`). `DC_Mode_GetFPS` y `DC_Mode_ReportFrame` lo leen; el control
+   del relieve (`M_UpdateBumpLoad`) usa `DC_Mode_GetFPS` en vez del fps fijo
+   del modo.
+3. **Opciones por modo que se pueden cambiar**: el modo ya no veta el cel
+   shading, el relieve ni el filtro bilineal (se quitan los `DC_Mode_Get()->`
+   de `batcher.c` y `pvr.c`). Al cambiar de modo, `DC_Mode_ApplyDefaults`
+   (llamado desde el listener de `config.c` y desde el modo de prueba de
+   `flow.c`) pone fps, cel, relieve, filtro y sombra; el jugador puede
+   cambiarlos después. Siguen fijos por modo: luces de sombra, auto-sombra y
+   320×240.
+4. **VMU, formato 4**: misma línea de 10 números; el segundo es `dc_fps` y el
+   cuarto queda a 0. Los formatos 1–3 se convierten (60 + adaptativo →
+   adaptativo, solo 60 → interpolado; modo 2 → 3). Los cambios de config se
+   avisan en diferido (`Config_Update`), así que `DC_Settings_Load` pone el
+   modo, llama a `Config_Update` (que aplica los valores del modo) y después
+   pone los valores guardados.
+
+Pendiente: verlo en Flycast. Cambiar de modo en el menú debe actualizar las
+filas; un cambio hecho a mano (relieve en Performance, por ejemplo) debe seguir
+igual tras reiniciar la consola.
+
+Añadido el mismo día, tras verlo en Flycast (DC build 811: con una bengala, las
+cuatro caras de un pilar salían iluminadas, porque la luz de sala no tiene
+dirección): las caras de sala que dan la espalda a todas las luces dinámicas
+que las alcanzan salen enteras con su color de sombra, como el lado oscuro de
+Lara (`M_FaceTurnedAway`). Las luces (hasta `M_ROOM_CEL_LIGHTS` 4) pasan a
+coordenadas de vista una vez por sala (`M_PrepareFaceLights`); la prueba mira
+si la cámara y la luz quedan a lados distintos del plano de la cara, sin
+depender del sentido de giro. Las salas que alcanza una luz dinámica se emiten
+por C en vez de por el ensamblador. No proyecta sombra sobre lo que hay detrás.
+
+Visto en Flycast, DC builds 813–815, con una sonda que contaba caras por
+frame: en la 814 la bengala (radio 2048, 2 casillas) alcanzaba unas 850 caras
+y ninguna salía oscura, porque el alcance se medía desde una sola esquina y el
+lateral de un pilar es más largo que el radio. Desde la 815 se mide desde la
+esquina más cercana de las tres: ~1550 caras alcanzadas, ~60 oscurecidas por
+frame, y la cara de espaldas del pilar se ve oscura. La sonda (dos líneas
+`[roomcel]` cada 120 frames por el puerto serie) daba un tirón periódico que
+no bajaba los fps; retirada. Falta medir el coste.

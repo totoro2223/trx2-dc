@@ -294,10 +294,10 @@ local TABS = {
   },
   graphic_rendering = {
     "rendering.dc_mode",
-    "rendering.dc_60fps",
+    "rendering.dc_fps",
     "rendering.dc_cel_shading",
     "rendering.dc_bump_mapping",
-    "rendering.dc_adaptive_fps",
+    "rendering.dc_room_cel",
     "ui.enable_fps_counter",
     "window.is_fullscreen",
 

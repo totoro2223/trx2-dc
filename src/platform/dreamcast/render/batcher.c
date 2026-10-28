@@ -243,6 +243,21 @@ _Static_assert(
 // A face whose corners all lie under half the alpha is lit all over: the
 // alpha runs straight across it. (A colour under this has its alpha so.)
 #define M_CEL_CUT 0x80000000u
+// The rooms' cel shading (a test, rendering.dc_room_cel): their vertices carry
+// no normal, so the cut is in their light as it comes: a vertex darker than
+// the edge (its brightness, 0 to 255) is in the shade, drawn as dark as Lara's
+// (m_CelShade), and a face that crosses the edge has it cut hard there by the
+// punch-through test, as hers. A face wholly in the shade goes out dark at
+// once; only those that cross take the second pass (M_RoomCel).
+#define M_ROOM_CEL_EDGE 100
+// Only within this of the camera, the shade lightening to nothing over the
+// last stretch.
+#define M_ROOM_CEL_RANGE (15.0f * WALL_L)
+#define M_ROOM_CEL_FADE (3.0f * WALL_L)
+// A room's light has no direction, so a flare lights a pillar's four sides
+// alike: the faces turned from the dynamic lights that reach them (up to
+// this many) go out dark all over, as Lara's side away from her light.
+#define M_ROOM_CEL_LIGHTS 4
 
 // Relief (bump mapping): the room faces nearer the camera than this take
 // their page's relief (DC_BLEND_BUMP), lit from the room's light nearest
@@ -374,6 +389,15 @@ typedef struct MESH_BATCHER {
     // faces going out now keep their shaded side (M_KeepCel).
     bool cel;
     bool cel_emit;
+    // Whether the cel shading is a room's (M_RoomCel): its corners in the
+    // shade went out dark already, so a face with all of them there keeps
+    // no shaded side.
+    bool cel_dark;
+    // The dynamic lights that reach a room with the cel shading, in view
+    // space with their radius squared: its faces turned from them all go out
+    // dark (M_FaceTurnedAway), face by face, so not through the assembly.
+    float face_lights[M_ROOM_CEL_LIGHTS][4];
+    int32_t face_light_count;
     // Whether the instance just transformed reflects.
     bool env;
     // The page the faces going out sample (M_EmitIndices).
@@ -448,6 +472,8 @@ typedef struct {
     bool bump;
     // The cel shading is on: the player's setting, where the mode allows it.
     bool cel;
+    // The rooms take it too (rendering.dc_room_cel, M_RoomCel).
+    bool room_cel;
     // The instance being drawn is one of Lara's meshes, the only ones the
     // cel shading takes (M_DrawInstance).
     bool lara_instance;
@@ -475,11 +501,10 @@ void DC_Cel_SetAllowed(const bool allowed)
     m_CelAllowed = allowed;
 }
 
-// The cel shading: the player's setting, where the mode allows it.
+// The cel shading: the player's setting, where what is drawn allows it.
 static bool M_CelOn(void)
 {
-    return m_CelAllowed && g_Config.rendering.dc_cel_shading
-        && DC_Mode_Get()->cel_shading;
+    return m_CelAllowed && g_Config.rendering.dc_cel_shading;
 }
 
 // Lara's shadow on herself: the cel shading shades her side turned from the
@@ -2537,6 +2562,96 @@ static void M_EmitIndices(
     const OUTPUT_MESH_INDEX *indices, int32_t count, DC_BLEND blend,
     int32_t *page);
 
+// The rooms' cel shading of count vertices just transformed from start (see
+// M_ROOM_CEL_EDGE): each one's shaded colour and how far into the shade it
+// lies as its alpha, and those in the shade going out dark already.
+static void M_RoomCel(
+    MESH_BATCHER *const batcher, const int32_t start, const int32_t count)
+{
+    M_XVERT *const xv = batcher->xverts;
+    uint32_t *const sargb = batcher->sargb;
+    for (int32_t i = start; i < start + count; i++) {
+        if (xv[i].z >= M_ROOM_CEL_RANGE) {
+            // Lit, in its own colour (a face turned from a light keeps it).
+            sargb[i] = xv[i].argb & 0x00FFFFFFu;
+            continue;
+        }
+        const float k =
+            M_Clamp((M_ROOM_CEL_RANGE - xv[i].z) / M_ROOM_CEL_FADE, 0.0f, 1.0f);
+        const uint32_t dark =
+            (uint32_t)(256.0f * (1.0f - (1.0f - m_CelShade) * k));
+        const uint32_t argb = xv[i].argb;
+        const int32_t luma = (int32_t)((((argb >> 16) & 0xFF) * 77
+                                        + ((argb >> 8) & 0xFF) * 151
+                                        + (argb & 0xFF) * 28)
+                                       >> 8);
+        // Half the alpha at the edge, in step with the brightness (and at
+        // half its slope, so that it never clips): the PowerVR runs both
+        // across a face alike, and the cut lies where its light crosses the
+        // edge.
+        const uint32_t a = (uint32_t)(128 + (M_ROOM_CEL_EDGE - luma) / 2);
+        const uint32_t shade = M_ScaleRGB8(argb, dark) & 0x00FFFFFFu;
+        sargb[i] = (a << 24) | shade;
+        if (a >= 128) {
+            xv[i].argb = (argb & 0xFF000000u) | shade;
+        }
+    }
+}
+
+// The dynamic lights that reach a room (il, in world space), in view space
+// for M_FaceTurnedAway: the room's world matrix undone, its model-view done.
+static void M_PrepareFaceLights(
+    MESH_BATCHER *const batcher, const M_INSTANCE_LIGHT *const il,
+    const float mv[4][4])
+{
+    batcher->face_light_count = 0;
+    const float(*const w)[4] = il->world;
+    // The inverse of the matrix's rotation and scale, by its cofactors.
+    const float det = w[0][0] * (w[1][1] * w[2][2] - w[1][2] * w[2][1])
+        - w[0][1] * (w[1][0] * w[2][2] - w[1][2] * w[2][0])
+        + w[0][2] * (w[1][0] * w[2][1] - w[1][1] * w[2][0]);
+    if (!il->has_room_lights || fabsf(det) < 1.0e-6f) {
+        return;
+    }
+    const float k = 1.0f / det;
+    const float inv[3][3] = {
+        { (w[1][1] * w[2][2] - w[1][2] * w[2][1]) * k,
+          (w[0][2] * w[2][1] - w[0][1] * w[2][2]) * k,
+          (w[0][1] * w[1][2] - w[0][2] * w[1][1]) * k },
+        { (w[1][2] * w[2][0] - w[1][0] * w[2][2]) * k,
+          (w[0][0] * w[2][2] - w[0][2] * w[2][0]) * k,
+          (w[0][2] * w[1][0] - w[0][0] * w[1][2]) * k },
+        { (w[1][0] * w[2][1] - w[1][1] * w[2][0]) * k,
+          (w[0][1] * w[2][0] - w[0][0] * w[2][1]) * k,
+          (w[0][0] * w[1][1] - w[0][1] * w[1][0]) * k },
+    };
+    const int32_t total = il->num_lights + il->num_rgb;
+    for (int32_t i = 0; i < total; i++) {
+        if (batcher->face_light_count >= M_ROOM_CEL_LIGHTS) {
+            break;
+        }
+        const bool rgb = i >= il->num_lights;
+        const float *const pos =
+            rgb ? il->rgb[i - il->num_lights].pos : il->lights[i].pos;
+        const float radius_sq = rgb
+            ? il->rgb[i - il->num_lights].radius
+                * il->rgb[i - il->num_lights].radius
+            : il->lights[i].radius_sq;
+        const float d[3] = { pos[0] - w[0][3], pos[1] - w[1][3],
+                             pos[2] - w[2][3] };
+        float local[3];
+        for (int32_t r = 0; r < 3; r++) {
+            local[r] = inv[r][0] * d[0] + inv[r][1] * d[1] + inv[r][2] * d[2];
+        }
+        float *const out = batcher->face_lights[batcher->face_light_count++];
+        for (int32_t r = 0; r < 3; r++) {
+            out[r] = mv[0][r] * local[0] + mv[1][r] * local[1]
+                + mv[2][r] * local[2] + mv[3][r];
+        }
+        out[3] = radius_sq;
+    }
+}
+
 // A room chunk's opaque runs, as M_DrawInstance emits the ranges of a whole
 // instance.
 static void M_EmitChunk(
@@ -2671,6 +2786,8 @@ static bool M_TransformInstance(
         && m_Frame.lara_instance && bind->needs_object_light
         && il.has_direction
         && eye_sq < M_CEL_RANGE * M_CEL_RANGE;
+    batcher->cel_dark = false;
+    batcher->face_light_count = 0;
     float cel_scale = 0.0f;
     if (batcher->cel) {
         if (bind->normal_len == 0.0f) {
@@ -2709,6 +2826,13 @@ static bool M_TransformInstance(
     if (bind->needs_room_lights && !bind->needs_object_light
         && !bind->needs_own_light && !bind->billboard && black_fog
         && !m_Frame.ortho && !batcher->env && !batcher->cel) {
+        // Not on a room fading out: it keeps no shaded side (M_DrawInstance).
+        batcher->cel = m_Frame.cel && m_Frame.room_cel && m_Frame.lighting
+            && inst->tint.a >= 1.0f;
+        batcher->cel_dark = batcher->cel;
+        if (batcher->cel) {
+            M_PrepareFaceLights(batcher, &il, mv);
+        }
         const int32_t nvr = bind->chunk_count > 0
             ? M_CullChunks(batcher, bind, mv, scale, &c)
             : -1;
@@ -2727,6 +2851,11 @@ static bool M_TransformInstance(
                     DC_PROBE_XT_ROOM,
                     M_XformRoom(
                         batcher, bind, inst, &il, &c, &batcher->vranges[r], 1));
+                if (batcher->cel_dark) {
+                    M_RoomCel(
+                        batcher, batcher->vranges[r][0],
+                        batcher->vranges[r][1]);
+                }
                 const int32_t k = batcher->vrange_chunk[r];
                 if (k < 0) {
                     continue;
@@ -2742,6 +2871,9 @@ static bool M_TransformInstance(
                 DC_PROBE_XT_ROOM,
                 M_XformRoom(
                     batcher, bind, inst, &il, &c, batcher->vranges, nvr));
+            if (batcher->cel_dark) {
+                M_RoomCel(batcher, 0, bind->vertex_count);
+            }
         }
         g_DC_ProbeUs[DC_PROBE_XF_LIT] += transformed; // TEMP
     } else if (
@@ -2988,6 +3120,62 @@ M_HOT bool M_CelShows(const uint32_t sargb_or)
     return sargb_or >= M_CEL_CUT;
 }
 
+// Whether a face keeps its shaded side (M_KeepCel), from its corners' cel
+// colours or-ed and and-ed: one that shows, unless a room's corners are all in
+// the shade, which went out dark already (M_RoomCel). As emit_sh4.S's
+// CEL_FACE.
+M_HOT bool M_CelKeeps(
+    const MESH_BATCHER *const batcher, const uint32_t sargb_or,
+    const uint32_t sargb_and)
+{
+    return M_CelShows(sargb_or)
+        && !(batcher->cel_dark && sargb_and >= M_CEL_CUT);
+}
+
+// Whether a room face (corners a, b, c in view space) is turned from every
+// dynamic light that reaches it (M_PrepareFaceLights), and so goes out dark:
+// the camera and the light on opposite sides of its plane, whichever way it
+// winds. False when none reaches it.
+M_HOT bool M_FaceTurnedAway(
+    const MESH_BATCHER *const batcher, const M_XVERT *const a,
+    const M_XVERT *const b, const M_XVERT *const c)
+{
+    const float e1[3] = { b->x - a->x, b->y - a->y, b->z - a->z };
+    const float e2[3] = { c->x - a->x, c->y - a->y, c->z - a->z };
+    const float n[3] = { e1[1] * e2[2] - e1[2] * e2[1],
+                         e1[2] * e2[0] - e1[0] * e2[2],
+                         e1[0] * e2[1] - e1[1] * e2[0] };
+    // The camera stands at the view's origin.
+    const float eye = -(n[0] * a->x + n[1] * a->y + n[2] * a->z);
+    bool reached = false;
+    for (int32_t i = 0; i < batcher->face_light_count; i++) {
+        const float *const l = batcher->face_lights[i];
+        const float d[3] = { l[0] - a->x, l[1] - a->y, l[2] - a->z };
+        // Reached by its nearest corner: a wall or a pillar's side is often
+        // far longer than the light's radius.
+        const float db[3] = { l[0] - b->x, l[1] - b->y, l[2] - b->z };
+        const float dc[3] = { l[0] - c->x, l[1] - c->y, l[2] - c->z };
+        const float dist_sq = MIN(
+            d[0] * d[0] + d[1] * d[1] + d[2] * d[2],
+            MIN(db[0] * db[0] + db[1] * db[1] + db[2] * db[2],
+                dc[0] * dc[0] + dc[1] * dc[1] + dc[2] * dc[2]));
+        if (dist_sq > l[3]) {
+            continue;
+        }
+        reached = true;
+        if ((n[0] * d[0] + n[1] * d[1] + n[2] * d[2]) * eye > 0.0f) {
+            return false;
+        }
+    }
+    return reached;
+}
+
+// A colour of a face turned from the light: its vertex's shaded one.
+M_HOT uint32_t M_DarkColour(const uint32_t argb, const uint32_t sargb)
+{
+    return (argb & 0xFF000000u) | (sargb & 0x00FFFFFFu);
+}
+
 // A triangle known to show: in front of the near plane and facing the camera.
 static void M_EmitFront(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
@@ -3001,19 +3189,27 @@ static void M_EmitFront(
     if (out == nullptr) {
         return;
     }
+    const bool dark = batcher->face_light_count > 0
+        && m_Frame.emit == M_EMIT_PLAIN
+        && M_FaceTurnedAway(batcher, &xv[idx[0]], &xv[idx[1]], &xv[idx[2]]);
     uint32_t cel_argb[3];
     for (int32_t k = 0; k < 3; k++) {
         uint32_t argb;
         uint32_t oargb;
         M_Colours(batcher, idx[k], &argb, &oargb);
+        if (dark) {
+            argb = M_DarkColour(argb, sargb[idx[k]]);
+        }
         M_Project(
             &xv[idx[k]], uv[k][0], uv[k][1], argb, oargb,
             k == 2 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
         cel_argb[k] = sargb[idx[k]];
     }
     DC_PVR_CommitPoly(3);
-    if (batcher->cel_emit
-        && M_CelShows(cel_argb[0] | cel_argb[1] | cel_argb[2])) {
+    if (batcher->cel_emit && !dark
+        && M_CelKeeps(
+            batcher, cel_argb[0] | cel_argb[1] | cel_argb[2],
+            cel_argb[0] & cel_argb[1] & cel_argb[2])) {
         M_KeepCel(batcher, out, 3, cel_argb);
     }
 }
@@ -3039,8 +3235,13 @@ static void M_EmitTriangle(
     }
 
     const uint32_t *const sargb = batcher->sargb;
-    const bool cel = batcher->cel_emit
-        && M_CelShows(sargb[i0] | sargb[i1] | sargb[i2]);
+    const bool dark = batcher->face_light_count > 0 && batcher->cel_emit
+        && m_Frame.emit == M_EMIT_PLAIN
+        && M_FaceTurnedAway(batcher, &xv[i0], &xv[i1], &xv[i2]);
+    const bool cel = batcher->cel_emit && !dark
+        && M_CelKeeps(
+            batcher, sargb[i0] | sargb[i1] | sargb[i2],
+            sargb[i0] & sargb[i1] & sargb[i2]);
     float uv[3][2];
     const float near_z = m_Frame.near_z;
     g_DC_ProbeUs[DC_PROBE_E_CLIP]++; // TEMP
@@ -3080,8 +3281,9 @@ static void M_EmitTriangle(
     for (int32_t k = 0; k < count; k++) {
         const M_CLIP_VERT *const p = &poly[ord[k]];
         M_Project(
-            &p->xv, p->u, p->v, p->argb, p->oargb,
-            k == count - 1 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
+            &p->xv, p->u, p->v, dark ? M_DarkColour(p->argb, p->sargb) : p->argb,
+            p->oargb, k == count - 1 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX,
+            &out[k]);
         cel_argb[k] = p->sargb;
     }
     DC_PVR_CommitPoly(count);
@@ -3170,19 +3372,27 @@ static bool M_TryEmitQuad(
         return true;
     }
     const uint32_t *const sargb = batcher->sargb;
+    const bool dark = batcher->face_light_count > 0
+        && m_Frame.emit == M_EMIT_PLAIN
+        && M_FaceTurnedAway(batcher, &xv[t0[0]], &xv[t0[1]], &xv[t0[2]]);
     uint32_t cel_argb[4];
     for (int32_t k = 0; k < 4; k++) {
         uint32_t argb;
         uint32_t oargb;
         M_Colours(batcher, strip[k], &argb, &oargb);
+        if (dark) {
+            argb = M_DarkColour(argb, sargb[strip[k]]);
+        }
         M_Project(
             &xv[strip[k]], uv[k][0], uv[k][1], argb, oargb,
             k == 3 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
         cel_argb[k] = sargb[strip[k]];
     }
     DC_PVR_CommitPoly(4);
-    if (batcher->cel_emit
-        && M_CelShows(cel_argb[0] | cel_argb[1] | cel_argb[2] | cel_argb[3])) {
+    if (batcher->cel_emit && !dark
+        && M_CelKeeps(
+            batcher, cel_argb[0] | cel_argb[1] | cel_argb[2] | cel_argb[3],
+            cel_argb[0] & cel_argb[1] & cel_argb[2] & cel_argb[3])) {
         M_KeepCel(batcher, out, 4, cel_argb);
     }
     return true;
@@ -3219,7 +3429,11 @@ typedef struct {
     int32_t written;
     int32_t polys;
     pvr_vertex_t *cel_end;
+    // A room's cel shading (M_CelKeeps): 1 to keep no shaded side of a face
+    // with all its corners in the shade.
+    int32_t cel_dark;
 } M_EMIT_RUN;
+_Static_assert(offsetof(M_EMIT_RUN, cel_dark) == 96, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, indices) == 32, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, page_id) == 64, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, sargb) == 72, "emit_sh4.S layout");
@@ -3350,6 +3564,7 @@ static int32_t M_EmitRunFast(
         .space = (int32_t)MIN(space, (size_t)INT32_MAX),
         .page_id = page,
         .cull = m_Frame.cull ? 1 : 0,
+        .cel_dark = batcher->cel_dark ? 1 : 0,
     };
     // Lara's cel shading keeps a copy of each lit face (M_KeepCel): room for
     // them all, and the run of her page they belong to, made first.
@@ -3432,7 +3647,10 @@ static void M_EmitIndices(
     const bool env = m_Frame.emit == M_EMIT_ENV;
     // The plain faces of a room or an object (not the reflections, the relief
     // or Lara's cel shading, nor a model on the canvas) go through assembly.
-    const bool fast = !env && !m_Frame.ortho && m_Frame.emit == M_EMIT_PLAIN;
+    // Nor a room's faces that a dynamic light reaches with the cel shading:
+    // each is looked at for the way it turns (M_FaceTurnedAway).
+    const bool fast = !env && !m_Frame.ortho && m_Frame.emit == M_EMIT_PLAIN
+        && batcher->face_light_count == 0;
     int32_t i = 0;
     while (i + 2 < count) {
 #if defined(DC_EMIT_VERIFY)
@@ -4557,8 +4775,8 @@ static void M_PrepareFrame(void)
 
     m_Frame.lighting = general->lighting_enabled != 0;
     m_Frame.cel = M_CelOn();
-    m_Frame.bump = DC_Mode_Get()->bump_mapping
-        && g_Config.rendering.dc_bump_mapping
+    m_Frame.room_cel = g_Config.rendering.dc_room_cel;
+    m_Frame.bump = g_Config.rendering.dc_bump_mapping
         && m_BumpOn && !m_Frame.ortho;
     m_Frame.min_shade = general->min_shade;
     m_Frame.time_in_game = general->time_in_game;
@@ -4665,8 +4883,7 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     // next texture on the page; the faces' coordinates are pulled in by that
     // much instead, as they are filled (M_InsetRun).
     const bool inset =
-        g_Config.rendering.texture_filter == TEXTURE_FILTER_BILINEAR
-        && DC_Mode_Get()->bilinear;
+        g_Config.rendering.texture_filter == TEXTURE_FILTER_BILINEAR;
     if (inset != m_InsetUV) {
         m_InsetUV = inset;
         for (int32_t i = 0; i < batcher->bindings->count; i++) {
@@ -5998,7 +6215,7 @@ static void M_UpdateBumpLoad(void)
     }
     m_FrameRooms = false;
     const int32_t fps = Output_GetMeasuredFPS();
-    const int32_t target = DC_Mode_Get()->fps;
+    const int32_t target = DC_Mode_GetFPS();
     // A relief page being made (as a level starts, or new walls come in)
     // stalls its frame: the next two seconds' rate says nothing of the load.
     static uint32_t made = 0;

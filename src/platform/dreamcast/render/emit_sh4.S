@@ -25,13 +25,13 @@
 !   fr12 depth lo     fr13 depth scale fr14 1/65535       fr15 1.0
 ! The frame on the stack: 0 the run, 4 polygons made, 8 cull, 12 the page, 32 the
 ! cel colours, 36 the cel cursor, 40..52 the shaded colours of a face,
-! 16..28 the four corners' xverts, advanced to their sx.
+! 16..28 the four corners' xverts, advanced to their sx, 56 cel_dark.
 !
 ! Struct layout, DC_EMIT_RUN (batcher.c):
 !    0 centre_x 4 centre_y 8 screen_scale 12 near_z 16 depth_lo 20 depth_scale
 !   24 uv_scale 28 one 32 indices 36 count 40 xverts 44 uv 48 page 52 oargb
 !   56 out 60 space 64 page_id 68 cull 72 sargb 76 cel_out | 80 used
-!   84 written 88 polys 92 cel_end
+!   84 written 88 polys 92 cel_end | 96 cel_dark
 
     .text
     .align 2
@@ -180,7 +180,8 @@
 
 ! The cel shading's copy of the face of \n vertices just written (r11 is past
 ! them), for the corners at \o0.. in the indices: kept where the lit side of
-! the face reaches half the alpha, as M_KeepCel does after M_EmitFront.
+! the face reaches half the alpha, as M_KeepCel does after M_EmitFront; with
+! cel_dark (a room's), not where all its corners do (M_CelKeeps).
     .macro CEL_FACE n, o0, o1, o2, o3
     mov.l   @(36,r15),r5
     tst     r5,r5
@@ -217,7 +218,23 @@
     bf      8f
     bra     9f
     nop
-8:  mov     r11,r1
+8:  mov.l   @(56,r15),r0
+    tst     r0,r0
+    bt      0f                      ! not a room's: kept
+    mov.l   @(40,r15),r0
+    mov.l   @(44,r15),r1
+    and     r1,r0
+    mov.l   @(48,r15),r1
+    and     r1,r0
+    .if \n == 4
+    mov.l   @(52,r15),r1
+    and     r1,r0
+    .endif
+    cmp/pz  r0                      ! T = some corner out of the shade
+    bt      0f
+    bra     9f                      ! all in it: gone out dark already
+    nop
+0:  mov     r11,r1
     add     #-(32 * \n),r1
     COPY_VERTEX 40
     COPY_VERTEX 44
@@ -245,7 +262,7 @@ _dc_emit_run:
     fmov.s  fr9,@-r15
     fmov.s  fr10,@-r15
     fmov.s  fr11,@-r15
-    add     #-56,r15
+    add     #-60,r15
     mov.l   r4,@(0,r15)
     mov     r4,r5
     fmov.s  @r5+,fr8
@@ -272,6 +289,8 @@ _dc_emit_run:
     mov.l   r1,@(32,r15)            ! the cel colours
     mov.l   @r5+,r1
     mov.l   r1,@(36,r15)            ! where the cel copies go, or 0
+    mov.l   @(16,r5),r1             ! cel_dark, at 96
+    mov.l   r1,@(56,r15)
     mov     #-32,r2
     shll16  r2
     shll8   r2                      ! 0xE0000000
@@ -442,7 +461,7 @@ done:
     mov.l   r11,@(4,r4)
     mov.l   r0,@(8,r4)
     mov.l   r5,@(12,r4)
-    add     #56,r15
+    add     #60,r15
     fmov.s  @r15+,fr11
     fmov.s  @r15+,fr10
     fmov.s  @r15+,fr9

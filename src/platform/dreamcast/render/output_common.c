@@ -408,8 +408,8 @@ void DC_Bench_End(void)
         "mode %d (%s), shadows %d, bump %d, %d fps",
         (int)g_Config.rendering.dc_mode,
         DC_PVR_IsLowRes() ? "320x240" : "640x480",
-        (int)g_Config.visuals.shadow_type, (int)DC_Mode_Get()->bump_mapping,
-        (int)DC_Mode_Get()->fps);
+        (int)g_Config.visuals.shadow_type,
+        (int)g_Config.rendering.dc_bump_mapping, (int)DC_Mode_GetFPS());
     M_BenchPrint("frames %d in %u ms", m_Bench.frames,
         (unsigned)(m_Bench.time_us / 1000));
     M_BenchPrint(

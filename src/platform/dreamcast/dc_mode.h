@@ -1,28 +1,28 @@
 #pragma once
 
 // What the renderer spends a frame on, by rendering.dc_mode: what each mode
-// allows at most.
+// fixes, and the options it sets as it is chosen, which the player may then
+// change (DC_Mode_ApplyDefaults).
 
 #include <stdbool.h>
 #include <stdint.h>
 
 typedef struct {
-    // Lara's shadows: how many lights cast them, whether soft shadows are
-    // drawn as shadow volumes instead, and whether Lara shadows herself.
+    // Lara's shadows: how many lights cast them, and whether Lara shadows
+    // herself.
     int32_t shadow_lights;
-    bool volume_shadows;
     bool self_shadow;
-    // Whether the cel shading may be drawn (rendering.dc_cel_shading turns
-    // it off).
-    bool cel_shading;
-    // Whether the room faces near the camera take relief (bump mapping).
-    bool bump_mapping;
-    // Frames drawn a second; TRX interpolates the world above 30.
-    int32_t fps;
     // 320x240 instead of 640x480, from the next level load on.
     bool low_res;
-    // The world's textures filtered bilinearly (rendering.texture_filter
-    // decides the rest).
+
+    // Set as the mode is chosen: the shadow type (the game's own, the shadow
+    // volumes, or the soft shadows), the frame rate (a DC_FPS), the cel
+    // shading, the relief, and the bilinear texture filter.
+    bool game_shadow;
+    bool volume_shadows;
+    int32_t fps;
+    bool cel_shading;
+    bool bump_mapping;
     bool bilinear;
 } DC_MODE_PARAMS;
 
@@ -54,8 +54,12 @@ extern int32_t g_DC_Run;
 
 const DC_MODE_PARAMS *DC_Mode_Get(void);
 
-// The rate the game runs at: the mode's, except that a 60 fps mode falls back
-// to 30 while the scene is too heavy to draw even that.
+// Sets the options the mode picks (the frame rate, cel shading, relief, texture
+// filter and shadow), as it is chosen.
+void DC_Mode_ApplyDefaults(void);
+
+// The rate the game runs at: rendering.dc_fps's, except that adaptive falls
+// back to 30 while the scene is too heavy to draw even that.
 int32_t DC_Mode_GetFPS(void);
 
 // Tells how long a frame took to run and draw, excluding its wait. Returns
