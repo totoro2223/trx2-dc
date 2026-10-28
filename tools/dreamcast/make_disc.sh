@@ -138,6 +138,11 @@ if [ -n "${TRX_DC_SHADOW:-}" ]; then
   echo "$TRX_DC_SHADOW" > "$STAGE/SHADOW.TXT"
   echo "shadow type $TRX_DC_SHADOW"
 fi
+if [ -n "${TRX_DC_CEL:-}" ]; then
+  # A test disc with the cel shading and the room cel shading fixed: "<0|1> <0|1>".
+  echo "$TRX_DC_CEL" > "$STAGE/CEL.TXT"
+  echo "cel shading $TRX_DC_CEL"
+fi
 if [ -n "${TRX_DC_MODE:-}" ]; then
   # A test disc that starts in that mode (graphics, performance, original or
   # experimental-60), whatever the settings say (dc_main.c, MODE.TXT).

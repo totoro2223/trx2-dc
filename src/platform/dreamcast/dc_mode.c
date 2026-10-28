@@ -2,6 +2,8 @@
 
 #include "dc_mode.h"
 
+#include <stdio.h>
+
 #include <trx/config.h>
 #include <trx/config/common.h>
 #include <trx/version.h>
@@ -56,6 +58,9 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
 
 int32_t g_DC_TestMode = -1;
 int32_t g_DC_TestShadow = -1;
+int32_t g_DC_TestCel = -1;
+int32_t g_DC_TestRoomCel = -1;
+int32_t g_DC_TestBump = -1;
 int32_t g_DC_TestResetOptions = 0;
 int32_t g_DC_TestSwitchMode = -1;
 int32_t g_DC_TestSwitchFrame = 0;
@@ -93,6 +98,15 @@ void DC_Mode_ApplyDefaults(void)
         shadow = (SHADOW_TYPE)g_DC_TestShadow;
     }
     CONFIG_SET(g_Config.visuals.shadow_type, shadow);
+    if (g_DC_TestCel >= 0) {
+        CONFIG_SET(g_Config.rendering.dc_cel_shading, (bool)(g_DC_TestCel != 0));
+    }
+    if (g_DC_TestBump >= 0) {
+        CONFIG_SET(g_Config.rendering.dc_bump_mapping, (bool)(g_DC_TestBump != 0));
+    }
+    if (g_DC_TestRoomCel >= 0) {
+        CONFIG_SET(g_Config.rendering.dc_room_cel, (bool)(g_DC_TestRoomCel != 0));
+    }
 }
 
 // Below about 30 frames a second there is no frame between two ticks to

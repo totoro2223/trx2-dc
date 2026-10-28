@@ -31,6 +31,11 @@ typedef struct {
 extern int32_t g_DC_TestMode;
 // A test disc's shadow type, whatever the mode picks (-1 for none).
 extern int32_t g_DC_TestShadow;
+// A test disc that fixes the cel shading and the room cel shading (0 or 1;
+// -1 leaves them to the mode).
+extern int32_t g_DC_TestCel;
+extern int32_t g_DC_TestRoomCel;
+extern int32_t g_DC_TestBump;
 // A test disc that deletes the render options from the memory card as it
 // starts, and begins from the defaults (make_disc.sh's TRX_DC_RESETOPT,
 // RESETOPT.TXT).

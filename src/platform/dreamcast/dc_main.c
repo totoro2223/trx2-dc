@@ -134,6 +134,9 @@ static int M_RunGame(int argc, char *argv[])
     g_DC_Run++;
     g_DC_TestMode = -1;
     g_DC_TestShadow = -1;
+    g_DC_TestCel = -1;
+    g_DC_TestRoomCel = -1;
+    g_DC_TestBump = -1;
     g_DC_TestResetOptions = 0;
     g_DC_TestSwitchMode = -1;
     g_DC_TestSwitchFrame = 0;
@@ -227,6 +230,20 @@ static int M_RunGame(int argc, char *argv[])
             g_DC_TestShadow = number;
         }
         fclose(shadow);
+    }
+    // A test disc that fixes the cel shading and the room cel shading
+    // (make_disc.sh's TRX_DC_CEL): "<cel> <room cel>", each 0 or 1.
+    FILE *const cel = M_Open("CEL.TXT");
+    if (cel != nullptr) {
+        int a = -1;
+        int b = -1;
+        int c = -1;
+        if (fscanf(cel, "%d %d %d", &a, &b, &c) >= 2) {
+            g_DC_TestCel = a;
+            g_DC_TestRoomCel = b;
+            g_DC_TestBump = c;
+        }
+        fclose(cel);
     }
     // A test disc that wipes the render options off the memory card
     // (make_disc.sh's TRX_DC_RESETOPT).

@@ -103,13 +103,13 @@ void DC_Settings_Load(const char *const saves_dir)
     CONFIG_SET(g_Config.rendering.dc_mode, (DC_MODE)v[0]);
     Config_Update();
     CONFIG_SET(g_Config.rendering.dc_fps, (DC_FPS)v[1]);
-    CONFIG_SET(g_Config.rendering.dc_cel_shading, v[2] != 0);
-    CONFIG_SET(g_Config.ui.enable_fps_counter, v[4] != 0);
+    CONFIG_SET(g_Config.rendering.dc_cel_shading, (bool)(v[2] != 0));
+    CONFIG_SET(g_Config.ui.enable_fps_counter, (bool)(v[4] != 0));
     CONFIG_SET(g_Config.rendering.texture_filter, (TEXTURE_FILTER)v[5]);
     CONFIG_SET(g_Config.rendering.ui_filter, (TEXTURE_FILTER)v[6]);
     CONFIG_SET(g_Config.visuals.shadow_type, (SHADOW_TYPE)v[7]);
-    CONFIG_SET(g_Config.rendering.dc_bump_mapping, v[8] != 0);
-    CONFIG_SET(g_Config.rendering.dc_room_cel, v[9] != 0);
+    CONFIG_SET(g_Config.rendering.dc_bump_mapping, (bool)(v[8] != 0));
+    CONFIG_SET(g_Config.rendering.dc_room_cel, (bool)(v[9] != 0));
     M_Format(m_Stored, sizeof(m_Stored));
     LOG_INFO("render options loaded from the memory card");
 }
@@ -118,7 +118,8 @@ void DC_Settings_Save(void)
 {
     // A test disc that forces the mode or the shadows is not the player
     // choosing: those would stay on the card.
-    if (m_Path[0] == '\0' || g_DC_TestMode >= 0 || g_DC_TestShadow >= 0) {
+    if (m_Path[0] == '\0' || g_DC_TestMode >= 0 || g_DC_TestShadow >= 0
+        || g_DC_TestCel >= 0 || g_DC_TestBump >= 0) {
         return;
     }
     char now[256];
