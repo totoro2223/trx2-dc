@@ -202,6 +202,12 @@ void Output_BeginScene(void)
     Output_Lights_BeginScene();
 }
 
+// TEMP: see dc_probe.h. Outside the watchdog: the batcher counts into it in
+// every build, release too.
+uint32_t g_DC_ProbeUs[DC_PROBE_COUNT] = {};
+uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
+uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};
+
 #if defined(TRX_DC_WATCHDOG)
 
 extern _Thread_local uint64_t g_DC_SleepUs;
@@ -231,8 +237,6 @@ static struct {
     uint32_t probe_max[DC_PROBE_COUNT];
 } m_Stats = {};
 
-// TEMP: see dc_probe.h
-uint32_t g_DC_ProbeUs[DC_PROBE_COUNT] = {};
 static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "ev",  "lua",  "rem",  "inp",  "items", "fx",   "lara", "post",
     "end", "ctrl", "mctl", "flip", "log",   "tcyc", "tuvw", "tcomp",
@@ -245,8 +249,6 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
     "rall", "rplain", "rdyn", "rflick", "rvary", "rnw", "rfog", "rhit",
 };
-uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
-uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};
 
 static void M_StatsBeginScene(void)
 {
