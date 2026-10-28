@@ -194,7 +194,20 @@ void DC_VMU_RestoreSaves(const char *const saves_dir)
     free(entries);
 }
 
+static bool M_Store(const char *path, const char *title, bool icon);
+
 bool DC_VMU_StoreSave(const char *const path, const char *const title)
+{
+    return M_Store(path, title, true);
+}
+
+bool DC_VMU_StoreSmall(const char *const path, const char *const title)
+{
+    return M_Store(path, title, false);
+}
+
+static bool M_Store(
+    const char *const path, const char *const title, const bool icon)
 {
     const char *const name = M_GetRelativeName(path);
     maple_device_t *const card = M_GetCard();
@@ -237,8 +250,10 @@ bool DC_VMU_StoreSave(const char *const path, const char *const title)
             pkg.desc_long, sizeof(pkg.desc_long), "%s",
             title != nullptr && title[0] != '\0' ? title : name);
         snprintf(pkg.app_id, sizeof(pkg.app_id), M_APP_ID);
-        uint8_t icon[M_ICON_SIZE * M_ICON_SIZE / 2];
-        M_FillIcon(&pkg, icon);
+        uint8_t icon_data[M_ICON_SIZE * M_ICON_SIZE / 2];
+        if (icon) {
+            M_FillIcon(&pkg, icon_data);
+        }
         pkg.eyecatch_type = VMUPKG_EC_NONE;
         pkg.data_len = M_NAME_SIZE + (int)size;
         pkg.data = payload;

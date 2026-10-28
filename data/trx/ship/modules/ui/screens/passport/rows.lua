@@ -8,9 +8,14 @@ local M = {}
 -- Lists every quick save and every numbered slot, empty or not. TR1 centers
 -- the save number after the level name; the later games set it against the
 -- right edge.
-function M.slot_rows(filter)
+-- hide_quick leaves the quick saves out: on the Dreamcast the one quick save
+-- (L + R + Start) is not a slot to save to.
+function M.slot_rows(filter, hide_quick)
   local rows = {}
   pages.each_slot(function(slot_num, pool)
+    if hide_quick and pool == trx.savegame.Pool.QUICK then
+      return
+    end
     local info = trx.savegame.info(slot_num, pool)
     if filter ~= nil and not filter(info) then
       return

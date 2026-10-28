@@ -116,6 +116,9 @@ GF_COMMAND GF_PauseGame(void)
     PHASE *const subphase = Phase_Pause_Create();
     const GF_COMMAND gf_cmd = PhaseExecutor_Run(subphase);
     Phase_Pause_Destroy(subphase);
+#if defined(__DREAMCAST__)
+    DC_Settings_Save();
+#endif
     return gf_cmd;
 }
 
@@ -131,6 +134,11 @@ GF_COMMAND GF_ShowInventory(const INVENTORY_MODE mode)
     PHASE *const phase = Phase_Inventory_Create(mode);
     const GF_COMMAND gf_cmd = PhaseExecutor_Run(phase);
     Phase_Inventory_Destroy(phase);
+#if defined(__DREAMCAST__)
+    // The options menu is in the ring: what it changed goes to the memory
+    // card now, for the next level, menu or demo (and the next power on).
+    DC_Settings_Save();
+#endif
     return gf_cmd;
 }
 

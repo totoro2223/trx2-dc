@@ -9,6 +9,7 @@
 
 #include "dc_level_select.h"
 
+#include "bfont_small.h"
 #include "dc_bench.h"
 #include "dc_games.h"
 #include "dc_strict.h"
@@ -196,37 +197,79 @@ static bool m_RTrigHeld = false;
 static M_PAGE m_Pages[M_PAGE_MAX] = {};
 static int32_t m_PageCount = M_PAGE_EXPANSION;
 
-// Rows of entries on screen at once; the list scrolls past them.
+// Rows of entries on screen at once at most; the list scrolls past them.
 #define M_ROWS 15
-#define M_LEFT 64
-#define M_TOP 72
+
+// The screen as it is now: at 320x240 (a game of the disc ran there before)
+// the text is the BIOS font at half size, and the layout is as 640x480's
+// halved. The font never has to be scaled by the screen.
+static bool M_IsLowRes(void)
+{
+    return vid_mode != nullptr && vid_mode->width < 640;
+}
+
+static int32_t M_Width(void)
+{
+    return vid_mode != nullptr ? vid_mode->width : 640;
+}
+
+static int32_t M_Height(void)
+{
+    return vid_mode != nullptr ? vid_mode->height : 480;
+}
+
+static int32_t M_LineHeight(void)
+{
+    return M_IsLowRes() ? DC_BFONT_SMALL_HEIGHT : BFONT_HEIGHT;
+}
+
+static int32_t M_CharWidth(void)
+{
+    return M_IsLowRes() ? DC_BFONT_SMALL_WIDTH : BFONT_THIN_WIDTH;
+}
+
+static void M_Text(const int32_t x, const int32_t y, const char *const text)
+{
+    const int32_t width = M_Width();
+    if (M_IsLowRes()) {
+        DC_BFontSmall_DrawStr(
+            vram_s + y * width + x, (uint32_t)width, 0xFFFF, 0x0000, true,
+            text);
+    } else {
+        bfont_draw_str(vram_s + y * width + x, (uint32_t)width, true, text);
+    }
+}
 
 // A box in the style of the game's own notices: a dark panel with a green
 // frame, text inside, its right edge or bottom edge at the given spot.
 static void M_DrawBox(const int32_t right, const int32_t y, const char *const text)
 {
-    const int32_t w = (int32_t)strlen(text) * 12 + 16;
-    const int32_t h = BFONT_HEIGHT + 8;
+    const int32_t pad = M_IsLowRes() ? 4 : 8;
+    const int32_t w = (int32_t)strlen(text) * M_CharWidth() + 2 * pad;
+    const int32_t h = M_LineHeight() + pad;
     const int32_t x = right - w;
     for (int32_t j = 0; j < h; j++) {
         for (int32_t i = 0; i < w; i++) {
             const bool edge = i < 2 || j < 2 || i >= w - 2 || j >= h - 2;
-            vram_s[(y + j) * 640 + x + i] = edge ? 0x07E0 : 0x0120;
+            vram_s[(y + j) * M_Width() + x + i] = edge ? 0x07E0 : 0x0120;
         }
     }
-    bfont_draw_str(vram_s + (y + 4) * 640 + x + 8, 640, true, text);
+    M_Text(x + pad, y + pad / 2, text);
 }
 
 static void M_DrawGames(void)
 {
+    const int32_t margin = M_IsLowRes() ? 8 : 16;
     char text[40];
     if (DC_Games_PrevId() != 0) {
         snprintf(text, sizeof(text), "Press L to go to TR%d", DC_Games_PrevId());
-        M_DrawBox(640 - 16, 8, text);
+        M_DrawBox(M_Width() - margin, margin / 2, text);
     }
     if (DC_Games_NextId() != 0) {
         snprintf(text, sizeof(text), "Press R to go to TR%d", DC_Games_NextId());
-        M_DrawBox(640 - 16, 480 - 16 - BFONT_HEIGHT - 8, text);
+        M_DrawBox(
+            M_Width() - margin,
+            M_Height() - margin - M_LineHeight() - margin / 2, text);
     }
 }
 
@@ -234,28 +277,32 @@ static void M_Draw(const int32_t engine, const M_PAGE_ID page_id)
 {
     const M_PAGE *const page = &m_Pages[page_id];
     vid_clear(0, 0, 0);
+    const int32_t left = M_IsLowRes() ? 32 : 64;
+    const int32_t line_height = M_LineHeight();
+    const int32_t top = 8 + 2 * line_height + (M_IsLowRes() ? 4 : 16);
     char header[64];
     snprintf(
         header, sizeof(header), "TRX totoro222 - TR%d - %s (%d/%d)",
         (int)engine, page->title, (int)page_id + 1, (int)m_PageCount);
-    bfont_draw_str(vram_s + 8 * 640 + M_LEFT, 640, true, header);
-    bfont_draw_str(
-        vram_s + (8 + BFONT_HEIGHT) * 640 + M_LEFT, 640, true,
-        "A: start   left/right: page");
-    int32_t first = page->selected - M_ROWS / 2;
-    if (first > page->count - M_ROWS) {
-        first = page->count - M_ROWS;
+    M_Text(left, 8, header);
+    M_Text(left, 8 + line_height, "A: start   left/right: page");
+    int32_t rows = (M_Height() - top - 8) / line_height;
+    if (rows > M_ROWS) {
+        rows = M_ROWS;
+    }
+    int32_t first = page->selected - rows / 2;
+    if (first > page->count - rows) {
+        first = page->count - rows;
     }
     if (first < 0) {
         first = 0;
     }
-    for (int32_t i = first; i < first + M_ROWS && i < page->count; i++) {
+    for (int32_t i = first; i < first + rows && i < page->count; i++) {
         char line[48];
         snprintf(
             line, sizeof(line), "%c %s", i == page->selected ? '>' : ' ',
             page->names[i]);
-        const int32_t y = M_TOP + (i - first) * BFONT_HEIGHT;
-        bfont_draw_str(vram_s + y * 640 + M_LEFT, 640, true, line);
+        M_Text(left, top + (i - first) * line_height, line);
     }
     M_DrawGames();
 }

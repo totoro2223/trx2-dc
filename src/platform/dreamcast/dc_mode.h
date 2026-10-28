@@ -23,6 +23,7 @@ typedef struct {
     int32_t fps;
     bool cel_shading;
     bool bump_mapping;
+    bool room_cel;
     bool bilinear;
 } DC_MODE_PARAMS;
 
@@ -30,6 +31,10 @@ typedef struct {
 extern int32_t g_DC_TestMode;
 // A test disc's shadow type, whatever the mode picks (-1 for none).
 extern int32_t g_DC_TestShadow;
+// A test disc that deletes the render options from the memory card as it
+// starts, and begins from the defaults (make_disc.sh's TRX_DC_RESETOPT,
+// RESETOPT.TXT).
+extern int32_t g_DC_TestResetOptions;
 // A test disc that changes the mode while it runs, as the menu does: the mode
 // and the frame to do it on (make_disc.sh's TRX_DC_SWITCH, SWITCH.TXT).
 extern int32_t g_DC_TestSwitchMode;

@@ -15,6 +15,7 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
         .self_shadow = true,
         .cel_shading = true,
         .bump_mapping = true,
+        .room_cel = true,
         .fps = DC_FPS_30,
         .low_res = false,
         .bilinear = true,
@@ -55,6 +56,7 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
 
 int32_t g_DC_TestMode = -1;
 int32_t g_DC_TestShadow = -1;
+int32_t g_DC_TestResetOptions = 0;
 int32_t g_DC_TestSwitchMode = -1;
 int32_t g_DC_TestSwitchFrame = 0;
 int32_t g_DC_TestLevelStart = 0;
@@ -78,6 +80,7 @@ void DC_Mode_ApplyDefaults(void)
     CONFIG_SET(g_Config.rendering.dc_fps, (DC_FPS)mode->fps);
     CONFIG_SET(g_Config.rendering.dc_cel_shading, mode->cel_shading);
     CONFIG_SET(g_Config.rendering.dc_bump_mapping, mode->bump_mapping);
+    CONFIG_SET(g_Config.rendering.dc_room_cel, mode->room_cel);
     CONFIG_SET(
         g_Config.rendering.texture_filter,
         mode->bilinear ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT);

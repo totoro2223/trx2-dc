@@ -9,8 +9,10 @@
 #include "dc_strict.h"
 
 #include "render/pvr.h"
+#include "vmu.h"
 
 #include <arch/timer.h>
+#include <kos/thread.h>
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -117,6 +119,27 @@ void DC_Loading_SetStep(const char *const step)
     strncpy(m_Priv.name, step, sizeof(m_Priv.name) - 1);
     m_Priv.name[sizeof(m_Priv.name) - 1] = '\0';
     M_Draw(true);
+}
+
+void DC_Loading_Notice(
+    const char *const title, const char *const text, const int32_t hold_ms)
+{
+    DC_PVR_SetPicture(nullptr);
+    DC_PVR_DrawLoadingScreen(title, text, 100);
+    if (hold_ms > 0) {
+        thd_sleep(hold_ms);
+    }
+}
+
+void DC_Loading_SaveDone(const bool saved)
+{
+    const int result = DC_VMU_LastResult();
+    DC_Loading_Notice(
+        "QUICK SAVE",
+        !saved || result == 2  ? "Could not save the game"
+            : result == 3      ? "No VMU found: saved until the console is off"
+                               : "Saved to the VMU",
+        1200);
 }
 
 void DC_Loading_End(void)

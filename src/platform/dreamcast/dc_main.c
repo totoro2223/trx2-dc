@@ -134,6 +134,7 @@ static int M_RunGame(int argc, char *argv[])
     g_DC_Run++;
     g_DC_TestMode = -1;
     g_DC_TestShadow = -1;
+    g_DC_TestResetOptions = 0;
     g_DC_TestSwitchMode = -1;
     g_DC_TestSwitchFrame = 0;
     g_DC_TestLevelStart = 0;
@@ -226,6 +227,13 @@ static int M_RunGame(int argc, char *argv[])
             g_DC_TestShadow = number;
         }
         fclose(shadow);
+    }
+    // A test disc that wipes the render options off the memory card
+    // (make_disc.sh's TRX_DC_RESETOPT).
+    FILE *const reset = M_Open("RESETOPT.TXT");
+    if (reset != nullptr) {
+        g_DC_TestResetOptions = 1;
+        fclose(reset);
     }
     // A test disc that makes the pistols smoke every n frames
     // (make_disc.sh's TRX_DC_FIRE).

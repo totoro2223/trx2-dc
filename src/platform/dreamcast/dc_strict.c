@@ -3,6 +3,7 @@
 
 #include "dc_strict.h"
 
+#include "bfont_small.h"
 #include "vmu.h"
 
 #include <arch/timer.h>
@@ -126,15 +127,22 @@ static void M_ShowOnScreen(const char *const report)
     char line[64];
     uint32_t y = 8;
     const char *p = report;
-    while (*p != '\0' && y + BFONT_HEIGHT < (uint32_t)vid_mode->height) {
+    const uint32_t line_height =
+        width < 640 ? DC_BFONT_SMALL_HEIGHT : BFONT_HEIGHT;
+    while (*p != '\0' && y + line_height < (uint32_t)vid_mode->height) {
         size_t n = 0;
         while (p[n] != '\0' && p[n] != '\n' && n < sizeof(line) - 1) {
             n++;
         }
         memcpy(line, p, n);
         line[n] = '\0';
-        bfont_draw_str_ex(fb + y * width + 8, width, 0xFFFF, 0x0000, 16, true, line);
-        y += BFONT_HEIGHT;
+        if (width < 640) {
+            DC_BFontSmall_DrawStr(fb + y * width + 8, width, 0xFFFF, 0x0000, true, line);
+            y += DC_BFONT_SMALL_HEIGHT;
+        } else {
+            bfont_draw_str_ex(fb + y * width + 8, width, 0xFFFF, 0x0000, 16, true, line);
+            y += BFONT_HEIGHT;
+        }
         p += n;
         if (*p == '\n') {
             p++;

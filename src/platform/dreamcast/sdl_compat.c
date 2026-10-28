@@ -12,6 +12,8 @@
 
 #include <SDL2/SDL.h>
 
+#include <trx/version.h>
+
 #include <dc/maple.h>
 #include <dc/maple/controller.h>
 #include <kos/cond.h>
@@ -84,6 +86,12 @@ static kthread_t *m_LatchThread = nullptr;
 // last DC_Input_TakeEndLevelCombo.
 static bool m_ComboHeld = false;
 static bool m_ComboPressed = false;
+// L + R + Start and L + R + Down: the quick save and the quick load, each
+// pressed since last asked for.
+static bool m_QuickSaveHeld = false;
+static bool m_QuickSavePressed = false;
+static bool m_QuickLoadHeld = false;
+static bool m_QuickLoadPressed = false;
 
 static const char *const m_ButtonNames[SDL_CONTROLLER_BUTTON_MAX] = {
     [SDL_CONTROLLER_BUTTON_A] = "a",
@@ -268,26 +276,46 @@ static void M_PollController(void)
         M_PushEvent(&quit);
     }
 
-    M_SetButton(SDL_CONTROLLER_BUTTON_A, b & CONT_A);
+    // L is a modifier: with R it looks (a paddle, so that R alone keeps
+    // walking), and in TR3 with Y it crouches and with A it sprints. L + R
+    // with Start or Down are the quick save and load, which keep those two
+    // buttons from doing their own work.
+    const bool l = state->ltrig >= DC_TRIGGER_BUTTON_THRESHOLD;
+    const bool r = state->rtrig >= DC_TRIGGER_BUTTON_THRESHOLD;
+    const bool chord = l && r;
+    const bool quick_save = chord && (b & CONT_START);
+    const bool quick_load = chord && (b & CONT_DPAD_DOWN);
+    if (quick_save && !m_QuickSaveHeld) {
+        m_QuickSavePressed = true;
+    }
+    m_QuickSaveHeld = quick_save;
+    if (quick_load && !m_QuickLoadHeld) {
+        m_QuickLoadPressed = true;
+    }
+    m_QuickLoadHeld = quick_load;
+    const bool tr3 = g_TRVersion >= 3;
+    const bool a = b & CONT_A;
+    const bool y = b & CONT_Y;
+
+    M_SetButton(SDL_CONTROLLER_BUTTON_A, a && !(tr3 && l));
     M_SetButton(SDL_CONTROLLER_BUTTON_B, b & CONT_B);
     M_SetButton(SDL_CONTROLLER_BUTTON_X, b & CONT_X);
-    M_SetButton(SDL_CONTROLLER_BUTTON_Y, b & CONT_Y);
-    M_SetButton(SDL_CONTROLLER_BUTTON_START, b & CONT_START);
+    M_SetButton(SDL_CONTROLLER_BUTTON_Y, y && !(tr3 && l));
+    M_SetButton(SDL_CONTROLLER_BUTTON_PADDLE1, chord);
+    M_SetButton(SDL_CONTROLLER_BUTTON_PADDLE2, tr3 && l && y);
+    M_SetButton(SDL_CONTROLLER_BUTTON_PADDLE3, tr3 && l && a);
+    M_SetButton(SDL_CONTROLLER_BUTTON_START, (b & CONT_START) && !chord);
     // Pads with the extra buttons (arcade sticks, the twin-stick) offer C, Z
     // and D; the stock controller has none of them.
     M_SetButton(SDL_CONTROLLER_BUTTON_BACK, b & CONT_D);
     M_SetButton(SDL_CONTROLLER_BUTTON_LEFTSTICK, b & CONT_Z);
     M_SetButton(SDL_CONTROLLER_BUTTON_RIGHTSTICK, b & CONT_C);
     M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_UP, b & CONT_DPAD_UP);
-    M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_DOWN, b & CONT_DPAD_DOWN);
+    M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_DOWN, (b & CONT_DPAD_DOWN) && !chord);
     M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_LEFT, b & CONT_DPAD_LEFT);
     M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, b & CONT_DPAD_RIGHT);
-    M_SetButton(
-        SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
-        state->ltrig >= DC_TRIGGER_BUTTON_THRESHOLD);
-    M_SetButton(
-        SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
-        state->rtrig >= DC_TRIGGER_BUTTON_THRESHOLD);
+    M_SetButton(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, l);
+    M_SetButton(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, r && !l);
 
     const bool combo = state->ltrig >= DC_TRIGGER_BUTTON_THRESHOLD
         && state->rtrig >= DC_TRIGGER_BUTTON_THRESHOLD
@@ -303,6 +331,22 @@ static void M_PollController(void)
     M_SetAxis(SDL_CONTROLLER_AXIS_RIGHTY, M_StickToAxis(state->joy2y));
     M_SetAxis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, M_TriggerToAxis(state->ltrig));
     M_SetAxis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, M_TriggerToAxis(state->rtrig));
+}
+
+// Whether L + R + Start (the quick save) or L + R + Down (the quick load) was
+// pressed since last asked.
+bool DC_Input_TakeQuickSave(void)
+{
+    const bool pressed = m_QuickSavePressed;
+    m_QuickSavePressed = false;
+    return pressed;
+}
+
+bool DC_Input_TakeQuickLoad(void)
+{
+    const bool pressed = m_QuickLoadPressed;
+    m_QuickLoadPressed = false;
+    return pressed;
 }
 
 // Whether L, R, X and Y were pressed together since last asked: the pad's

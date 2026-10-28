@@ -118,6 +118,14 @@
     #define M_ICON_R1             "R"
     #define M_ICON_L2             "L"
     #define M_ICON_R2             "R"
+    // L is a modifier on the Dreamcast (see sdl_compat.c): these three are
+    // the chords it makes.
+    #undef M_NAME_PADDLE_1
+    #undef M_NAME_PADDLE_2
+    #undef M_NAME_PADDLE_3
+    #define M_NAME_PADDLE_1       "L+R"
+    #define M_NAME_PADDLE_2       "L+Y"
+    #define M_NAME_PADDLE_3       "L+A"
     #define M_NAME_L_STICK        "Z"
     #define M_NAME_L_ANALOG_UP    "STICK UP"
     #define M_NAME_L_ANALOG_RIGHT "STICK RIGHT"
@@ -650,6 +658,34 @@ static void M_HandleBuiltInDefaults(void)
         M_GetBuiltInLayout(INPUT_ROLE_STEP_RIGHT)->bind =
             (CONTROLLER_BINDING) { .key_count = 0 };
     }
+    // L is a modifier (sdl_compat.c makes the paddles from it): looking is
+    // L + R, and TR3's crouch is L + Y and its sprint L + A. R alone keeps
+    // walking in all three games.
+    const CONTROLLER_MAP look = {
+        .type = BT_BUTTON,
+        .bind.button = SDL_CONTROLLER_BUTTON_PADDLE1,
+    };
+    M_GetBuiltInLayout(INPUT_ROLE_LOOK)->bind =
+        (CONTROLLER_BINDING) { .key_count = 1, .keys = { look } };
+    if (g_TRVersion >= 3) {
+        const CONTROLLER_MAP crouch = {
+            .type = BT_BUTTON,
+            .bind.button = SDL_CONTROLLER_BUTTON_PADDLE2,
+        };
+        const CONTROLLER_MAP sprint = {
+            .type = BT_BUTTON,
+            .bind.button = SDL_CONTROLLER_BUTTON_PADDLE3,
+        };
+        M_GetBuiltInLayout(INPUT_ROLE_CROUCH)->bind =
+            (CONTROLLER_BINDING) { .key_count = 1, .keys = { crouch } };
+        M_GetBuiltInLayout(INPUT_ROLE_SPRINT)->bind =
+            (CONTROLLER_BINDING) { .key_count = 1, .keys = { sprint } };
+    }
+    // The pad has one stick, and it walks; the free camera goes with it.
+    M_GetBuiltInLayout(INPUT_ROLE_CAMERA_UP)->bind =
+        (CONTROLLER_BINDING) { .key_count = 0 };
+    M_GetBuiltInLayout(INPUT_ROLE_CAMERA_DOWN)->bind =
+        (CONTROLLER_BINDING) { .key_count = 0 };
     // Flares stay unbound for now: a chord such as walk + draw weapon holds
     // its keys' own roles back until it is let go, which kept the weapons
     // from coming out. (The flare goes in the inventory meanwhile.)
@@ -677,6 +713,27 @@ static void M_Init(void)
         const BUILTIN_CONTROLLER_LAYOUT *const builtin = &m_BuiltinLayout[i];
         m_Layout[INPUT_LAYOUT_DEFAULT][builtin->role].slots[0] = builtin->bind;
     }
+#if defined(__DREAMCAST__)
+    // The stick moves Lara as the D-pad does (the second slot of each role).
+    const struct {
+        INPUT_ROLE role;
+        SDL_GameControllerAxis axis;
+        int16_t dir;
+    } stick[] = {
+        { INPUT_ROLE_UP, SDL_CONTROLLER_AXIS_LEFTY, -1 },
+        { INPUT_ROLE_DOWN, SDL_CONTROLLER_AXIS_LEFTY, 1 },
+        { INPUT_ROLE_LEFT, SDL_CONTROLLER_AXIS_LEFTX, -1 },
+        { INPUT_ROLE_RIGHT, SDL_CONTROLLER_AXIS_LEFTX, 1 },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(stick); i++) {
+        m_Layout[INPUT_LAYOUT_DEFAULT][stick[i].role].slots[1] =
+            (CONTROLLER_BINDING) {
+                .key_count = 1,
+                .keys = { { BT_AXIS, { .axis = stick[i].axis },
+                            stick[i].dir } },
+            };
+    }
+#endif
     M_CheckConflicts(INPUT_LAYOUT_DEFAULT);
 
     for (int32_t layout = INPUT_LAYOUT_CUSTOM_1;

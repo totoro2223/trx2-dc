@@ -12,5 +12,9 @@ void DC_Loading_Begin(uint64_t total_bytes, const char *picture);
 // Shows a step that reads nothing, in place of a file's name.
 void DC_Loading_SetStep(const char *step);
 void DC_Loading_End(void);
+// A notice on the loading screen, held for hold_ms: the quick save's.
+void DC_Loading_Notice(const char *title, const char *text, int32_t hold_ms);
+// What the quick save is told of the card, once the save has been written.
+void DC_Loading_SaveDone(bool saved);
 // The disc's "DC build N" (make_disc.sh's VERSION.TXT).
 const char *DC_Loading_GetVersion(void);

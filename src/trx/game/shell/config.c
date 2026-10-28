@@ -184,6 +184,9 @@ void Shell_HandleConfigChange(const CONFIG_CHANGE *const change)
     if (L_CHANGED(rendering.dc_mode)) {
         // The mode's options, which the player may then change.
         DC_Mode_ApplyDefaults();
+        // Told at once, so that the menu shows the options the mode just set
+        // rather than the ones it had.
+        Config_Update();
     }
 #endif
 

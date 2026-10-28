@@ -11,6 +11,7 @@
 
 #include "bump_page.h"
 
+#include <platform/dreamcast/bfont_small.h>
 #include <platform/dreamcast/dc_games.h>
 #include <platform/dreamcast/dc_strict.h>
 #include <platform/dreamcast/dc_mode.h>
@@ -578,16 +579,37 @@ void DC_PVR_DrawLoadingScreen(
     }
     // ARGB4444: white on clear.
     uint16_t *const text = (uint16_t *)m_LoadingText;
-    bfont_draw_str_ex(
-        text, M_LOADING_TEXT_WIDTH, 0xFFFF, 0x0000, 16, true, line1);
-    bfont_draw_str_ex(
-        text + M_LOADING_TEXT_WIDTH * (M_LOADING_TEXT_HEIGHT / 2),
-        M_LOADING_TEXT_WIDTH, 0xFFFF, 0x0000, 16, true, line2);
+    // At 320x240 the font is the BIOS's at half size (bfont_small.h), shown a
+    // texel to a screen pixel: two lines of 12 rows, 16 apart, centred.
+    const int32_t chars = (int32_t)MAX(strlen(line1), strlen(line2));
+    const int32_t low_width = MIN(chars * DC_BFONT_SMALL_WIDTH, M_LOADING_TEXT_WIDTH);
+    const int32_t low_height = 16 + DC_BFONT_SMALL_HEIGHT;
+    if (m_LowRes) {
+        DC_BFontSmall_DrawStr(
+            text, M_LOADING_TEXT_WIDTH, 0xFFFF, 0x0000, true, line1);
+        DC_BFontSmall_DrawStr(
+            text + M_LOADING_TEXT_WIDTH * 16, M_LOADING_TEXT_WIDTH, 0xFFFF,
+            0x0000, true, line2);
+        DC_PVR_SetFilter(false);
+    } else {
+        bfont_draw_str_ex(
+            text, M_LOADING_TEXT_WIDTH, 0xFFFF, 0x0000, 16, true, line1);
+        bfont_draw_str_ex(
+            text + M_LOADING_TEXT_WIDTH * (M_LOADING_TEXT_HEIGHT / 2),
+            M_LOADING_TEXT_WIDTH, 0xFFFF, 0x0000, 16, true, line2);
+    }
 
     DC_PVR_SetBackgroundColor(0.0f, 0.0f, 0.0f);
     DC_PVR_BeginFrame();
     const bool picture = m_Picture != nullptr;
-    const float x0 = (640 - M_LOADING_TEXT_WIDTH) / 2.0f + 32.0f;
+    // The text's place in 640x480 coordinates (a pixel is two there at
+    // 320x240).
+    const float text_w = m_LowRes ? low_width * 2.0f : M_LOADING_TEXT_WIDTH;
+    const float text_h = m_LowRes ? low_height * 2.0f : M_LOADING_TEXT_HEIGHT;
+    const float u1 = m_LowRes ? (float)low_width / M_LOADING_TEXT_WIDTH : 1.0f;
+    const float v1 = m_LowRes ? (float)low_height / M_LOADING_TEXT_HEIGHT : 1.0f;
+    const float x0 = m_LowRes ? 320.0f - low_width
+                              : (640 - M_LOADING_TEXT_WIDTH) / 2.0f + 32.0f;
     // Under the picture, the text and bar sit at its foot on a dark band.
     const float y0 = picture ? 368.0f : 190.0f;
     const float z = DC_PVR_Depth2D(0.5f);
@@ -617,12 +639,10 @@ void DC_PVR_DrawLoadingScreen(
     const uint32_t white = 0xFFFFFFFF;
     const DC_PVR_VERTEX t[4] = {
         { .x = x0, .y = y0, .z = z, .u = 0, .v = 0, .argb = white },
-        { .x = x0 + M_LOADING_TEXT_WIDTH, .y = y0, .z = z, .u = 1, .v = 0,
+        { .x = x0 + text_w, .y = y0, .z = z, .u = u1, .v = 0, .argb = white },
+        { .x = x0, .y = y0 + text_h, .z = z, .u = 0, .v = v1, .argb = white },
+        { .x = x0 + text_w, .y = y0 + text_h, .z = z, .u = u1, .v = v1,
           .argb = white },
-        { .x = x0, .y = y0 + M_LOADING_TEXT_HEIGHT, .z = z, .u = 0, .v = 1,
-          .argb = white },
-        { .x = x0 + M_LOADING_TEXT_WIDTH, .y = y0 + M_LOADING_TEXT_HEIGHT,
-          .z = z, .u = 1, .v = 1, .argb = white },
     };
     DC_PVR_Quad(&t[0], &t[1], &t[2], &t[3]);
 
@@ -634,7 +654,7 @@ void DC_PVR_DrawLoadingScreen(
     }
     const float bx0 = 120.0f;
     const float bx1 = 520.0f;
-    const float by0 = y0 + M_LOADING_TEXT_HEIGHT + 16.0f;
+    const float by0 = y0 + text_h + 16.0f;
     const float by1 = by0 + 12.0f;
     const float fill = bx0 + (bx1 - bx0) * percent / 100.0f;
     DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_NO_TEXTURE, false);

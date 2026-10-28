@@ -38,6 +38,10 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_watchdog.h>
+    #include <platform/dreamcast/loading.h>
+
+bool DC_Input_TakeQuickSave(void);
+bool DC_Input_TakeQuickLoad(void);
 #endif
 
 #define M_FRAME_BUFFER(key)                                                    \
@@ -152,6 +156,17 @@ GF_COMMAND Game_Control(const bool demo_mode)
         }
     }
 #endif
+#if defined(__DREAMCAST__)
+    // L + R + Start and L + R + Down on the pad (platform/dreamcast/sdl_compat.c).
+    if (!demo_mode) {
+        if (DC_Input_TakeQuickSave()) {
+            g_InputDB.quick_save = true;
+        }
+        if (DC_Input_TakeQuickLoad()) {
+            g_InputDB.quick_load = true;
+        }
+    }
+#endif
     if ((g_InputDB.quick_save || g_InputDB.quick_load) && !demo_mode
         && !g_Config.flow.load_save_disabled) {
         bool quick_handled = false;
@@ -160,12 +175,28 @@ GF_COMMAND Game_Control(const bool demo_mode)
             const SAVEGAME_SLOT_REF slot = SG_Manager_GetNextQuickSlot();
             if (!SG_Manager_IsValidSlotRef(slot)) {
                 Console_Error("%s", GS("general/osd/quick_save_fail_no_slots"));
-            } else if (Savegame_Save(slot)) {
-                Console_Info("%s", GS("general/osd/quick_save"));
+            } else {
+#if defined(__DREAMCAST__)
+                // Writing the card takes a while: say so before.
+                DC_Loading_Notice(
+                    "QUICK SAVE", "Saving to VMU... Do not remove the card", 0);
+#endif
+                const bool saved = Savegame_Save(slot);
+#if defined(__DREAMCAST__)
+                DC_Loading_SaveDone(saved);
+#endif
+                if (saved) {
+                    Console_Info("%s", GS("general/osd/quick_save"));
+                }
             }
             quick_handled = true;
         } else if (g_InputDB.quick_load) {
+#if defined(__DREAMCAST__)
+            // The one quick save, whatever was loaded or saved last.
+            const SAVEGAME_SLOT_REF slot = SG_Manager_QuickSlot(0);
+#else
             const SAVEGAME_SLOT_REF slot = SG_Manager_GetBoundSlot();
+#endif
             if (!SG_Manager_IsValidSlotRef(slot)) {
                 Console_Error(
                     "%s", GS("general/osd/quick_load_fail_no_bound_slot"));

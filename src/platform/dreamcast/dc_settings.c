@@ -5,13 +5,15 @@
 // Rendering page of the menu holds) go into a small file of their own on the
 // RAM disk, which the memory card keeps like a saved game (vmu.c), so that
 // the console remembers them when switched off. They are loaded as the engine
-// starts, where the main menu begins, and written to the card as the main
-// menu ends, once, and only if they changed: a write takes the game's time.
+// starts, and written to the card where a level, a menu or a demo is about to
+// load and as the ring or the pause menu closes (which is where the options
+// are changed), only if they changed: a write takes the game's time.
 
 #include "dc_settings.h"
 
 #include "dc_mode.h"
 #include "vmu.h"
+
 
 #include <trx/config.h>
 #include <trx/config/common.h>
@@ -26,6 +28,8 @@
 static char m_Path[160] = "";
 // What the card holds now, as the file's text.
 static char m_Stored[256] = "";
+// What the card refused last: not tried again until the options change.
+static char m_Refused[256] = "";
 
 // The options, as a line of numbers: the file format, the mode, the frame rate,
 // the cel shading switch, a 0 (where the adaptive switch was until format 4),
@@ -47,6 +51,12 @@ static void M_Format(char *const out, const size_t size)
 void DC_Settings_Load(const char *const saves_dir)
 {
     snprintf(m_Path, sizeof(m_Path), "%s/%s", saves_dir, M_FILE);
+    if (g_DC_TestResetOptions) {
+        // A test disc that starts from the defaults: the card's copy goes.
+        remove(m_Path);
+        DC_VMU_DeleteSave(m_Path);
+        LOG_INFO("render options on the memory card deleted");
+    }
     FILE *const fp = fopen(m_Path, "r");
     if (fp == nullptr) {
         // Never saved: the options the starting mode picks.
@@ -83,7 +93,9 @@ void DC_Settings_Load(const char *const saves_dir)
         || v[5] < 0 || v[5] >= TEXTURE_FILTER_NUMBER_OF || v[6] < 0
         || v[6] >= TEXTURE_FILTER_NUMBER_OF || v[7] < 0
         || v[7] >= SHADOW_TYPE_NUMBER_OF) {
+        // Whatever is wrong with them, the game goes on with the defaults.
         LOG_WARNING("the saved render options are not readable; ignored");
+        DC_Mode_ApplyDefaults();
         return;
     }
     // The mode first, and its change told at once: that sets the options it
@@ -104,12 +116,14 @@ void DC_Settings_Load(const char *const saves_dir)
 
 void DC_Settings_Save(void)
 {
-    if (m_Path[0] == '\0') {
+    // A test disc that forces the mode or the shadows is not the player
+    // choosing: those would stay on the card.
+    if (m_Path[0] == '\0' || g_DC_TestMode >= 0 || g_DC_TestShadow >= 0) {
         return;
     }
     char now[256];
     M_Format(now, sizeof(now));
-    if (strcmp(now, m_Stored) == 0) {
+    if (strcmp(now, m_Stored) == 0 || strcmp(now, m_Refused) == 0) {
         return;
     }
     FILE *const fp = fopen(m_Path, "w");
@@ -118,8 +132,12 @@ void DC_Settings_Save(void)
     }
     const bool ok = fputs(now, fp) >= 0;
     fclose(fp);
-    if (ok && DC_VMU_StoreSave(m_Path, "TRX options")) {
+    if (ok && DC_VMU_StoreSmall(m_Path, "TRX options")) {
         snprintf(m_Stored, sizeof(m_Stored), "%s", now);
         LOG_INFO("render options written to the memory card");
+    } else {
+        // Most likely the card is full: they last until switched off.
+        snprintf(m_Refused, sizeof(m_Refused), "%s", now);
+        LOG_WARNING("render options could not be written to the memory card");
     }
 }

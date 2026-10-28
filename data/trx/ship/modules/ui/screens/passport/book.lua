@@ -12,6 +12,8 @@ local ring = require("common.ui.ring")
 local timer = require("common.timer")
 local rows = require("common.ui.screens.passport.rows")
 
+-- Whether this is the Dreamcast build (rendering.dc_mode exists there).
+local on_console = pcall(trx.config.describe, "rendering.dc_mode")
 local M = {}
 
 -- Each page sits five frames past the one the book opens on.
@@ -334,8 +336,9 @@ function Passport:open_page(role)
       words = trx.locale.get("general/passport/delete_save"),
       align = trx.ui.HAlign.RIGHT,
     })
+    page.hide_quick = on_console and role == pages.Page.SAVE_GAME
     req = list_req(
-      rows.slot_rows(),
+      rows.slot_rows(nil, page.hide_quick),
       trx.locale.get(pages.CAPTIONS[role]),
       page.delete.widget
     )
@@ -425,7 +428,6 @@ end
 -- The Dreamcast writes the save to the memory card with the game stopped, so
 -- the box that says so is drawn first: the save follows two ticks later, with
 -- the box on the screen, and the passport closes after it.
-local on_console = pcall(trx.config.describe, "rendering.dc_mode")
 
 -- The box says how the save went, and holds for a moment before the passport
 -- closes.
@@ -596,7 +598,7 @@ function Passport:choose(entry, row)
     if row.yes then
       if trx.savegame.delete(slot.slot_num, slot.pool) then
         if self.page ~= nil then
-          self.page.req:set_rows(rows.slot_rows())
+          self.page.req:set_rows(rows.slot_rows(nil, self.page.hide_quick))
           self:sync_delete()
         end
       else

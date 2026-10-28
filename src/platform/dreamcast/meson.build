@@ -50,6 +50,7 @@ dc_excluded_sources = [
 dc_sources = files(
   'audio.c',
   'av_stub.c',
+  'bfont_small.c',
   'dc_level_heap.c',
   'dc_games.c',
   'dc_level_select.c',

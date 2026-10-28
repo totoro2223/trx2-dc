@@ -37,6 +37,8 @@ typedef struct {
     DC_PVR_VERTEX v[4];
     int16_t page;
     bool is_triangle;
+    // Drawn smaller than its texels: from the page at half size.
+    bool half;
 } M_PRIM;
 
 typedef struct {
@@ -418,13 +420,12 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     DC_PVR_SetFilter(
         g_Config.rendering.ui_filter == TEXTURE_FILTER_BILINEAR
         && !DC_PVR_IsLowRes());
-    // There the text is drawn smaller than its texels, from pages at half size.
-    DC_PVR_SetHalfPages(DC_PVR_IsLowRes());
     for (int32_t i = 0; i < p->prims->count; i++) {
         M_PRIM *const prim = Vector_Get(p->prims, i);
         for (int32_t j = 0; j < 4; j++) {
             prim->v[j].z = DC_PVR_Depth2D(prim->v[j].z);
         }
+        DC_PVR_SetHalfPages(prim->half);
         DC_PVR_SetState(DC_BLEND_ALPHA, prim->page, true);
         if (prim->is_triangle) {
             DC_PVR_Triangle(&prim->v[0], &prim->v[1], &prim->v[2]);
@@ -486,6 +487,26 @@ void OutputSource_UI_StageBinocularMask(void)
     m_Priv.binocular_mask = true;
 }
 
+// At 320x240 (screen coordinates still 640x480, halved): puts a sprite's
+// edges on whole pixels and, when it is drawn near a whole number of pixels
+// per texel, at exactly that many, so that every texel is as wide as the
+// next. Says whether it is drawn smaller than its texels.
+static bool M_SnapLowRes(float *const lo, float *const hi, const uint16_t size)
+{
+    const float texels = size / 256.0f;
+    const float p0 = roundf(*lo * 0.5f);
+    float pixels = (*hi - *lo) * 0.5f;
+    const float per_texel = roundf(pixels / texels);
+    if (per_texel >= 1.0f && fabsf(pixels / texels - per_texel) < 0.25f) {
+        pixels = per_texel * roundf(texels);
+    } else {
+        pixels = roundf(pixels);
+    }
+    *lo = p0 * 2.0f;
+    *hi = (p0 + pixels) * 2.0f;
+    return pixels < texels;
+}
+
 void OutputSource_UI_StageSprite(const OUTPUT_UI_SPRITE sprite)
 {
     const SPRITE_TEXTURE *const tex = Output_GetSpriteTexture(sprite.sprite_idx);
@@ -509,6 +530,14 @@ void OutputSource_UI_StageSprite(const OUTPUT_UI_SPRITE sprite)
         prim.v[i].u = u[i];
         prim.v[i].v = v[i];
         prim.v[i].argb = M_PackF(sprite.color[color_idx[i]]);
+    }
+    if (DC_PVR_IsLowRes()) {
+        prim.half = M_SnapLowRes(&prim.v[0].x, &prim.v[1].x, tex->width)
+            | M_SnapLowRes(&prim.v[0].y, &prim.v[2].y, tex->height);
+        prim.v[2].x = prim.v[0].x;
+        prim.v[3].x = prim.v[1].x;
+        prim.v[1].y = prim.v[0].y;
+        prim.v[3].y = prim.v[2].y;
     }
     Vector_Add(m_Priv.prims, &prim);
 }

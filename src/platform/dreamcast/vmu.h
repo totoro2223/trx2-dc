@@ -15,6 +15,10 @@ void DC_VMU_RestoreSaves(const char *saves_dir);
 // card or no room left on it.
 bool DC_VMU_StoreSave(const char *path, const char *title);
 
+// The same for a small file with no icon, which takes a single block of the
+// card (the render options).
+bool DC_VMU_StoreSmall(const char *path, const char *title);
+
 // How the last DC_VMU_StoreSave went: 0 nothing yet, 1 written, 2 the card
 // refused it (no room, or it failed), 3 no card in the console.
 int DC_VMU_LastResult(void);

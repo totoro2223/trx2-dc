@@ -8,9 +8,9 @@
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/renderer.h>
 
-    // At 320x240 the text takes this much more room: at its own size it has
-    // too few lines to read.
-    #define M_LOW_RES_TEXT_SCALE 1.25f
+    // At 320x240 the text is drawn at one pixel per texel of the font, twice
+    // its 640x480 size: any other size leaves some texels wider than others.
+    #define M_LOW_RES_TEXT_SCALE 2.0f
 #endif
 
 #define M_MAX_SCALE_DEPTH 8

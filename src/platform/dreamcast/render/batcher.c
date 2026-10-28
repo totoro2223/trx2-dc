@@ -240,6 +240,8 @@ _Static_assert(
 // close (and M_SOFT_NO_LIGHT_WEIGHT's worth with no light near).
 #define M_CEL_SHADE_FAR 0.8f
 #define M_CEL_SHADE_NEAR 0.45f
+// TR1's, whose Lara and levels take the shade to 45 % dark at most.
+#define M_CEL_SHADE_NEAR_TR1 0.55f
 // Where the edge lies: the cosine to the light past which a vertex is in
 // shade (0 at right angles to it; above 0, the shade narrows).
 #define M_CEL_EDGE 0.0f
@@ -5706,7 +5708,9 @@ typedef struct {
 // The cel shading's shade by the nearest light's weight (M_SHADOW_LIGHT).
 static void M_SetCelShade(const float weight)
 {
-    m_CelShade = M_CEL_SHADE_FAR + (M_CEL_SHADE_NEAR - M_CEL_SHADE_FAR) * weight;
+    const float darkest =
+        g_TRVersion == 1 ? M_CEL_SHADE_NEAR_TR1 : M_CEL_SHADE_NEAR;
+    m_CelShade = M_CEL_SHADE_FAR + (darkest - M_CEL_SHADE_FAR) * weight;
 }
 
 // Adds a light to the list, kept nearest first and at most max long, if it
@@ -5747,6 +5751,189 @@ static void M_ConsiderLight(
         .dist = dist,
         .reach = reach,
     };
+}
+
+// A room with no light near: the direction its sun shines from (TR3), or else
+// where its vertices are brightest, which says where the light the level was
+// made with came from. Only a guess: it is used when the vertices stand out
+// enough to point somewhere.
+// The vertices looked at, around the casters.
+#define M_BRIGHT_RADIUS (3.0f * WALL_L)
+#define M_BRIGHT_MIN_VERTICES 12
+// The brightness (0 to 1) the bright vertices stand over the rest by: none
+// below the first, all of it from the second on.
+#define M_BRIGHT_MIN_CONTRAST 0.15f
+#define M_BRIGHT_FULL_CONTRAST 0.5f
+// The least distance to the bright part that gives a direction.
+#define M_BRIGHT_MIN_DIST 256.0f
+// A bright part spread wider than this share of its distance is no point of
+// light: the light is taken to shine in parallel.
+#define M_BRIGHT_DIFFUSE 0.75f
+// The weight of that light (a light's weight is how near it is), from the
+// faintest contrast to the fullest, and of a room's sun.
+#define M_BRIGHT_WEIGHT_MAX 0.7f
+#define M_SUN_WEIGHT 0.5f
+// The estimate is made again when the casters move this far.
+#define M_BRIGHT_REFRESH WALL_L
+
+static struct {
+    const ROOM *room;
+    float at[3];
+    bool found;
+    float point[3];
+    float spread;
+    float contrast;
+} m_Bright = {};
+
+// How bright a room vertex is, 0 to 1: TR1 and TR2 keep a shade (0 the
+// brightest), TR3 a colour.
+static float M_VertexBrightness(const ROOM_VERTEX *const vertex)
+{
+    if (g_TRVersion >= 3) {
+        return (vertex->color.r * 0.30f + vertex->color.g * 0.59f
+                + vertex->color.b * 0.11f)
+            * (1.0f / 255.0f);
+    }
+    return M_Clamp(
+        (M_SHADE_MAX - vertex->light_base) * (1.0f / M_SHADE_MAX), 0.0f, 1.0f);
+}
+
+static void M_VertexWorld(
+    const ROOM *const room, const ROOM_VERTEX *const vertex, float out[3])
+{
+    out[0] = (float)(room->pos.x + vertex->pos.x);
+    out[1] = (float)(room->pos.y + vertex->pos.y);
+    out[2] = (float)(room->pos.z + vertex->pos.z);
+}
+
+// Finds where the room's vertices near the casters are brightest, with how
+// widely they spread and how far over the rest they stand.
+static void M_FindBrightPart(const ROOM *const room, const float center[3])
+{
+    m_Bright.room = room;
+    memcpy(m_Bright.at, center, sizeof(m_Bright.at));
+    m_Bright.found = false;
+    const float radius_sq = M_BRIGHT_RADIUS * M_BRIGHT_RADIUS;
+    const ROOM_VERTEX *const vertices = room->mesh.vertices;
+    const int32_t num = room->mesh.num_vertices;
+    float sum = 0.0f;
+    int32_t near = 0;
+    for (int32_t i = 0; vertices != nullptr && i < num; i++) {
+        float p[3];
+        M_VertexWorld(room, &vertices[i], p);
+        const float d[3] = {
+            p[0] - center[0], p[1] - center[1], p[2] - center[2]
+        };
+        if (M_Dot3(d, d) <= radius_sq) {
+            sum += M_VertexBrightness(&vertices[i]);
+            near++;
+        }
+    }
+    if (near < M_BRIGHT_MIN_VERTICES) {
+        return;
+    }
+    const float mean = sum / near;
+    float weight = 0.0f;
+    float weighted_brightness = 0.0f;
+    float mid[3] = {};
+    float square = 0.0f;
+    for (int32_t i = 0; i < num; i++) {
+        float p[3];
+        M_VertexWorld(room, &vertices[i], p);
+        const float d[3] = {
+            p[0] - center[0], p[1] - center[1], p[2] - center[2]
+        };
+        if (M_Dot3(d, d) > radius_sq) {
+            continue;
+        }
+        const float b = M_VertexBrightness(&vertices[i]);
+        const float w = b - mean;
+        if (w <= 0.0f) {
+            continue;
+        }
+        weight += w;
+        weighted_brightness += w * b;
+        for (int32_t k = 0; k < 3; k++) {
+            mid[k] += w * p[k];
+        }
+        square += w * M_Dot3(p, p);
+    }
+    if (weight <= 0.0f) {
+        return;
+    }
+    for (int32_t k = 0; k < 3; k++) {
+        m_Bright.point[k] = mid[k] / weight;
+    }
+    m_Bright.contrast = weighted_brightness / weight - mean;
+    m_Bright.spread = sqrtf(
+        MAX(square / weight - M_Dot3(m_Bright.point, m_Bright.point), 0.0f));
+    m_Bright.found = true;
+}
+
+// Adds the light a room without any is taken to have, if it gives one.
+static int32_t M_GatherRoomLight(
+    const ROOM *const room, const float center[3], M_SHADOW_LIGHT *const out)
+{
+    for (int32_t i = 0; i < room->num_lights; i++) {
+        const LIGHT *const light = &room->lights[i];
+        if (light->type != LIGHT_TYPE_SUN
+            || light->layout != LIGHT_LAYOUT_LEGACY) {
+            continue;
+        }
+        const float d[3] = {
+            (float)light->u.legacy.dir.x,
+            (float)light->u.legacy.dir.y,
+            (float)light->u.legacy.dir.z,
+        };
+        const float len_sq = M_Dot3(d, d);
+        if (len_sq <= 0.0f) {
+            continue;
+        }
+        // The vector points towards the sun; the shadow falls the other way.
+        const float inv = -M_InvSqrt(len_sq);
+        *out = (M_SHADOW_LIGHT) {
+            .dir = { d[0] * inv, d[1] * inv, d[2] * inv },
+            .weight = M_SUN_WEIGHT,
+        };
+        return 1;
+    }
+
+    float moved[3] = {
+        center[0] - m_Bright.at[0], center[1] - m_Bright.at[1],
+        center[2] - m_Bright.at[2],
+    };
+    if (m_Bright.room != room || M_Dot3(moved, moved) > M_BRIGHT_REFRESH * M_BRIGHT_REFRESH) {
+        M_FindBrightPart(room, center);
+    }
+    if (!m_Bright.found || m_Bright.contrast < M_BRIGHT_MIN_CONTRAST) {
+        return 0;
+    }
+    // From the bright part to the casters.
+    float d[3] = {
+        center[0] - m_Bright.point[0], center[1] - m_Bright.point[1],
+        center[2] - m_Bright.point[2],
+    };
+    const float dist = sqrtf(M_Dot3(d, d));
+    if (dist < M_BRIGHT_MIN_DIST) {
+        return 0;
+    }
+    for (int32_t k = 0; k < 3; k++) {
+        d[k] /= dist;
+    }
+    const float strength = M_Clamp(
+        (m_Bright.contrast - M_BRIGHT_MIN_CONTRAST)
+            / (M_BRIGHT_FULL_CONTRAST - M_BRIGHT_MIN_CONTRAST),
+        0.0f, 1.0f);
+    const bool point = m_Bright.spread < dist * M_BRIGHT_DIFFUSE;
+    *out = (M_SHADOW_LIGHT) {
+        .dir = { d[0], d[1], d[2] },
+        .dist_sq = dist * dist,
+        .weight = M_SOFT_NO_LIGHT_WEIGHT
+            + (M_BRIGHT_WEIGHT_MAX - M_SOFT_NO_LIGHT_WEIGHT) * strength,
+        .dist = M_Clamp(dist, M_PERSP_MIN_DIST, M_SHADOW_LIGHT_RANGE),
+        .reach = point ? M_SHADOW_LIGHT_RANGE : 0.0f,
+    };
+    return 1;
 }
 
 // Gathers the up to max lights nearest the casters' middle within reach, the
@@ -5790,6 +5977,9 @@ static int32_t M_GatherShadowLights(
         M_ConsiderLight(
             center, light->pos[0], light->pos[1], light->pos[2], reach, out,
             &count, max);
+    }
+    if (count == 0 && room != nullptr) {
+        count += M_GatherRoomLight(room, center, &out[0]);
     }
     for (int32_t i = 0; i < count; i++) {
         // TR's y axis points down.
@@ -5872,6 +6062,16 @@ static int32_t M_BuildVolume(
             // left only the feet's shadow.
             for (int32_t k = 0; k < 3; k++) {
                 push[i][k] = len_sq > 1.0f ? push[i][k] * inv : dir[k];
+            }
+            // The parts above a light in the hand (a flare) would throw their
+            // shadow up, and only the legs' would reach the floor: every part
+            // is tilted no further off the vertical than the other lights.
+            if (push[i][1] < M_SHADOW_MIN_DROP) {
+                push[i][1] = M_SHADOW_MIN_DROP;
+                const float norm = 1.0f / sqrtf(M_Dot3(push[i], push[i]));
+                for (int32_t k = 0; k < 3; k++) {
+                    push[i][k] *= norm;
+                }
             }
         } else {
             memcpy(push[i], dir, sizeof(push[i]));

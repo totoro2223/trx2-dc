@@ -30,6 +30,7 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_level_heap.h>
+    #include <platform/dreamcast/dc_settings.h>
     #include <trx/game/output/sources/objects.h>
 
 int32_t LUA_DC_CollectGarbage(void);
@@ -95,6 +96,12 @@ RESULT Level_Initialise(
     if (level->type == GFL_DEMO) {
         Demo_Initialise();
     }
+#if defined(__DREAMCAST__)
+    // Whatever the render options changed since they were last written goes
+    // to the memory card before any level, menu or demo loads, where the
+    // next one starts with them.
+    DC_Settings_Save();
+#endif
 
     // Before the incoming level takes over as the current one, so a script
     // hearing the unload still finds the level it was written for.

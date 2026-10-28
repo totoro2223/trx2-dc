@@ -150,6 +150,12 @@ if [ -n "${TRX_DC_MODE:-}" ]; then
   esac
   echo "mode $TRX_DC_MODE"
 fi
+if [ -n "${TRX_DC_RESETOPT:-}" ]; then
+  # A test disc that deletes the render options from the memory card as it
+  # starts, so that it begins from the defaults (dc_main.c, RESETOPT.TXT).
+  echo 1 > "$STAGE/RESETOPT.TXT"
+  echo "render options reset"
+fi
 # Injections too large for 16 MiB of RAM. The engine holds every injection of
 # a level decompressed while the level loads, and leaves out with a warning
 # any it cannot find.
