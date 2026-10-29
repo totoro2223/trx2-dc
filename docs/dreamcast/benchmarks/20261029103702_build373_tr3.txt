@@ -1,0 +1,88 @@
+﻿date 2026-10-29 10:37:02
+build DC build 373
+game tr3
+demo 0
+mode 0 (640x480), shadows 5, bump 1, 30 fps
+frames 2027 in 94626 ms
+fps avg 21.4, min 7.2, best frame 12.0 ms
+frame ms: median 41, 99% under 106, worst 138.2
+frames over 35 ms: 1370 (67%)
+per frame, average / worst (ms, or counts and KiB):
+  logic  5.3 / 41.4
+  stage  13.9 / 89.0
+  pass   20.2 / 77.7
+  submit 0.4 / 17.2
+  map    2.6 / 41.0
+  mwait  0.0 / 3.2
+  wait   0.0 / 0.0
+  pvr    7.5 / 10.0
+  polys  1059 / 2199
+  inst   100 / 339
+  verts  6520 / 14402
+  OP     75 / 179 KiB
+  TR     37 / 104 KiB
+  PT     37 / 71 KiB
+  MOD    0 / 0 KiB
+  xform  8.1 / 47.9
+probes, average per frame (us or counts):
+  ev=0 lua=0 rem=0 inp=0 items=0 fx=0 lara=0 post=0 end=0 ctrl=0 mctl=0 flip=0 log=0 tcyc=0
+  tuvw=0 tcomp=0 vroom=1584 vobj=2607 vgen=2328 soft=0 emit=734 cel=0 bump=0 envp=0
+  sscene=0 spre=0 sbounds=0 ssky=0 sroom=0 sstat=0 sitem=0 slara=0 sfx=0 spaint=0 sgflush=0
+  sui=0 soflush=0 nrooms=3 llight=0 lshadow=0 lmesh=0 lwater=0 ljoint=0 lhair=0 lequip=0
+  lblend=0 troom=0 tplain=0 tgen=0 gown=2131 genv=0 gfog=0 gbill=115 goth=81 equad=112
+  etri=15 eclip=96 eout=326 eback=70 msil=0 mend=0 src0=0 src1=0 src2=0 src3=0 src4=0
+  src5=0 src6=0 src7=0 src8=0 src9=0 plprep=0 pvol=0 ppsoft=0 pdrawi=0 ptransp=0 pntransp=8
+  udraw=0 uops=0 ilight=0 lweld=0 aruns=198 afaces=2026 acfaces=338 aempty=21 rall=1584
+  rplain=0 rdyn=0 rflick=0 rvary=86 rnw=1497 rfog=1426 rhit=958
+frame length histogram (ms: frames):
+  12:1 13:4 14:4 15:4 16:2 17:5 18:6 19:6 20:2 21:12 22:6 23:11 24:4 25:7 26:9 27:21 28:26
+  29:142 30:126 31:56 32:61 33:87 34:55 35:44 36:43 37:68 38:53 39:101 40:105 41:43 42:43
+  43:19 44:16 45:15 46:29 47:23 48:19 49:28 50:25 51:23 52:19 53:24 54:31 55:24 56:21 57:31
+  58:35 59:31 60:27 61:29 62:16 63:20 64:25 65:24 66:25 67:32 68:25 69:21 70:17 71:18 72:10
+  73:12 74:10 75:13 76:7 77:8 78:8 79:7 80:6 81:6 82:5 83:5 84:1 85:5 86:5 88:6 89:6 90:2
+  91:5 92:5 93:5 94:2 95:2 96:2 98:2 99:3 101:5 102:2 103:1 104:1 105:1 106:2 107:1 108:3
+  110:1 111:1 112:1 114:1 115:2 118:1 120:2 121:1 122:1 124:1 137:1 138:1
+frame length by frame (ms), 24 a line, from the middle:
+ 0965: 67 65 68 66 62 64 60 63 53 60 61 62 99 64 56 55 58 58 50 57 57 54 64 62
+ 0989: 63 61 60 55 62 57 61 54 67 62 69 62 62 71 78 72 64 86 137 115 106 93 108 101
+ 1013: 98 121 91 59 66 70 80 75 66 68 65 65 63 62 66 72 65 67 64 69 65 66 58 64
+ 1037: 106 73 66 59 56 54 57 54 49 63 59 61 48 57 61 54 65 64 69 64 70 70 68 69
+ logic (1/4 ms) from frame 1013: 84 92 113 53 58 62 59 91 57 59 58 55 60 54 61 59 60 63 55 69 58 61 58 65
+ stage (1/4 ms) from frame 1013: 110 174 97 77 100 107 137 103 103 108 97 104 94 93 101 112 98 109 101 107 104 109 87
+ pass (1/4 ms) from frame 1013: 192 210 98 98 100 105 116 98 98 99 99 95 93 95 96 109 95 89 93 92 91 88 82 84
+ map (1/4 ms) from frame 1013: 5 5 53 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5
+ frame (ms) from frame 1013: 98 121 91 59 66 70 80 75 66 68 65 65 63 62 66 72 65 67 64 69 65 66 58 64
+slow frames (60 ms or more), times in tenths of ms:
+ #18 75ms logic 22 stage 40 pass 52 submit 2 map 384 mwait 0 wait 0 pvr 75 polys 499 inst 24 verts 2526
+ #48 75ms logic 25 stage 40 pass 53 submit 2 map 385 mwait 0 wait 0 pvr 75 polys 502 inst 25 verts 2578
+ #78 75ms logic 21 stage 39 pass 70 submit 2 map 385 mwait 0 wait 0 pvr 75 polys 549 inst 28 verts 2865
+ #108 76ms logic 23 stage 28 pass 64 submit 2 map 384 mwait 0 wait 0 pvr 75 polys 537 inst 26 verts 2741
+ #138 67ms logic 27 stage 67 pass 71 submit 2 map 385 mwait 0 wait 0 pvr 75 polys 582 inst 73 verts 2790
+ #168 68ms logic 28 stage 75 pass 76 submit 2 map 386 mwait 0 wait 0 pvr 75 polys 616 inst 85 verts 2835
+ #198 66ms logic 29 stage 73 pass 80 submit 2 map 382 mwait 0 wait 0 pvr 75 polys 597 inst 103 verts 2895
+ #228 67ms logic 29 stage 70 pass 75 submit 2 map 384 mwait 0 wait 0 pvr 75 polys 594 inst 52 verts 2818
+ #258 75ms logic 29 stage 63 pass 78 submit 2 map 385 mwait 0 wait 0 pvr 75 polys 610 inst 45 verts 2903
+ #288 66ms logic 23 stage 42 pass 95 submit 2 map 388 mwait 0 wait 0 pvr 75 polys 641 inst 70 verts 3196
+ #318 66ms logic 23 stage 43 pass 98 submit 3 map 389 mwait 0 wait 0 pvr 75 polys 694 inst 55 verts 3173
+ #348 67ms logic 23 stage 39 pass 79 submit 2 map 390 mwait 0 wait 0 pvr 75 polys 605 inst 48 verts 3030
+ #378 67ms logic 23 stage 37 pass 75 submit 2 map 385 mwait 0 wait 0 pvr 75 polys 606 inst 36 verts 3038
+ #438 69ms logic 27 stage 54 pass 148 submit 4 map 385 mwait 0 wait 0 pvr 75 polys 1010 inst 81 verts 3198
+ #468 67ms logic 26 stage 45 pass 128 submit 3 map 388 mwait 0 wait 0 pvr 75 polys 949 inst 76 verts 2972
+ #498 67ms logic 28 stage 51 pass 134 submit 3 map 387 mwait 0 wait 0 pvr 75 polys 931 inst 86 verts 3092
+ #528 65ms logic 27 stage 44 pass 123 submit 3 map 385 mwait 0 wait 0 pvr 75 polys 870 inst 75 verts 2984
+ #558 66ms logic 28 stage 48 pass 115 submit 3 map 385 mwait 0 wait 0 pvr 75 polys 847 inst 79 verts 2884
+ #581 64ms logic 27 stage 72 pass 361 submit 3 map 13 mwait 0 wait 0 pvr 75 polys 954 inst 98 verts 5174
+ #588 66ms logic 28 stage 57 pass 191 submit 4 map 385 mwait 0 wait 0 pvr 75 polys 974 inst 92 verts 5150
+ #602 61ms logic 154 stage 54 pass 387 submit 3 map 13 mwait 0 wait 0 pvr 75 polys 898 inst 81 verts 5110
+ #618 68ms logic 28 stage 59 pass 201 submit 4 map 387 mwait 0 wait 0 pvr 75 polys 1012 inst 91 verts 5042
+ #648 70ms logic 28 stage 52 pass 234 submit 4 map 387 mwait 0 wait 0 pvr 75 polys 1173 inst 93 verts 4842
+ #678 79ms logic 27 stage 52 pass 193 submit 4 map 399 mwait 0 wait 0 pvr 75 polys 994 inst 79 verts 4818
+ #708 72ms logic 27 stage 55 pass 250 submit 4 map 384 mwait 0 wait 0 pvr 75 polys 1137 inst 94 verts 4866
+ #721 81ms logic 156 stage 62 pass 574 submit 4 map 13 mwait 0 wait 0 pvr 75 polys 1267 inst 102 verts 5434
+ #722 83ms logic 155 stage 84 pass 575 submit 4 map 13 mwait 0 wait 0 pvr 75 polys 1251 inst 99 verts 5734
+ #738 74ms logic 29 stage 61 pass 266 submit 4 map 386 mwait 0 wait 0 pvr 75 polys 1196 inst 102 verts 5746
+ #768 74ms logic 29 stage 64 pass 263 submit 4 map 386 mwait 0 wait 0 pvr 75 polys 1125 inst 114 verts 6066
+ #798 72ms logic 27 stage 81 pass 223 submit 4 map 387 mwait 0 wait 0 pvr 75 polys 1023 inst 81 verts 4360
+ #828 74ms logic 27 stage 60 pass 263 submit 4 map 387 mwait 0 wait 0 pvr 75 polys 1174 inst 88 verts 5690
+ #841 75ms logic 128 stage 59 pass 551 submit 4 map 13 mwait 0 wait 0 pvr 75 polys 1180 inst 92 verts 5186
+summary: BENCH 2027 frames  avg 21.4 fps  min 7.2  slow 67% | logic 5.3 stage 13.9 pass 20.2 map 2.6 pvr 7.5 ms

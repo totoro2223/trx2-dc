@@ -113,6 +113,8 @@ if [ -n "$START_LEVEL" ]; then
 fi
 
 echo "== engine data"
+# The engine's Lua bytecode, which the game puts in video memory.
+cp "$(find "$BUILD_DIR" -name TRXLUA.BIN | head -1)" "$STAGE/TRXLUA.BIN"
 cp -r "$SHIP/cfg" "$STAGE/cfg"
 cp -r "$SHIP/modules" "$STAGE/modules"
 cp -r "$SHIP/scripts" "$STAGE/scripts"

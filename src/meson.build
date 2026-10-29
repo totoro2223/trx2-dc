@@ -163,7 +163,8 @@ trx_lua_compiler = get_option('lua_compiler')
 trx_lua_embed = custom_target(
   'trx_lua_embed',
   input: trx_lua_api_sources + trx_lua_script_sources,
-  output: ['trx_embedded_lua.c'],
+  output: ['trx_embedded_lua.c']
+    + (host_machine.system() == 'dreamcast' ? ['TRXLUA.BIN'] : []),
   depend_files: files(
     '../tools/embed_trx_lua.py',
     '../tools/shared/luaannot.py',
@@ -184,7 +185,9 @@ trx_lua_embed = custom_target(
   ] + (trx_lua_compiler != '' ? ['--luac', trx_lua_compiler] : [])
     # The Dreamcast keeps of the signatures only what loading and type
     # checking read.
-    + (host_machine.system() == 'dreamcast' ? ['--lean-signatures'] : []),
+    + (host_machine.system() == 'dreamcast'
+      ? ['--lean-signatures', '--blob', '@OUTPUT1@']
+      : []),
 )
 
 prefix_map = fs.relative_to(meson.current_source_dir() / 'trx', meson.global_build_root())

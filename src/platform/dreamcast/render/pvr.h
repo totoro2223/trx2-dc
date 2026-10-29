@@ -62,7 +62,12 @@ typedef struct {
 #define DC_PVR_SHADOW_MAP (-4)
 #define DC_PVR_SHADOW_MAP_SLOTS 8
 // Each cell's side, in texels.
+// (At 128 the world lost faces in Flycast, TR1 snow caves, 29/10/2026.)
 #define DC_PVR_SHADOW_MAP_SIZE 64
+// The Lua bytecode of the engine (TRXLUA.BIN on the disc), kept in video
+// memory for good, or in main memory if that has no room. Brings the
+// PowerVR up if it is not. Null if the file cannot be read.
+const uint8_t *DC_PVR_LuaBlob(void);
 // The environment map the reflective faces add over themselves: a sphere
 // map, sampled at its middle by a normal facing the camera and at its rim by
 // one at right angles to it, top at the top.

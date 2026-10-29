@@ -27,7 +27,16 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_lua_alloc.h>
+    #include <platform/dreamcast/render/pvr.h>
 #endif
+
+const uint8_t *g_LUA_EmbeddedBlob = nullptr;
+
+static const uint8_t *M_ScriptData(const LUA_EMBEDDED_SCRIPT *const script)
+{
+    return script->data != nullptr ? script->data
+                                   : g_LUA_EmbeddedBlob + script->offset;
+}
 
 // The pool beside the engine, and the root a script may not require: the
 // engine's own modules are reached as the global trx table.
@@ -304,7 +313,7 @@ static RESULT M_LoadTRXModules(lua_State *const L)
         const char *const chunk_name =
             String_FormatStatic(LUA_API_CHUNK_PREFIX "%s", script->path);
         M_RegisterTRXPreloadEmbedded(
-            L, script->data, script->size, chunk_name, name);
+            L, M_ScriptData(script), script->size, chunk_name, name);
         Memory_FreePointer(&name);
     }
 
@@ -338,7 +347,8 @@ static RESULT M_RunTRXRuntimeScripts(lua_State *const L)
             String_FormatStatic("@trx/%s", script->path);
         FAIL_IF(
             luaL_loadbufferx(
-                L, (const char *)script->data, script->size, chunk_name, "Bt")
+                L, (const char *)M_ScriptData(script), script->size, chunk_name,
+                "Bt")
                     != LUA_OK
                 || lua_pcall(L, 0, 0, 0) != LUA_OK,
             "%s: %s", script->path, lua_tostring(L, -1));
@@ -628,6 +638,14 @@ int32_t LUA_DC_CollectGarbage(void)
 
 RESULT LUA_Init(void)
 {
+#if defined(__DREAMCAST__)
+    // The bytecode lies in video memory, which the game has no other use for
+    // there (see DC_PVR_LuaBlob).
+    if (g_LUA_EmbeddedModules[0].data == nullptr) {
+        g_LUA_EmbeddedBlob = DC_PVR_LuaBlob();
+        FAIL_IF(g_LUA_EmbeddedBlob == nullptr, "TRXLUA.BIN could not be read");
+    }
+#endif
     lua_State *const L = luaL_newstate();
     ASSERT(L != nullptr);
 #if defined(__DREAMCAST__)

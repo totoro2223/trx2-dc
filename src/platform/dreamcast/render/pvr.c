@@ -221,12 +221,18 @@ static struct {
     // The texels' FNV-1a hash (M_HashPage) as stored, ARGB1555 pages only: how
     // the disc's files key a page.
     bool hashed[M_MAX_TEXTURE_PAGES];
+    // A VQ page that has its mipmaps.
+    bool mip[M_MAX_TEXTURE_PAGES];
     uint32_t hash[M_MAX_TEXTURE_PAGES];
 } m_Pages = {};
 // A VQ page: a codebook of 256 2x2 blocks, then a byte per block of the page,
 // twiddled (tools/dreamcast/texvq.c makes them).
 #define M_VQ_BOOK_BYTES (256 * 4 * 2)
 #define M_VQ_BYTES (M_VQ_BOOK_BYTES + TEXTURE_PAGE_SIZE / 4)
+// With mipmaps ("TVQ2"): the indices of the levels from 1x1 to 128x128 lie
+// between the codebook and the page's, and two bytes of padding follow.
+#define M_VQ_MIP_INDICES 5462
+#define M_VQ_MIP_BYTES (M_VQ_BYTES + M_VQ_MIP_INDICES + 2)
 // The disc's VQ pages while a level loads: the file, its index, and room for
 // one page on its way to video memory.
 static struct {
@@ -234,6 +240,8 @@ static struct {
     uint32_t count;
     uint32_t *index;
     uint8_t *data;
+    // Each page in the file holds its mipmaps.
+    bool mip;
     // Where the file stands, to seek only when the next page is elsewhere.
     long at;
 } m_VQ = {};
@@ -349,12 +357,35 @@ void DC_PVR_ReleaseVertexPool(void)
     }
 }
 
+// The Lua bytecode, put in video memory right after the PowerVR comes up so
+// that it lies at the same address every time (a new screen mode empties
+// video memory, and the Lua state holds pointers into it).
+static struct {
+    const uint8_t *ptr;
+    size_t size;
+    bool in_vram;
+} m_LuaBlob = {};
+static bool m_HardwareUp = false;
+
+static void M_PlaceLuaBlob(void);
+
+static void M_BringUpHardware(void)
+{
+    M_InitHardware();
+    m_HardwareUp = true;
+    if (m_LuaBlob.ptr != nullptr && m_LuaBlob.in_vram) {
+        M_PlaceLuaBlob();
+    }
+}
+
 void DC_PVR_Init(void)
 {
     if (m_Initialised) {
         return;
     }
-    M_InitHardware();
+    if (!m_HardwareUp) {
+        M_BringUpHardware();
+    }
     m_PoolBytes = g_TRVersion >= 3 ? M_POOL_BYTES_TR3 : M_POOL_BYTES;
     m_Pool = memalign(32, m_PoolBytes);
     m_PoolHave = m_Pool != nullptr ? m_PoolBytes : 0;
@@ -395,7 +426,7 @@ static void M_SetLowRes(const bool low_res)
     m_LoadingText = nullptr;
     m_Picture = nullptr;
     m_Video = nullptr;
-    M_InitHardware();
+    M_BringUpHardware();
     m_LowRes = low_res;
     LOG_INFO("Screen now %s", low_res ? "320x240" : "640x480");
 }
@@ -721,14 +752,15 @@ static void M_OpenVQ(void)
     m_VQ.fp = fopen(vq_path, "rb");
     uint32_t head[2];
     if (m_VQ.fp == nullptr || fread(head, 4, 2, m_VQ.fp) != 2
-        || memcmp(head, "TVQ1", 4) != 0) {
+        || (memcmp(head, "TVQ1", 4) != 0 && memcmp(head, "TVQ2", 4) != 0)) {
         M_CloseVQ();
         return;
     }
+    m_VQ.mip = memcmp(head, "TVQ2", 4) == 0;
     m_VQ.count = head[1];
     m_VQ.at = -1;
     m_VQ.index = malloc(m_VQ.count * 8);
-    m_VQ.data = memalign(32, M_VQ_BYTES);
+    m_VQ.data = memalign(32, M_VQ_MIP_BYTES);
     if (m_VQ.index == nullptr || m_VQ.data == nullptr
         || fread(m_VQ.index, 8, m_VQ.count, m_VQ.fp) != m_VQ.count) {
         M_CloseVQ();
@@ -763,6 +795,83 @@ static void M_WriteTexels(
     for (size_t i = 0; i < count / 2; i++) {
         dst32[i] = src32[i];
     }
+}
+
+// The file's bytes into dst, a piece at a time (video memory takes whole
+// words), true if all came.
+static bool M_ReadLuaBlob(FILE *const fp, void *const dst, const size_t size)
+{
+    enum { M_CHUNK = 16384 };
+    uint16_t *const chunk = malloc(M_CHUNK);
+    size_t done = 0;
+    while (chunk != nullptr && done < size) {
+        const size_t n = size - done < M_CHUNK ? size - done : M_CHUNK;
+        if (fread(chunk, 1, n, fp) != n) {
+            break;
+        }
+        M_WriteTexels((uint16_t *)((uint8_t *)dst + done), chunk, n / 2);
+        done += n;
+    }
+    free(chunk);
+    return done == size;
+}
+
+static FILE *M_OpenLuaBlob(size_t *const size)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "%s/TRXLUA.BIN", g_DC_Root);
+    FILE *const fp = fopen(path, "rb");
+    if (fp == nullptr) {
+        return nullptr;
+    }
+    fseek(fp, 0, SEEK_END);
+    *size = (size_t)ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    return *size % 4 == 0 ? fp : (fclose(fp), nullptr);
+}
+
+// After a new screen mode emptied video memory: the bytecode again, where it
+// was.
+static void M_PlaceLuaBlob(void)
+{
+    size_t size;
+    FILE *const fp = M_OpenLuaBlob(&size);
+    void *const ptr = fp != nullptr ? pvr_mem_malloc(size) : nullptr;
+    if (ptr != m_LuaBlob.ptr || !M_ReadLuaBlob(fp, ptr, size)) {
+        LOG_ERROR("TRXLUA.BIN did not come back to video memory");
+    }
+    if (fp != nullptr) {
+        fclose(fp);
+    }
+}
+
+const uint8_t *DC_PVR_LuaBlob(void)
+{
+    if (m_LuaBlob.ptr != nullptr) {
+        return m_LuaBlob.ptr;
+    }
+    size_t size;
+    FILE *const fp = M_OpenLuaBlob(&size);
+    if (fp == nullptr) {
+        return nullptr;
+    }
+    if (!m_HardwareUp) {
+        M_BringUpHardware();
+    }
+    void *ptr = pvr_mem_malloc(size);
+    m_LuaBlob.in_vram = ptr != nullptr;
+    if (ptr == nullptr) {
+        LOG_WARNING("No video memory for TRXLUA.BIN: kept in main memory");
+        ptr = memalign(8, size);
+    }
+    if (ptr != nullptr
+        && (m_LuaBlob.in_vram ? M_ReadLuaBlob(fp, ptr, size)
+                              : fread(ptr, 1, size, fp) == size)) {
+        m_LuaBlob.ptr = ptr;
+        m_LuaBlob.size = size;
+    }
+    fclose(fp);
+    return m_LuaBlob.ptr;
 }
 
 void DC_PVR_SetPicture(const char *const name)
@@ -943,7 +1052,7 @@ static int32_t M_FindIndexed(
 // The page in VQ, an eighth of the size, if the disc has it so (ARGB1555
 // pages only). A level's own pages lie one after another in the file, so
 // mostly no seek is needed.
-static pvr_ptr_t M_LoadVQ(const uint32_t hash)
+static pvr_ptr_t M_LoadVQ(const uint32_t hash, bool *const mip)
 {
     if (m_VQ.fp == nullptr) {
         return nullptr;
@@ -952,18 +1061,20 @@ static pvr_ptr_t M_LoadVQ(const uint32_t hash)
     if (pos < 0) {
         return nullptr;
     }
-    const long at = 8 + m_VQ.count * 8 + (long)pos * M_VQ_BYTES;
-    pvr_ptr_t ptr = pvr_mem_malloc(M_VQ_BYTES);
+    const size_t bytes = m_VQ.mip ? M_VQ_MIP_BYTES : M_VQ_BYTES;
+    const long at = 8 + m_VQ.count * 8 + (long)pos * bytes;
+    pvr_ptr_t ptr = pvr_mem_malloc(bytes);
     if (ptr != nullptr
         && ((at != m_VQ.at && fseek(m_VQ.fp, at, SEEK_SET) != 0)
-            || fread(m_VQ.data, 1, M_VQ_BYTES, m_VQ.fp) != M_VQ_BYTES)) {
+            || fread(m_VQ.data, 1, bytes, m_VQ.fp) != bytes)) {
         pvr_mem_free(ptr);
         ptr = nullptr;
     }
-    m_VQ.at = ptr != nullptr ? at + M_VQ_BYTES : -1;
+    m_VQ.at = ptr != nullptr ? at + (long)bytes : -1;
     if (ptr != nullptr) {
-        M_WriteTexels(ptr, (const uint16_t *)m_VQ.data, M_VQ_BYTES / 2);
+        M_WriteTexels(ptr, (const uint16_t *)m_VQ.data, bytes / 2);
     }
+    *mip = m_VQ.mip;
     return ptr;
 }
 
@@ -986,8 +1097,10 @@ void DC_PVR_StoreTexturePage(
     m_Pages.format[page] = format;
     m_Pages.hashed[page] = format == TEXTURE_PAGE_ARGB1555;
     m_Pages.hash[page] = m_Pages.hashed[page] ? M_HashPage(texels) : 0;
-    m_Pages.ptr[page] =
-        m_Pages.hashed[page] ? M_LoadVQ(m_Pages.hash[page]) : nullptr;
+    m_Pages.mip[page] = false;
+    m_Pages.ptr[page] = m_Pages.hashed[page]
+        ? M_LoadVQ(m_Pages.hash[page], &m_Pages.mip[page])
+        : nullptr;
     m_Pages.vq[page] = m_Pages.ptr[page] != nullptr;
     if (m_Pages.vq[page]) {
         return;
@@ -1779,7 +1892,10 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
             m_Bilinear ? PVR_FILTER_BILINEAR : PVR_FILTER_NEAREST);
         cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
         cxt.txr.uv_clamp = PVR_UVCLAMP_NONE;
-        // The texture's own alpha is what cuts the colour key out and fades
+        // The levels it keeps, picked by bilinear filtering alone (trilinear
+        // doubles the fill).
+        cxt.txr.mipmap = m_Pages.mip[m_Page] && m_Pages.vq[m_Page]
+            && half == nullptr && m_Bilinear;        // The texture's own alpha is what cuts the colour key out and fades
         // soft edges; the opaque list has no use for it. (The field is true
         // to disable.)
         cxt.txr.alpha = m_Blend == DC_BLEND_OPAQUE;

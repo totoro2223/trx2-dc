@@ -11,8 +11,10 @@
 // ARGB4444 pages (soft-edged, which VQ would smear) have no entry and stay as
 // they are.
 //
-// Output: "TVQ1", u32 count, count x {u32 hash, u32 position}, sorted by
-// hash, then count x 18432 bytes in the order the pages first came (a
+// Output: "TVQ2", u32 count, count x {u32 hash, u32 position}, sorted by
+// hash, then count x 23896 bytes (the codebook, the indices of the mipmaps
+// from 1x1 up to 128x128, the page's own, two bytes of padding; a page with
+// no mipmaps would take 18432) in the order the pages first came (a
 // level's pages one after another, so that loading it reads ahead, not back
 // and forth); position counts those.
 //
@@ -36,6 +38,12 @@
 #define DIMS 16
 #define VQ_BYTES (CODES * 8 + BLOCKS)
 #define ITERATIONS 16
+// The indices of the levels under the whole page (1x1 to 128x128), which the
+// PowerVR keeps in front of the whole page's: 1 + 1 + 4 + ... + 4096.
+#define MIP_BYTES 5462
+// A page on the disc: the codebook, the small levels, the whole page, and two
+// bytes so that the next starts on a word.
+#define MIP_PAGE_BYTES (CODES * 8 + MIP_BYTES + BLOCKS + 2)
 // Alpha weighs more than colour: a cut-out edge that moves shows more than a
 // shade that does.
 #define ALPHA_WEIGHT 4.0f
@@ -45,6 +53,7 @@ typedef struct {
     uint32_t format;
     uint16_t texels[PAGE_SIZE];
     uint8_t vq[VQ_BYTES];
+    uint8_t mip[MIP_BYTES];
 } PAGE;
 
 static PAGE *m_Pages = NULL;
@@ -606,6 +615,77 @@ static int CompareU64(const void *const a, const void *const b)
     return x < y ? -1 : x > y;
 }
 
+// The levels under the page, each halved by averaging, in the page's own
+// codebook (a block of the 2x2 level is one byte, the 1x1 level is that same
+// block). The PowerVR keeps their indices from the smallest up, each twiddled:
+// the 2x2 level at 1, 4x4 at 2, 8x8 at 6, 16x16 at 0x16, and so on.
+// Averaged across the whole page: a texture of the atlas bleeds into its
+// neighbours in the far levels.
+static void Mipmaps(PAGE *const page, float (*const codes)[DIMS], const int code_count)
+{
+    float(*cur)[4] = malloc(sizeof(float) * 4 * PAGE_SIZE);
+    float(*next)[4] = malloc(sizeof(float) * 4 * PAGE_SIZE);
+    for (int i = 0; i < PAGE_SIZE; i++) {
+        Decode(page->texels[i], cur[i]);
+    }
+    int offset = MIP_BYTES;
+    for (int size = PAGE_W; size > 2; size /= 2) {
+        const int half = size / 2;
+        for (int y = 0; y < half; y++) {
+            for (int x = 0; x < half; x++) {
+                // The colour of a see-through texel is whatever the artist left
+                // (black): only the solid ones give theirs to the average.
+                const float *const t[4] = {
+                    cur[2 * y * size + 2 * x],
+                    cur[2 * y * size + 2 * x + 1],
+                    cur[(2 * y + 1) * size + 2 * x],
+                    cur[(2 * y + 1) * size + 2 * x + 1],
+                };
+                float solid = 0.0f;
+                for (int c = 0; c < 4; c++) {
+                    solid += t[c][3] > 0.0f ? 1.0f : 0.0f;
+                }
+                for (int k = 0; k < 3; k++) {
+                    float sum = 0.0f;
+                    for (int c = 0; c < 4; c++) {
+                        sum += (solid > 0.0f ? (t[c][3] > 0.0f ? 1.0f : 0.0f)
+                                             : 1.0f)
+                            * t[c][k];
+                    }
+                    next[y * half + x][k] = sum / (solid > 0.0f ? solid : 4.0f);
+                }
+                next[y * half + x][3] =
+                    (t[0][3] + t[1][3] + t[2][3] + t[3][3]) * 0.25f;
+            }
+        }
+        // next is a level of half x half texels, in blocks of 2x2.
+        const int blocks = half / 2;
+        offset -= blocks * blocks;
+        for (int by = 0; by < blocks; by++) {
+            for (int bx = 0; bx < blocks; bx++) {
+                float v[DIMS];
+                const float *const t[4] = {
+                    next[2 * by * half + 2 * bx],
+                    next[(2 * by + 1) * half + 2 * bx],
+                    next[2 * by * half + 2 * bx + 1],
+                    next[(2 * by + 1) * half + 2 * bx + 1],
+                };
+                for (int c = 0; c < 4; c++) {
+                    memcpy(&v[c * 4], t[c], sizeof(float) * 4);
+                }
+                page->mip[offset + Twiddle(bx, by)] =
+                    (uint8_t)Nearest(v, codes, code_count, NULL);
+            }
+        }
+        float(*const swap)[4] = cur;
+        cur = next;
+        next = swap;
+    }
+    page->mip[0] = page->mip[1];
+    free(cur);
+    free(next);
+}
+
 static void Compress(PAGE *const page)
 {
     // Blocks in the order the PowerVR keeps them: block i holds texels
@@ -710,6 +790,7 @@ static void Compress(PAGE *const page)
         }
         page->vq[CODES * 8 + i] = (uint8_t)Nearest(v, codes, code_count, NULL);
     }
+    Mipmaps(page, codes, code_count);
     free(blocks);
     free(unique);
     free(weight);
@@ -815,11 +896,22 @@ int main(int argc, char **argv)
         return 1;
     }
     const uint32_t count = m_Count;
-    fwrite("TVQ1", 1, 4, fp);
+    // TRX_MIP=1 writes the pages with their mipmaps ("TVQ2"). Off by default:
+    // in Flycast the pages with see-through texels (Lara, the font, the
+    // passport) came out corrupt with them, even with the level bias at 0.25,
+    // while the data decodes right (29/10/2026, unsolved).
+    const bool no_mip = getenv("TRX_MIP") == NULL;
+    fwrite(no_mip ? "TVQ1" : "TVQ2", 1, 4, fp);
     fwrite(&count, 4, 1, fp);
     fwrite(index, sizeof(*index), m_Count, fp);
     for (int i = 0; i < m_Count; i++) {
-        fwrite(m_Pages[i].vq, 1, VQ_BYTES, fp);
+        fwrite(m_Pages[i].vq, 1, CODES * 8, fp);
+        if (!no_mip) {
+            fwrite(m_Pages[i].mip, 1, MIP_BYTES, fp);
+        }
+        fwrite(m_Pages[i].vq + CODES * 8, 1, BLOCKS, fp);
+        if (!no_mip)
+        fwrite("\0\0", 1, 2, fp);
     }
     fclose(fp);
     return m_BumpPath != NULL ? WriteBumps() : 0;

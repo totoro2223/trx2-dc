@@ -99,12 +99,21 @@ def _compile(scripts: list[Script], luac: Path) -> list[Script]:
     return compiled
 
 
-def _emit_array(name: str, scripts: list[Script]) -> list[str]:
+def _emit_array(
+    name: str, scripts: list[Script], offsets: dict[str, int] | None
+) -> list[str]:
     lines = [f"const LUA_EMBEDDED_SCRIPT {name}[] = {{"]
     for path, c_ident, data in scripts:
-        lines.append(
-            f'    {{ .path = "{path}", .data = {c_ident}, .size = {len(data)} }},'
-        )
+        if offsets is not None:
+            lines.append(
+                f'    {{ .path = "{path}", .offset = {offsets[path]}, '
+                f".size = {len(data)} }},"
+            )
+        else:
+            lines.append(
+                f'    {{ .path = "{path}", .data = {c_ident}, '
+                f".size = {len(data)} }},"
+            )
     lines.append("    { .path = nullptr, .data = nullptr, .size = 0 },")
     lines.append("};")
     lines.append("")
@@ -119,6 +128,9 @@ def main() -> int:
     parser.add_argument("--script-root", required=True, type=Path)
     parser.add_argument("--scripts", nargs="*", default=[], type=Path)
     parser.add_argument("--luac", type=Path)
+    # The bytecode goes to this file instead of into arrays, for a target that
+    # keeps it somewhere other than its main memory. Needs --luac.
+    parser.add_argument("--blob", type=Path)
     parser.add_argument("--lean-signatures", action="store_true")
     args = parser.parse_args()
 
@@ -145,18 +157,31 @@ def main() -> int:
         scripts = _compile(scripts, args.luac)
     align = " _Alignas(8)" if args.luac else ""
 
+    offsets: dict[str, int] | None = None
+    if args.blob:
+        # The developer console's commands are not run on such a target.
+        scripts = [s for s in scripts if not s[0].startswith("commands/")]
+        offsets = {}
+        blob = bytearray()
+        for path, _, data in modules + scripts:
+            blob += b"\0" * (-len(blob) % 8)
+            offsets[path] = len(blob)
+            blob += data
+        blob += b"\0" * (-len(blob) % 4)
+        args.blob.write_bytes(blob)
+
     lines: list[str] = []
     lines.append("// Auto-generated file; do not edit.")
     lines.append("#include <trx/game/lua/embedded_scripts.h>")
     lines.append("")
-    for _, c_ident, data in modules + scripts:
+    for _, c_ident, data in [] if offsets is not None else modules + scripts:
         lines.append(f"static const uint8_t{align} {c_ident}[] = {{")
         lines.append(_bytes_to_c_array(data) + ",")
         lines.append("};")
         lines.append("")
 
-    lines += _emit_array("g_LUA_EmbeddedModules", modules)
-    lines += _emit_array("g_LUA_EmbeddedRuntimeScripts", scripts)
+    lines += _emit_array("g_LUA_EmbeddedModules", modules, offsets)
+    lines += _emit_array("g_LUA_EmbeddedRuntimeScripts", scripts, offsets)
 
     args.output.write_text("\n".join(lines), encoding="utf-8")
     return 0
