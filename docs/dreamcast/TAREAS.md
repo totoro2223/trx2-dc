@@ -14,6 +14,10 @@ juego, reinicio de nivel): plan completo de pruebas P1–P13 y correcciones
 M1–M13 en [PLAN_MEMORIA_SESIONES_LARGAS.md](PLAN_MEMORIA_SESIONES_LARGAS.md).
 Cubre las filas 64, 65, 66, 67 y 68 de la sección J.
 
+**VRAM libre** (bytecode de Lua a VRAM, mipmaps del mundo, mapa de sombra
+suave de 128): plan V1–V3 en
+[PLAN_VRAM_LUA_MIPMAPS_SOMBRA.md](PLAN_VRAM_LUA_MIPMAPS_SOMBRA.md).
+
 Al terminar una tarea: anota la fila en PROBADO.md (OK o FALLIDO, con cifra y
 build), el detalle en REGISTRO.md, y **bórrala de aquí**. Retira las sondas
 `TEMP` (`dc_probe.h` y los `DC_PROBE(...)`) antes de dar un commit por bueno.
