@@ -165,10 +165,20 @@ typedef struct {
     float bounds[2][3];
     float world[3][4];
     const ROOM *room;
+    // The object it belongs to (its casters lie together), and whether that
+    // is Lara.
+    int16_t group;
+    bool lara;
 } M_CASTER;
 
-#define M_MAX_CASTERS 32
-// How far a shadow volume reaches past its caster, in world units.
+// Lara's meshes and those of the few objects nearest her that cast volumes
+// (DC_Shadow_TakeObjectCaster, with rendering.dc_object_shadows).
+#define M_MAX_CASTERS 128
+#define M_MAX_OBJECT_CASTERS 6
+// How near Lara an object must be to cast a volume.
+#define M_OBJECT_CAST_RANGE (8.0f * WALL_L)
+// How far down a shadow volume reaches past its caster, in world units: its
+// length grows as the light tilts, so that her head's still meets the floor.
 #define M_SHADOW_LENGTH 1024.0f
 // How far a light may tilt a shadow off the vertical: a light level with or
 // below the caster would throw it sideways or up.
@@ -207,15 +217,21 @@ _Static_assert(
 #define M_SOFT_STRENGTH_MAX 0.9f
 // How strong a shadow is without a light near, as a light's weight.
 #define M_SOFT_NO_LIGHT_WEIGHT 0.3f
-// The fade length of a shadow without a light of its own: long, so that the
-// shadow only eases off along its reach, down to 30 % of its strength at the
-// end of it (1 - M_SOFT_REACH / this).
-#define M_FIXED_FADE (M_SOFT_REACH / 0.7f)
+// The fade length of a shadow without a light of its own: about Lara's
+// height, so that the far end of it, her head's, is barely seen.
+#define M_FIXED_FADE 1152.0f
+// How much of the way to this frame's soft shadow lights the last frame's go:
+// a light lost or found, or the room's own taking over, slides in over about
+// half a second instead of jumping.
+#define M_SOFT_EASE 0.15f
 // The same for the shadow volumes (the hard shadows), which the PowerVR
 // darkens all as much: they fade with the light's distance by this, and keep
 // their length (see M_BuildVolume).
 #define M_VOLUME_STRENGTH_MIN 0.2f
-#define M_VOLUME_STRENGTH_MAX 0.8f
+#define M_VOLUME_STRENGTH_MAX 0.55f
+// With no light near (the room's own taken from its vertices, or straight
+// down): faint, and as dark all over as any volume.
+#define M_VOLUME_STRENGTH_NO_LIGHT 0.3f
 // How much of Lara's colour her own shadow takes away.
 #define M_SOFT_SELF_STRENGTH 0.7f
 // A world face takes no shadow when the cosine between it and the light is
@@ -547,6 +563,8 @@ static bool m_StagingLara = false;
 #define M_LARA_NOT_CASTER (-2)
 static int32_t m_CasterCount = 0;
 static M_CASTER m_Casters[M_MAX_CASTERS];
+static int16_t m_CasterGroup = 0;
+static int32_t m_ObjectCasters = 0;
 
 typedef struct {
     // From the light towards the casters, and two directions across it (the
@@ -1673,6 +1691,11 @@ static void M_XformRoom(
     const bool white =
         bind->white && ta == 256 && tr == 256 && tg == 256 && tb == 256;
     const float(*const w)[4] = il->world;
+    // With faces turned from a dynamic light to find (M_FaceTurnedAway), each
+    // vertex's colour without those lights too, in the reflections' colours
+    // (eargb), which no room has.
+    uint32_t *const nodyn =
+        batcher->face_light_count > 0 ? batcher->eargb : nullptr;
     // The whole mesh, or the chunks that show: each a run of vertices.
     const int32_t whole[1][2] = { { 0, bind->vertex_count } };
     const int32_t(*const ranges)[2] = nvr < 0 ? whole : vranges;
@@ -1747,6 +1770,9 @@ static void M_XformRoom(
                 if ((*s & 0xFFFF0000u) == gen) {
                     g_DC_ProbeUs[DC_PROBE_R_HIT]++; // TEMP
                     xverts[i] = xverts[*s & 0xFFFFu];
+                    if (nodyn != nullptr) {
+                        nodyn[i] = nodyn[*s & 0xFFFFu];
+                    }
                     continue;
                 }
                 *s = gen | (uint32_t)i;
@@ -1766,6 +1792,11 @@ static void M_XformRoom(
 
             uint32_t k = 256;
             RGBA_8888 color = vertex->color;
+            // What the dynamic lights take off the shade (TR1, TR2) or add to
+            // the colour (TR3), and the shade's factor without them.
+            int32_t dyn_drop = 0;
+            uint8_t dyn_rgb[3] = { 0, 0, 0 };
+            int32_t k_nodyn = -1;
             if (tr3) {
                 // Prelit colours, doubled by the curve, plus the colour
                 // of the dynamic lights passing.
@@ -1782,9 +1813,13 @@ static void M_XformRoom(
                     };
                     float add[3];
                     M_TR3DynamicRGB(il, world, add);
+                    const RGBA_8888 prelit = color;
                     color.r = (uint8_t)MIN(255.0f, color.r + add[0] * 255.0f);
                     color.g = (uint8_t)MIN(255.0f, color.g + add[1] * 255.0f);
                     color.b = (uint8_t)MIN(255.0f, color.b + add[2] * 255.0f);
+                    dyn_rgb[0] = color.r - prelit.r;
+                    dyn_rgb[1] = color.g - prelit.g;
+                    dyn_rgb[2] = color.b - prelit.b;
                 }
                 if (water && (flags & (VERT_MOVE | VERT_GLOW)) != 0
                     && (flags & VERT_NO_LIGHTING) == 0) {
@@ -1810,7 +1845,10 @@ static void M_XformRoom(
                                 w[2][0] * px + w[2][1] * py + w[2][2] * pz
                                     + w[2][3],
                             };
-                            s = (int32_t)M_DynamicLum((float)s, world, il);
+                            const int32_t lit =
+                                (int32_t)M_DynamicLum((float)s, world, il);
+                            dyn_drop = s - lit;
+                            s = lit;
                         }
                         if (flicker != 0) {
                             s += ((vertex->light_table_idx & 31) - 16)
@@ -1822,15 +1860,37 @@ static void M_XformRoom(
                     s += (int32_t)M_Caustic(vertex);
                 }
                 k = M_ShadeK(s, min_shade);
+                if (dyn_drop != 0) {
+                    k_nodyn = (int32_t)M_ShadeK(s + dyn_drop, min_shade);
+                }
             }
             if (fog_on && (flags & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0) {
-                k = k * M_FogKeep(M_Fog(x, y, z, c), &clip) >> 8;
+                const uint32_t keep = M_FogKeep(M_Fog(x, y, z, c), &clip);
+                k = k * keep >> 8;
+                if (k_nodyn >= 0) {
+                    k_nodyn = (int32_t)((uint32_t)k_nodyn * keep >> 8);
+                }
             }
             out->argb = white && !rgb_dyn ? m_WhiteARGB[k]
                                           : M_Colour(
                                                 color, ta, k * tr >> 8,
                                                 k * tg >> 8, k * tb >> 8);
             out->clip = clip;
+            if (nodyn != nullptr) {
+                const uint32_t kn = k_nodyn >= 0 ? (uint32_t)k_nodyn : k;
+                const RGBA_8888 prelit = {
+                    .r = color.r - dyn_rgb[0],
+                    .g = color.g - dyn_rgb[1],
+                    .b = color.b - dyn_rgb[2],
+                    .a = color.a,
+                };
+                nodyn[i] = k_nodyn < 0 && !rgb_dyn ? out->argb
+                    : white && !rgb_dyn            ? m_WhiteARGB[kn]
+                                                   : M_Colour(
+                                                         prelit, ta, kn * tr >> 8,
+                                                         kn * tg >> 8,
+                                                         kn * tb >> 8);
+            }
         }
     }
 #if defined(DC_EMIT_VERIFY)
@@ -2616,6 +2676,11 @@ static void M_RoomCel(
         sargb[i] = (a << 24) | shade;
         if (a >= 128) {
             xv[i].argb = (argb & 0xFF000000u) | shade;
+            if (batcher->face_light_count > 0) {
+                // In the shade without the dynamic lights too.
+                const uint32_t n = batcher->eargb[i];
+                batcher->eargb[i] = (n & 0xFF000000u) | M_ScaleRGB8(n, dark);
+            }
         }
     }
 }
@@ -3158,11 +3223,14 @@ M_HOT bool M_CelKeeps(
         && !(batcher->cel_dark && sargb_and >= M_CEL_CUT);
 }
 
-// Whether a room face (corners a, b, c in view space) is turned from every
-// dynamic light that reaches it (M_PrepareFaceLights), and so goes out dark:
-// the camera and the light on opposite sides of its plane, whichever way it
-// winds. False when none reaches it.
-M_HOT bool M_FaceTurnedAway(
+// How far a room face (corners a, b, c in view space) is turned from the
+// dynamic lights that reach it (M_PrepareFaceLights), 0 to 256: by the cosine
+// between it and the light, the camera's side of its plane counting as its
+// front whichever way it winds. A face square to the light takes it all (0),
+// one edge-on half of it, and one turned 30 degrees past that none: it keeps
+// its colour without those lights (eargb, M_XformRoom). The light that lights
+// it most counts; 0 when none reaches it.
+M_HOT uint32_t M_FaceTurnedAway(
     const MESH_BATCHER *const batcher, const M_XVERT *const a,
     const M_XVERT *const b, const M_XVERT *const c)
 {
@@ -3173,7 +3241,12 @@ M_HOT bool M_FaceTurnedAway(
                          e1[0] * e2[1] - e1[1] * e2[0] };
     // The camera stands at the view's origin.
     const float eye = -(n[0] * a->x + n[1] * a->y + n[2] * a->z);
-    bool reached = false;
+    const float n_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+    if (n_sq <= 0.0f) {
+        return 0;
+    }
+    const float inv_n = eye < 0.0f ? -M_InvSqrt(n_sq) : M_InvSqrt(n_sq);
+    float away = 2.0f;
     for (int32_t i = 0; i < batcher->face_light_count; i++) {
         const float *const l = batcher->face_lights[i];
         const float d[3] = { l[0] - a->x, l[1] - a->y, l[2] - a->z };
@@ -3188,18 +3261,14 @@ M_HOT bool M_FaceTurnedAway(
         if (dist_sq > l[3]) {
             continue;
         }
-        reached = true;
-        if ((n[0] * d[0] + n[1] * d[1] + n[2] * d[2]) * eye > 0.0f) {
-            return false;
-        }
+        const float d_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        const float facing = d_sq > 0.0f
+            ? (n[0] * d[0] + n[1] * d[1] + n[2] * d[2]) * inv_n
+                * M_InvSqrt(d_sq)
+            : 1.0f;
+        away = MIN(away, M_Clamp(0.5f - facing, 0.0f, 1.0f));
     }
-    return reached;
-}
-
-// A colour of a face turned from the light: its vertex's shaded one.
-M_HOT uint32_t M_DarkColour(const uint32_t argb, const uint32_t sargb)
-{
-    return (argb & 0xFF000000u) | (sargb & 0x00FFFFFFu);
+    return away > 1.0f ? 0 : (uint32_t)(away * 256.0f);
 }
 
 // A triangle known to show: in front of the near plane and facing the camera.
@@ -3215,16 +3284,18 @@ static void M_EmitFront(
     if (out == nullptr) {
         return;
     }
-    const bool dark = batcher->face_light_count > 0
-        && m_Frame.emit == M_EMIT_PLAIN
-        && M_FaceTurnedAway(batcher, &xv[idx[0]], &xv[idx[1]], &xv[idx[2]]);
+    const uint32_t away = batcher->face_light_count > 0
+            && m_Frame.emit == M_EMIT_PLAIN
+        ? M_FaceTurnedAway(batcher, &xv[idx[0]], &xv[idx[1]], &xv[idx[2]])
+        : 0;
+    const bool dark = away > 0;
     uint32_t cel_argb[3];
     for (int32_t k = 0; k < 3; k++) {
         uint32_t argb;
         uint32_t oargb;
         M_Colours(batcher, idx[k], &argb, &oargb);
         if (dark) {
-            argb = M_DarkColour(argb, sargb[idx[k]]);
+            argb = M_LerpARGB(argb, batcher->eargb[idx[k]], (int32_t)away);
         }
         M_Project(
             &xv[idx[k]], uv[k][0], uv[k][1], argb, oargb,
@@ -3261,9 +3332,11 @@ static void M_EmitTriangle(
     }
 
     const uint32_t *const sargb = batcher->sargb;
-    const bool dark = batcher->face_light_count > 0 && batcher->cel_emit
-        && m_Frame.emit == M_EMIT_PLAIN
-        && M_FaceTurnedAway(batcher, &xv[i0], &xv[i1], &xv[i2]);
+    const uint32_t away = batcher->face_light_count > 0 && batcher->cel_emit
+            && m_Frame.emit == M_EMIT_PLAIN
+        ? M_FaceTurnedAway(batcher, &xv[i0], &xv[i1], &xv[i2])
+        : 0;
+    const bool dark = away > 0;
     const bool cel = batcher->cel_emit && !dark
         && M_CelKeeps(
             batcher, sargb[i0] | sargb[i1] | sargb[i2],
@@ -3278,6 +3351,11 @@ static void M_EmitTriangle(
     M_CLIP_VERT in[3];
     for (int32_t k = 0; k < 3; k++) {
         in[k] = M_LoadClipVert(batcher, idx[k], uv[k][0], uv[k][1]);
+        if (dark) {
+            // No cel copy of a darkened face: its field carries the colour
+            // without the dynamic lights through the clip instead.
+            in[k].sargb = batcher->eargb[idx[k]];
+        }
     }
     M_CLIP_VERT poly[4];
     int32_t count = 0;
@@ -3307,7 +3385,8 @@ static void M_EmitTriangle(
     for (int32_t k = 0; k < count; k++) {
         const M_CLIP_VERT *const p = &poly[ord[k]];
         M_Project(
-            &p->xv, p->u, p->v, dark ? M_DarkColour(p->argb, p->sargb) : p->argb,
+            &p->xv, p->u, p->v,
+            dark ? M_LerpARGB(p->argb, p->sargb, (int32_t)away) : p->argb,
             p->oargb, k == count - 1 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX,
             &out[k]);
         cel_argb[k] = p->sargb;
@@ -3398,16 +3477,18 @@ static bool M_TryEmitQuad(
         return true;
     }
     const uint32_t *const sargb = batcher->sargb;
-    const bool dark = batcher->face_light_count > 0
-        && m_Frame.emit == M_EMIT_PLAIN
-        && M_FaceTurnedAway(batcher, &xv[t0[0]], &xv[t0[1]], &xv[t0[2]]);
+    const uint32_t away = batcher->face_light_count > 0
+            && m_Frame.emit == M_EMIT_PLAIN
+        ? M_FaceTurnedAway(batcher, &xv[t0[0]], &xv[t0[1]], &xv[t0[2]])
+        : 0;
+    const bool dark = away > 0;
     uint32_t cel_argb[4];
     for (int32_t k = 0; k < 4; k++) {
         uint32_t argb;
         uint32_t oargb;
         M_Colours(batcher, strip[k], &argb, &oargb);
         if (dark) {
-            argb = M_DarkColour(argb, sargb[strip[k]]);
+            argb = M_LerpARGB(argb, batcher->eargb[strip[k]], (int32_t)away);
         }
         M_Project(
             &xv[strip[k]], uv[k][0], uv[k][1], argb, oargb,
@@ -4912,7 +4993,21 @@ static void M_DrawInstance(
     if (bind->tex_dirty) {
         M_RefillTextures(bind);
     }
-    m_Frame.lara_instance = caster != -1;
+    m_Frame.lara_instance = caster == M_LARA_NOT_CASTER
+        || (caster >= 0 && m_Casters[caster].lara);
+    // Lara's shadow falls on the rooms and on herself only, not on enemies
+    // or other objects. Boxes make a rough shadow; on the caster itself it
+    // would only look wrong.
+    // Nor on a room under water while she wades above it: seen through the
+    // surface it looks cast on the water itself. Swimming at the surface, it
+    // falls on the bottom.
+    // Told before the transform: a room's chunks go out on the way.
+    const LARA_WATER_STATE water = Lara_GetLaraInfo()->water_status;
+    const bool is_room = bind->needs_room_lights
+        && (inst->room == nullptr || !inst->room->flags.underwater
+            || water == LWS_UNDERWATER || water == LWS_SURFACE);
+    DC_PVR_SetShadowReceiver(
+        is_room && M_ShadowType() == SHADOW_TYPE_VOLUME);
     batcher->emitted = false;
     batcher->chunk_emit_us = 0;
 #if defined(TRX_DC_WATCHDOG)
@@ -4931,16 +5026,6 @@ static void M_DrawInstance(
     }
 #endif
     const bool is_caster = caster >= 0;
-    // Lara's shadow falls on the rooms and on herself only, not on enemies
-    // or other objects. Boxes make a rough shadow; on the caster itself it
-    // would only look wrong.
-    // Nor on a room under water while she is above it: seen through the
-    // surface it looks cast on the water itself, which she wades through.
-    const bool is_room = bind->needs_room_lights
-        && (inst->room == nullptr || !inst->room->flags.underwater
-            || Lara_GetLaraInfo()->water_status == LWS_UNDERWATER);
-    DC_PVR_SetShadowReceiver(
-        is_room && M_ShadowType() == SHADOW_TYPE_VOLUME);
 #if defined(TRX_DC_WATCHDOG)
     m_ShadowReceivers += is_room && M_ShadowType() == SHADOW_TYPE_VOLUME;
     m_ShadowRooms += bind->needs_room_lights;
@@ -5926,6 +6011,8 @@ void MeshBatcher_Stage(
             memcpy(caster->bounds, bind->bounds, sizeof(caster->bounds));
             M_WorldMatrix(&inst->wmatrix, caster->world);
             caster->room = inst->room;
+            caster->group = m_CasterGroup;
+            caster->lara = m_StagingLara;
             caster_index = (int16_t)(m_CasterCount - 1);
         }
     }
@@ -5935,7 +6022,30 @@ void MeshBatcher_Stage(
 
 void DC_Shadow_SetCasting(const bool casting)
 {
+    if (casting && !m_Casting) {
+        m_CasterGroup++;
+    }
     m_Casting = casting;
+}
+
+bool DC_Shadow_TakeObjectCaster(const ITEM *const item)
+{
+    const ITEM *const lara = Lara_GetItem();
+    if (M_ShadowType() != SHADOW_TYPE_VOLUME
+        || !g_Config.rendering.dc_object_shadows || lara == nullptr
+        || m_ObjectCasters >= M_MAX_OBJECT_CASTERS
+        || m_CasterCount > M_MAX_CASTERS - 16) {
+        return false;
+    }
+    const float dx = (float)(item->pos.x - lara->pos.x);
+    const float dy = (float)(item->pos.y - lara->pos.y);
+    const float dz = (float)(item->pos.z - lara->pos.z);
+    if (dx * dx + dy * dy + dz * dz
+        > M_OBJECT_CAST_RANGE * M_OBJECT_CAST_RANGE) {
+        return false;
+    }
+    m_ObjectCasters++;
+    return true;
 }
 
 void DC_Shadow_SetLara(const bool lara)
@@ -6379,11 +6489,50 @@ static void M_KeepSoftCasters(const float center[3])
         };
         count = 1;
     }
+    const int32_t last_count = m_Soft.light_count;
     m_Soft.light_count = count;
     M_SetCelShade(lights[0].weight);
     for (int32_t l = 0; l < count; l++) {
         M_SOFT_LIGHT *const out = &m_Soft.lights[l];
-        const float *const d = lights[l].dir;
+        float strength = M_SOFT_STRENGTH_MIN
+            + (M_SOFT_STRENGTH_MAX - M_SOFT_STRENGTH_MIN) * lights[l].weight;
+        float dist = M_PARALLEL_DIST;
+        float fade = M_SOFT_REACH;
+        if (high && lights[l].reach > 0.0f) {
+            dist = MAX(lights[l].dist, M_PERSP_MIN_DIST);
+            fade = M_Clamp(
+                lights[l].reach - lights[l].dist, M_PERSP_MIN_FADE,
+                M_SOFT_REACH);
+        }
+        if (lights[l].fixed) {
+            // Eased off along the reach, the far end most.
+            fade = M_FIXED_FADE;
+        }
+        float d[3] = { lights[l].dir[0], lights[l].dir[1], lights[l].dir[2] };
+        if (l < last_count) {
+            // From the last frame's light in this place, part of the way.
+            for (int32_t k = 0; k < 3; k++) {
+                d[k] = out->dir[k] + (d[k] - out->dir[k]) * M_SOFT_EASE;
+            }
+            const float len_sq = M_Dot3(d, d);
+            if (len_sq > 1.0e-4f) {
+                const float inv = M_InvSqrt(len_sq);
+                for (int32_t k = 0; k < 3; k++) {
+                    d[k] *= inv;
+                }
+            } else {
+                memcpy(d, lights[l].dir, sizeof(d));
+            }
+            strength = out->strength + (strength - out->strength) * M_SOFT_EASE;
+            fade = out->fade + (fade - out->fade) * M_SOFT_EASE;
+            // Through its inverse: a parallel light is a million away.
+            dist = 1.0f
+                / (1.0f / out->dist
+                   + (1.0f / dist - 1.0f / out->dist) * M_SOFT_EASE);
+        } else {
+            // A new one comes in faint.
+            strength *= M_SOFT_EASE;
+        }
         memcpy(out->dir, d, sizeof(out->dir));
         // Any direction across the light will do, as long as the map and the
         // projection agree.
@@ -6404,20 +6553,9 @@ static void M_KeepSoftCasters(const float center[3])
         out->up[0] = d[1] * r[2] - d[2] * r[1];
         out->up[1] = d[2] * r[0] - d[0] * r[2];
         out->up[2] = d[0] * r[1] - d[1] * r[0];
-        out->strength = M_SOFT_STRENGTH_MIN
-            + (M_SOFT_STRENGTH_MAX - M_SOFT_STRENGTH_MIN) * lights[l].weight;
-        out->dist = M_PARALLEL_DIST;
-        out->fade = M_SOFT_REACH;
-        if (high && lights[l].reach > 0.0f) {
-            out->dist = MAX(lights[l].dist, M_PERSP_MIN_DIST);
-            out->fade = M_Clamp(
-                lights[l].reach - lights[l].dist, M_PERSP_MIN_FADE,
-                M_SOFT_REACH);
-        }
-        if (lights[l].fixed) {
-            // Eased off a little along the reach, not to nothing.
-            out->fade = M_FIXED_FADE;
-        }
+        out->strength = strength;
+        out->dist = dist;
+        out->fade = fade;
     }
 
     // The slices for self-shadowing, by the order of the casters' middles
@@ -6724,34 +6862,35 @@ void DC_Shadow_RenderMaps(void)
     m_SoftDrawn.self_count = m_Soft.self_count;
 }
 
-void DC_Shadow_DrawVolumes(void)
+// The volumes of one object's casters, from the lights near it. Lara's sets
+// how dark they all go (the PowerVR darkens every volume as much) and the cel
+// shading. Returns the volumes sent; dir_out takes the nearest light's way.
+static int32_t M_DrawGroupVolumes(
+    const M_CASTER *const casters, const int32_t caster_count,
+    float dir_out[3])
 {
-    if (m_CasterCount == 0) {
-        return;
-    }
     float center[3];
-    M_CastersCenter(m_Casters, m_CasterCount, center);
-    if (M_IS_SOFT(M_ShadowType())) {
-        M_KeepSoftCasters(center);
-        m_CasterCount = 0;
-        return;
-    }
+    M_CastersCenter(casters, caster_count, center);
     M_SHADOW_LIGHT lights[M_SOFT_MAX_LIGHTS];
     const int32_t max = MIN(DC_Mode_GetShadowLights(), M_SOFT_MAX_LIGHTS);
-    int32_t light_count = M_GatherShadowLights(m_Casters, center, lights, max);
+    int32_t light_count = M_GatherShadowLights(casters, center, lights, max);
     if (light_count == 0) {
         lights[0] = (M_SHADOW_LIGHT) {
             .dir = { 0.0f, 1.0f, 0.0f },
             .weight = M_SOFT_NO_LIGHT_WEIGHT,
+            .fixed = true,
         };
         light_count = 1;
     }
-    M_SetCelShade(lights[0].weight);
-    // The PowerVR darkens every volume as much: by the nearest light.
-    DC_PVR_SetShadowStrength(
-        M_VOLUME_STRENGTH_MIN
-        + (M_VOLUME_STRENGTH_MAX - M_VOLUME_STRENGTH_MIN) * lights[0].weight);
-    const float *const dir = lights[0].dir;
+    if (casters[0].lara) {
+        M_SetCelShade(lights[0].weight);
+        DC_PVR_SetShadowStrength(
+            lights[0].fixed ? M_VOLUME_STRENGTH_NO_LIGHT
+                            : M_VOLUME_STRENGTH_MIN
+                    + (M_VOLUME_STRENGTH_MAX - M_VOLUME_STRENGTH_MIN)
+                        * lights[0].weight);
+    }
+    memcpy(dir_out, lights[0].dir, sizeof(float) * 3);
 
     // 12 cap triangles and two for each of the box's 12 edges at most: a
     // light inside or beside the box can leave every edge on the outline
@@ -6759,20 +6898,160 @@ void DC_Shadow_DrawVolumes(void)
     DC_PVR_TRIANGLE tris[36];
     int32_t volumes = 0;
     for (int32_t l = 0; l < light_count; l++) {
-        for (int32_t i = 0; i < m_CasterCount; i++) {
+        for (int32_t i = 0; i < caster_count; i++) {
             // Where the light is, taken along the (tilted) direction it
-            // shines in; a light with none shines in parallel.
+            // shines in; a light with none shines in parallel. One up close
+            // (a muzzle flash at her hands) is taken a block away, as the
+            // soft shadows do: else her head and chest lie above it and
+            // cast nothing on the floor.
+            const float dist = MAX(lights[l].dist, M_PERSP_MIN_DIST);
             float origin[3];
             for (int32_t k = 0; k < 3; k++) {
-                origin[k] = center[k] - lights[l].dir[k] * lights[l].dist;
+                origin[k] = center[k] - lights[l].dir[k] * dist;
             }
             const bool point = lights[l].reach > 0.0f;
             const int32_t count = M_BuildVolume(
-                &m_Casters[i], lights[l].dir, point ? origin : nullptr,
-                M_SHADOW_LENGTH, tris);
+                &casters[i], lights[l].dir, point ? origin : nullptr,
+                M_SHADOW_LENGTH / MAX(lights[l].dir[1], 0.5f),
+                tris);
             DC_PVR_ShadowVolume(tris, count);
             volumes += count > 0;
         }
+    }
+    return volumes;
+}
+
+// The room's own walls and pillars, with object shadows on: the solid
+// sectors of Lara's room near the passing light nearest her (a flare, a muzzle
+// flash) cast volumes from it, as her meshes do. A light that stays put has its
+// shadows in the room's own light already. Each solid sector is a column a
+// block wide from the room's ceiling to its floor; the steps of the floor and
+// ceiling cast nothing.
+#define M_ROOM_CAST_RANGE (3.0f * WALL_L)
+#define M_ROOM_CAST_MAX 32
+// Drawn a little inside its faces, so that the lit side does not shade itself.
+#define M_ROOM_CAST_INSET 32.0f
+
+static int32_t M_DrawRoomVolumes(
+    const M_CASTER *const lara, const int32_t lara_count)
+{
+    const ROOM *const room = lara[0].room;
+    if (room == nullptr || room->sectors == nullptr) {
+        return 0;
+    }
+    float center[3];
+    M_CastersCenter(lara, lara_count, center);
+    Output_Uniforms_UploadRoomLights(Output_GetUniforms(), room);
+    const DC_UNIFORM_LIGHTS *const lights =
+        DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
+    float at[3];
+    float reach = 0.0f;
+    float best = FLT_MAX;
+    for (int32_t i = 0; lights != nullptr && i < lights->num_lights; i++) {
+        const DC_UNIFORM_LIGHT *const light = &lights->lights[i];
+        if (light->kind == 0.0f) {
+            continue; // the room's own
+        }
+        const float r = light->falloff
+            / (float)(1 << (OUTPUT_DYNAMIC_FALLOFF_SHIFT
+                            - OUTPUT_DYNAMIC_RADIUS_SHIFT));
+        const float d[3] = { light->pos[0] - center[0],
+                             light->pos[1] - center[1],
+                             light->pos[2] - center[2] };
+        const float dist_sq = M_Dot3(d, d);
+        if (dist_sq < best && dist_sq < r * r) {
+            best = dist_sq;
+            memcpy(at, light->pos, sizeof(at));
+            reach = MIN(r, M_ROOM_CAST_RANGE);
+        }
+    }
+    if (reach <= 0.0f) {
+        return 0;
+    }
+
+    const int32_t x0 = MAX(0, (int32_t)((at[0] - reach - room->pos.x) / WALL_L));
+    const int32_t x1 =
+        MIN(room->size.x - 1, (int32_t)((at[0] + reach - room->pos.x) / WALL_L));
+    const int32_t z0 = MAX(0, (int32_t)((at[2] - reach - room->pos.z) / WALL_L));
+    const int32_t z1 =
+        MIN(room->size.z - 1, (int32_t)((at[2] + reach - room->pos.z) / WALL_L));
+    DC_PVR_TRIANGLE tris[36];
+    int32_t volumes = 0;
+    for (int32_t x = x0; x <= x1 && volumes < M_ROOM_CAST_MAX; x++) {
+        for (int32_t z = z0; z <= z1 && volumes < M_ROOM_CAST_MAX; z++) {
+            const SECTOR *const sector = &room->sectors[z + x * room->size.z];
+            if (sector->floor.height != NO_HEIGHT
+                || sector->portal_room.wall != NO_ROOM) {
+                continue;
+            }
+            const M_CASTER column = {
+                .bounds = {
+                    { room->pos.x + x * WALL_L + M_ROOM_CAST_INSET,
+                      (float)room->max_ceiling,
+                      room->pos.z + z * WALL_L + M_ROOM_CAST_INSET },
+                    { room->pos.x + (x + 1) * WALL_L - M_ROOM_CAST_INSET,
+                      (float)room->min_floor,
+                      room->pos.z + (z + 1) * WALL_L - M_ROOM_CAST_INSET },
+                },
+                .world = { { 1.0f, 0.0f, 0.0f, 0.0f },
+                           { 0.0f, 1.0f, 0.0f, 0.0f },
+                           { 0.0f, 0.0f, 1.0f, 0.0f } },
+                .room = room,
+            };
+            float d[3] = {
+                (column.bounds[0][0] + column.bounds[1][0]) * 0.5f - at[0],
+                (column.bounds[0][1] + column.bounds[1][1]) * 0.5f - at[1],
+                (column.bounds[0][2] + column.bounds[1][2]) * 0.5f - at[2],
+            };
+            const float len_sq = M_Dot3(d, d);
+            if (len_sq > (reach + WALL_L) * (reach + WALL_L)) {
+                continue;
+            }
+            const float inv = M_InvSqrt(len_sq);
+            for (int32_t k = 0; k < 3; k++) {
+                d[k] *= inv;
+            }
+            const int32_t count = M_BuildVolume(&column, d, at, reach, tris);
+            DC_PVR_ShadowVolume(tris, count);
+            volumes += count > 0;
+        }
+    }
+    return volumes;
+}
+
+void DC_Shadow_DrawVolumes(void)
+{
+    // What the objects took this frame is spent.
+    m_ObjectCasters = 0;
+    if (m_CasterCount == 0) {
+        return;
+    }
+    if (M_IS_SOFT(M_ShadowType())) {
+        float center[3];
+        M_CastersCenter(m_Casters, m_CasterCount, center);
+        M_KeepSoftCasters(center);
+        m_CasterCount = 0;
+        return;
+    }
+    // Object by object: each one's casters lie together.
+    int32_t volumes = 0;
+    float dir[3] = { 0.0f, 1.0f, 0.0f };
+    for (int32_t first = 0; first < m_CasterCount;) {
+        int32_t end = first + 1;
+        while (end < m_CasterCount
+               && m_Casters[end].group == m_Casters[first].group) {
+            end++;
+        }
+        float group_dir[3];
+        volumes +=
+            M_DrawGroupVolumes(&m_Casters[first], end - first, group_dir);
+        if (m_Casters[first].lara) {
+            memcpy(dir, group_dir, sizeof(dir));
+            if (g_Config.rendering.dc_object_shadows) {
+                volumes += M_DrawRoomVolumes(&m_Casters[first], end - first);
+            }
+        }
+        first = end;
     }
 #if defined(TRX_DC_WATCHDOG)
     static int32_t frame = 0;

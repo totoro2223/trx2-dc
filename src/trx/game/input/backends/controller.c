@@ -714,23 +714,35 @@ static void M_Init(void)
         m_Layout[INPUT_LAYOUT_DEFAULT][builtin->role].slots[0] = builtin->bind;
     }
 #if defined(__DREAMCAST__)
-    // The stick moves Lara as the D-pad does (the second slot of each role).
+    // Only the stick moves Lara; the D-pad is left to the menus, which also
+    // follow the stick (input/update.c).
     const struct {
         INPUT_ROLE role;
         SDL_GameControllerAxis axis;
         int16_t dir;
+        INPUT_ROLE menu_role;
+        SDL_GameControllerButton button;
     } stick[] = {
-        { INPUT_ROLE_UP, SDL_CONTROLLER_AXIS_LEFTY, -1 },
-        { INPUT_ROLE_DOWN, SDL_CONTROLLER_AXIS_LEFTY, 1 },
-        { INPUT_ROLE_LEFT, SDL_CONTROLLER_AXIS_LEFTX, -1 },
-        { INPUT_ROLE_RIGHT, SDL_CONTROLLER_AXIS_LEFTX, 1 },
+        { INPUT_ROLE_UP, SDL_CONTROLLER_AXIS_LEFTY, -1, INPUT_ROLE_MENU_UP,
+          SDL_CONTROLLER_BUTTON_DPAD_UP },
+        { INPUT_ROLE_DOWN, SDL_CONTROLLER_AXIS_LEFTY, 1, INPUT_ROLE_MENU_DOWN,
+          SDL_CONTROLLER_BUTTON_DPAD_DOWN },
+        { INPUT_ROLE_LEFT, SDL_CONTROLLER_AXIS_LEFTX, -1, INPUT_ROLE_MENU_LEFT,
+          SDL_CONTROLLER_BUTTON_DPAD_LEFT },
+        { INPUT_ROLE_RIGHT, SDL_CONTROLLER_AXIS_LEFTX, 1,
+          INPUT_ROLE_MENU_RIGHT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
     };
     for (size_t i = 0; i < ARRAY_SIZE(stick); i++) {
-        m_Layout[INPUT_LAYOUT_DEFAULT][stick[i].role].slots[1] =
+        m_Layout[INPUT_LAYOUT_DEFAULT][stick[i].role].slots[0] =
             (CONTROLLER_BINDING) {
                 .key_count = 1,
                 .keys = { { BT_AXIS, { .axis = stick[i].axis },
                             stick[i].dir } },
+            };
+        m_Layout[INPUT_LAYOUT_DEFAULT][stick[i].menu_role].slots[0] =
+            (CONTROLLER_BINDING) {
+                .key_count = 1,
+                .keys = { { BT_BUTTON, { .button = stick[i].button }, 0 } },
             };
     }
 #endif

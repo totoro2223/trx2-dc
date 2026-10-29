@@ -138,6 +138,12 @@ if [ -n "${TRX_DC_SHADOW:-}" ]; then
   echo "$TRX_DC_SHADOW" > "$STAGE/SHADOW.TXT"
   echo "shadow type $TRX_DC_SHADOW"
 fi
+if [ -n "${TRX_DC_OBJECT_SHADOWS:-}" ]; then
+  # A test disc with the object shadows on (1): with volume shadows, enemies,
+  # objects and, under a flare, the walls near it cast volumes. Not in the menu.
+  echo "$TRX_DC_OBJECT_SHADOWS" > "$STAGE/OBJSHADOW.TXT"
+  echo "object shadows $TRX_DC_OBJECT_SHADOWS"
+fi
 if [ -n "${TRX_DC_CEL:-}" ]; then
   # A test disc with the cel shading and the room cel shading fixed: "<0|1> <0|1>".
   echo "$TRX_DC_CEL" > "$STAGE/CEL.TXT"

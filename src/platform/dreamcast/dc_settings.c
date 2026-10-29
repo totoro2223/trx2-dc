@@ -33,19 +33,20 @@ static char m_Refused[256] = "";
 
 // The options, as a line of numbers: the file format, the mode, the frame rate,
 // the cel shading switch, a 0 (where the adaptive switch was until format 4),
-// the fps counter, the two filters, the shadow type, and the bump mapping and
-// room cel shading switches.
+// the fps counter, the two filters, the shadow type, the bump mapping and
+// room cel shading switches, and the 3D pickups switch.
 static void M_Format(char *const out, const size_t size)
 {
     snprintf(
-        out, size, "4 %d %d %d 0 %d %d %d %d %d %d\n",
+        out, size, "5 %d %d %d 0 %d %d %d %d %d %d %d\n",
         (int)g_Config.rendering.dc_mode, (int)g_Config.rendering.dc_fps,
         (int)g_Config.rendering.dc_cel_shading,
         (int)g_Config.ui.enable_fps_counter,
         (int)g_Config.rendering.texture_filter,
         (int)g_Config.rendering.ui_filter, (int)g_Config.visuals.shadow_type,
         (int)g_Config.rendering.dc_bump_mapping,
-        (int)g_Config.rendering.dc_room_cel);
+        (int)g_Config.rendering.dc_room_cel,
+        (int)g_Config.visuals.enable_3d_pickups);
 }
 
 void DC_Settings_Load(const char *const saves_dir)
@@ -64,10 +65,10 @@ void DC_Settings_Load(const char *const saves_dir)
         return;
     }
     int version = 0;
-    int v[10] = {};
+    int v[11] = {};
     const int read = fscanf(
-        fp, "%d %d %d %d %d %d %d %d %d %d %d", &version, &v[0], &v[1], &v[2],
-        &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9]);
+        fp, "%d %d %d %d %d %d %d %d %d %d %d %d", &version, &v[0], &v[1],
+        &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10]);
     fclose(fp);
     // The first file format had no bump mapping switch, and the first two no
     // room cel shading one.
@@ -76,6 +77,10 @@ void DC_Settings_Load(const char *const saves_dir)
     }
     if (version <= 2) {
         v[9] = 0;
+    }
+    // Before format 5 the pickups were always 3D.
+    if (version <= 4) {
+        v[10] = 1;
     }
     // Before format 4 the 60 fps and adaptive switches were two, and the
     // Original mode came in before Experimental 60's.
@@ -87,8 +92,9 @@ void DC_Settings_Load(const char *const saves_dir)
             v[0] = DC_MODE_EXPERIMENTAL_60;
         }
     }
-    if (version < 1 || version > 4
-        || read != (version >= 3 ? 11 : 8 + version) || v[0] < 0
+    if (version < 1 || version > 5
+        || read != (version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
+        || v[0] < 0
         || v[0] >= DC_MODE_NUMBER_OF || v[1] < 0 || v[1] >= DC_FPS_NUMBER_OF
         || v[5] < 0 || v[5] >= TEXTURE_FILTER_NUMBER_OF || v[6] < 0
         || v[6] >= TEXTURE_FILTER_NUMBER_OF || v[7] < 0
@@ -110,6 +116,7 @@ void DC_Settings_Load(const char *const saves_dir)
     CONFIG_SET(g_Config.visuals.shadow_type, (SHADOW_TYPE)v[7]);
     CONFIG_SET(g_Config.rendering.dc_bump_mapping, (bool)(v[8] != 0));
     CONFIG_SET(g_Config.rendering.dc_room_cel, (bool)(v[9] != 0));
+    CONFIG_SET(g_Config.visuals.enable_3d_pickups, (bool)(v[10] != 0));
     M_Format(m_Stored, sizeof(m_Stored));
     LOG_INFO("render options loaded from the memory card");
 }

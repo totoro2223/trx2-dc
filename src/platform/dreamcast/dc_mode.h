@@ -36,6 +36,9 @@ extern int32_t g_DC_TestShadow;
 extern int32_t g_DC_TestCel;
 extern int32_t g_DC_TestRoomCel;
 extern int32_t g_DC_TestBump;
+// A test disc with the object shadows on (make_disc.sh's TRX_DC_OBJECT_SHADOWS,
+// 1), which the menu does not offer: its row cost the menu memory it lacks.
+extern int32_t g_DC_TestObjectShadows;
 // A test disc that deletes the render options from the memory card as it
 // starts, and begins from the defaults (make_disc.sh's TRX_DC_RESETOPT,
 // RESETOPT.TXT).

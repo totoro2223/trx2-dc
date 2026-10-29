@@ -158,8 +158,16 @@ GF_COMMAND Game_Control(const bool demo_mode)
 #endif
 #if defined(__DREAMCAST__)
     // L + R + Start and L + R + Down on the pad (platform/dreamcast/sdl_compat.c).
+    // The card write holds the game up, so the save waits for its notice to
+    // be on screen first (m_QuickSaveWait ticks).
+    static int32_t m_QuickSaveWait = 0;
+    bool save_now = false;
+    if (m_QuickSaveWait > 0 && --m_QuickSaveWait == 0) {
+        g_InputDB.quick_save = true;
+        save_now = true;
+    }
     if (!demo_mode) {
-        if (DC_Input_TakeQuickSave()) {
+        if (DC_Input_TakeQuickSave() && m_QuickSaveWait == 0) {
             g_InputDB.quick_save = true;
         }
         if (DC_Input_TakeQuickLoad()) {
@@ -177,17 +185,17 @@ GF_COMMAND Game_Control(const bool demo_mode)
                 Console_Error("%s", GS("general/osd/quick_save_fail_no_slots"));
             } else {
 #if defined(__DREAMCAST__)
-                // Writing the card takes a while: say so before.
-                DC_Loading_Notice(
-                    "QUICK SAVE", "Saving to VMU... Do not remove the card", 0);
-#endif
-                const bool saved = Savegame_Save(slot);
-#if defined(__DREAMCAST__)
-                DC_Loading_SaveDone(saved);
-#endif
-                if (saved) {
+                if (!save_now) {
+                    Console_Info("%s", "Quick saving... Do not remove the VMU");
+                    m_QuickSaveWait = 2;
+                } else {
+                    DC_Loading_SaveDone(Savegame_Save(slot));
+                }
+#else
+                if (Savegame_Save(slot)) {
                     Console_Info("%s", GS("general/osd/quick_save"));
                 }
+#endif
             }
             quick_handled = true;
         } else if (g_InputDB.quick_load) {

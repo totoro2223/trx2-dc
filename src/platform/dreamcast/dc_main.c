@@ -137,6 +137,7 @@ static int M_RunGame(int argc, char *argv[])
     g_DC_TestCel = -1;
     g_DC_TestRoomCel = -1;
     g_DC_TestBump = -1;
+    g_DC_TestObjectShadows = -1;
     g_DC_TestResetOptions = 0;
     g_DC_TestSwitchMode = -1;
     g_DC_TestSwitchFrame = 0;
@@ -244,6 +245,16 @@ static int M_RunGame(int argc, char *argv[])
             g_DC_TestBump = c;
         }
         fclose(cel);
+    }
+    // A test disc with the object shadows on (make_disc.sh's
+    // TRX_DC_OBJECT_SHADOWS).
+    FILE *const objshadow = M_Open("OBJSHADOW.TXT");
+    if (objshadow != nullptr) {
+        int on = -1;
+        if (fscanf(objshadow, "%d", &on) == 1) {
+            g_DC_TestObjectShadows = on;
+        }
+        fclose(objshadow);
     }
     // A test disc that wipes the render options off the memory card
     // (make_disc.sh's TRX_DC_RESETOPT).

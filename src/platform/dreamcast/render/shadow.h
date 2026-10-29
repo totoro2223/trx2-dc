@@ -15,9 +15,14 @@
 // with it projected on them, multiplying the colour already there. Bilinear
 // filtering of the small texture softens the edges.
 
+#include <trx/game/items/types.h>
+
 #include <stdbool.h>
 
 void DC_Shadow_SetCasting(bool casting);
+// Whether an object (one with a round shadow) casts a volume instead: with
+// shadow volumes and object shadows chosen, the few nearest Lara this frame.
+bool DC_Shadow_TakeObjectCaster(const ITEM *item);
 // Lara's own meshes are being drawn: only she takes the cel shading and her
 // own shadow.
 void DC_Shadow_SetLara(bool lara);

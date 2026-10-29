@@ -422,11 +422,12 @@ if pcall(trx.config.describe, "rendering.dc_mode") then
       table.remove(keys, i)
     end
   end
-  -- The shadows are chosen here, over what the mode picks; the visuals tab,
-  -- where they sit elsewhere, is not on the console.
+  -- The shadows and the 3D pickups are chosen here, over what the mode
+  -- picks; the visuals tab, where they sit elsewhere, is not on the console.
   for i, key in ipairs(keys) do
     if key == "rendering.dc_cel_shading" then
       table.insert(keys, i + 1, "visuals.shadow_type")
+      table.insert(keys, i + 2, "visuals.enable_3d_pickups")
       break
     end
   end

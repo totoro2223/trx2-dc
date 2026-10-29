@@ -1135,10 +1135,10 @@ static bool M_DrawSprite(
     return true;
 }
 
-static void M_StageShadow(void)
+static void M_StageShadow(const SHADOW_TYPE type)
 {
     M_PRIV *const p = &m_Priv;
-    OUTPUT_MESH *const mesh = g_Config.visuals.shadow_type == SHADOW_TYPE_CIRCLE
+    OUTPUT_MESH *const mesh = type == SHADOW_TYPE_CIRCLE
         ? p->mesh_high
         : p->mesh_low;
     const MESH_INSTANCE inst = {
@@ -1223,7 +1223,16 @@ void OutputSource_Shadows_Draw(
         }
     }
 
-    if (g_Config.visuals.shadow_type == SHADOW_TYPE_SPRITE) {
+    SHADOW_TYPE type = g_Config.visuals.shadow_type;
+#if defined(__DREAMCAST__)
+    // The game's own shadow for all but Lara, and for her with the sprite
+    // chosen: TR3's sprite, TR1 and TR2's octagon (the sprite they would
+    // take shows as a square).
+    if (item != Lara_GetItem() || type == SHADOW_TYPE_SPRITE) {
+        type = g_TRVersion >= 3 ? SHADOW_TYPE_SPRITE : SHADOW_TYPE_OCTAGON;
+    }
+#endif
+    if (type == SHADOW_TYPE_SPRITE) {
         if (M_DrawSprite(size, bounds, size_bounds, item)) {
             return;
         }
@@ -1245,6 +1254,6 @@ void OutputSource_Shadows_Draw(
     Matrix_RotY(item->interp.result.rot.y);
     Matrix_ScaleX((1 << W2V_SHIFT) * x_size / UNIT_SHADOW);
     Matrix_ScaleZ((1 << W2V_SHIFT) * z_size / UNIT_SHADOW);
-    M_StageShadow();
+    M_StageShadow(type);
     Matrix_Pop();
 }

@@ -18,6 +18,7 @@
 // TEMP: see platform/dreamcast/dc_probe.h
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_probe.h>
+    #include <platform/dreamcast/render/shadow.h>
 #else
     #define DC_PROBE(i, stmt) stmt
 #endif
@@ -246,6 +247,12 @@ bool Object_DrawAnimatingItemWithSwap(
         ASSERT(swap_obj->mesh_count >= obj->mesh_count);
     }
 
+#if defined(__DREAMCAST__)
+    // Near Lara, with shadow volumes and object shadows chosen, its meshes
+    // cast one in place of the round shadow (left out while they cast).
+    DC_Shadow_SetCasting(
+        obj->shadow_size != 0 && DC_Shadow_TakeObjectCaster(item));
+#endif
     if (obj->shadow_size != 0) {
         OutputSource_Shadows_Draw(obj->shadow_size, bounds, item);
     }
@@ -257,6 +264,9 @@ bool Object_DrawAnimatingItemWithSwap(
     const CLIP clip = M_GetClip(obj, bounds);
     if (clip == CLIP_NOT_VISIBLE) {
         Matrix_Pop();
+#if defined(__DREAMCAST__)
+        DC_Shadow_SetCasting(false);
+#endif
         return false;
     }
 
@@ -275,6 +285,9 @@ bool Object_DrawAnimatingItemWithSwap(
         Output_DrawCuboid(&debug_bounds);
     }
     Matrix_Pop();
+#if defined(__DREAMCAST__)
+    DC_Shadow_SetCasting(false);
+#endif
     return result;
 }
 

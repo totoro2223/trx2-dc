@@ -11,6 +11,8 @@
 #include "render/pvr.h"
 #include "vmu.h"
 
+#include <trx/game/console/common.h>
+
 #include <arch/timer.h>
 #include <kos/thread.h>
 
@@ -133,13 +135,15 @@ void DC_Loading_Notice(
 
 void DC_Loading_SaveDone(const bool saved)
 {
+    // On the in-game console, where the notice before it went.
     const int result = DC_VMU_LastResult();
-    DC_Loading_Notice(
-        "QUICK SAVE",
-        !saved || result == 2  ? "Could not save the game"
-            : result == 3      ? "No VMU found: saved until the console is off"
-                               : "Saved to the VMU",
-        1200);
+    if (!saved || result == 2) {
+        Console_Error("%s", "Could not save the game");
+    } else if (result == 3) {
+        Console_Info("%s", "No VMU found: saved until the console is off");
+    } else {
+        Console_Info("%s", "Saved to the VMU");
+    }
 }
 
 void DC_Loading_End(void)
