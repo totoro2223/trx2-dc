@@ -82,6 +82,7 @@ static void M_Draw(const bool force)
         line1, sizeof(line1), "LOADING  %ld%%   %s", (long)percent,
         M_GetVersion());
     DC_PVR_DrawLoadingScreen(line1, m_Priv.name, percent);
+    DC_VMU_ShowLoading(percent);
 }
 
 static void M_OnRead(const char *const name, const size_t bytes)
@@ -162,4 +163,7 @@ void DC_Loading_End(void)
     // picture again).
     DC_PVR_SetPicture(nullptr);
     m_Priv.active = false;
+    // The VMU goes back to its logo; the level's screens redraw themselves.
+    DC_VMU_ShowLoading(-1);
+    DC_VMU_DrawLogo();
 }

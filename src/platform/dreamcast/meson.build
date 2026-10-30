@@ -65,6 +65,7 @@ dc_sources = files(
   'posix_compat.c',
   'render/batcher.c',
   'render/compositor.c',
+  'render/debug_boxes.c',
   'render/emit_sh4.S',
   'render/xform_sh4.S',
   'render/xform_obj_sh4.S',
@@ -77,6 +78,7 @@ dc_sources = files(
   'sdl_compat.c',
   'video.c',
   'vmu.c',
+  'vmu_hud.c',
 )
 
 # The SH-4 has fsqrt, which GCC only uses when sqrtf need not set errno;

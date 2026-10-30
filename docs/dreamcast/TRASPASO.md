@@ -165,7 +165,10 @@ Desde PowerShell, en la raíz del repo:
 - `dc_lua_alloc.c`: Lua en su propia región (2,5 MB) para no fragmentar el
   heap. Scripts embebidos como bytecode `luac -s` (`tools/embed_trx_lua.py`,
   opción `lua_compiler`).
-- `vmu.c`: guardado en VMU (refleja los ficheros de partida del RAM disk).
+- `vmu.c`: guardado en VMU (refleja los ficheros de partida del RAM disk),
+  logo en la pantalla de la VMU y aviso + beep al guardar. `vmu_hud.c`: la
+  pantalla de la VMU en juego (L + R + B: logo / estadísticas / buscador de
+  secretos). Flycast la muestra con `rend.FloatVMUs = yes` en `emu.cfg`.
 - En DC el anillo de opciones solo tiene pasaporte + Gráficos, y Gráficos
   solo la pestaña Rendering (recorte de memoria; Sonido/Controles/Juego se
   reimplementarán más adelante).

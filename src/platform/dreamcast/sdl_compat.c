@@ -92,6 +92,12 @@ static bool m_QuickSaveHeld = false;
 static bool m_QuickSavePressed = false;
 static bool m_QuickLoadHeld = false;
 static bool m_QuickLoadPressed = false;
+// L + R + B: the next thing on the VMU's screen (vmu_hud.c).
+static bool m_VMUModeHeld = false;
+static bool m_VMUModePressed = false;
+// L + R + Up: the debug bounding boxes on and off.
+static bool m_BoxesHeld = false;
+static bool m_BoxesPressed = false;
 
 static const char *const m_ButtonNames[SDL_CONTROLLER_BUTTON_MAX] = {
     [SDL_CONTROLLER_BUTTON_A] = "a",
@@ -278,8 +284,9 @@ static void M_PollController(void)
 
     // L is a modifier: with R it looks (a paddle, so that R alone keeps
     // walking), and in TR3 with Y it crouches and with A it sprints. L + R
-    // with Start or Down are the quick save and load, which keep those two
-    // buttons from doing their own work.
+    // with Start or Down are the quick save and load, with B the VMU's
+    // screen and with Up the debug boxes, which keep those buttons from doing
+    // their own work.
     const bool l = state->ltrig >= DC_TRIGGER_BUTTON_THRESHOLD;
     const bool r = state->rtrig >= DC_TRIGGER_BUTTON_THRESHOLD;
     const bool chord = l && r;
@@ -293,12 +300,22 @@ static void M_PollController(void)
         m_QuickLoadPressed = true;
     }
     m_QuickLoadHeld = quick_load;
+    const bool vmu_mode = chord && (b & CONT_B);
+    if (vmu_mode && !m_VMUModeHeld) {
+        m_VMUModePressed = true;
+    }
+    m_VMUModeHeld = vmu_mode;
+    const bool boxes = chord && (b & CONT_DPAD_UP);
+    if (boxes && !m_BoxesHeld) {
+        m_BoxesPressed = true;
+    }
+    m_BoxesHeld = boxes;
     const bool tr3 = g_TRVersion >= 3;
     const bool a = b & CONT_A;
     const bool y = b & CONT_Y;
 
     M_SetButton(SDL_CONTROLLER_BUTTON_A, a && !(tr3 && l));
-    M_SetButton(SDL_CONTROLLER_BUTTON_B, b & CONT_B);
+    M_SetButton(SDL_CONTROLLER_BUTTON_B, (b & CONT_B) && !chord);
     M_SetButton(SDL_CONTROLLER_BUTTON_X, b & CONT_X);
     M_SetButton(SDL_CONTROLLER_BUTTON_Y, y && !(tr3 && l));
     M_SetButton(SDL_CONTROLLER_BUTTON_PADDLE1, chord);
@@ -310,7 +327,7 @@ static void M_PollController(void)
     M_SetButton(SDL_CONTROLLER_BUTTON_BACK, b & CONT_D);
     M_SetButton(SDL_CONTROLLER_BUTTON_LEFTSTICK, b & CONT_Z);
     M_SetButton(SDL_CONTROLLER_BUTTON_RIGHTSTICK, b & CONT_C);
-    M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_UP, b & CONT_DPAD_UP);
+    M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_UP, (b & CONT_DPAD_UP) && !chord);
     M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_DOWN, (b & CONT_DPAD_DOWN) && !chord);
     M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_LEFT, b & CONT_DPAD_LEFT);
     M_SetButton(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, b & CONT_DPAD_RIGHT);
@@ -346,6 +363,21 @@ bool DC_Input_TakeQuickLoad(void)
 {
     const bool pressed = m_QuickLoadPressed;
     m_QuickLoadPressed = false;
+    return pressed;
+}
+
+bool DC_Input_TakeVMUMode(void)
+{
+    const bool pressed = m_VMUModePressed;
+    m_VMUModePressed = false;
+    return pressed;
+}
+
+// Whether L + R + Up was pressed since last asked.
+bool DC_Input_TakeDebugBoxes(void)
+{
+    const bool pressed = m_BoxesPressed;
+    m_BoxesPressed = false;
     return pressed;
 }
 

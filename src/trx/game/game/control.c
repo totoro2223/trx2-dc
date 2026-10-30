@@ -39,9 +39,11 @@
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_watchdog.h>
     #include <platform/dreamcast/loading.h>
+    #include <platform/dreamcast/vmu.h>
 
 bool DC_Input_TakeQuickSave(void);
 bool DC_Input_TakeQuickLoad(void);
+bool DC_Input_TakeDebugBoxes(void);
 #endif
 
 #define M_FRAME_BUFFER(key)                                                    \
@@ -172,6 +174,13 @@ GF_COMMAND Game_Control(const bool demo_mode)
         }
         if (DC_Input_TakeQuickLoad()) {
             g_InputDB.quick_load = true;
+        }
+        DC_VMU_Hud_Update();
+        if (DC_Input_TakeDebugBoxes()) {
+            CONFIG_TOGGLE(g_Config.debug.enable_debug_bounding_boxes);
+            Console_Info(
+                "Bounding boxes: %s",
+                g_Config.debug.enable_debug_bounding_boxes ? "on" : "off");
         }
     }
 #endif

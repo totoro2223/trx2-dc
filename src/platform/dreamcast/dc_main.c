@@ -97,6 +97,7 @@ static void M_SetupEnvironment(void)
     setenv("TRX_SAVES_DIR", "/ram", 0);
     setenv("TRX_SCREENSHOTS_DIR", "/ram/trx/screenshots", 0);
     DC_VMU_RestoreSaves(getenv("TRX_SAVES_DIR"));
+    DC_VMU_DrawLogo();
 }
 
 typedef struct {

@@ -1090,3 +1090,12 @@ de contar la pared hasta el techo de la sala y de la prueba del techo; corregido
 en la 855, sin ver todavía. Nada medido en fps. Las sondas `ctest`, `chide`,
 `croom`, `qtest` y `qhide` cuentan trozos y portales; el d-pad arriba enciende
 las cajas solo con `DC_PROBES=1`.
+
+## 30/10/2026: módulo VMU y cajas de depuración
+
+`vmu.c` (logo, aviso de guardado con pitido, porcentaje de carga) y `vmu_hud.c`
+(estadísticas y detector de secretos, ciclo L+R+B) nuevos; `sdl_compat.c` gestiona
+los acordes L+R+B y L+R+Arriba; `debug_boxes.c` dibuja las cajas de objetos y de
+salas. Los secretos se cuentan al cargar el nivel (`Stats_ScanLevel` en
+`pipeline.c`). El quicksave colgaba por bloquear un frame Maple no enviado. Pruebas
+pendientes en `PRUEBAS_PENDIENTES.md` T72-T78.

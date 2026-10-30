@@ -25,6 +25,7 @@
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_bench.h>
     #include <platform/dreamcast/dc_settings.h>
+    #include <platform/dreamcast/vmu.h>
 #endif
 
 static void M_PlayIntroFMVs(void)
@@ -87,6 +88,8 @@ RESULT GF_RunTitle(GF_COMMAND *const out_cmd)
     if (!m_LegalShown) {
         M_ShowLegalPictures();
     }
+    // Over whatever the last save left on the card's screen.
+    DC_VMU_DrawLogo();
 #endif
     SG_Manager_UnbindSlot();
     GameStringTable_Apply(nullptr);

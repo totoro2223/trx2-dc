@@ -21,5 +21,10 @@ bool Pickup_Trigger(int16_t item_num);
 const OBJECT_BOUNDS *Pickup_Bounds(void);
 void Pickup_Collision(int16_t item_num, ITEM *lara_item, COLL_INFO *coll);
 uint32_t Pickup_GetSecretMask(const ITEM *item);
+#if defined(__DREAMCAST__)
+// The bit a secret item sets when it is picked up, for a level counted after
+// its items were set up (Level_Pipeline_Load).
+void Pickup_SetSecretMask(ITEM *item, uint32_t secret_mask);
+#endif
 int16_t Pickup_FindNearbyCrowbarPryPickup(void);
 void Pickup_Collect(GAME_VECTOR pos, PICKUP_MODE mode);

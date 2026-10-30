@@ -68,7 +68,8 @@
 // camera are neither transformed nor drawn. Cells of this size, doubled until
 // a room has no more chunks than this; rooms with fewer vertices stay whole.
 #define M_CHUNK_CELL 2048
-#define M_MAX_CHUNKS 128
+// (128 made the cell double in the big rooms: 4096 or 8192 units a chunk.)
+#define M_MAX_CHUNKS 256
 #define M_CHUNK_MIN_VERTICES 256
 
 typedef struct {
@@ -96,6 +97,15 @@ typedef struct {
     int32_t run;
     float z_near;
 } M_RANGE;
+
+// What the walls hide of a room's chunks from one sector of the grid about it,
+// worked out the first time the eye is there and kept (M_ChunkHiddenAt): a
+// chunk is hidden only if it is from every point sampled in the sector.
+typedef struct {
+    int16_t bucket; // the eye's height, in steps of M_SEE_Y
+    uint8_t known[M_MAX_CHUNKS / 8];
+    uint8_t hidden[M_MAX_CHUNKS / 8];
+} M_SEE_CELL;
 
 typedef struct M_BINDING {
     OUTPUT_MESH *mesh;
@@ -150,6 +160,10 @@ typedef struct M_BINDING {
     // Per sector of the room (z + x * depth): a face you can see through lies
     // on or beside it, so a wall there hides nothing (M_MarkSeeThrough).
     uint8_t *see_through;
+    // Its sectors' cells, with M_SEE_PAD sectors about the room, made as the
+    // eye comes to them.
+    M_SEE_CELL **see_cells;
+    int32_t see_cell_count;
     // Per sector: the highest point of the faces standing on it (room space,
     // y down), where a wall there stops hiding what is above it.
     float *wall_top;
@@ -166,7 +180,7 @@ typedef struct M_BINDING {
 
 // TEMP: boxes of the rooms and their chunks, drawn over the scene while the
 // d-pad's up has them on (DC_Debug_DrawRoomBoxes).
-#define M_DEBUG_BOXES 192
+#define M_DEBUG_BOXES 480
 typedef struct {
     MATRIX w;
     float lo[3];
@@ -176,6 +190,9 @@ typedef struct {
 static M_DEBUG_BOX m_DebugBoxList[M_DEBUG_BOXES];
 static int32_t m_DebugBoxCount = 0;
 static bool m_DebugRooms = false;
+// TEMP: R + d-pad up turns the occlusion (rays, chunks, rooms, objects) off and
+// on, to see a view with and without it.
+bool g_DC_NoOcclusion = false;
 // Rooms transformed this frame: there is a level in view to switch it on for.
 static int32_t m_DebugFrameRooms = 0;
 // Per chunk of the room just culled: 0 outside the view, 1 drawn, 2 hidden by
@@ -2632,7 +2649,7 @@ static bool M_SphereShows(
 // sectors on its sides.
 #define M_SEE_THIN 64.0f
 // How far under the top of its faces a wall starts to hide, for a slope.
-#define M_WALL_TOP_MARGIN 128.0f
+#define M_WALL_TOP_MARGIN 384.0f
 // How far a ray is followed across the grid.
 #define M_SIGHT_STEPS 48
 // Pulled in from the chunk's edges, so that its corners lie in it.
@@ -2848,7 +2865,7 @@ static bool M_SightBlocked(
 }
 
 // Whether the walls hide the whole of the chunk from the eye: five rays, to its
-// middle and its four corners, all stopped.
+// middle and its four corners, at two heights, all stopped.
 static bool M_ChunkHidden(const M_SIGHT *const s, const M_CHUNK *const chunk)
 {
     const int32_t foot[4] = {
@@ -2863,22 +2880,95 @@ static bool M_ChunkHidden(const M_SIGHT *const s, const M_CHUNK *const chunk)
                           MAX(chunk->hi[0] - M_SIGHT_INSET, mid_x) };
     const float zs[3] = { mid_z, MIN(chunk->lo[2] + M_SIGHT_INSET, mid_z),
                           MAX(chunk->hi[2] - M_SIGHT_INSET, mid_z) };
-    const float y = (chunk->lo[1] + chunk->hi[1]) * 0.5f;
-    {
+    // At the middle of its height and at its top (y grows down): a tall chunk
+    // (a hill) can show over a wall that hides its middle.
+    const float ys[2] = { (chunk->lo[1] + chunk->hi[1]) * 0.5f, chunk->lo[1] };
+    for (int32_t h = 0; h < 2; h++) {
+        const float y = ys[h];
         const float to[3] = { mid_x, y, mid_z };
         if (!M_SightBlocked(s, to, foot)) {
             return false;
         }
-    }
-    for (int32_t a = 1; a < 3; a++) {
-        for (int32_t b = 1; b < 3; b++) {
-            const float to[3] = { xs[a], y, zs[b] };
-            if (!M_SightBlocked(s, to, foot)) {
-                return false;
+        for (int32_t a = 1; a < 3; a++) {
+            for (int32_t b = 1; b < 3; b++) {
+                const float to[3] = { xs[a], y, zs[b] };
+                if (!M_SightBlocked(s, to, foot)) {
+                    return false;
+                }
             }
         }
     }
     return true;
+}
+
+// The sectors about a room the cells cover, the eye's height step, and how
+// far from the sector's middle the other samples of the eye lie.
+#define M_SEE_PAD 8
+#define M_SEE_Y 512.0f
+#define M_SEE_SPREAD 384.0f
+
+// Whether the walls hide chunk k from the whole of the sector the eye is in:
+// from its middle, its corners and where the eye is, each seeing the chunk as
+// M_ChunkHidden asks. Kept per sector and height step; an eye too far from the
+// room's grid is sampled only.
+static bool M_ChunkHiddenAt(
+    M_BINDING *const bind, const M_SIGHT *const sight, const int32_t k)
+{
+    const ROOM *const room = sight->room;
+    const float inv = 1.0f / WALL_L;
+    const int32_t sx = (int32_t)floorf(sight->eye[0] * inv);
+    const int32_t sz = (int32_t)floorf(sight->eye[2] * inv);
+    M_SEE_CELL *cell = nullptr;
+    if (sx >= -M_SEE_PAD && sx < room->size.x + M_SEE_PAD && sz >= -M_SEE_PAD
+        && sz < room->size.z + M_SEE_PAD) {
+        const int32_t depth = room->size.z + 2 * M_SEE_PAD;
+        if (bind->see_cells == nullptr) {
+            bind->see_cell_count = (room->size.x + 2 * M_SEE_PAD) * depth;
+            bind->see_cells =
+                Memory_Alloc(sizeof(M_SEE_CELL *) * bind->see_cell_count);
+            memset(bind->see_cells, 0, sizeof(M_SEE_CELL *) * bind->see_cell_count);
+        }
+        M_SEE_CELL **const slot =
+            &bind->see_cells[(sx + M_SEE_PAD) * depth + (sz + M_SEE_PAD)];
+        if (*slot == nullptr) {
+            *slot = Memory_Alloc(sizeof(M_SEE_CELL));
+            memset(*slot, 0, sizeof(M_SEE_CELL));
+            (*slot)->bucket = INT16_MIN;
+        }
+        cell = *slot;
+        const int16_t bucket = (int16_t)floorf(sight->eye[1] * (1.0f / M_SEE_Y));
+        if (cell->bucket != bucket) {
+            memset(cell, 0, sizeof(*cell));
+            cell->bucket = bucket;
+        }
+        if (cell->known[k >> 3] & (1 << (k & 7))) {
+            return (cell->hidden[k >> 3] & (1 << (k & 7))) != 0;
+        }
+    }
+    static const float spread[6][2] = {
+        { 0.0f, 0.0f },
+        { 0.0f, 0.0f },
+        { -M_SEE_SPREAD, -M_SEE_SPREAD },
+        { M_SEE_SPREAD, -M_SEE_SPREAD },
+        { -M_SEE_SPREAD, M_SEE_SPREAD },
+        { M_SEE_SPREAD, M_SEE_SPREAD },
+    };
+    bool hidden = true;
+    for (int32_t i = 0; i < 6 && hidden; i++) {
+        M_SIGHT at = *sight;
+        if (i > 0) {
+            at.eye[0] = (sx + 0.5f) * WALL_L + spread[i][0];
+            at.eye[2] = (sz + 0.5f) * WALL_L + spread[i][1];
+        }
+        hidden = M_ChunkHidden(&at, &bind->chunks[k]);
+    }
+    if (cell != nullptr) {
+        cell->known[k >> 3] |= (uint8_t)(1 << (k & 7));
+        if (hidden) {
+            cell->hidden[k >> 3] |= (uint8_t)(1 << (k & 7));
+        }
+    }
+    return hidden;
 }
 
 bool DC_MeshBatcher_RayBlocked(
@@ -2887,7 +2977,7 @@ bool DC_MeshBatcher_RayBlocked(
 {
 #if TRX_DC_OCCLUDE
     M_BINDING *const bind = M_GetBinding(batcher, mesh);
-    if (bind == nullptr || room->sectors == nullptr || room->size.x <= 0
+    if (g_DC_NoOcclusion || bind == nullptr || room->sectors == nullptr || room->size.x <= 0
         || room->size.z <= 0
         || (bind->see_through != nullptr
             && (bind->see_width != room->size.x
@@ -2926,7 +3016,8 @@ bool DC_MeshBatcher_RayBlocked(
 // and the room goes out whole.
 static int32_t M_CullChunks(
     MESH_BATCHER *const batcher, M_BINDING *const bind, const ROOM *const room,
-    const float mv[4][4], const float scale, const M_XFORM *const c)
+    const float mv[4][4], const float scale, const M_XFORM *const c,
+    const MATRIX *const w)
 {
     bool shows[M_MAX_CHUNKS];
     float z_near[M_MAX_CHUNKS];
@@ -2934,8 +3025,8 @@ static int32_t M_CullChunks(
     M_SIGHT sight = {};
     bool sees = false;
 #if TRX_DC_OCCLUDE
-    if (room != nullptr && room->sectors != nullptr && room->size.x > 0
-        && room->size.z > 0 && scale > 0.0f && !m_Frame.ortho
+    if (!g_DC_NoOcclusion && room != nullptr && room->sectors != nullptr
+        && room->size.x > 0 && room->size.z > 0 && scale > 0.0f && !m_Frame.ortho
         && (bind->see_through == nullptr
             || (bind->see_width == room->size.x
                 && bind->see_depth == room->size.z))) {
@@ -2958,6 +3049,38 @@ static int32_t M_CullChunks(
         sees = true;
     }
 #endif
+#if TRX_DC_OCCLUDE
+    // TEMP: in the room the eye is in, a tile on the floor for each sector
+    // near it: blue the eye sees its middle, yellow the walls stop the ray,
+    // grey a wall.
+    if (sees && m_DebugRooms && sight.eye[0] >= 0.0f && sight.eye[2] >= 0.0f
+        && sight.eye[0] < room->size.x * WALL_L
+        && sight.eye[2] < room->size.z * WALL_L) {
+        const int32_t reach = 8;
+        const int32_t ex = (int32_t)(sight.eye[0] * (1.0f / WALL_L));
+        const int32_t ez = (int32_t)(sight.eye[2] * (1.0f / WALL_L));
+        const float y = MIN(MAX(sight.eye[1], sight.y_lo), sight.y_hi);
+        for (int32_t x = MAX(0, ex - reach); x <= MIN(room->size.x - 1, ex + reach);
+             x++) {
+            for (int32_t z = MAX(0, ez - reach);
+                 z <= MIN(room->size.z - 1, ez + reach); z++) {
+                const float to[3] = { (x + 0.5f) * WALL_L, y, (z + 0.5f) * WALL_L };
+                const int32_t foot[4] = { x, z, x, z };
+                const bool wall =
+                    room->sectors[z + x * room->size.z].floor.height == NO_HEIGHT;
+                const float lo[3] = { x * WALL_L + 48.0f, sight.y_hi - 32.0f,
+                                      z * WALL_L + 48.0f };
+                const float hi[3] = { (x + 1) * WALL_L - 48.0f, sight.y_hi,
+                                      (z + 1) * WALL_L - 48.0f };
+                M_DebugBox(
+                    w, lo, hi,
+                    wall                                ? 0xC0808080u
+                        : M_SightBlocked(&sight, to, foot) ? 0xC0FFFF00u
+                                                           : 0xC00080FFu);
+            }
+        }
+    }
+#endif
     for (int32_t k = 0; k < bind->chunk_count; k++) {
         const M_CHUNK *const chunk = &bind->chunks[k];
         const float *const p = chunk->center;
@@ -2972,7 +3095,7 @@ static int32_t M_CullChunks(
         m_ChunkState[k] = shows[k] ? 1 : 0;
         if (shows[k] && sees) {
             g_DC_ProbeUs[DC_PROBE_C_TESTED]++; // TEMP
-            if (M_ChunkHidden(&sight, chunk)) {
+            if (M_ChunkHiddenAt(bind, &sight, k)) {
                 g_DC_ProbeUs[DC_PROBE_C_HIDDEN]++; // TEMP
                 shows[k] = false;
                 m_ChunkState[k] = 2;
@@ -3300,7 +3423,7 @@ static bool M_TransformInstance(
             M_PrepareFaceLights(batcher, &il, mv);
         }
         const int32_t nvr = bind->chunk_count > 0
-            ? M_CullChunks(batcher, bind, inst->room, mv, scale, &c)
+            ? M_CullChunks(batcher, bind, inst->room, mv, scale, &c, &inst->wmatrix)
             : -1;
         batcher->vrange_count = nvr;
         if (nvr >= 0) {
@@ -6090,6 +6213,12 @@ static void M_BuildChunks(M_BINDING *const bind)
         memcpy(chunk->lo, lo, sizeof(lo));
         memcpy(chunk->hi, hi, sizeof(hi));
     }
+#if defined(TRX_DC_PROBES)
+    // TEMP: the cell of each room cut in chunks, to see which are coarse.
+    LOG_INFO(
+        "[chunks] cell %d, grid %dx%dx%d, %d chunks, %d vertices", cell, dim[0],
+        dim[1], dim[2], chunk_count, nv);
+#endif
     bind->chunks = chunks;
     bind->chunk_count = chunk_count;
     bind->always_start = always_start;
@@ -6356,6 +6485,12 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     Memory_Free(bind->twin);
     Memory_Free(bind->env);
     Memory_Free(bind->chunks);
+    if (bind->see_cells != nullptr) {
+        for (int32_t i = 0; bind->see_cell_count > i; i++) {
+            Memory_Free(bind->see_cells[i]);
+        }
+    }
+    Memory_Free(bind->see_cells);
     Memory_Free(bind->see_through);
     Memory_Free(bind->wall_top);
     Memory_Free(bind->transp);
@@ -6704,6 +6839,17 @@ static bool M_ProjectWorld(const float p[3], float out[3])
     return true;
 }
 
+// For the debug boxes (debug_boxes.c): the frame's camera and a staged matrix.
+bool DC_Batcher_ProjectWorld(const float p[3], float out[3])
+{
+    return M_ProjectWorld(p, out);
+}
+
+void DC_Batcher_WorldMatrix(const MATRIX *const m, float out[3][4])
+{
+    M_WorldMatrix(m, out);
+}
+
 // A box's faces by corner (bit 0: x, bit 1: y, bit 2: z; set for the maximum).
 static const int8_t m_BoxFaces[6][4] = {
     { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 },
@@ -6987,14 +7133,6 @@ static void M_KeepSoftCasters(const float center[3])
 #if defined(TRX_DC_WATCHDOG)
     static int32_t frame = 0;
     if (++frame % 120 == 0) {
-        LOG_DEBUG(
-            "soft shadow: %d casters, %d lights, %d faces, first dir %.2f "
-            "%.2f %.2f strength %.2f, relief %d",
-            m_CasterCount, count, (int)m_SoftFaces, m_Soft.lights[0].dir[0],
-            m_Soft.lights[0].dir[1], m_Soft.lights[0].dir[2],
-            m_Soft.lights[0].strength, (int)(m_BumpFaces / 120));
-    }
-    if (frame % 120 == 0) {
         m_BumpFaces = 0;
     }
     m_SoftFaces = 0;
@@ -7472,6 +7610,15 @@ static void M_DebugLine(const float a[3], const float b[3], const uint32_t argb)
     DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
 }
 
+void DC_Debug_Box(
+    const MATRIX *const w, const float lo[3], const float hi[3],
+    const uint32_t argb)
+{
+    if (m_DebugRooms) {
+        M_DebugBox(w, lo, hi, argb);
+    }
+}
+
 void DC_Debug_RoomBox(
     const ROOM *const room, const MATRIX *const w, const uint32_t argb)
 {
@@ -7496,9 +7643,16 @@ void DC_Debug_DrawRoomBoxes(void)
     const maple_device_t *const pad = maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
     const cont_state_t *const state =
         pad != nullptr ? (const cont_state_t *)maple_dev_status(pad) : nullptr;
-    const bool up = state != nullptr && (state->buttons & CONT_DPAD_UP) != 0;
+    // (L + R + up is the collision boxes' (debug_boxes.c).)
+    const bool up = state != nullptr && (state->buttons & CONT_DPAD_UP) != 0
+        && !(state->ltrig > 128 && state->rtrig > 128);
     if (up && !was_up && m_DebugFrameRooms > 0) {
-        m_DebugRooms = !m_DebugRooms;
+        if (state->rtrig > 128) {
+            g_DC_NoOcclusion = !g_DC_NoOcclusion;
+            LOG_INFO("occlusion %s", g_DC_NoOcclusion ? "off" : "on");
+        } else {
+            m_DebugRooms = !m_DebugRooms;
+        }
     }
     was_up = up;
 #endif
@@ -7566,25 +7720,6 @@ void DC_Shadow_DrawVolumes(void)
         }
         first = end;
     }
-#if defined(TRX_DC_WATCHDOG)
-    static int32_t frame = 0;
-    static int32_t lit_frames = 0;
-    lit_frames += dir[1] < 0.999f;
-    const DC_UNIFORM_LIGHTS *const passing = m_Frame.lights;
-    if (++frame % 120 == 0) {
-        LOG_DEBUG(
-            "shadow: %d casters, %d volumes, receivers %d/%d, lit %d/120, "
-            "room lights %d, passing %d, dir %.2f %.2f %.2f",
-            m_CasterCount, volumes, m_ShadowReceivers, m_ShadowRooms,
-            lit_frames,
-            m_Casters[0].room != nullptr ? m_Casters[0].room->num_lights : -1,
-            passing != nullptr ? (int)passing->num_lights : -1, dir[0], dir[1],
-            dir[2]);
-        lit_frames = 0;
-        m_ShadowReceivers = 0;
-        m_ShadowRooms = 0;
-    }
-#endif
     m_CasterCount = 0;
 }
 

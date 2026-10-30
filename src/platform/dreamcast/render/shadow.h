@@ -39,6 +39,8 @@ void DC_Shadow_DrawVolumes(void);
 // hide is told by DC_Debug_RoomBox, with the matrix it would be drawn with.
 void DC_Debug_DrawRoomBoxes(void);
 void DC_Debug_RoomBox(const ROOM *room, const MATRIX *w, uint32_t argb);
+// The same for any box (lo, hi in the space of w): an object the walls hide.
+void DC_Debug_Box(const MATRIX *w, const float lo[3], const float hi[3], uint32_t argb);
 
 // Draws the shadow map from the casters the last frame kept. Goes before the
 // frame starts.

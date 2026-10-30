@@ -46,20 +46,7 @@ void OutputSource_Lightnings_Shutdown(void)
     DC_STUB();
 }
 
-void OutputSource_Misc_Init(void)
-{
-    DC_STUB();
-}
-
-void OutputSource_Misc_Shutdown(void)
-{
-    DC_STUB();
-}
-
-void OutputSource_Misc_StageCuboid(RGBA_8888 color)
-{
-    DC_STUB();
-}
+// OutputSource_Misc_Init, _Shutdown and _StageCuboid: render/debug_boxes.c.
 
 void OutputSource_Misc_StageSphere(RGBA_8888 color)
 {

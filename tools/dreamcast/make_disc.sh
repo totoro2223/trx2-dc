@@ -400,6 +400,10 @@ for f in "${MUSIC_FILES[@]}"; do
   # Only numbered tracks: the classic TR2's audio/cdaudio.mp3 is every
   # track in one, which the game cannot use.
   [[ "${name%.*}" =~ ^[0-9]+$ ]] || continue
+  # TRX_DC_MUSIC_KEEP="29 37": only those tracks (small test discs).
+  if [ -n "${TRX_DC_MUSIC_KEEP:-}" ] && [[ " $TRX_DC_MUSIC_KEEP " != *" $((10#${name%.*})) "* ]]; then
+    continue
+  fi
   out="$MUSIC_CACHE/${name%.*}.wav"
   if [ ! -f "$out" ] && command -v ffmpeg > /dev/null; then
     ffmpeg -hide_banner -loglevel error -y -i "$f" -ac 2 -ar 44100 \

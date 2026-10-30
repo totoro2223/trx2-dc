@@ -248,7 +248,7 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "plprep", "pvol", "ppsoft", "pdrawi", "ptransp", "pntransp", "udraw", "uops",
     "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
     "rall", "rplain", "rdyn", "rflick", "rvary", "rnw", "rfog", "rhit",
-    "ctest", "chide", "croom", "qtest", "qhide",
+    "ctest", "chide", "croom", "qtest", "qhide", "otest", "ohide", "otime",
 };
 
 static void M_StatsBeginScene(void)
@@ -609,30 +609,22 @@ static void M_StatsEndScene(void)
     char probes[2048];
     len = snprintf(probes, sizeof(probes), "[probe]");
     for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
+        // The ones that stayed at nought say nothing; the line is shorter.
+        if (m_Stats.probe_sum[i] == 0 && m_Stats.probe_max[i] == 0) {
+            continue;
+        }
         len += snprintf(
             probes + len, sizeof(probes) - len, " %s=%lu/%lu", m_ProbeNames[i],
             (unsigned long)(m_Stats.probe_sum[i] / m_Stats.frames),
             (unsigned long)m_Stats.probe_max[i]);
     }
-    // Lua events of the window: "e<type>=<us per frame>x<fires per frame>".
-    char events[320];
-    len = snprintf(events, sizeof(events), "[luaev]");
-    for (int32_t i = 0; i < DC_PROBE_LUA_EVENTS && len < 300; i++) {
-        if (g_DC_LuaEvN[i] != 0) {
-            len += snprintf(
-                events + len, sizeof(events) - len, " e%d=%lux%lu", (int)i,
-                (unsigned long)(g_DC_LuaEvUs[i] / m_Stats.frames),
-                (unsigned long)(g_DC_LuaEvN[i] / m_Stats.frames));
-        }
-    }
     memset(g_DC_LuaEvUs, 0, sizeof(g_DC_LuaEvUs));
     memset(g_DC_LuaEvN, 0, sizeof(g_DC_LuaEvN));
-    // Through the log thread: written straight to the serial port, the three
+    // Through the log thread: written straight to the serial port, the two
     // lines held the game up for a frame every window.
     DC_PROBE(
         DC_PROBE_LOG, DC_Watchdog_Print(line); DC_Watchdog_Print("\n");
-        DC_Watchdog_Print(probes); DC_Watchdog_Print("\n");
-        DC_Watchdog_Print(events); DC_Watchdog_Print("\n"));
+        DC_Watchdog_Print(probes); DC_Watchdog_Print("\n"));
     memset(m_Stats.sum, 0, sizeof(m_Stats.sum));
     memset(m_Stats.max, 0, sizeof(m_Stats.max));
     memset(m_Stats.probe_sum, 0, sizeof(m_Stats.probe_sum));

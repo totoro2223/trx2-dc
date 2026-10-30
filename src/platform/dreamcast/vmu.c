@@ -15,8 +15,11 @@
 #include <trx/core/log.h>
 
 #include <dc/maple.h>
+#include <dc/maple/vmu.h>
+#include <dc/vmu_fb.h>
 #include <dc/vmu_pkg.h>
 #include <dc/vmufs.h>
+#include <kos/thread.h>
 
 #include <ctype.h>
 #include <stdint.h>
@@ -127,6 +130,99 @@ static void M_FillIcon(vmu_pkg_t *const pkg, uint8_t *const icon)
         }
     }
     pkg->icon_data = icon;
+}
+
+static void M_WaitIdle(maple_device_t *card);
+
+void DC_VMU_DrawLogo(void)
+{
+    // The last picture may still be on its way, and a screen that is busy
+    // drops the command.
+    for (int i = 0;; i++) {
+        maple_device_t *const dev = maple_enum_type(i, MAPLE_FUNC_LCD);
+        if (dev == nullptr) {
+            break;
+        }
+        M_WaitIdle(dev);
+    }
+    // The save icon's letters and frame, centred; '.' is a dark pixel.
+    char screen[VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT + 1];
+    const int left = (VMU_SCREEN_WIDTH - M_ICON_SIZE) / 2;
+    for (int y = 0; y < VMU_SCREEN_HEIGHT; y++) {
+        for (int x = 0; x < VMU_SCREEN_WIDTH; x++) {
+            const bool dark = x >= left && x < left + M_ICON_SIZE
+                && M_IconPixel(x - left, y) >= 2;
+            screen[y * VMU_SCREEN_WIDTH + x] = dark ? '.' : ' ';
+        }
+    }
+    screen[VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT] = '\0';
+    vmu_set_icon(screen);
+}
+
+void DC_VMU_ShowLoading(const int percent)
+{
+    static int shown = -1;
+    if (percent == shown) {
+        return;
+    }
+    maple_device_t *const vmu = maple_enum_type(0, MAPLE_FUNC_LCD);
+    if (vmu == nullptr) {
+        return;
+    }
+    shown = percent < 0 ? -1 : percent;
+    if (percent < 0) {
+        return;
+    }
+    vmufb_t fb;
+    vmufb_clear(&fb);
+    char text[24];
+    snprintf(text, sizeof(text), "LOADING\n %3d%%", percent < 100 ? percent : 100);
+    vmufb_print_string_into(&fb, nullptr, 8, 3, 36, 16, 2, text);
+    // The bar: a frame, and inside it a row of columns per percent.
+    const int fill = percent * 42 / 100;
+    for (int x = 2; x < 46; x++) {
+        for (int y = 22; y < 29; y++) {
+            const bool edge = x == 2 || x == 45 || y == 22 || y == 28;
+            if (edge || x - 3 < fill) {
+                const int bit = y * VMU_SCREEN_WIDTH + x;
+                ((uint8_t *)fb.data)[bit / 8] |= (uint8_t)(0x80 >> (bit % 8));
+            }
+        }
+    }
+    vmufb_present(&fb, vmu);
+}
+
+// The card takes one command at a time and answers it a frame or so later;
+// the screen and the buzzer give up rather than wait, so this waits for them.
+// The frame is only looked at, never locked: unlocking one that has not been
+// answered is an assertion in KOS.
+static void M_WaitIdle(maple_device_t *const card)
+{
+    for (int i = 0; i < 20 && card->frame.state != MAPLE_FRAME_VACANT; i++) {
+        thd_sleep(5);
+    }
+}
+
+// Up to three lines of the VMU's own 4x6 font, on the card's screen.
+static void M_ShowText(maple_device_t *const card, const char *const text)
+{
+    vmufb_t fb;
+    vmufb_clear(&fb);
+    vmufb_print_string_into(
+        &fb, nullptr, 0, 4, VMU_SCREEN_WIDTH, VMU_SCREEN_HEIGHT - 4, 2, text);
+    M_WaitIdle(card);
+    vmufb_present(&fb, card);
+}
+
+static void M_Beep(maple_device_t *const card)
+{
+    M_WaitIdle(card);
+    vmu_beep_raw(card, 0x000065F0);
+    thd_sleep(150);
+    // A buzzer left on keeps sounding, so this one insists.
+    for (int i = 0; i < 40 && vmu_beep_raw(card, 0) == MAPLE_EAGAIN; i++) {
+        thd_sleep(5);
+    }
 }
 
 static bool M_WriteFile(const char *const path, const void *data, size_t size)
@@ -266,7 +362,18 @@ static bool M_Store(
     if (ok) {
         char card_name[VMU_FILENAME_SIZE + 1];
         M_GetCardName(name, card_name);
+        // Saved games (the ones with an icon) say so on the card's own screen.
+        if (icon) {
+            M_ShowText(card, "SAVING...\nDO NOT\nREMOVE");
+        }
         ok = vmufs_write(card, card_name, file, file_size, VMUFS_OVERWRITE) == 0;
+        if (icon) {
+            M_ShowText(card, ok ? "GAME SAVED" : "NOT SAVED");
+            if (ok) {
+                M_Beep(card);
+            }
+            DC_VMU_Hud_Hold();
+        }
         if (ok) {
             LOG_INFO(
                 "%s saved to the memory card as %s (%d blocks)", name,

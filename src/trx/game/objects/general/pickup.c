@@ -1054,6 +1054,14 @@ uint32_t Pickup_GetSecretMask(const ITEM *const item)
     return p->secret_mask;
 }
 
+#if defined(__DREAMCAST__)
+void Pickup_SetSecretMask(ITEM *const item, const uint32_t secret_mask)
+{
+    M_PRIV *const p = item->priv;
+    p->secret_mask = secret_mask;
+}
+#endif
+
 bool Pickup_Trigger(const int16_t item_num)
 {
     ITEM *const item = Item_Get(item_num);

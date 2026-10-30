@@ -9,6 +9,7 @@
 #include <trx/game/effects.h>
 #include <trx/game/fx.h>
 #include <trx/game/lara.h>
+#include <trx/game/lara/common.h>
 #include <trx/game/lara/mesh.h>
 #include <trx/game/matrix.h>
 #include <trx/game/output.h>
@@ -146,32 +147,129 @@ static int16_t m_OcclusionQueue[MAX_ROOMS];
 // What the walls leave of a portal, seen from the camera: lines of sight to a
 // grid of points across it (M_SIGHT_GRID steps a side).
 #define M_SIGHT_GRID 4
-#define M_SIGHT_SLOTS 128
 
-typedef enum {
-    M_SIGHT_ALL, // some of it shows
-    M_SIGHT_NONE, // the walls hide all of it
-} M_SIGHT_STATE;
+// The eyes the walls are asked about: where the camera is, the middle of its
+// sector of the camera room's grid, and four points about the middle. What
+// the walls hide of a portal or of a static is hidden from every one of them,
+// and kept for the sector (and a step of the eye's height) in m_SeeCache, so
+// that it neither flickers as the camera moves in the sector nor costs rays
+// every frame.
+#define M_EYES 6
+#define M_EYE_SPREAD 384
+#define M_SEE_SLOTS 1024
+#define M_SEE_Y_SHIFT 9
 
 typedef struct {
-    const PORTAL *portal;
-    uint32_t frame;
-    M_SIGHT_STATE state;
-} M_PORTAL_SIGHT;
+    const void *id; // the portal, or the static mesh
+    const ROOM *camera;
+    int16_t sector;
+    int16_t bucket;
+    bool used;
+    bool hidden;
+} M_SEE_ENTRY;
 
-static M_PORTAL_SIGHT m_Sights[M_SIGHT_SLOTS];
-static M_PORTAL_SIGHT m_SightScratch;
-static uint32_t m_SightFrame = 0;
-static bool m_SightDump = false;
+static M_SEE_ENTRY m_SeeCache[M_SEE_SLOTS];
+static const ROOM *m_SeeLevel = nullptr;
+static int32_t m_SeeRooms = -1;
+static XYZ_32 m_Eyes[M_EYES];
+static int32_t m_EyeCount = 1;
+static int32_t m_EyeSector = -1;
+static int16_t m_EyeBucket = 0;
 static const ROOM *m_SightCamera = nullptr;
 
-// Whether a wall of the room the portal is in or of the camera's lies between
-// the camera and the point.
+// Once a frame: the eyes of the camera's sector, and the cache emptied if the
+// level has changed.
+static void M_PrepareEyes(const ROOM *const camera)
+{
+    if (m_SeeLevel != Room_Get(0) || m_SeeRooms != Room_GetCount()) {
+        memset(m_SeeCache, 0, sizeof(m_SeeCache));
+        m_SeeLevel = Room_Get(0);
+        m_SeeRooms = Room_GetCount();
+    }
+    m_Eyes[0] = g_ViewPos;
+    m_EyeCount = 1;
+    m_EyeSector = -1;
+    m_EyeBucket = (int16_t)(g_ViewPos.y >> M_SEE_Y_SHIFT);
+    if (camera->size.x <= 0 || camera->size.z <= 0) {
+        return;
+    }
+    const int32_t sx = (g_ViewPos.x - camera->pos.x) >> 10;
+    const int32_t sz = (g_ViewPos.z - camera->pos.z) >> 10;
+    if (g_ViewPos.x < camera->pos.x || g_ViewPos.z < camera->pos.z
+        || sx >= camera->size.x || sz >= camera->size.z) {
+        return;
+    }
+    m_EyeSector = (int16_t)(sx * camera->size.z + sz);
+    const int32_t mx = camera->pos.x + sx * WALL_L + WALL_L / 2;
+    const int32_t mz = camera->pos.z + sz * WALL_L + WALL_L / 2;
+    static const int8_t spread[5][2] = {
+        { 0, 0 }, { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 },
+    };
+    for (int32_t i = 0; i < 5; i++) {
+        m_Eyes[m_EyeCount++] = (XYZ_32) {
+            .x = mx + spread[i][0] * M_EYE_SPREAD,
+            .y = g_ViewPos.y,
+            .z = mz + spread[i][1] * M_EYE_SPREAD,
+        };
+    }
+}
+
+// The slot of an id for the camera's sector: the entry that has it, or the one
+// to make. Null when the camera is not in a sector of its room.
+static M_SEE_ENTRY *M_SeeSlot(const void *const id, bool *const found)
+{
+    *found = false;
+    if (m_EyeSector < 0) {
+        return nullptr;
+    }
+    const uint32_t hash = ((uintptr_t)id >> 3) * 2654435761u
+        + (uint32_t)m_EyeSector * 40503u + (uint32_t)(m_EyeBucket & 0xFFFF);
+    M_SEE_ENTRY *empty = nullptr;
+    for (int32_t n = 0; n < 8; n++) {
+        M_SEE_ENTRY *const e = &m_SeeCache[(hash + n) % M_SEE_SLOTS];
+        if (e->used && e->id == id && e->camera == m_SightCamera
+            && e->sector == m_EyeSector && e->bucket == m_EyeBucket) {
+            *found = true;
+            return e;
+        }
+        if (!e->used && empty == nullptr) {
+            empty = e;
+        }
+    }
+    M_SEE_ENTRY *const e = empty != nullptr ? empty : &m_SeeCache[hash % M_SEE_SLOTS];
+    e->id = id;
+    e->camera = m_SightCamera;
+    e->sector = (int16_t)m_EyeSector;
+    e->bucket = m_EyeBucket;
+    e->used = true;
+    return e;
+}
+
+// Whether a wall of the room the point is in or of the camera's lies between
+// an eye and the point.
+static bool M_PointHiddenFrom(
+    const ROOM *const room, const XYZ_32 *const eye, const XYZ_32 *const point)
+{
+    return OutputSource_Rooms_RayBlocked(room, eye, point)
+        || (room != m_SightCamera
+            && OutputSource_Rooms_RayBlocked(m_SightCamera, eye, point));
+}
+
+// From the camera alone (what moves: the items, the effects).
 static bool M_PointHidden(const ROOM *const room, const XYZ_32 *const point)
 {
-    return OutputSource_Rooms_RayBlocked(room, &g_ViewPos, point)
-        || (room != m_SightCamera
-            && OutputSource_Rooms_RayBlocked(m_SightCamera, &g_ViewPos, point));
+    return M_PointHiddenFrom(room, &g_ViewPos, point);
+}
+
+// From every eye: one that sees the point shows it.
+static bool M_PointHiddenAll(const ROOM *const room, const XYZ_32 *const point)
+{
+    for (int32_t i = 0; i < m_EyeCount; i++) {
+        if (!M_PointHiddenFrom(room, &m_Eyes[i], point)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // The point of the portal at (u, v) steps of the grid, a corner of it for
@@ -203,61 +301,36 @@ static bool M_GridPointHidden(
         .y = room->pos.y + (int32_t)local[1],
         .z = room->pos.z + (int32_t)local[2],
     };
-    return M_PointHidden(room, &world);
+    return M_PointHiddenAll(room, &world);
 }
 
-// Whether the portal is hidden, worked out once a frame: its four corners and
-// its middle, each behind a wall of the room the portal is in or of the
-// camera's. Only all five hidden hides it.
-static const M_PORTAL_SIGHT *M_GetPortalSight(
-    const ROOM *const room, const PORTAL *const portal)
+// Whether the portal is hidden: its grid of points, each behind a wall of the
+// room the portal is in or of the camera's, from every eye. Only all of them
+// hidden hides it. Worked out once for each sector the camera is in.
+static bool M_PortalHidden(const ROOM *const room, const PORTAL *const portal)
 {
-    uint32_t slot = ((uintptr_t)portal >> 4) % M_SIGHT_SLOTS;
-    M_PORTAL_SIGHT *entry = nullptr;
-    for (int32_t n = 0; n < M_SIGHT_SLOTS;
-         n++, slot = (slot + 1) % M_SIGHT_SLOTS) {
-        M_PORTAL_SIGHT *const e = &m_Sights[slot];
-        if (e->frame == m_SightFrame && e->portal == portal) {
-            return e;
-        }
-        if (e->frame != m_SightFrame) {
-            entry = e;
-            break;
-        }
+    bool found;
+    M_SEE_ENTRY *const entry = M_SeeSlot(portal, &found);
+    if (found) {
+        return entry->hidden;
     }
-    if (entry == nullptr) {
-        entry = &m_SightScratch;
-    }
-    entry->portal = portal;
-    entry->frame = m_SightFrame;
     g_DC_ProbeUs[DC_PROBE_C_PTEST]++; // TEMP
 
-    static const int8_t points[5][2] = {
-        { 0, 0 },
-        { M_SIGHT_GRID, 0 },
-        { M_SIGHT_GRID, M_SIGHT_GRID },
-        { 0, M_SIGHT_GRID },
-        { M_SIGHT_GRID / 2, M_SIGHT_GRID / 2 },
-    };
-    char marks[6] = "";
+    // Every point of the grid, the first one seen showing it: a wide portal
+    // (the hills of an open room) can lie open between a few that are hidden.
     bool all_hidden = true;
-    for (int32_t i = 0; i < 5; i++) {
-        const bool hidden =
-            M_GridPointHidden(room, portal, points[i][0], points[i][1]);
-        marks[i] = hidden ? '#' : '.';
-        all_hidden &= hidden;
+    for (int32_t iu = 0; iu <= M_SIGHT_GRID && all_hidden; iu++) {
+        for (int32_t iv = 0; iv <= M_SIGHT_GRID && all_hidden; iv++) {
+            all_hidden = M_GridPointHidden(room, portal, iu, iv);
+        }
     }
-    marks[5] = '\0';
-    entry->state = all_hidden ? M_SIGHT_NONE : M_SIGHT_ALL;
     if (all_hidden) {
         g_DC_ProbeUs[DC_PROBE_C_PHIDE]++; // TEMP
     }
-    if (m_SightDump) {
-        LOG_INFO(
-            "[occl] room %d -> %d: %s %s", Room_GetIndex(room), portal->room_num,
-            marks, all_hidden ? "HIDDEN" : "shown");
+    if (entry != nullptr) {
+        entry->hidden = all_hidden;
     }
-    return entry;
+    return all_hidden;
 }
 
 // Marks the rooms of the list that no portal leads to unless a wall hides it
@@ -288,7 +361,7 @@ static void M_FindOccluded(const int16_t camera_room)
             OUTPUT_ROOM_BIND *const to =
                 Output_Bind_GetRoom(Room_Get(portal->room_num));
             if (!to->occluded || !to->drawn || tail >= MAX_ROOMS
-                || M_GetPortalSight(room, portal)->state == M_SIGHT_NONE) {
+                || M_PortalHidden(room, portal)) {
                 continue;
             }
             to->occluded = false;
@@ -300,6 +373,70 @@ static void M_FindOccluded(const int16_t camera_room)
             g_DC_ProbeUs[DC_PROBE_C_ROOMS]++; // TEMP
         }
     }
+}
+
+// Whether the walls hide an object whose box is a column of the given radius
+// about (x, z) from y_top to y_bottom (y grows down): five rays from the eye,
+// to the middle, the top, the bottom and the two sides across the view; only
+// all five stopped hides it. Not what lies within two blocks of the eye.
+static bool M_ObjectHidden(
+    const ROOM *const room, const XYZ_32 *const at, const int32_t radius,
+    const int32_t y_top, const int32_t y_bottom, const void *const still)
+{
+    const float dx = (float)(at->x - g_ViewPos.x);
+    const float dz = (float)(at->z - g_ViewPos.z);
+    const float dy = (float)((y_top + y_bottom) / 2 - g_ViewPos.y);
+    const float len_xz = sqrtf(dx * dx + dz * dz);
+    if (len_xz < 2.0f * WALL_L || dx * dx + dy * dy + dz * dz < 4.0f * WALL_L * WALL_L) {
+        return false;
+    }
+    DC_PROBE_START(probe);
+    g_DC_ProbeUs[DC_PROBE_O_TESTED]++; // TEMP
+    const int32_t mid = (y_top + y_bottom) / 2;
+    bool hidden = true;
+    if (still != nullptr) {
+        // A static, which stays: seen from every eye of the camera's sector,
+        // from all round it, and kept for the sector.
+        bool found;
+        M_SEE_ENTRY *const entry = M_SeeSlot(still, &found);
+        if (found) {
+            hidden = entry->hidden;
+        } else {
+            const XYZ_32 points[7] = {
+                { at->x, mid, at->z },
+                { at->x, y_top, at->z },
+                { at->x, y_bottom, at->z },
+                { at->x + radius, mid, at->z },
+                { at->x - radius, mid, at->z },
+                { at->x, mid, at->z + radius },
+                { at->x, mid, at->z - radius },
+            };
+            for (int32_t i = 0; i < 7 && hidden; i++) {
+                hidden = M_PointHiddenAll(room, &points[i]);
+            }
+            if (entry != nullptr) {
+                entry->hidden = hidden;
+            }
+        }
+    } else {
+        const int32_t sx = (int32_t)(-dz / len_xz * radius);
+        const int32_t sz = (int32_t)(dx / len_xz * radius);
+        const XYZ_32 points[5] = {
+            { at->x, mid, at->z },
+            { at->x, y_top, at->z },
+            { at->x, y_bottom, at->z },
+            { at->x + sx, mid, at->z + sz },
+            { at->x - sx, mid, at->z - sz },
+        };
+        for (int32_t i = 0; i < 5 && hidden; i++) {
+            hidden = M_PointHidden(room, &points[i]);
+        }
+    }
+    if (hidden) {
+        g_DC_ProbeUs[DC_PROBE_O_HIDDEN]++; // TEMP
+    }
+    DC_PROBE_STOP(DC_PROBE_O_US, probe);
+    return hidden;
 }
 #endif
 
@@ -569,7 +706,28 @@ static void M_DrawRoomItem(const int16_t item_num, void *const ud)
         tint.a *= item->fade / 255.0f;
         Output_PushTintOverride(tint);
     }
-    bind->drawn |= obj->draw_func(item);
+#if defined(__DREAMCAST__)
+    // The walls between the eye and a creature or an item hide it: it is not
+    // drawn (Lara never is left out).
+    bool hidden = false;
+    if (item != Lara_GetItem()) {
+        hidden = M_ObjectHidden(
+            Room_Get(item->room_num), &item->pos, WALL_L, item->pos.y - 2 * WALL_L,
+            item->pos.y, nullptr);
+        if (hidden) {
+            Matrix_Push();
+            Matrix_TranslateAbs32(item->pos);
+            const float lo[3] = { -WALL_L, -2 * WALL_L, -WALL_L };
+            const float hi[3] = { WALL_L, 0, WALL_L };
+            DC_Debug_Box(g_WMatrixPtr, lo, hi, 0xC0FF8000u);
+            Matrix_Pop();
+        }
+    }
+    if (!hidden)
+#endif
+    {
+        bind->drawn |= obj->draw_func(item);
+    }
     if (is_fading) {
         Output_PopTintOverride();
     }
@@ -651,6 +809,29 @@ static void M_DrawSingleRoom(const ROOM *const room)
             continue;
         }
 
+#if defined(__DREAMCAST__)
+        {
+            const BOUNDS_16 *const b = &obj->draw_bounds;
+            const int32_t r =
+                MAX(MAX(ABS(b->min.x), ABS(b->max.x)),
+                    MAX(ABS(b->min.z), ABS(b->max.z)))
+                    * 3 / 2
+                + 256;
+            if (M_ObjectHidden(
+                    Room_Get(mesh->room_num), &mesh->pos, r,
+                    mesh->pos.y + b->min.y - 128, mesh->pos.y + b->max.y + 128,
+                    mesh)) {
+                Matrix_Push();
+                Matrix_TranslateAbs32(mesh->pos);
+                Matrix_RotY(mesh->rot.y);
+                const float lo[3] = { b->min.x, b->min.y, b->min.z };
+                const float hi[3] = { b->max.x, b->max.y, b->max.z };
+                DC_Debug_Box(g_WMatrixPtr, lo, hi, 0xC0FF8000u);
+                Matrix_Pop();
+                continue;
+            }
+        }
+#endif
         Matrix_Push();
         Matrix_TranslateAbs32(mesh->pos);
         Matrix_RotY(mesh->rot.y);
@@ -706,7 +887,16 @@ static void M_DrawSingleRoom(const ROOM *const room)
     int16_t effect_num = room->effect_num;
     while (effect_num != NO_EFFECT) {
         const EFFECT *const effect = Effect_Get(effect_num);
+#if defined(__DREAMCAST__)
+        // Smoke, splashes and blood behind a wall are not drawn.
+        if (!M_ObjectHidden(
+                Room_Get(effect->room_num), &effect->pos, 256,
+                effect->pos.y - 256, effect->pos.y + 256, nullptr)) {
+            Effect_Draw(effect_num);
+        }
+#else
         Effect_Draw(effect_num);
+#endif
         effect_num = effect->next_free;
     }
     DC_PROBE_STOP(DC_PROBE_S_FX, probe_effects);
@@ -789,17 +979,8 @@ void Room_DrawAllRooms(const int16_t current_room, const int16_t target_room)
     }
 
 #if defined(__DREAMCAST__)
-    m_SightFrame++;
     m_SightCamera = room;
-#if defined(TRX_DC_PROBES)
-    // One frame in 120 says why each portal was kept or hidden.
-    m_SightDump = m_SightFrame % 120 == 0;
-#endif
-    if (m_SightDump) {
-        LOG_INFO(
-            "[occl] camera room %d at %d %d %d", current_room, g_ViewPos.x,
-            g_ViewPos.y, g_ViewPos.z);
-    }
+    M_PrepareEyes(room);
 #endif
     DC_PROBE(DC_PROBE_S_BOUNDS, M_GetBounds());
 #if defined(__DREAMCAST__)

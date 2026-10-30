@@ -127,6 +127,9 @@ enum {
     DC_PROBE_C_ROOMS,
     DC_PROBE_C_PTEST,
     DC_PROBE_C_PHIDE,
+    DC_PROBE_O_TESTED, // objects (statics and items) tested by rays
+    DC_PROBE_O_HIDDEN, // ... and left out
+    DC_PROBE_O_US, // the rays' time
     DC_PROBE_COUNT,
 };
 

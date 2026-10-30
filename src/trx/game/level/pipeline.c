@@ -27,6 +27,9 @@
 #include <platform/dreamcast/dc_level_heap.h>
 #include <platform/dreamcast/loading.h>
 #include <trx/core/filesystem.h>
+#include <trx/game/items.h>
+#include <trx/game/objects/families.h>
+#include <trx/game/objects/general/pickup.h>
 #endif
 
 typedef struct {
@@ -245,6 +248,26 @@ static void M_CompleteSetup(
 
     // Configure enemies who carry and drop items
     Carrier_InitialiseLevel(level);
+
+#if defined(__DREAMCAST__)
+    // The Dreamcast does not count every level at startup
+    // (Stats_CalculateMaxStats), which leaves the secrets without their bits:
+    // none would count, nor play its music. This level is counted now, as the
+    // startup does it (items and carriers in place), and its secret items,
+    // set up already, are handed the bits they were given.
+    if ((level->type == GFL_NORMAL || level->type == GFL_BONUS)
+        && Stats_HasLevelMaxStats(level)) {
+        Stats_ScanLevel(level);
+        for (int32_t i = 0; i < Item_GetLevelCount(); i++) {
+            ITEM *const item = Item_Get(i);
+            if (item->priv != nullptr
+                && ObjectFamily_Has(item->object_id, OBJ_FAMILY_SECRET)) {
+                Pickup_SetSecretMask(
+                    item, Stats_GetSecretMaskForItem(level, (int16_t)i));
+            }
+        }
+    }
+#endif
 
     Level_Finalize_LoadRooms(ctx);
     Level_Finalize_LoadTextures(ctx);
