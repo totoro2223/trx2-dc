@@ -192,10 +192,22 @@ for f in "$GAME_DATA"/* "$GAME_DATA"/../cuts/*; do
   name="$(basename "$f")"
   lower="$(echo "$name" | tr '[:upper:]' '[:lower:]')"
   case "$lower" in
-    *.tr2 | *.phd) cp "$f" "$STAGE/games/$GAME/levels/$lower" ;;
+    *.tr2 | *.phd)
+      # TRX_DC_KEEP="wall title": a small test disc with only those levels.
+      if [ -n "${TRX_DC_KEEP:-}" ] && [[ " $TRX_DC_KEEP " != *" ${lower%.*} "* ]]; then
+        continue
+      fi
+      cp "$f" "$STAGE/games/$GAME/levels/$lower" ;;
     main.sfx) cp "$f" "$STAGE/games/$GAME/main.sfx" ;;
   esac
 done
+
+# main.sfx as the AICA's ADPCM, with an index of where every sample starts, so
+# that a level reads only its own samples (level/pipeline.c, audio.c).
+if [ -f "$STAGE/games/$GAME/main.sfx" ]; then
+  SFX="$(cygpath -w "$STAGE/games/$GAME/main.sfx")"
+  python3 "$ROOT/tools/dreamcast/sfx_encode.py" "$SFX" "$SFX.new"     && mv "$SFX.new" "$SFX" && mv "$SFX.new.idx" "$SFX.idx"
+fi
 
 # An expansion (TRX_DC_MOD=tr1-ub, tr2-gm or tr3-la) rides on its base game's
 # disc: its gameflow and scripts, and its levels from the UB, GM or LA folder
@@ -471,8 +483,9 @@ if [ -n "$SUBDIR" ]; then
   exit 0
 fi
 echo "== image"
+bash "$(dirname "$0")/disc_sort.sh" "$STAGE" > "$TMP/sort.txt"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
-  -o "$TMP/TRX.iso" "$STAGE"
+  -sort "$TMP/sort.txt" -o "$TMP/TRX.iso" "$STAGE"
 cdi4dc "$TMP/TRX.iso" "$OUT" > /dev/null
 rm -rf "$TMP"
 ls -la "$OUT"

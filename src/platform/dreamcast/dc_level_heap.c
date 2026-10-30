@@ -260,16 +260,30 @@ static void M_BinRemove(uint8_t *const block)
 static void M_Init(void)
 {
     m_Heap.tried = true;
+    // Bisection: every failed malloc makes newlib print "Out of memory", and
+    // stepping down from the top failed some 70 times before the first fit.
     size_t size = M_PROBE_MAX;
-    void *probe = nullptr;
-    while (size > M_HEAP_RESERVE + M_PROBE_STEP
-           && (probe = malloc(size)) == nullptr) {
-        size -= M_PROBE_STEP;
-    }
+    void *probe = malloc(size);
     if (probe == nullptr) {
-        return;
+        size_t lo = 0;
+        size_t hi = M_PROBE_MAX;
+        while (hi - lo > M_PROBE_STEP) {
+            const size_t mid = lo + ((hi - lo) / 2 & ~(size_t)(M_PROBE_STEP - 1));
+            void *const p = malloc(mid);
+            if (p != nullptr) {
+                free(p);
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        size = lo;
+        if (size <= M_HEAP_RESERVE + M_PROBE_STEP) {
+            return;
+        }
+    } else {
+        free(probe);
     }
-    free(probe);
     size -= M_HEAP_RESERVE;
     m_Heap.base = malloc(size);
     if (m_Heap.base == nullptr) {

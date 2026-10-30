@@ -18,6 +18,7 @@
 #include <trx/game/stats.h>
 #include <trx/version.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -74,6 +75,24 @@ static void M_InitialiseSamplesFromFile(
     }
 #endif
 
+#if defined(__DREAMCAST__)
+    // make_disc.sh writes the byte offset of every WAV of main.sfx beside it
+    // (main.sfx.idx, uint32 little endian), so that only the samples the
+    // level uses are read, not the whole 8 MB through a chain of headers.
+    uint32_t *wav_offsets = nullptr;
+    int32_t wav_count = 0;
+    {
+        TRX_FILE *idx = nullptr;
+        char idx_path[256];
+        snprintf(idx_path, sizeof(idx_path), "%s.idx", file_name);
+        if (IS_OK(File_OpenPath(idx_path, FILE_OPEN_READ, &idx))) {
+            wav_count = (int32_t)(File_Size(idx) / sizeof(uint32_t));
+            wav_offsets = Memory_Alloc(sizeof(uint32_t) * (wav_count + 1));
+            File_ReadData(idx, wav_offsets, sizeof(uint32_t) * wav_count);
+            File_Close(idx);
+        }
+    }
+#endif
     const int32_t sample_count = info->samples.offset_count;
     entries = Memory_Alloc(sizeof(M_SAMPLE_ENTRY) * sample_count);
     for (int32_t i = 0; i < sample_count; i++) {
@@ -83,6 +102,35 @@ static void M_InitialiseSamplesFromFile(
     qsort(
         entries, sample_count, sizeof(M_SAMPLE_ENTRY), M_CompareSampleOffsets);
 
+#if defined(__DREAMCAST__)
+    for (int32_t k = 0; wav_offsets != nullptr && k < sample_count; k++) {
+        const M_SAMPLE_ENTRY *const entry = &entries[k];
+        if (entry->file_index < 0 || entry->file_index >= wav_count) {
+            LOG_ERROR("Sample %d is not in main.sfx.idx", entry->file_index);
+            continue;
+        }
+        File_Seek(fp, wav_offsets[entry->file_index], FILE_SEEK_SET);
+        uint32_t header[11] = {};
+        File_ReadData(fp, header, 11 * sizeof(uint32_t));
+        if (header[0] != MKTAG('R', 'I', 'F', 'F')
+            || header[9] != MKTAG('d', 'a', 't', 'a')) {
+            LOG_ERROR("Unexpected sample header for sample %d", k);
+            break;
+        }
+        const size_t header_size = 11 * sizeof(uint32_t);
+        const size_t aligned_size = (header[10] + 1) & ~1;
+        char *sample_data = Memory_Alloc(aligned_size + header_size);
+        memcpy(sample_data, header, header_size);
+        File_ReadData(fp, sample_data + header_size, aligned_size);
+        SHOULD(Sound_LoadSampleData(
+            entry->game_index, sample_data, aligned_size + header_size));
+        Memory_FreePointer(&sample_data);
+    }
+    if (wav_offsets != nullptr) {
+        Memory_FreePointer(&wav_offsets);
+        goto finish;
+    }
+#endif
     for (int32_t i = 0, current_sample = 0; current_sample < sample_count;
          i++) {
         uint32_t header[11] = {};
@@ -235,7 +283,14 @@ static uint64_t M_GetLoadSize(const GF_LEVEL *const level)
     for (int32_t i = 0; i < Inject_GetDeclaredCount(); i++) {
         total += M_GetFileSize(Inject_GetDeclaredPath(i));
     }
-    total += M_GetFileSize(level->settings.sfx_path);
+    if (level->settings.sfx_path != nullptr) {
+        char idx_path[256];
+        snprintf(idx_path, sizeof(idx_path), "%s.idx", level->settings.sfx_path);
+        // With its index only the level's own samples are read (~1 MB).
+        total += M_GetFileSize(idx_path) > 0
+            ? 1024 * 1024
+            : M_GetFileSize(level->settings.sfx_path);
+    }
     return total;
 }
 #endif

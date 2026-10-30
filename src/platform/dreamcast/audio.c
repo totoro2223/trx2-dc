@@ -348,6 +348,39 @@ RESULT Audio_Sample_Load(
     M_SAMPLE *const sample = &m_Samples[sample_id];
     FAIL_IF(sample->addr != 0, "sample %d is already loaded", sample_id);
 
+    {
+        // Already the AICA's ADPCM, as tools/dreamcast/sfx_encode.py leaves
+        // main.sfx: mono, format 0x20, the sample count in the byte-rate
+        // field. Only copied to sound RAM.
+        M_WAV wav;
+        if (M_ParseWAV((const uint8_t *)data, size, &wav) && wav.format == 0x20
+            && wav.channels == 1 && wav.fmt_at + 16 <= size
+            && wav.data_at + wav.data_size <= size) {
+            const uint8_t *const fmt = (const uint8_t *)data + wav.fmt_at;
+            const uint32_t length = M_Read32(fmt + 8);
+            const size_t bytes = (wav.data_size + 31) & ~(size_t)31;
+            FAIL_IF(
+                length == 0 || length > M_MAX_LENGTH || bytes == 0,
+                "sample %d has a bad ADPCM length", sample_id);
+            uint8_t *const adpcm = Memory_Alloc(bytes);
+            memset(adpcm, 0, bytes);
+            memcpy(adpcm, data + wav.data_at, wav.data_size);
+            const uint32_t addr = snd_mem_malloc(bytes);
+            if (addr != 0) {
+                spu_memload_sq(addr, adpcm, bytes);
+            }
+            Memory_Free(adpcm);
+            FAIL_IF(
+                addr == 0,
+                "sample %d does not fit in sound RAM (%u bytes left)",
+                sample_id, (unsigned)snd_mem_available());
+            *sample = (M_SAMPLE) {
+                .addr = addr, .length = (int32_t)length, .rate = wav.rate,
+            };
+            return OK;
+        }
+    }
+
     int32_t count;
     uint32_t rate;
     int16_t *const pcm =

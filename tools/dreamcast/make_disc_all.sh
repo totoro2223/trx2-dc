@@ -89,8 +89,9 @@ if [ -n "${TRX_DC_ALL_PICK:-}" ]; then
 fi
 
 echo "== image"
+bash "$(dirname "$0")/disc_sort.sh" "$STAGE" > "$TMP/sort.txt"
 mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
-  -o "$TMP/TRX.iso" "$STAGE"
+  -sort "$TMP/sort.txt" -o "$TMP/TRX.iso" "$STAGE"
 cdi4dc "$TMP/TRX.iso" "$OUT" > /dev/null
 rm -rf "$TMP"
 ls -la "$OUT"

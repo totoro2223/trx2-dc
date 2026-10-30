@@ -129,7 +129,7 @@ dc_kos_overrides = static_library(
   'dc_kos_overrides',
   'kos/fs_iso9660.c',
   override_options: ['c_std=gnu11', 'warning_level=0'],
-  c_args: ['-w'],
+  c_args: ['-w', '-DTRX_ISO_USE_DMA=' + (get_option('dc_iso_dma') ? '1' : '0')],
 )
 
 # What the code of the strict build and the hang report is held to: new code
