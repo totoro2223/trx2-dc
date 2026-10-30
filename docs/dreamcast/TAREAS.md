@@ -14,6 +14,10 @@ juego, reinicio de nivel): plan completo de pruebas P1–P13 y correcciones
 M1–M13 en [PLAN_MEMORIA_SESIONES_LARGAS.md](PLAN_MEMORIA_SESIONES_LARGAS.md).
 Cubre las filas 64, 65, 66, 67 y 68 de la sección J.
 
+**Geometría que no se ve** (objetos tapados por paredes, trozos más finos en
+salas grandes, tope del relieve): plan G1-G4 en
+[PLAN_GEOMETRIA_OCULTA.md](PLAN_GEOMETRIA_OCULTA.md).
+
 **VRAM libre** (bytecode de Lua a VRAM, mipmaps del mundo, mapa de sombra
 suave de 128): plan V1–V3 en
 [PLAN_VRAM_LUA_MIPMAPS_SOMBRA.md](PLAN_VRAM_LUA_MIPMAPS_SOMBRA.md).
