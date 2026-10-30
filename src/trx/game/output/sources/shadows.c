@@ -1225,11 +1225,12 @@ void OutputSource_Shadows_Draw(
 
     SHADOW_TYPE type = g_Config.visuals.shadow_type;
 #if defined(__DREAMCAST__)
-    // The game's own shadow for all but Lara, and for her with the sprite
-    // chosen: TR3's sprite, TR1 and TR2's octagon (the sprite they would
-    // take shows as a square).
+    // The octagon for all but Lara, and for her with the sprite chosen, in
+    // every game: TR3's sprite is a textured subtractive blend whose
+    // transparent texels came out black, and its facets took 14 ms a frame
+    // beside a wall.
     if (item != Lara_GetItem() || type == SHADOW_TYPE_SPRITE) {
-        type = g_TRVersion >= 3 ? SHADOW_TYPE_SPRITE : SHADOW_TYPE_OCTAGON;
+        type = SHADOW_TYPE_OCTAGON;
     }
 #endif
     if (type == SHADOW_TYPE_SPRITE) {
