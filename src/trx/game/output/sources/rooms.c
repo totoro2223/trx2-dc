@@ -281,6 +281,16 @@ void OutputSource_Rooms_ObserveRoomFlip(const ROOM *const room)
     }
 }
 
+#if defined(__DREAMCAST__)
+bool OutputSource_Rooms_RayBlocked(
+    const ROOM *const room, const XYZ_32 *const eye, const XYZ_32 *const to)
+{
+    const M_PRIV *const p = &m_Priv;
+    return DC_MeshBatcher_RayBlocked(
+        p->batcher, p->meshes[Room_GetIndex(room)], room, eye, to);
+}
+#endif
+
 void OutputSource_Rooms_StageRoom(const ROOM *const room)
 {
     M_PRIV *const p = &m_Priv;

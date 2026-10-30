@@ -25,6 +25,7 @@ void Output_Bind_ResetRooms(void)
     for (int32_t i = 0; i < MAX_ROOMS; i++) {
         m_RoomBindings[i].active = false;
         m_RoomBindings[i].drawn = false;
+        m_RoomBindings[i].occluded = false;
         m_RoomBindings[i].bound_left = Viewport_GetMaxX(VIEWPORT_GAME);
         m_RoomBindings[i].bound_top = Viewport_GetMaxY(VIEWPORT_GAME);
         m_RoomBindings[i].bound_right = Viewport_GetMinX(VIEWPORT_GAME);

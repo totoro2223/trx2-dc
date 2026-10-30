@@ -10,3 +10,7 @@ void OutputSource_Rooms_ObserveLevelUnload(void);
 void OutputSource_Rooms_ObserveRoomFlip(const ROOM *room);
 
 void OutputSource_Rooms_StageRoom(const ROOM *room);
+#if defined(__DREAMCAST__)
+bool OutputSource_Rooms_RayBlocked(
+    const ROOM *room, const XYZ_32 *eye, const XYZ_32 *to);
+#endif

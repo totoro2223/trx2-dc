@@ -44,6 +44,8 @@
 #include <dc/fmath.h>
 #include <dc/pvr.h>
 #include <dc/matrix.h>
+#include <dc/maple.h>
+#include <dc/maple/controller.h>
 #if defined(TRX_DC_SQ_VERTICES)
     #include <dc/sq.h>
 #endif
@@ -73,6 +75,9 @@ typedef struct {
     // Bounding sphere, in object space.
     float center[3];
     float radius;
+    // Its box, in object space.
+    float lo[3];
+    float hi[3];
     // Its vertices: a range of the mesh's, which M_BuildChunks lays out by
     // chunk.
     int32_t vert_start;
@@ -142,6 +147,14 @@ typedef struct M_BINDING {
     // ones), which are always transformed.
     M_CHUNK *chunks;
     int32_t chunk_count;
+    // Per sector of the room (z + x * depth): a face you can see through lies
+    // on or beside it, so a wall there hides nothing (M_MarkSeeThrough).
+    uint8_t *see_through;
+    // Per sector: the highest point of the faces standing on it (room space,
+    // y down), where a wall there stops hiding what is above it.
+    float *wall_top;
+    int32_t see_width;
+    int32_t see_depth;
     int32_t always_start;
     int32_t always_count;
     // The transparent faces' indices end to end, as M_PairQuads leaves them:
@@ -150,6 +163,38 @@ typedef struct M_BINDING {
     int32_t transp_count;
     UT_hash_handle hh;
 } M_BINDING;
+
+// TEMP: boxes of the rooms and their chunks, drawn over the scene while the
+// d-pad's up has them on (DC_Debug_DrawRoomBoxes).
+#define M_DEBUG_BOXES 192
+typedef struct {
+    MATRIX w;
+    float lo[3];
+    float hi[3];
+    uint32_t argb;
+} M_DEBUG_BOX;
+static M_DEBUG_BOX m_DebugBoxList[M_DEBUG_BOXES];
+static int32_t m_DebugBoxCount = 0;
+static bool m_DebugRooms = false;
+// Rooms transformed this frame: there is a level in view to switch it on for.
+static int32_t m_DebugFrameRooms = 0;
+// Per chunk of the room just culled: 0 outside the view, 1 drawn, 2 hidden by
+// the walls.
+static uint8_t m_ChunkState[M_MAX_CHUNKS];
+
+static void M_DebugBox(
+    const MATRIX *const w, const float lo[3], const float hi[3],
+    const uint32_t argb)
+{
+    if (m_DebugBoxCount >= M_DEBUG_BOXES) {
+        return;
+    }
+    M_DEBUG_BOX *const box = &m_DebugBoxList[m_DebugBoxCount++];
+    box->w = *w;
+    memcpy(box->lo, lo, sizeof(box->lo));
+    memcpy(box->hi, hi, sizeof(box->hi));
+    box->argb = argb;
+}
 
 // The vertex a corner of the binding reads.
 static inline const OUTPUT_MESH_VERTEX *M_Corner(
@@ -2578,17 +2623,341 @@ static bool M_SphereShows(
     return true;
 }
 
+// Whether a wall of the room's grid may hide what lies behind it (the
+// chunks' occlusion, TRX_DC_OCCLUDE).
+#ifndef TRX_DC_OCCLUDE
+    #define TRX_DC_OCCLUDE 1
+#endif
+// How thin a face standing in a wall is, and how far it reaches into the
+// sectors on its sides.
+#define M_SEE_THIN 64.0f
+// How far under the top of its faces a wall starts to hide, for a slope.
+#define M_WALL_TOP_MARGIN 128.0f
+// How far a ray is followed across the grid.
+#define M_SIGHT_STEPS 48
+// Pulled in from the chunk's edges, so that its corners lie in it.
+#define M_SIGHT_INSET 16.0f
+
+// Marks the sectors that a face you can see through (a punch-through one, a
+// translucent or an added one) lies on or beside, one more each way as a face
+// on a wall lies on the border between the wall and the open sector.
+static void M_MarkSeeThrough(
+    M_BINDING *const bind, const OUTPUT_MESH_INDEX *const indices,
+    const int32_t count, const OUTPUT_MESH_VERTEX *const vertices)
+{
+    for (int32_t i = 0; i + 2 < count; i += 3) {
+        float lo_x = FLT_MAX;
+        float hi_x = -FLT_MAX;
+        float lo_z = FLT_MAX;
+        float hi_z = -FLT_MAX;
+        for (int32_t j = 0; j < 3; j++) {
+            const OUTPUT_MESH_VERTEX *const v = &vertices[indices[i + j]];
+            lo_x = MIN(lo_x, v->pos.x);
+            hi_x = MAX(hi_x, v->pos.x);
+            lo_z = MIN(lo_z, v->pos.z);
+            hi_z = MAX(hi_z, v->pos.z);
+        }
+        // Standing in a plane of the grid (thin one way) it may be a window in
+        // a wall (bit 1); lying flat, a grate in a floor or a ceiling (bit 2).
+        const uint8_t mark =
+            hi_x - lo_x > M_SEE_THIN && hi_z - lo_z > M_SEE_THIN ? 2 : 3;
+        const int32_t x0 = MAX(
+            0, (int32_t)floorf((lo_x - M_SEE_THIN) * (1.0f / WALL_L)));
+        const int32_t x1 = MIN(
+            bind->see_width - 1,
+            (int32_t)floorf((hi_x + M_SEE_THIN) * (1.0f / WALL_L)));
+        const int32_t z0 = MAX(
+            0, (int32_t)floorf((lo_z - M_SEE_THIN) * (1.0f / WALL_L)));
+        const int32_t z1 = MIN(
+            bind->see_depth - 1,
+            (int32_t)floorf((hi_z + M_SEE_THIN) * (1.0f / WALL_L)));
+        for (int32_t x = x0; x <= x1; x++) {
+            for (int32_t z = z0; z <= z1; z++) {
+                bind->see_through[z + x * bind->see_depth] |= mark;
+            }
+        }
+    }
+}
+
+// The tops of the walls: for the sectors a face standing in a plane of the
+// grid (thin one way) reaches, the highest point of those faces.
+static void M_MarkWallTops(
+    M_BINDING *const bind, const OUTPUT_MESH_INDEX *const indices,
+    const int32_t count, const OUTPUT_MESH_VERTEX *const vertices)
+{
+    for (int32_t i = 0; i + 2 < count; i += 3) {
+        float lo_x = FLT_MAX;
+        float hi_x = -FLT_MAX;
+        float lo_z = FLT_MAX;
+        float hi_z = -FLT_MAX;
+        float top = FLT_MAX;
+        for (int32_t j = 0; j < 3; j++) {
+            const OUTPUT_MESH_VERTEX *const v = &vertices[indices[i + j]];
+            lo_x = MIN(lo_x, v->pos.x);
+            hi_x = MAX(hi_x, v->pos.x);
+            lo_z = MIN(lo_z, v->pos.z);
+            hi_z = MAX(hi_z, v->pos.z);
+            top = MIN(top, v->pos.y);
+        }
+        if (hi_x - lo_x > M_SEE_THIN && hi_z - lo_z > M_SEE_THIN) {
+            continue;
+        }
+        const int32_t x0 = MAX(
+            0, (int32_t)floorf((lo_x - M_SEE_THIN) * (1.0f / WALL_L)));
+        const int32_t x1 = MIN(
+            bind->see_width - 1,
+            (int32_t)floorf((hi_x + M_SEE_THIN) * (1.0f / WALL_L)));
+        const int32_t z0 = MAX(
+            0, (int32_t)floorf((lo_z - M_SEE_THIN) * (1.0f / WALL_L)));
+        const int32_t z1 = MIN(
+            bind->see_depth - 1,
+            (int32_t)floorf((hi_z + M_SEE_THIN) * (1.0f / WALL_L)));
+        for (int32_t x = x0; x <= x1; x++) {
+            for (int32_t z = z0; z <= z1; z++) {
+                float *const at = &bind->wall_top[z + x * bind->see_depth];
+                *at = MIN(*at, top);
+            }
+        }
+    }
+}
+
+static void M_BuildSeeThrough(M_BINDING *const bind, const ROOM *const room)
+{
+    OUTPUT_MESH *const mesh = bind->mesh;
+    bind->see_width = room->size.x;
+    bind->see_depth = room->size.z;
+    bind->see_through = Memory_Alloc(room->size.x * room->size.z);
+    memset(bind->see_through, 0, room->size.x * room->size.z);
+    bind->wall_top = Memory_Alloc(sizeof(float) * room->size.x * room->size.z);
+    for (int32_t i = 0; i < room->size.x * room->size.z; i++) {
+        bind->wall_top[i] = FLT_MAX;
+    }
+    const OUTPUT_MESH_VERTEX *const vertices = Vector_GetData(mesh->vertices);
+    const OUTPUT_MESH_INDEX *const opaque =
+        Vector_GetData(mesh->opaque_vertex_indices);
+    const int32_t clean = mesh->opaque_nodiscard_count;
+    M_MarkWallTops(bind, opaque, clean, vertices);
+    M_MarkSeeThrough(
+        bind, opaque + clean, mesh->opaque_vertex_indices->count - clean,
+        vertices);
+    if (mesh->opaque_discard_indices != nullptr) {
+        M_MarkSeeThrough(
+            bind, Vector_GetData(mesh->opaque_discard_indices),
+            mesh->opaque_discard_indices->count, vertices);
+    }
+    M_MarkSeeThrough(
+        bind, Vector_GetData(mesh->blend_add_vertex_indices),
+        mesh->blend_add_vertex_indices->count, vertices);
+    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
+        const OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, i);
+        M_MarkSeeThrough(
+            bind, (const OUTPUT_MESH_INDEX *)face->vertex_indices,
+            face->vertex_count, vertices);
+    }
+}
+
+// The eye, the room's height range and its grid, for the rays.
+typedef struct {
+    const ROOM *room;
+    const uint8_t *see_through;
+    const float *wall_top;
+    float eye[3];
+    float y_lo;
+    float y_hi;
+} M_SIGHT;
+
+// Whether a wall of the room's grid, solid from its floor to its ceiling and
+// with nothing you can see through on it, lies between the eye and the point:
+// the ray crosses the grid's sectors outside the box (foot: its sectors, x0
+// z0 x1 z1) and stops at the first such wall. A ray goes through the rest of
+// the room as the eye is, so that a room seen from another one is tested too.
+static bool M_SightBlocked(
+    const M_SIGHT *const s, const float to[3], const int32_t foot[4])
+{
+    const ROOM *const room = s->room;
+    const float inv = 1.0f / WALL_L;
+    const float x0 = s->eye[0] * inv;
+    const float z0 = s->eye[2] * inv;
+    const float dx = to[0] * inv - x0;
+    const float dz = to[2] * inv - z0;
+    const float dy = to[1] - s->eye[1];
+    int32_t ix = (int32_t)floorf(x0);
+    int32_t iz = (int32_t)floorf(z0);
+    const int32_t ex = (int32_t)floorf(to[0] * inv);
+    const int32_t ez = (int32_t)floorf(to[2] * inv);
+    const int32_t sx = dx > 0.0f ? 1 : -1;
+    const int32_t sz = dz > 0.0f ? 1 : -1;
+    const float step_x = dx != 0.0f ? 1.0f / fabsf(dx) : FLT_MAX;
+    const float step_z = dz != 0.0f ? 1.0f / fabsf(dz) : FLT_MAX;
+    float next_x = dx > 0.0f ? (ix + 1 - x0) * step_x
+        : dx < 0.0f          ? (x0 - ix) * step_x
+                             : FLT_MAX;
+    float next_z = dz > 0.0f ? (iz + 1 - z0) * step_z
+        : dz < 0.0f          ? (z0 - iz) * step_z
+                             : FLT_MAX;
+    for (int32_t n = 0; n < M_SIGHT_STEPS; n++) {
+        if (ix == ex && iz == ez) {
+            return false;
+        }
+        const float enter = MIN(next_x, next_z);
+        if (enter >= 1.0f) {
+            return false;
+        }
+        if (next_x < next_z) {
+            ix += sx;
+            next_x += step_x;
+        } else {
+            iz += sz;
+            next_z += step_z;
+        }
+        if ((ix >= foot[0] && ix <= foot[2] && iz >= foot[1] && iz <= foot[3])
+            || ix < 0 || iz < 0 || ix >= room->size.x || iz >= room->size.z) {
+            continue;
+        }
+        const int32_t at = iz + ix * room->size.z;
+        const SECTOR *const sector = &room->sectors[at];
+        const float y_in = s->eye[1] + dy * enter;
+        const float y_out = s->eye[1] + dy * MIN(next_x, next_z);
+        if (sector->floor.height == NO_HEIGHT) {
+            // A wall, from the highest point of its faces down to the room's
+            // floor: a ray over it (a low wall, a rock) sees what is behind.
+            const float top = MAX(s->y_lo, s->wall_top[at] + M_WALL_TOP_MARGIN);
+            if (sector->portal_room.wall == NO_ROOM
+                && !(s->see_through[at] & 1) && y_in >= top && y_in <= s->y_hi
+                && y_out >= top && y_out <= s->y_hi) {
+                return true;
+            }
+            continue;
+        }
+        if (s->see_through[at] & 2) {
+            continue;
+        }
+        // Wholly below the floor (a ledge, a block), with no way down: the
+        // slope can move it this far either way. (Not above a ceiling: an
+        // open sky has one in the floor data and nothing to stop the eye.)
+        const SURFACE *const floor = &sector->floor;
+        if (sector->portal_room.pit == NO_ROOM && !floor->is_split) {
+            const float lowest = (float)(floor->height - room->pos.y)
+                + 256.0f * (ABS(floor->tilt.x) + ABS(floor->tilt.z));
+            if (y_in > lowest && y_out > lowest) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Whether the walls hide the whole of the chunk from the eye: five rays, to its
+// middle and its four corners, all stopped.
+static bool M_ChunkHidden(const M_SIGHT *const s, const M_CHUNK *const chunk)
+{
+    const int32_t foot[4] = {
+        (int32_t)floorf(chunk->lo[0] * (1.0f / WALL_L)),
+        (int32_t)floorf(chunk->lo[2] * (1.0f / WALL_L)),
+        (int32_t)floorf(chunk->hi[0] * (1.0f / WALL_L)),
+        (int32_t)floorf(chunk->hi[2] * (1.0f / WALL_L)),
+    };
+    const float mid_x = (chunk->lo[0] + chunk->hi[0]) * 0.5f;
+    const float mid_z = (chunk->lo[2] + chunk->hi[2]) * 0.5f;
+    const float xs[3] = { mid_x, MIN(chunk->lo[0] + M_SIGHT_INSET, mid_x),
+                          MAX(chunk->hi[0] - M_SIGHT_INSET, mid_x) };
+    const float zs[3] = { mid_z, MIN(chunk->lo[2] + M_SIGHT_INSET, mid_z),
+                          MAX(chunk->hi[2] - M_SIGHT_INSET, mid_z) };
+    const float y = (chunk->lo[1] + chunk->hi[1]) * 0.5f;
+    {
+        const float to[3] = { mid_x, y, mid_z };
+        if (!M_SightBlocked(s, to, foot)) {
+            return false;
+        }
+    }
+    for (int32_t a = 1; a < 3; a++) {
+        for (int32_t b = 1; b < 3; b++) {
+            const float to[3] = { xs[a], y, zs[b] };
+            if (!M_SightBlocked(s, to, foot)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool DC_MeshBatcher_RayBlocked(
+    const MESH_BATCHER *const batcher, const OUTPUT_MESH *const mesh,
+    const ROOM *const room, const XYZ_32 *const eye, const XYZ_32 *const to)
+{
+#if TRX_DC_OCCLUDE
+    M_BINDING *const bind = M_GetBinding(batcher, mesh);
+    if (bind == nullptr || room->sectors == nullptr || room->size.x <= 0
+        || room->size.z <= 0
+        || (bind->see_through != nullptr
+            && (bind->see_width != room->size.x
+                || bind->see_depth != room->size.z))) {
+        return false;
+    }
+    if (bind->see_through == nullptr) {
+        M_BuildSeeThrough(bind, room);
+    }
+    const M_SIGHT sight = {
+        .room = room,
+        .see_through = bind->see_through,
+        .wall_top = bind->wall_top,
+        .eye = { (float)(eye->x - room->pos.x), (float)(eye->y - room->pos.y),
+                 (float)(eye->z - room->pos.z) },
+        .y_lo = (float)(room->max_ceiling - room->pos.y),
+        .y_hi = (float)(room->min_floor - room->pos.y),
+    };
+    const float point[3] = { (float)(to->x - room->pos.x),
+                             (float)(to->y - room->pos.y),
+                             (float)(to->z - room->pos.z) };
+    // The sectors about the point are not walls in the way of what lies at it
+    // (a portal lies on the border of sectors).
+    const int32_t x = (int32_t)floorf(point[0] * (1.0f / WALL_L));
+    const int32_t z = (int32_t)floorf(point[2] * (1.0f / WALL_L));
+    const int32_t foot[4] = { x - 1, z - 1, x + 1, z + 1 };
+    return M_SightBlocked(&sight, point, foot);
+#else
+    return false;
+#endif
+}
+
 // Picks the chunks of a room that show, and gathers their faces into the
 // ranges and their vertices (with the ones always transformed) into the
 // vertex ranges. Returns how many vertex ranges, or -1 when every chunk shows
 // and the room goes out whole.
 static int32_t M_CullChunks(
-    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    MESH_BATCHER *const batcher, M_BINDING *const bind, const ROOM *const room,
     const float mv[4][4], const float scale, const M_XFORM *const c)
 {
     bool shows[M_MAX_CHUNKS];
     float z_near[M_MAX_CHUNKS];
     int32_t shown = 0;
+    M_SIGHT sight = {};
+    bool sees = false;
+#if TRX_DC_OCCLUDE
+    if (room != nullptr && room->sectors != nullptr && room->size.x > 0
+        && room->size.z > 0 && scale > 0.0f && !m_Frame.ortho
+        && (bind->see_through == nullptr
+            || (bind->see_width == room->size.x
+                && bind->see_depth == room->size.z))) {
+        if (bind->see_through == nullptr) {
+            M_BuildSeeThrough(bind, room);
+        }
+        // The eye lies at the origin of eye space: back in object space by
+        // the model-view's rotation and scale undone.
+        const float inv_sq = 1.0f / (scale * scale);
+        for (int32_t k = 0; k < 3; k++) {
+            sight.eye[k] = -(mv[k][0] * mv[3][0] + mv[k][1] * mv[3][1]
+                             + mv[k][2] * mv[3][2])
+                * inv_sq;
+        }
+        sight.room = room;
+        sight.see_through = bind->see_through;
+        sight.wall_top = bind->wall_top;
+        sight.y_lo = (float)(room->max_ceiling - room->pos.y);
+        sight.y_hi = (float)(room->min_floor - room->pos.y);
+        sees = true;
+    }
+#endif
     for (int32_t k = 0; k < bind->chunk_count; k++) {
         const M_CHUNK *const chunk = &bind->chunks[k];
         const float *const p = chunk->center;
@@ -2600,6 +2969,15 @@ static int32_t M_CullChunks(
         const float radius = chunk->radius * scale;
         shows[k] = M_SphereShows(eye, radius, c);
         z_near[k] = eye[2] - radius;
+        m_ChunkState[k] = shows[k] ? 1 : 0;
+        if (shows[k] && sees) {
+            g_DC_ProbeUs[DC_PROBE_C_TESTED]++; // TEMP
+            if (M_ChunkHidden(&sight, chunk)) {
+                g_DC_ProbeUs[DC_PROBE_C_HIDDEN]++; // TEMP
+                shows[k] = false;
+                m_ChunkState[k] = 2;
+            }
+        }
         shown += shows[k] ? 1 : 0;
     }
 
@@ -2910,6 +3288,7 @@ static bool M_TransformInstance(
     mat_load(&batcher->mv);
 
     int32_t transformed = bind->vertex_count;
+    bool chunked = false;
     if (bind->needs_room_lights && !bind->needs_object_light
         && !bind->needs_own_light && !bind->billboard && black_fog
         && !m_Frame.ortho && !batcher->env && !batcher->cel) {
@@ -2921,10 +3300,11 @@ static bool M_TransformInstance(
             M_PrepareFaceLights(batcher, &il, mv);
         }
         const int32_t nvr = bind->chunk_count > 0
-            ? M_CullChunks(batcher, bind, mv, scale, &c)
+            ? M_CullChunks(batcher, bind, inst->room, mv, scale, &c)
             : -1;
         batcher->vrange_count = nvr;
         if (nvr >= 0) {
+            chunked = bind->chunk_count > 0;
             // Each chunk drawn as soon as it is transformed: a room's vertices
             // are many times the data cache, and emitted after them all, every
             // corner missed it. (Flycast models no cache: nothing to measure
@@ -2992,6 +3372,26 @@ static bool M_TransformInstance(
     // world start above it.
     if (m_Frame.depth.track && c.max_inv_z > 0.0f) {
         DC_PVR_UseDepth(M_Depth(m_Frame.near_z * c.max_inv_z));
+    }
+    if (bind->needs_room_lights && !bind->needs_object_light
+        && !bind->billboard) {
+        m_DebugFrameRooms++;
+        if (m_DebugRooms) {
+            if (chunked) {
+                for (int32_t k = 0; k < bind->chunk_count; k++) {
+                    if (m_ChunkState[k] != 0) {
+                        M_DebugBox(
+                            &inst->wmatrix, bind->chunks[k].lo,
+                            bind->chunks[k].hi,
+                            m_ChunkState[k] == 1 ? 0xC000FF00u : 0xC0FF0000u);
+                    }
+                }
+            } else {
+                M_DebugBox(
+                    &inst->wmatrix, bind->bounds[0], bind->bounds[1],
+                    0xC000FFFFu);
+            }
+        }
     }
     g_DC_BatcherFrameVertices += transformed;
     m_FrameVertices += transformed;
@@ -5687,6 +6087,8 @@ static void M_BuildChunks(M_BINDING *const bind)
             radius_sq += half * half;
         }
         chunk->radius = sqrtf(radius_sq);
+        memcpy(chunk->lo, lo, sizeof(lo));
+        memcpy(chunk->hi, hi, sizeof(hi));
     }
     bind->chunks = chunks;
     bind->chunk_count = chunk_count;
@@ -5954,6 +6356,8 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     Memory_Free(bind->twin);
     Memory_Free(bind->env);
     Memory_Free(bind->chunks);
+    Memory_Free(bind->see_through);
+    Memory_Free(bind->wall_top);
     Memory_Free(bind->transp);
     Vector_Remove(batcher->bindings, &bind);
     HASH_DEL(batcher->map, bind);
@@ -7017,6 +7421,115 @@ static int32_t M_DrawRoomVolumes(
         }
     }
     return volumes;
+}
+
+// A line of the box in eye space as a quad a few pixels wide, near-clipped.
+static void M_DebugLine(const float a[3], const float b[3], const uint32_t argb)
+{
+    float p[2][3] = { { a[0], a[1], a[2] }, { b[0], b[1], b[2] } };
+    const float near_z = m_Frame.near_z;
+    if (p[0][2] < near_z && p[1][2] < near_z) {
+        return;
+    }
+    for (int32_t i = 0; i < 2; i++) {
+        if (p[i][2] < near_z) {
+            const float t = (near_z - p[i][2]) / (p[1 - i][2] - p[i][2]);
+            for (int32_t k = 0; k < 3; k++) {
+                p[i][k] += t * (p[1 - i][k] - p[i][k]);
+            }
+            p[i][2] = near_z;
+        }
+    }
+    float sx[2];
+    float sy[2];
+    float inv[2];
+    for (int32_t i = 0; i < 2; i++) {
+        inv[i] = 1.0f / p[i][2];
+        sx[i] = (m_Frame.center_x + m_Frame.proj_x * p[i][0] * inv[i])
+            * m_Frame.screen_scale;
+        sy[i] = (m_Frame.center_y + m_Frame.proj_y * p[i][1] * inv[i])
+            * m_Frame.screen_scale;
+    }
+    const float dx = sx[1] - sx[0];
+    const float dy = sy[1] - sy[0];
+    const float len = sqrtf(dx * dx + dy * dy);
+    if (len < 0.5f || len > 4000.0f) {
+        return;
+    }
+    const float half = 1.5f * m_Frame.screen_scale;
+    const float nx = -dy / len * half;
+    const float ny = dx / len * half;
+    DC_PVR_VERTEX v[4] = {};
+    const float ox[4] = { nx, -nx, nx, -nx };
+    const float oy[4] = { ny, -ny, ny, -ny };
+    for (int32_t i = 0; i < 4; i++) {
+        const int32_t end = i / 2;
+        v[i].x = sx[end] + ox[i];
+        v[i].y = sy[end] + oy[i];
+        v[i].z = M_Depth(near_z * inv[end]);
+        v[i].argb = argb;
+    }
+    DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
+}
+
+void DC_Debug_RoomBox(
+    const ROOM *const room, const MATRIX *const w, const uint32_t argb)
+{
+    if (!m_DebugRooms || room == nullptr) {
+        return;
+    }
+    const float lo[3] = { 0.0f, (float)(room->max_ceiling - room->pos.y), 0.0f };
+    const float hi[3] = { (float)(room->size.x * WALL_L),
+                          (float)(room->min_floor - room->pos.y),
+                          (float)(room->size.z * WALL_L) };
+    M_DebugBox(w, lo, hi, argb);
+}
+
+// In a build with the probes (build.sh DC_PROBES=1) the d-pad's up switches the
+// boxes on and off (only with a level in view), and while they are on they are
+// drawn over the scene, once the passes are done: green the chunks drawn, red those the walls hide, cyan a room with no
+// chunks, magenta a room the portals' walls hide.
+void DC_Debug_DrawRoomBoxes(void)
+{
+#if defined(TRX_DC_PROBES)
+    static bool was_up = false;
+    const maple_device_t *const pad = maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
+    const cont_state_t *const state =
+        pad != nullptr ? (const cont_state_t *)maple_dev_status(pad) : nullptr;
+    const bool up = state != nullptr && (state->buttons & CONT_DPAD_UP) != 0;
+    if (up && !was_up && m_DebugFrameRooms > 0) {
+        m_DebugRooms = !m_DebugRooms;
+    }
+    was_up = up;
+#endif
+    m_DebugFrameRooms = 0;
+    if (m_DebugRooms && m_DebugBoxCount > 0) {
+        DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_NO_TEXTURE, false);
+        for (int32_t n = 0; n < m_DebugBoxCount; n++) {
+            const M_DEBUG_BOX *const box = &m_DebugBoxList[n];
+            float mv[4][4];
+            float scale;
+            M_ModelView(&box->w, mv, &scale);
+            float corner[8][3];
+            for (int32_t i = 0; i < 8; i++) {
+                const float p[3] = { i & 1 ? box->hi[0] : box->lo[0],
+                                     i & 2 ? box->hi[1] : box->lo[1],
+                                     i & 4 ? box->hi[2] : box->lo[2] };
+                for (int32_t r = 0; r < 3; r++) {
+                    corner[i][r] = mv[0][r] * p[0] + mv[1][r] * p[1]
+                        + mv[2][r] * p[2] + mv[3][r];
+                }
+            }
+            for (int32_t i = 0; i < 8; i++) {
+                for (int32_t bit = 1; bit <= 4; bit <<= 1) {
+                    if (!(i & bit)) {
+                        M_DebugLine(corner[i], corner[i | bit], box->argb);
+                    }
+                }
+            }
+        }
+    }
+    m_DebugBoxCount = 0;
 }
 
 void DC_Shadow_DrawVolumes(void)

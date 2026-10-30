@@ -118,6 +118,7 @@ static void M_RenderScenePassesTimed(const M_PRIV *const p)
         }
     }
     DC_PROBE(DC_PROBE_P_VOL, DC_Shadow_DrawVolumes()); // TEMP
+    DC_Debug_DrawRoomBoxes(); // TEMP
     if (M_IsSourceDirty(p, SCENE_PASS_OVERLAY)) {
         DC_PVR_NextDepthLayer();
         M_RenderSourcePass(p, SCENE_PASS_OVERLAY);

@@ -11,6 +11,9 @@ typedef struct {
 typedef struct {
     bool active;
     bool drawn;
+    // In the list, but no portal that a wall does not hide leads to it
+    // (Dreamcast: its geometry is not drawn).
+    bool occluded;
     int16_t bound_left;
     int16_t bound_right;
     int16_t bound_top;

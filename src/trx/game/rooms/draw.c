@@ -1,4 +1,5 @@
 #include <trx/config.h>
+#include <trx/core/log.h>
 #include <trx/core/math/geom.h>
 #include <trx/core/subsystem.h>
 #include <trx/core/utils.h>
@@ -12,6 +13,7 @@
 #include <trx/game/matrix.h>
 #include <trx/game/output.h>
 #include <trx/game/output/bind.h>
+#include <trx/game/output/sources/rooms.h>
 #include <trx/game/output/water.h>
 #include <trx/game/rooms.h>
 #include <trx/game/rope.h>
@@ -24,6 +26,7 @@
 // TEMP: see platform/dreamcast/dc_probe.h
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_probe.h>
+    #include <platform/dreamcast/render/shadow.h>
 #else
     #define DC_PROBE(i, stmt) stmt
     #define DC_PROBE_START(t)
@@ -136,6 +139,169 @@ static inline bool M_PortalFacesCamera(
     // clang-format on
     return offset.x + offset.y + offset.z < 0;
 }
+
+#if defined(__DREAMCAST__)
+static int16_t m_OcclusionQueue[MAX_ROOMS];
+
+// What the walls leave of a portal, seen from the camera: lines of sight to a
+// grid of points across it (M_SIGHT_GRID steps a side).
+#define M_SIGHT_GRID 4
+#define M_SIGHT_SLOTS 128
+
+typedef enum {
+    M_SIGHT_ALL, // some of it shows
+    M_SIGHT_NONE, // the walls hide all of it
+} M_SIGHT_STATE;
+
+typedef struct {
+    const PORTAL *portal;
+    uint32_t frame;
+    M_SIGHT_STATE state;
+} M_PORTAL_SIGHT;
+
+static M_PORTAL_SIGHT m_Sights[M_SIGHT_SLOTS];
+static M_PORTAL_SIGHT m_SightScratch;
+static uint32_t m_SightFrame = 0;
+static bool m_SightDump = false;
+static const ROOM *m_SightCamera = nullptr;
+
+// Whether a wall of the room the portal is in or of the camera's lies between
+// the camera and the point.
+static bool M_PointHidden(const ROOM *const room, const XYZ_32 *const point)
+{
+    return OutputSource_Rooms_RayBlocked(room, &g_ViewPos, point)
+        || (room != m_SightCamera
+            && OutputSource_Rooms_RayBlocked(m_SightCamera, &g_ViewPos, point));
+}
+
+// The point of the portal at (u, v) steps of the grid, a corner of it for
+// 0 or M_SIGHT_GRID, in the portal's own space.
+static void M_PortalPoint(
+    const PORTAL *const portal, const float u, const float v, float out[3])
+{
+    const float fu = u / M_SIGHT_GRID;
+    const float fv = v / M_SIGHT_GRID;
+    const XYZ_16 *const p = portal->vertex;
+    const float x[4] = { p[0].x, p[1].x, p[2].x, p[3].x };
+    const float y[4] = { p[0].y, p[1].y, p[2].y, p[3].y };
+    const float z[4] = { p[0].z, p[1].z, p[2].z, p[3].z };
+    const float k[4] = { (1.0f - fu) * (1.0f - fv), fu * (1.0f - fv), fu * fv,
+                         (1.0f - fu) * fv };
+    out[0] = k[0] * x[0] + k[1] * x[1] + k[2] * x[2] + k[3] * x[3];
+    out[1] = k[0] * y[0] + k[1] * y[1] + k[2] * y[2] + k[3] * y[3];
+    out[2] = k[0] * z[0] + k[1] * z[1] + k[2] * z[2] + k[3] * z[3];
+}
+
+static bool M_GridPointHidden(
+    const ROOM *const room, const PORTAL *const portal, const int32_t iu,
+    const int32_t iv)
+{
+    float local[3];
+    M_PortalPoint(portal, (float)iu, (float)iv, local);
+    const XYZ_32 world = {
+        .x = room->pos.x + (int32_t)local[0],
+        .y = room->pos.y + (int32_t)local[1],
+        .z = room->pos.z + (int32_t)local[2],
+    };
+    return M_PointHidden(room, &world);
+}
+
+// Whether the portal is hidden, worked out once a frame: its four corners and
+// its middle, each behind a wall of the room the portal is in or of the
+// camera's. Only all five hidden hides it.
+static const M_PORTAL_SIGHT *M_GetPortalSight(
+    const ROOM *const room, const PORTAL *const portal)
+{
+    uint32_t slot = ((uintptr_t)portal >> 4) % M_SIGHT_SLOTS;
+    M_PORTAL_SIGHT *entry = nullptr;
+    for (int32_t n = 0; n < M_SIGHT_SLOTS;
+         n++, slot = (slot + 1) % M_SIGHT_SLOTS) {
+        M_PORTAL_SIGHT *const e = &m_Sights[slot];
+        if (e->frame == m_SightFrame && e->portal == portal) {
+            return e;
+        }
+        if (e->frame != m_SightFrame) {
+            entry = e;
+            break;
+        }
+    }
+    if (entry == nullptr) {
+        entry = &m_SightScratch;
+    }
+    entry->portal = portal;
+    entry->frame = m_SightFrame;
+    g_DC_ProbeUs[DC_PROBE_C_PTEST]++; // TEMP
+
+    static const int8_t points[5][2] = {
+        { 0, 0 },
+        { M_SIGHT_GRID, 0 },
+        { M_SIGHT_GRID, M_SIGHT_GRID },
+        { 0, M_SIGHT_GRID },
+        { M_SIGHT_GRID / 2, M_SIGHT_GRID / 2 },
+    };
+    char marks[6] = "";
+    bool all_hidden = true;
+    for (int32_t i = 0; i < 5; i++) {
+        const bool hidden =
+            M_GridPointHidden(room, portal, points[i][0], points[i][1]);
+        marks[i] = hidden ? '#' : '.';
+        all_hidden &= hidden;
+    }
+    marks[5] = '\0';
+    entry->state = all_hidden ? M_SIGHT_NONE : M_SIGHT_ALL;
+    if (all_hidden) {
+        g_DC_ProbeUs[DC_PROBE_C_PHIDE]++; // TEMP
+    }
+    if (m_SightDump) {
+        LOG_INFO(
+            "[occl] room %d -> %d: %s %s", Room_GetIndex(room), portal->room_num,
+            marks, all_hidden ? "HIDDEN" : "shown");
+    }
+    return entry;
+}
+
+// Marks the rooms of the list that no portal leads to unless a wall hides it
+// from the camera (each portal facing the camera, from a room that shows):
+// the list stays as it is, for what else reads it, but their geometry is not
+// drawn.
+static void M_FindOccluded(const int16_t camera_room)
+{
+    const int32_t count = Room_DrawGetCount();
+    for (int32_t i = 0; i < count; i++) {
+        Output_Bind_GetRoom(Room_Get(Room_DrawGetRoom(i)))->occluded = true;
+    }
+    Output_Bind_GetRoom(Room_Get(camera_room))->occluded = false;
+    int32_t head = 0;
+    int32_t tail = 0;
+    m_OcclusionQueue[tail++] = camera_room;
+    while (head < tail) {
+        const int16_t room_num = m_OcclusionQueue[head++];
+        const ROOM *const room = Room_Get(room_num);
+        if (room->portals == nullptr) {
+            continue;
+        }
+        for (int32_t i = 0; i < room->portals->count; i++) {
+            const PORTAL *const portal = &room->portals->portal[i];
+            if (!M_PortalFacesCamera(room, portal)) {
+                continue;
+            }
+            OUTPUT_ROOM_BIND *const to =
+                Output_Bind_GetRoom(Room_Get(portal->room_num));
+            if (!to->occluded || !to->drawn || tail >= MAX_ROOMS
+                || M_GetPortalSight(room, portal)->state == M_SIGHT_NONE) {
+                continue;
+            }
+            to->occluded = false;
+            m_OcclusionQueue[tail++] = portal->room_num;
+        }
+    }
+    for (int32_t i = 0; i < count; i++) {
+        if (Output_Bind_GetRoom(Room_Get(Room_DrawGetRoom(i)))->occluded) {
+            g_DC_ProbeUs[DC_PROBE_C_ROOMS]++; // TEMP
+        }
+    }
+}
+#endif
 
 static void M_GetBounds(void)
 {
@@ -443,7 +609,17 @@ static void M_DrawSingleRoom(const ROOM *const room)
     }
 
     Matrix_TranslateAbs32(room->pos);
-    DC_PROBE(DC_PROBE_S_ROOMGEO, Output_DrawRoom(room, false));
+#if defined(__DREAMCAST__)
+    if (!bind->occluded)
+#endif
+    {
+        DC_PROBE(DC_PROBE_S_ROOMGEO, Output_DrawRoom(room, false));
+    }
+#if defined(__DREAMCAST__)
+    if (bind->occluded) {
+        DC_Debug_RoomBox(room, g_WMatrixPtr, 0xC0FF00FFu);
+    }
+#endif
 #if defined(__DREAMCAST__)
     g_DC_ProbeUs[DC_PROBE_S_ROOMS]++;
 #endif
@@ -459,7 +635,12 @@ static void M_DrawSingleRoom(const ROOM *const room)
     g_PhdBottom = bind->bound_bottom;
 
     DC_PROBE_START(probe_statics);
-    for (int32_t i = 0; i < room->num_static_meshes; i++) {
+#if defined(__DREAMCAST__)
+    const int32_t num_statics = bind->occluded ? 0 : room->num_static_meshes;
+#else
+    const int32_t num_statics = room->num_static_meshes;
+#endif
+    for (int32_t i = 0; i < num_statics; i++) {
         const STATIC_MESH *const mesh = &room->static_meshes[i];
         if (M_DrawSet_Has(&m_DrawnStatics, mesh->draw_num)) {
             continue;
@@ -607,7 +788,23 @@ void Room_DrawAllRooms(const int16_t current_room, const int16_t target_room)
         m_OutsideRight = Viewport_GetMinX(VIEWPORT_GAME);
     }
 
+#if defined(__DREAMCAST__)
+    m_SightFrame++;
+    m_SightCamera = room;
+#if defined(TRX_DC_PROBES)
+    // One frame in 120 says why each portal was kept or hidden.
+    m_SightDump = m_SightFrame % 120 == 0;
+#endif
+    if (m_SightDump) {
+        LOG_INFO(
+            "[occl] camera room %d at %d %d %d", current_room, g_ViewPos.x,
+            g_ViewPos.y, g_ViewPos.z);
+    }
+#endif
     DC_PROBE(DC_PROBE_S_BOUNDS, M_GetBounds());
+#if defined(__DREAMCAST__)
+    M_FindOccluded(current_room);
+#endif
 
     if (m_Outside) {
         DC_PROBE(DC_PROBE_S_SKY, M_DrawSkybox());
