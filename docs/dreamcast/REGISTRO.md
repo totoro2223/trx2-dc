@@ -1055,3 +1055,38 @@ esquina más cercana de las tres: ~1550 caras alcanzadas, ~60 oscurecidas por
 frame, y la cara de espaldas del pilar se ve oscura. La sonda (dos líneas
 `[roomcel]` cada 120 frames por el puerto serie) daba un tirón periódico que
 no bajaba los fps; retirada. Falta medir el coste.
+
+## 30/10/2026 - Sombras de TR3 y oclusión de salas (DC builds 841-855)
+
+**Sombra.** En una vista pegada a una pared de TR3 el frame iba a 20-27 fps con
+`stage` de 19 a 30 ms. Los contadores nuevos del frame partían ese tiempo:
+las sombras de los ítems (`ishad`) 14,5 ms y las de Lara 11,5 ms, mientras las
+mallas de los ítems costaban 0,07 ms. La sombra sprite de TR3 recoge las caras
+del suelo bajo la sombra, une las que se tocan (O(n^2)) y pone cada una como
+triángulos; rechazar antes las caras fuera de alcance en altura no cambió nada.
+El octágono (la sombra de TR1 y TR2: un polígono plano) la sustituye en los
+tres juegos para todo menos Lara con el volumen o la sombra suave; además la
+sombra sprite era una de las que sacan el negro en los texels transparentes
+(tarea 72), porque se dibuja con mezcla sustractiva que lee el color del texel.
+
+**Oclusión.** `batcher.c`: `M_SightBlocked` recorre la rejilla de sectores de
+la sala (DDA) entre el ojo y un punto; `M_ChunkHidden` lo hace a cinco puntos de
+la caja del trozo; `DC_MeshBatcher_RayBlocked` a un punto de un portal.
+`rooms/draw.c`: `M_GetPortalSight` (cacheado por frame) prueba las cuatro
+esquinas y el centro de cada portal contra las paredes de su sala y de la sala
+de la cámara; `M_FindOccluded` recorre la lista de salas desde la de la cámara
+por los portales no tapados y marca el resto como `occluded`, que no dibujan su
+geometría ni sus estáticos (items y efectos sí, y la lista no cambia: otros
+la leen). Las paredes solo cuentan por debajo de la altura de sus caras
+(`wall_top`, de las caras opacas finas en un plano de la rejilla) y las caras
+translúcidas finas las hacen transparentes (`see_through`). Sin techo: en el
+exterior los datos de suelo dan uno que no existe.
+
+Visto en Flycast: en una vista abierta de TR3 (13 salas) ningún portal sale
+oculto, porque todos se ven, y los trozos tapados son 6 de 8. Recortar la
+ventana de un portal a la parte que se ve dejó agujeros en TR2 (build 852);
+quitado. Los trozos tapados de más sobre el acantilado de TR2 (build 854) venían
+de contar la pared hasta el techo de la sala y de la prueba del techo; corregido
+en la 855, sin ver todavía. Nada medido en fps. Las sondas `ctest`, `chide`,
+`croom`, `qtest` y `qhide` cuentan trozos y portales; el d-pad arriba enciende
+las cajas solo con `DC_PROBES=1`.
