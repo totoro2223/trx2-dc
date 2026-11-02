@@ -44,7 +44,8 @@ if [ -f "$MPEG_TAR" ]; then
   MPEG_BUILD="$DEPS/build/libmpeg"
   rm -rf "$MPEG_BUILD" && mkdir -p "$MPEG_BUILD"
   tar xzf "$MPEG_TAR" -C "$MPEG_BUILD"
-  cp "$MPEG_BUILD"/pl_mpeg-2.0.0/pl_mpeg.h "$PREFIX/include/"
+  cp "$MPEG_BUILD"/pl_mpeg-2.0.0/pl_mpeg.h "$MPEG_BUILD"/pl_mpeg-2.0.0/mpeg.h \
+    "$PREFIX/include/"
 fi
 
 # luac for this PC, configured as kos-ports configures the Dreamcast's Lua

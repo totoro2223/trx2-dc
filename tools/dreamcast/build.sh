@@ -23,6 +23,9 @@ BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE"
 [ "${DC_ISO_DMA:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-dma"
 [ "${DC_BOXES:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-boxes"
 [ "${DC_MAGENTA:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-magenta"
+# DC_CENSUS=1 lists the level region and newlib by caller at each load
+# (dc_heap_census; tools/dreamcast/live_census.py).
+[ "${DC_CENSUS:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-census"
 CROSS="$ROOT/build/dc-cross.ini"
 
 win() { cygpath -m "$1"; }
@@ -103,7 +106,7 @@ want=false
 if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk '$1 == "dc_probes" { print $2 }')" != "$want" ]; then
   meson configure "$BUILD_DIR" -Ddc_probes="$want"
 fi
-for opt in "dc_iso_dma:${DC_ISO_DMA:-0}" "dc_debug_boxes:${DC_BOXES:-0}" "dc_bg_magenta:${DC_MAGENTA:-0}"; do
+for opt in "dc_iso_dma:${DC_ISO_DMA:-0}" "dc_debug_boxes:${DC_BOXES:-0}" "dc_bg_magenta:${DC_MAGENTA:-0}" "dc_heap_census:${DC_CENSUS:-0}"; do
   want=false
   [ "${opt#*:}" = 1 ] && want=true
   if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk -v o="${opt%:*}" '$1 == o { print $2 }')" != "$want" ]; then

@@ -29,6 +29,7 @@
 // A diagnostic, built in with -DTRX_DC_HEAP_CENSUS: who holds what the region
 // keeps between levels (tools/dreamcast/live_census.py reads the log).
 #if defined(TRX_DC_HEAP_CENSUS)
+    #include "dc_alloc_trace.h"
     #define DC_LEVELHEAP_TRACE 1
 #else
     #define DC_LEVELHEAP_TRACE 0
@@ -178,19 +179,15 @@ static void M_TraceDel(void *const ptr)
 
 void DC_LevelHeap_DumpLive(const char *const label)
 {
-    printf("[live-begin] %s\n", label);
     for (int i = 0; i < M_TRACE_SLOTS; i++) {
         const M_TRACE *const slot = &m_Trace[i];
-        if (slot->ptr == nullptr || slot->ptr == (void *)1) {
-            continue;
+        if (slot->ptr != nullptr && slot->ptr != (void *)1) {
+            DC_AllocTrace_Group(slot->size, slot->pc, M_TRACE_FRAMES);
         }
-        printf("[live] %u", (unsigned)slot->size);
-        for (int k = 0; k < M_TRACE_FRAMES && slot->pc[k] != 0; k++) {
-            printf(" %08x", (unsigned)slot->pc[k]);
-        }
-        printf("\n");
     }
-    printf("[live-end] %d not traced\n", m_TraceDropped);
+    char head[160];
+    snprintf(head, sizeof(head), "[live-begin] %s", label);
+    DC_AllocTrace_PrintGroups(head, m_TraceDropped);
 }
 #else
 void DC_LevelHeap_DumpLive(const char *const label)

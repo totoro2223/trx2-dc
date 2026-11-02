@@ -19,6 +19,8 @@ static MEMORY_ARENA_ALLOCATOR m_Allocator[GBUF_NUM_MALLOC_TYPES] = {};
 // megabyte a level), and a run of levels ran out of memory.
 static mutex_t m_Lock = MUTEX_INITIALIZER;
 static int32_t m_Made[GBUF_NUM_MALLOC_TYPES];
+// Bytes asked of each buffer since the last reset (GameBuf_DumpSizes).
+static size_t m_Bytes[GBUF_NUM_MALLOC_TYPES];
 #endif
 
 static void M_Init(void)
@@ -57,6 +59,7 @@ void GameBuf_Reset(void)
         }
         m_Made[i] = 0;
     #endif
+        m_Bytes[i] = 0;
         Memory_ArenaFree(&m_Allocator[i]);
 #else
         Memory_ArenaReset(&m_Allocator[i]);
@@ -81,6 +84,20 @@ void GameBuf_Check(const char *const tag, const GAME_BUFFER buffer)
         "[gamebuf-check] %s: %d listed of %d made\n", tag, (int)chunks,
         (int)m_Made[buffer]);
 }
+
+// What the level is made of, by buffer (numbered as in GAME_BUFFER):
+// "[gbuf] <index> <bytes>" per buffer of 1K or more.
+void GameBuf_DumpSizes(void)
+{
+    size_t total = 0;
+    for (int32_t i = 0; i < GBUF_NUM_MALLOC_TYPES; i++) {
+        total += m_Bytes[i];
+        if (m_Bytes[i] >= 1024) {
+            printf("[gbuf] %d %u\n", (int)i, (unsigned)m_Bytes[i]);
+        }
+    }
+    printf("[gbuf] total %u\n", (unsigned)total);
+}
 #endif
 
 void GameBuf_ResetSingle(const GAME_BUFFER buffer)
@@ -98,6 +115,7 @@ void *GameBuf_Alloc(const size_t alloc_size, const GAME_BUFFER buffer)
     const MEMORY_ARENA_CHUNK *const before = m_Allocator[buffer].current_chunk;
     void *const result = Memory_ArenaAlloc(&m_Allocator[buffer], aligned_size);
     m_Made[buffer] += m_Allocator[buffer].current_chunk != before;
+    m_Bytes[buffer] += aligned_size;
     DC_LevelHeap_Leave();
     mutex_unlock(&m_Lock);
     return result;

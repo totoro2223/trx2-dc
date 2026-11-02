@@ -2,7 +2,10 @@
 """Sums what the level heap holds at each level load, by the function that
 asked for it (DC_LevelHeap_DumpLive's "[live]" lines in the serial log).
 
-    live_census.py SERIAL_LOG TRX.elf ADDR2LINE [DUMP_INDEX]
+    live_census.py SERIAL_LOG TRX.elf ADDR2LINE [DUMP_INDEX] [--tag nlive]
+
+--tag nlive reads instead newlib's census (DC_AllocTrace_DumpCensus,
+"[nlive-begin]"), whose small-block sizes are sampled estimates.
 
 Prints, for the dump asked for (the last by default), the sizes by owner, and
 what the dump holds that the one before it did not.
@@ -19,27 +22,38 @@ SKIP = re.compile(
 )
 
 
-def dumps(text):
+def dumps(text, tag):
     out = []
-    for block in re.split(r"\[live-begin\][^\n]*\n", text)[1:]:
+    for block in re.split(r"\[%s-begin\][^\n]*\n" % tag, text)[1:]:
         block = block.split("[live-end]")[0]
         rows = []
         for line in block.splitlines():
-            m = re.match(r"\[live\] (\d+)((?: [0-9a-f]{8})+)", line.strip())
+            # "[live] <bytes> [x<blocks>] <callers>": one block, or a sum.
+            m = re.match(
+                r"\[live\] (\d+)(?: x(\d+))?((?: [0-9a-f]{8})+)", line.strip()
+            )
             if m:
-                rows.append((int(m.group(1)), m.group(2).split()))
+                rows.append(
+                    (int(m.group(1)), m.group(3).split(), int(m.group(2) or 1))
+                )
         out.append(rows)
     return out
 
 
 def main():
+    args = sys.argv[1:]
+    tag = "live"
+    if "--tag" in args:
+        tag = args.pop(args.index("--tag") + 1)
+        args.remove("--tag")
+    sys.argv[1:] = args
     log, elf, addr2line = sys.argv[1:4]
     text = open(log, encoding="utf-8", errors="replace").read()
     text = re.sub(r"\x1b\[[0-9;]*m", "", text)
-    ds = dumps(text)
+    ds = dumps(text, tag)
     index = int(sys.argv[4]) if len(sys.argv) > 4 else len(ds) - 1
     print("dumps:", [len(d) for d in ds], "using", index)
-    addrs = sorted({a for d in ds for _, t in d for a in t})
+    addrs = sorted({a for d in ds for _, t, _ in d for a in t})
     res = subprocess.run(
         [addr2line, "-f", "-e", elf, *addrs], capture_output=True, text=True
     ).stdout.splitlines()
@@ -58,10 +72,10 @@ def main():
 
     def tally(d):
         by = defaultdict(lambda: [0, 0])
-        for size, trace in d:
+        for size, trace, blocks in d:
             o = owner(trace)
             by[o][0] += size
-            by[o][1] += 1
+            by[o][1] += blocks
         return by
 
     now = tally(ds[index])

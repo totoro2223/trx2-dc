@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #define DC_ALLOC_TRACE_MIN (24 * 1024)
 #define M_LIVE_SLOTS 512
@@ -235,6 +236,167 @@ void DC_AllocTrace_DumpKept(const char *const label)
         m_KeptLost);
 }
 
+#if defined(TRX_DC_HEAP_CENSUS)
+// Census of all of newlib's heap, from boot, by who asked (census builds
+// only: the table takes 128K). Blocks of M_CENSUS_WHOLE or more are all
+// followed; of the smaller ones, one in M_CENSUS_RATE, counted that many
+// times over, so the sums are estimates. live_census.py --tag nlive reads it.
+    #define M_CENSUS_SLOTS 4096
+    #define M_CENSUS_FRAMES 6
+    #define M_CENSUS_WHOLE 4096
+    #define M_CENSUS_RATE 8
+    #define M_CENSUS_GONE ((void *)1)
+
+    #include <arch/irq.h>
+
+typedef struct {
+    void *ptr;
+    uint32_t size;
+    uint32_t frames[M_CENSUS_FRAMES];
+} M_CENSUS;
+
+static M_CENSUS m_Census[M_CENSUS_SLOTS];
+static uint32_t m_CensusTick = 0;
+static int m_CensusLost = 0;
+
+static void M_CensusAdd(void *const ptr, const size_t size)
+{
+    if (ptr == nullptr) {
+        return;
+    }
+    uint32_t weight = 1;
+    if (size < M_CENSUS_WHOLE) {
+        if (++m_CensusTick % M_CENSUS_RATE != 0) {
+            return;
+        }
+        weight = M_CENSUS_RATE;
+    }
+    uint32_t frames[M_CENSUS_FRAMES] = {};
+    M_Trace(frames, M_CENSUS_FRAMES);
+    const int irq = irq_disable();
+    int slot = (int)(((uintptr_t)ptr >> 3) % M_CENSUS_SLOTS);
+    int i;
+    for (i = 0; i < M_CENSUS_SLOTS; i++) {
+        M_CENSUS *const c = &m_Census[slot];
+        if (c->ptr == nullptr || c->ptr == M_CENSUS_GONE) {
+            c->ptr = ptr;
+            c->size = (uint32_t)size * weight;
+            for (int j = 0; j < M_CENSUS_FRAMES; j++) {
+                c->frames[j] = frames[j];
+            }
+            break;
+        }
+        slot = (slot + 1) % M_CENSUS_SLOTS;
+    }
+    m_CensusLost += i == M_CENSUS_SLOTS;
+    irq_restore(irq);
+}
+
+static void M_CensusRemove(void *const ptr)
+{
+    if (ptr == nullptr) {
+        return;
+    }
+    const int irq = irq_disable();
+    int slot = (int)(((uintptr_t)ptr >> 3) % M_CENSUS_SLOTS);
+    for (int i = 0; i < M_CENSUS_SLOTS && m_Census[slot].ptr != nullptr;
+         i++) {
+        if (m_Census[slot].ptr == ptr) {
+            m_Census[slot].ptr = M_CENSUS_GONE;
+            break;
+        }
+        slot = (slot + 1) % M_CENSUS_SLOTS;
+    }
+    irq_restore(irq);
+}
+
+void DC_AllocTrace_DumpCensus(const char *const label)
+{
+    const struct mallinfo mem = mallinfo();
+    const int irq = irq_disable();
+    for (int i = 0; i < M_CENSUS_SLOTS; i++) {
+        const M_CENSUS *const c = &m_Census[i];
+        if (c->ptr != nullptr && c->ptr != M_CENSUS_GONE) {
+            DC_AllocTrace_Group(c->size, c->frames, M_CENSUS_FRAMES);
+        }
+    }
+    irq_restore(irq);
+    char head[160];
+    snprintf(
+        head, sizeof(head), "[nlive-begin] %s: newlib in use %uK", label,
+        (unsigned)(mem.uordblks / 1024));
+    DC_AllocTrace_PrintGroups(head, m_CensusLost);
+}
+#endif
+
+#if defined(TRX_DC_HEAP_CENSUS)
+// The census dumps, summed by callers here and not block by block: thousands
+// of lines down the serial port took 20 seconds a dump, and lost some to the
+// watchdog's lines. A group is a block's first M_GROUP_FRAMES callers.
+    #define M_GROUPS 384
+    #define M_GROUP_FRAMES 6
+
+typedef struct {
+    uint32_t frames[M_GROUP_FRAMES];
+    uint32_t bytes;
+    uint32_t blocks;
+} M_GROUP;
+
+static M_GROUP m_Groups[M_GROUPS];
+static int m_GroupCount = 0;
+static uint32_t m_GroupOther = 0;
+
+void DC_AllocTrace_Group(
+    const uint32_t size, const uint32_t *const frames, const int count)
+{
+    uint32_t key[M_GROUP_FRAMES] = {};
+    for (int i = 0; i < count && i < M_GROUP_FRAMES; i++) {
+        key[i] = frames[i];
+    }
+    int g;
+    for (g = 0; g < m_GroupCount; g++) {
+        if (memcmp(m_Groups[g].frames, key, sizeof(key)) == 0) {
+            break;
+        }
+    }
+    if (g == m_GroupCount) {
+        if (m_GroupCount == M_GROUPS) {
+            m_GroupOther += size;
+            return;
+        }
+        memcpy(m_Groups[g].frames, key, sizeof(key));
+        m_Groups[g].bytes = 0;
+        m_Groups[g].blocks = 0;
+        m_GroupCount++;
+    }
+    m_Groups[g].bytes += size;
+    m_Groups[g].blocks++;
+}
+
+void DC_AllocTrace_PrintGroups(const char *const head, const int dropped)
+{
+    printf("%s\n", head);
+    for (int g = 0; g < m_GroupCount; g++) {
+        printf(
+            "[live] %u x%u", (unsigned)m_Groups[g].bytes,
+            (unsigned)m_Groups[g].blocks);
+        for (int j = 0; j < M_GROUP_FRAMES && m_Groups[g].frames[j] != 0;
+             j++) {
+            printf(" %08lx", (unsigned long)m_Groups[g].frames[j]);
+        }
+        printf("\n");
+    }
+    printf(
+        "[live-end] %d not traced, %uK past %d callers\n", dropped,
+        (unsigned)(m_GroupOther / 1024), M_GROUPS);
+    m_GroupCount = 0;
+    m_GroupOther = 0;
+}
+#else
+    #define M_CensusAdd(ptr, size)
+    #define M_CensusRemove(ptr)
+#endif
+
 void *__wrap_malloc(const size_t size)
 {
     void *const result = __real_malloc(size);
@@ -246,6 +408,7 @@ void *__wrap_malloc(const size_t size)
     }
     M_Remember(result, size);
     M_Keep(result, size);
+    M_CensusAdd(result, size);
     return result;
 }
 
@@ -257,6 +420,7 @@ void *__wrap_calloc(const size_t count, const size_t size)
     }
     M_Remember(result, count * size);
     M_Keep(result, count * size);
+    M_CensusAdd(result, count * size);
     return result;
 }
 
@@ -279,6 +443,8 @@ void *__wrap_realloc(void *const ptr, const size_t size)
         M_Remember(result, size);
         M_Unkeep(ptr);
         M_Keep(result, size);
+        M_CensusRemove(ptr);
+        M_CensusAdd(result, size);
     }
     return result;
 }
@@ -287,6 +453,7 @@ void __wrap_free(void *const ptr)
 {
     M_Forget(ptr);
     M_Unkeep(ptr);
+    M_CensusRemove(ptr);
 #if defined(TRX_DC_STRICT)
     DC_Strict_FillFreed(ptr);
 #endif

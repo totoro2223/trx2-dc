@@ -406,11 +406,15 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
 
 #if defined(__DREAMCAST__)
     DC_Loading_End();
+    #if defined(TRX_DC_WATCHDOG)
+    GameBuf_DumpSizes();
+    #endif
     #if defined(TRX_DC_WATCHDOG) && defined(TRX_DC_HEAP_CENSUS)
     // What the level is made of, by who asked for it (live_census.py), and
     // where it lies.
     DC_LevelHeap_DumpLive("level loaded");
     DC_LevelHeap_DumpLayout();
+    DC_AllocTrace_DumpCensus(level->path);
     #endif
 #endif
     Benchmark_End(&benchmark, nullptr);

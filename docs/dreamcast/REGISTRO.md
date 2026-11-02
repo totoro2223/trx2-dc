@@ -1146,3 +1146,42 @@ presentación, y solo 5-7 fps visibles aunque el sonido y la imagen van
 sincronizados (179 imágenes en 12 s). La build 865 mide el tiempo entre
 vueltas del bucle de `fmv.c`; sin leer. Los 130 ms por vuelta que no explica el
 reproductor son lo primero que hay que encontrar.
+
+## 02/11/2026: medida de la RAM por tipo de dato (DC builds 413-415)
+
+Para el [plan de refactor de la RAM](PLAN_REFACTOR_RAM.md) (D0 y A5).
+
+1. **Herramientas**: `GameBuf_DumpSizes` (`game_buf.c`) imprime al terminar
+   cada carga los bytes pedidos a cada `GBUF_*` (`[gbuf] <índice> <bytes>`, en
+   todo build con watchdog); `tools/dreamcast/gbuf_summary.py` los tabula por
+   nivel. En los builds de censo (`DC_CENSUS=1 build.sh minsize` →
+   `build/dc-minsize-census`) hay además un censo de **todo newlib desde el
+   arranque** (`DC_AllocTrace_DumpCensus`: bloques >= 4 K todos, los menores 1
+   de cada 8 y multiplicados por 8), y tanto ese como el de la región salen
+   **sumados por llamador en la consola** (`DC_AllocTrace_Group`): bloque a
+   bloque eran ~4000 líneas por volcado, 45 s por el serie, y se perdían
+   líneas mezcladas con las del watchdog. `live_census.py ... --tag nlive` lee
+   el de newlib.
+2. **Pasadas**: discos `T-ram-tr{1,2,3}.cdi` (`TRX_DC_LEVELS`, sin películas
+   ni música), Flycast oculto y sin sonido (copia `D:\FlycastTest`, audio a
+   la salida óptica). Los tres llegan a `[levels] done`. Logs en
+   `build/logs/2026-11-02/` (guardan los últimos ~10 niveles de cada juego).
+3. **Resultado** (K, últimos ~10 niveles): fotogramas TR1 1260-1400, TR2
+   1280-1400, TR3 1230-1310 (fichero 270-425); sectores 150-870; malla de
+   salas 110-595; mallas de objeto 230-425; ítems 180 fijos; total del nivel
+   2,3-3,5 MB frente a 0,6-1,2 MB del fichero. Barkhang: región tras cargar
+   ~3,6 MB, casi todo `GameBuf`.
+4. **Fotogramas**: 16 000-17 000 por nivel (18 000-20 000 reservados con las
+   inyecciones), cada uno `ANIM_FRAME` de 24 B y una reserva propia de 4 B por
+   pieza; el fichero guarda la rotación en 2 o 4 B. Es lo primero a atacar
+   (D4 del plan).
+5. **Newlib** (aparte de la región de 6,3 MB y la de Lua de 2,3 MB): catálogos
+   ~280 K, `M_FindOrAdd` 110-170 K, vectores 110-340 K, JSON de configuración
+   80-90 K, cadenas ~120 K, mapas de enums ~70 K, ~670 K sin nombre.
+6. Las mallas de render (bindings del batcher) no salen en el volcado de fin
+   de carga; falta medirlas.
+
+Por el camino: `mpeg1.c` no compilaba en este PC (faltaba `mpeg.h`):
+`build_deps.sh` copiaba solo `pl_mpeg.h` del tarball de pl_mpeg 2.0.0; ahora
+copia los dos (el tarball es la etiqueta `v2.0.0` de Dreamcast-Projects/pl_mpeg
+guardada como `deps/dl/libmpeg-2.0.0.tar.gz`).

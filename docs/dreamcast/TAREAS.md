@@ -14,6 +14,10 @@ juego, reinicio de nivel): plan completo de pruebas P1–P13 y correcciones
 M1–M13 en [PLAN_MEMORIA_SESIONES_LARGAS.md](PLAN_MEMORIA_SESIONES_LARGAS.md).
 Cubre las filas 64, 65, 66, 67 y 68 de la sección J.
 
+**Refactor para bajar la RAM** (02/11/2026: revisión del fork OpenLara-dc,
+reparto de la RAM, fases A–C con ganancias estimadas): ver
+[PLAN_REFACTOR_RAM.md](PLAN_REFACTOR_RAM.md).
+
 **Geometría que no se ve** (objetos tapados por paredes, trozos más finos en
 salas grandes, tope del relieve): plan G1-G4 en
 [PLAN_GEOMETRIA_OCULTA.md](PLAN_GEOMETRIA_OCULTA.md).
