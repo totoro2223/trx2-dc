@@ -194,7 +194,7 @@ if get_option('dc_lua')
 else
   dc_sources += files('nolua.c', 'nolua_game.c', 'nolua_weapons.c',
     'nolua_levels.c', 'nolua_hud.c', 'nolua_ui.c', 'nolua_ring.c',
-    'nolua_passport.c', 'nolua_settings.c')
+    'nolua_passport.c', 'nolua_settings.c', 'nolua_screens.c')
   dc_excluded_sources += ['trx/game/lua/']
 endif
 

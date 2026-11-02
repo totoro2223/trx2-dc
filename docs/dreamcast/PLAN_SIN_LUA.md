@@ -84,10 +84,19 @@ store, scripts de nivel, hooks). Con la opción de Meson `dc_lua=false`:
   Pasaporte, páginas, listas (`DC_REQ`), guardar con aviso de VMU, cristal,
   pantalla de guardado/carga rápidos. Despachador de pantallas en `nolua.c`
   (`DC_Screens_*`).
-- Fase 5: `nolua_settings.c` es un trozo vacío (la entrada de gráficos no
-  abre nada). Falta la página DC Rendering y los otros aspectos del HUD.
-- Falta: `nolua_screens.c` (pausa, estadísticas, examinar, combinar,
-  imagen, vista de nivel, globo; `DC_NoLua_SetupScreens` está declarada y
-  sin definir: no llamarla), probar todo en Flycast, repetir
-  `test_levels.ps1` con el build nuevo, y la fase 6 (`dc_lua=false` por
-  defecto, quitar la región de Lua, pruebas de memoria).
+- Fase 5 (02/11/2026): `nolua_settings.c` escrito, compila, SIN PROBAR. Página
+  Rendering de DC: modo (aplica sus valores por defecto), reiniciar nivel,
+  frame rate, cel shading, sombras, objetos 3D, relieve, cel de salas,
+  contador de FPS, filtros de textura y de interfaz. Izquierda/derecha o
+  confirmar cambian el valor. Faltan los otros aspectos del HUD.
+- `nolua_screens.c` (02/11/2026): pausa, estadísticas (una sola caja, sin
+  página de assault), imagen y vista de nivel en C. Compila, SIN PROBAR.
+  Globo, examinar y combinar no están definidos (el motor sale al título y
+  el anillo devuelve la entrada).
+- Fase 6 (02/11/2026): `dc_lua=false` es el valor por defecto (meson.options)
+  y `build.sh minsize` compila sin Lua en `build/dc-minsize`; `DC_LUA=1`
+  compila el juego con scripts en `build/dc-minsize-lua`. Sin Lua no hay
+  región de Lua. Compila, SIN PROBAR. La carpeta `build/dc-minsize-nolua` ya
+  no se usa.
+- Falta: probar todo en Flycast (`test_levels.ps1`, P1/P2 de los tres juegos,
+  memoria) y el estilo del HUD elegible (hoy fijo por juego).

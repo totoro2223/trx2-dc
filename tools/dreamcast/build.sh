@@ -26,8 +26,9 @@ BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE"
 # DC_CENSUS=1 lists the level region and newlib by caller at each load
 # (dc_heap_census; tools/dreamcast/live_census.py).
 [ "${DC_CENSUS:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-census"
-# DC_NOLUA=1 builds without Lua (dc_lua=false; docs/dreamcast/PLAN_SIN_LUA.md).
-[ "${DC_NOLUA:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-nolua"
+# The build has no Lua (dc_lua=false, docs/dreamcast/PLAN_SIN_LUA.md); DC_LUA=1
+# builds the old scripted game in a directory of its own.
+[ "${DC_LUA:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-lua"
 CROSS="$ROOT/build/dc-cross.ini"
 
 win() { cygpath -m "$1"; }
@@ -115,8 +116,8 @@ for opt in "dc_iso_dma:${DC_ISO_DMA:-0}" "dc_debug_boxes:${DC_BOXES:-0}" "dc_bg_
     meson configure "$BUILD_DIR" "-D${opt%:*}=$want"
   fi
 done
-want=true
-[ "${DC_NOLUA:-0}" = 1 ] && want=false
+want=false
+[ "${DC_LUA:-0}" = 1 ] && want=true
 if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk '$1 == "dc_lua" { print $2 }')" != "$want" ]; then
   meson configure "$BUILD_DIR" -Ddc_lua="$want"
 fi

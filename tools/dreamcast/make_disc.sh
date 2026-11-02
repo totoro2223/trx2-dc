@@ -127,7 +127,7 @@ if [ -n "$LUA_BIN" ]; then
   cp -r "$SHIP/modules" "$STAGE/modules"
   cp -r "$SHIP/scripts" "$STAGE/scripts"
 else
-  # A build without Lua (DC_NOLUA=1): no scripts on the disc.
+  # A build without Lua (the default): no scripts on the disc.
   find "$STAGE/games/$GAME" -name '*.lua' -delete
 fi
 # The GLSL shaders are of no use without OpenGL 3.

@@ -279,6 +279,7 @@ RESULT LUA_RunGameScript(void)
     // Before the captions, so that its hints stand over the caption.
     DC_NoLua_SetupRing();
     DC_NoLua_SetupPassport();
+    DC_NoLua_SetupScreens();
     DC_NoLua_SetupHUD();
     DC_NoLua_SetupUI();
     return OK;
