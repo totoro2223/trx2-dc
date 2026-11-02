@@ -179,6 +179,33 @@ juegos; con B el pico de carga queda igual que eso. La región del nivel podría
 pasar de 6,6 MB a ~3 MB y devolver más de 3 MB al resto (Lua, newlib, margen).
 D5 es la palanca más grande pero la más cara; decidirla después de D0 y A5.
 
+## Rama `refactorizacion-masiva`: hecho (02/11/2026)
+
+Worktree `D:\trx\trx2-dc-refactor`. Pasadas de niveles sin películas en
+Flycast, oculto y sin sonido (builds del worktree 1-3, logs
+`build/logs/r1-tr*.txt`): **TR1 16, TR2 18 y TR3 20 niveles con
+`[levels] done`**, sin aserto ni excepción.
+
+| Cambio | Ganancia medida |
+|---|---|
+| D4 fotogramas en palabras de TR2, depósito por nivel, solo los usados | −185…−215 K por nivel (Barkhang 1376 → 1162 K, Atlantis 1316 → 1130 K); menos de lo estimado: la mayoría de rotaciones giran en dos ejes y siguen en 4 B |
+| `MAX_ITEMS` 1024 → 512 | ítems 180 → 90 K por nivel, y tablas estáticas a la mitad |
+| Tiempo 512, cola de relieve 256, chispas 256 | `.bss` 729 → 602 K (junto con lo anterior) |
+| Parte grande de Lua 1024 → 512 K | +512 K para el resto |
+| Sin pcre2 | `.text` −98 K |
+| **Total** | región del nivel **6336 → 7231 K** (TR1 7295 K); datos de Barkhang 3391 → 3077 K; pico de carga máx. TR1 5679 K, TR2 6034 K, TR3 6212 K (78-86 % de la región; antes 87-100 %) |
+
+Descartado al probarlo:
+
+- `SURFACE` con altura de 16 bits (sector 56 → 52 B): TRX usa
+  `NO_HEIGHT` = −3 251 200, no cabe; traducirlo toca ~70 accesos por 4 B.
+- Soltar el JSON de configuración (80-90 K): se guarda a propósito, lo
+  consultan las opciones que se registran más tarde.
+- Compartir fotogramas repetidos: 29-52 K por nivel en TR2 (el fichero trae
+  ~7000 fotogramas; los otros ~10 000 son las animaciones de Lara que
+  inyecta TRX, iguales en todos los niveles).
+- Código solo de TR4: ~7 K, no compensa un ejecutable por juego por eso.
+
 ## 5. Orden propuesto
 
 A5 + D0 (medidos el 02/11) → **D4 (fotogramas, ~0,8 MB)** → D3 (ítems) → A1

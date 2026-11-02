@@ -118,6 +118,8 @@ Por defecto, el modo Gráficos usa Soft (high).
 | Región antes que newlib, `realloc` grande movido a la región y reintento con desalojo de mallas y Lua | OK | P1 TR3: los 19 niveles con `[levels] done` (build 784); en el 771 moría cargando el 18 con `brk` a 384 K |
 | Guardado por trozos (zlib en bloques de 16 K) y árbol construido sección a sección con arena reutilizada | OK | P2 TR2: 17 niveles; Barkhang guarda con la región 6020/6591 K, hueco 556 K, BSON 196 K y 34 bloques de VMU (build 794); TR1 repite 45 guardados y 8 cargas (795) |
 | Medida por tipo de dato del nivel (`[gbuf]`, `gbuf_summary.py`) y censo de newlib por llamador (`--tag nlive`), volcados agrupados en la consola | Medido | Los tres juegos: nivel 2,3–3,5 MB en RAM frente a 0,6–1,2 MB en el fichero; **fotogramas ~1,3 MB en todos** (270–425 K en el fichero), sectores 150–870 K, ítems 180 K fijos (builds 413–415, 02/11/2026) |
+| Rama `refactorizacion-masiva`: fotogramas en palabras de TR2, `MAX_ITEMS` 512, topes de tiempo/relieve/chispas, Lua grande 512 K, sin pcre2 | OK (Flycast) | Región del nivel 6336 → 7231 K; Barkhang 3391 → 3077 K; pico de carga 78-86 % (antes 87-100 %); TR1/TR2/TR3 todos los niveles `[levels] done` (02/11/2026) |
+| `SURFACE` con altura de 16 bits | FALLIDO | `NO_HEIGHT` de TRX es −3 251 200, no cabe en 16 bits |
 | Árbol BSON leído en trozos con la arena del guardado (`DC_SaveArena_IsOpen`) | OK en corto | TR3: árbol de 154 K → ~67 000 nodos en 6 trozos, 448 K de la región + 484–496 K de newlib; ya no hay petición de 700 K; 5 niveles `[levels] done` (build 805) |
 
 ## Sonido, entrada y juego
