@@ -32,6 +32,8 @@ BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE"
 # DC_PROFILE=1 samples where the game thread spends its time (dc_profile;
 # tools/dreamcast/prof_report.py), in a directory of its own.
 [ "${DC_PROFILE:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-prof"
+# DC_PROBES=1 (the frame timers the benchmark reports need) also has a directory.
+[ "${DC_PROBES:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-probes"
 CROSS="$ROOT/build/dc-cross.ini"
 
 win() { cygpath -m "$1"; }
