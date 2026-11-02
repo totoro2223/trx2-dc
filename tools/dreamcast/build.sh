@@ -29,6 +29,9 @@ BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE"
 # The build has no Lua (dc_lua=false, docs/dreamcast/PLAN_SIN_LUA.md); DC_LUA=1
 # builds the old scripted game in a directory of its own.
 [ "${DC_LUA:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-lua"
+# DC_PROFILE=1 samples where the game thread spends its time (dc_profile;
+# tools/dreamcast/prof_report.py), in a directory of its own.
+[ "${DC_PROFILE:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-prof"
 CROSS="$ROOT/build/dc-cross.ini"
 
 win() { cygpath -m "$1"; }
@@ -116,6 +119,11 @@ for opt in "dc_iso_dma:${DC_ISO_DMA:-0}" "dc_debug_boxes:${DC_BOXES:-0}" "dc_bg_
     meson configure "$BUILD_DIR" "-D${opt%:*}=$want"
   fi
 done
+want=false
+[ "${DC_PROFILE:-0}" = 1 ] && want=true
+if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk '$1 == "dc_profile" { print $2 }')" != "$want" ]; then
+  meson configure "$BUILD_DIR" -Ddc_profile="$want"
+fi
 want=false
 [ "${DC_LUA:-0}" = 1 ] && want=true
 if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk '$1 == "dc_lua" { print $2 }')" != "$want" ]; then

@@ -179,6 +179,14 @@ if [ -n "${TRX_DC_RESETOPT:-}" ]; then
   echo 1 > "$STAGE/RESETOPT.TXT"
   echo "render options reset"
 fi
+# The serial log blocks the game at the port's speed (115200 baud: a level's
+# load prints ~50 KB, 4 s on the console, cable or not), so only a test disc
+# (any test hook, or TRX_DC_LOG=1) keeps it (dc_main.c, LOG.TXT).
+rm -f "$STAGE/LOG.TXT"
+for hook in DEMO BENCH SAVE EXIT COMPLETE GIVE FIRE START LEVELS SWITCH RESETOPT; do
+  [ -f "$STAGE/$hook.TXT" ] && echo 1 > "$STAGE/LOG.TXT"
+done
+[ -n "${TRX_DC_LOG:-}" ] && echo 1 > "$STAGE/LOG.TXT"
 # Injections too large for 16 MiB of RAM. The engine holds every injection of
 # a level decompressed while the level loads, and leaves out with a warning
 # any it cannot find.

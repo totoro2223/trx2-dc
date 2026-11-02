@@ -258,3 +258,7 @@ su disposición en cada carga) y pasar el registro de un disco de prueba con
 Pruebas de guardado (`TRX_DC_SAVE`): **mover antes el archivo de la VMU del
 emulador** (`G:\Flycast\data\T-TRX00_vmu_save_A1.bin`) porque es la tarjeta
 de las partidas del usuario.
+
+## Log serie
+
+Los discos normales no imprimen por el puerto serie (bloquea el juego a la velocidad del puerto). Los discos de prueba con algún gancho `TRX_DC_*` lo conservan; para uno sin gancho, `TRX_DC_LOG=1` en `make_disc.sh`. Perfil de carga: `DC_PROFILE=1 bash tools/dreamcast/build.sh minsize` y `prof_report.py`.

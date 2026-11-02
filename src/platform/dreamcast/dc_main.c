@@ -265,6 +265,15 @@ static int M_RunGame(int argc, char *argv[])
     }
     // A test disc that wipes the render options off the memory card
     // (make_disc.sh's TRX_DC_RESETOPT).
+    // The serial log blocks the game at the port's speed (~4 s of a level's
+    // load at 115200 baud, with or without a cable): only a test disc keeps it
+    // (make_disc.sh, LOG.TXT).
+    FILE *const log = M_Open("LOG.TXT");
+    if (log != nullptr) {
+        fclose(log);
+    } else {
+        dbgio_disable();
+    }
     FILE *const reset = M_Open("RESETOPT.TXT");
     if (reset != nullptr) {
         g_DC_TestResetOptions = 1;

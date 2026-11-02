@@ -1226,3 +1226,5 @@ ni CDI ni Flycast.
 - La interfaz en C (HUD, anillo, pasaporte, ajustes, pantallas) compila y no rompe la carga; su aspecto y manejo siguen SIN VER en Flycast (requiere teclas).
 - Pendiente de PLAN_REFACTOR_RAM: B (niveles horneados), D1, D2 completo, D6, D7 completo, C3.
 - Interfaz en C vista en Flycast (TR2 nivel 1): anillo, opciones, pasaporte (Load/Save/Exit) y Graphic Options (cel shading On->Off) responden sin fallos.
+
+- 02/11/2026 perfilador de carga: `build.sh` acepta `DC_PROFILE=1` (carpeta `dc-minsize-prof`). Resultado en PROBADO.md. Los discos normales ya no sacan log serie; los de prueba (cualquier `TRX_DC_*` de gancho o `TRX_DC_LOG=1`) sí. Para leer el log de un disco normal: `TRX_DC_LOG=1 make_disc.sh ...`.
