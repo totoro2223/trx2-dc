@@ -272,6 +272,29 @@ static void M_FadeToBlack(const int32_t ticks, const int32_t hold)
     M_FadeTo(id, 1.0f, ticks, false, M_RestThenClose);
 }
 
+int32_t DC_NoLua_FadeOpen(const float opacity, const bool holds)
+{
+    return M_OpenFade(
+        opacity, true, holds, M_DROP_TITLE | M_DROP_UNLOAD | M_DROP_DEMO);
+}
+
+void DC_NoLua_FadeMove(
+    const int32_t id, const float target, const int32_t ticks,
+    const bool close, void (*const on_done)(int32_t id))
+{
+    M_FadeTo(id, target, ticks, close, on_done);
+}
+
+void DC_NoLua_FadeClose(const int32_t id)
+{
+    M_CloseFade(id);
+}
+
+bool DC_NoLua_FadesEnabled(void)
+{
+    return M_FadesEnabled();
+}
+
 void DC_NoLua_FadeHandOver(const int32_t ticks, const int32_t hold)
 {
     m_Handed.ticks = ticks;

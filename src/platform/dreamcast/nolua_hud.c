@@ -327,11 +327,14 @@ static bool M_OnTick(
     }
 
     // Lara's bars show while she answers to the player outside a cutscene.
-    // ponytail: the inventory ring's "health bar forced" is a Lua signal with
-    // no C behind it yet; it comes with the ring in phase 3.
+    // The ring shows the health bar while it rests on a medipack.
     const bool lara_bars = item != nullptr && ui_enabled
         && Lara_IsControllable() && !CutSeq_IsActive() && playing;
-    if (lara_bars
+    if (item != nullptr && ui_enabled && DC_Ring_ForcesHealthBar()) {
+        M_PushBar(
+            M_TOP_LEFT, poisoned ? M_BAR_HP_POISON : M_BAR_HP,
+            health_flashing && m_Clock.blink ? 0.0f : health);
+    } else if (lara_bars
         && (m_Clock.opening > 0 || m_Clock.hit > 0 || health <= 0.0f || armed
             || poisoned || health_flashing)) {
         M_PushBar(

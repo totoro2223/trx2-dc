@@ -74,8 +74,20 @@ store, scripts de nivel, hooks). Con la opción de Meson `dc_lua=false`:
     en nolua.c ya guarda el estado), inicio de nivel, rótulos y flechas,
     recogidas, HUD de assault (TR2 assault, TR3 house).
   - `LUA_DropLevelScript` dispara `LEVEL_UNLOAD` como `lua/scripts.c`.
-  - Siguiente paso: `DC_NOLUA=1 bash tools/dreamcast/build.sh minsize`,
-    `test_levels.ps1 -BuildDir build/dc-minsize-nolua`, y mirar el HUD en
-    Flycast (captura con ventana visible: pedir permiso al usuario).
-  - Último build (con aviso de truncado en `M_FormatPenalty`, ya corregido
-    agrandando `penalty` a 32): OK. El build tras la corrección no se lanzó.
+  - Build tras la corrección: OK. Recorrido de niveles (código de la
+    fase 2): TR1 16 y TR2 18 cargas `[levels] done`; TR3 sin leer aún.
+  - Falta ver el HUD en Flycast (ventana visible: el usuario lo permitió).
+- Fase 3 (02/11/2026): `nolua_ring.c` escrito, compila, SIN PROBAR. Anillo
+  del inventario en C sobre `UI_TAKEOVER_MENU` y el evento TICK (entradas de
+  `inv_ring.json5`, fondo, pistas, contador).
+- Fase 4 (02/11/2026): `nolua_passport.c` escrito, compila, SIN PROBAR.
+  Pasaporte, páginas, listas (`DC_REQ`), guardar con aviso de VMU, cristal,
+  pantalla de guardado/carga rápidos. Despachador de pantallas en `nolua.c`
+  (`DC_Screens_*`).
+- Fase 5: `nolua_settings.c` es un trozo vacío (la entrada de gráficos no
+  abre nada). Falta la página DC Rendering y los otros aspectos del HUD.
+- Falta: `nolua_screens.c` (pausa, estadísticas, examinar, combinar,
+  imagen, vista de nivel, globo; `DC_NoLua_SetupScreens` está declarada y
+  sin definir: no llamarla), probar todo en Flycast, repetir
+  `test_levels.ps1` con el build nuevo, y la fase 6 (`dc_lua=false` por
+  defecto, quitar la región de Lua, pruebas de memoria).

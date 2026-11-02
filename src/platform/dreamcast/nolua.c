@@ -18,6 +18,7 @@
 #include <trx/game/lua/utils/level.h>
 #include <trx/game/ui/common.h>
 #include <trx/game/ui/regions.h>
+#include <trx/game/ui/takeover.h>
 
 #define M_MAX_HANDLERS 8
 
@@ -166,8 +167,100 @@ void LUA_UI_EndScene(void)
     M_Paint(UI_LAYER_EXIT, LUA_EVENT_UI_PAINT_EXIT);
 }
 
+// --- Screens ---
+
+// The C screen for each engine screen, and whether it is open: for the
+// engine, which takes its choice, or for the ring, which hears it close.
+static struct {
+    DC_SCREEN_OPEN open;
+    void (*release)(UI_TAKEOVER screen);
+    bool is_open;
+    bool for_engine;
+    void (*on_close)(bool confirmed);
+} m_Screens[UI_TAKEOVER_NUMBER_OF];
+
+void DC_Screens_Define(
+    const UI_TAKEOVER screen, const DC_SCREEN_OPEN open,
+    void (*const release)(UI_TAKEOVER))
+{
+    m_Screens[screen].open = open;
+    m_Screens[screen].release = release;
+}
+
+static bool M_OpenScreen(
+    const UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *const args,
+    const bool for_engine, void (*const on_close)(bool))
+{
+    if (m_Screens[screen].open == nullptr || m_Screens[screen].is_open) {
+        return false;
+    }
+    m_Screens[screen].is_open = true;
+    m_Screens[screen].for_engine = for_engine;
+    m_Screens[screen].on_close = on_close;
+    if (!m_Screens[screen].open(screen, args)) {
+        m_Screens[screen].is_open = false;
+        return false;
+    }
+    return true;
+}
+
+bool DC_Screens_OpenEntry(
+    const UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *const args,
+    void (*const on_close)(bool))
+{
+    return M_OpenScreen(screen, args, false, on_close);
+}
+
+bool DC_Screens_IsOpen(const UI_TAKEOVER screen)
+{
+    return m_Screens[screen].is_open;
+}
+
+void DC_Screens_Close(
+    const UI_TAKEOVER screen, const UI_TAKEOVER_CHOICE choice)
+{
+    if (!m_Screens[screen].is_open) {
+        return;
+    }
+    m_Screens[screen].is_open = false;
+    if (m_Screens[screen].release != nullptr) {
+        m_Screens[screen].release(screen);
+    }
+    if (m_Screens[screen].for_engine) {
+        UI_Takeover_Close(screen, choice);
+    } else if (m_Screens[screen].on_close != nullptr) {
+        m_Screens[screen].on_close(choice == UI_TAKEOVER_CHOICE_CONFIRM);
+    }
+}
+
+void DC_Screens_Cancel(const UI_TAKEOVER screen)
+{
+    if (!m_Screens[screen].is_open) {
+        return;
+    }
+    m_Screens[screen].is_open = false;
+    if (m_Screens[screen].release != nullptr) {
+        m_Screens[screen].release(screen);
+    }
+}
+
+static bool M_TakeoverOffer(
+    const UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *const args)
+{
+    return M_OpenScreen(screen, args, true, nullptr);
+}
+
+static void M_TakeoverRelease(const UI_TAKEOVER screen)
+{
+    DC_Screens_Cancel(screen);
+}
+
 RESULT LUA_Init(void)
 {
+    UI_Takeover_SetHooks((UI_TAKEOVER_HOOKS) {
+        .offer = M_TakeoverOffer,
+        .release = M_TakeoverRelease,
+    });
     return OK;
 }
 
@@ -183,6 +276,9 @@ RESULT LUA_RunStartupScripts(void)
 RESULT LUA_RunGameScript(void)
 {
     DC_NoLua_SetupGame();
+    // Before the captions, so that its hints stand over the caption.
+    DC_NoLua_SetupRing();
+    DC_NoLua_SetupPassport();
     DC_NoLua_SetupHUD();
     DC_NoLua_SetupUI();
     return OK;
