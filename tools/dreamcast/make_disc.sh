@@ -117,13 +117,19 @@ if [ -n "$START_LEVEL" ]; then
 fi
 
 echo "== engine data"
-# The engine's Lua bytecode, which the game puts in video memory.
-cp "$(find "$BUILD_DIR" -name TRXLUA.BIN | head -1)" "$STAGE/TRXLUA.BIN"
 cp -r "$SHIP/cfg" "$STAGE/cfg"
-cp -r "$SHIP/modules" "$STAGE/modules"
-cp -r "$SHIP/scripts" "$STAGE/scripts"
 mkdir -p "$STAGE/games"
 cp -r "$SHIP/games/$GAME" "$STAGE/games/$GAME"
+LUA_BIN="$(find "$BUILD_DIR" -name TRXLUA.BIN | head -1)"
+if [ -n "$LUA_BIN" ]; then
+  # The engine's Lua bytecode, which the game puts in video memory.
+  cp "$LUA_BIN" "$STAGE/TRXLUA.BIN"
+  cp -r "$SHIP/modules" "$STAGE/modules"
+  cp -r "$SHIP/scripts" "$STAGE/scripts"
+else
+  # A build without Lua (DC_NOLUA=1): no scripts on the disc.
+  find "$STAGE/games/$GAME" -name '*.lua' -delete
+fi
 # The GLSL shaders are of no use without OpenGL 3.
 rm -rf "$STAGE/cfg/shaders"
 if [ -n "${TRX_DC_LEVELS:-}" ]; then

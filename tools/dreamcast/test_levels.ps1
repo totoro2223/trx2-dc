@@ -60,7 +60,7 @@ foreach ($g in $Games) {
     $done = $text -match '\[levels\] done'
     $fault = [regex]::Match($text, 'exception [0-9a-f]{4}[^\r\n]*|Assertion[^\r\n]*|aborting[^\r\n]*|starting the disc over').Value
     $loads = ([regex]::Matches($text, '\[gbuf\] total')).Count
-    $region = [regex]::Match($text, 'game heap: (\d+)K').Groups[1].Value
+    $region = ([regex]::Matches($text, 'game heap: (\d+)K') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Maximum).Maximum
     $peak = ([regex]::Matches($text, 'peak (\d+)K') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Maximum).Maximum
     $ok = $done -and -not $fault
     if (-not $ok) { $failed += $g }

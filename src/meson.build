@@ -1104,7 +1104,10 @@ if host_machine.system() == 'windows'
   ]
 endif
 
-trx_sources = common_sources + [trx_init, trx_resources, trx_lua_embed]
+trx_sources = common_sources + [trx_init, trx_resources]
+if not is_dreamcast or get_option('dc_lua')
+  trx_sources += [trx_lua_embed]
+endif
 
 executable(
   'TRX',

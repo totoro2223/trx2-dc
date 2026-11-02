@@ -12,11 +12,13 @@ dc_kos_ports_dir = meson.get_external_property('dc_kos_ports_dir')
 dc_lib_dirs = [dc_deps_dir / 'lib', dc_kos_ports_dir / 'lib']
 
 dc_dependencies = [
-  c_compiler.find_library('lua', dirs: dc_lib_dirs),
   c_compiler.find_library('pcre2-8', dirs: dc_lib_dirs),
   c_compiler.find_library('z', dirs: dc_lib_dirs),
   c_compiler.find_library('m', required: false),
 ]
+if get_option('dc_lua')
+  dc_dependencies += c_compiler.find_library('lua', dirs: dc_lib_dirs)
+endif
 
 dc_include_directories = include_directories(
   'include',
@@ -54,7 +56,6 @@ dc_sources = files(
   'dc_level_heap.c',
   'dc_games.c',
   'dc_level_select.c',
-  'dc_lua_alloc.c',
   'dc_main.c',
   'dc_settings.c',
   'dc_mode.c',
@@ -169,6 +170,16 @@ dc_mpeg_lib = static_library(
   override_options: ['c_std=gnu11', 'warning_level=0'],
   c_args: ['-w'],
 )
+# Without Lua (dc_lua=false) the bridge in trx/game/lua is left out and
+# nolua.c answers the engine in its place.
+if get_option('dc_lua')
+  dc_sources += files('dc_lua_alloc.c')
+else
+  dc_sources += files('nolua.c', 'nolua_game.c', 'nolua_weapons.c',
+    'nolua_levels.c')
+  dc_excluded_sources += ['trx/game/lua/']
+endif
+
 dc_link_whole = [dc_kos_overrides, dc_strict_lib, dc_mpeg_lib]
 
 # dc_main.c runs ahead of the engine's main.
