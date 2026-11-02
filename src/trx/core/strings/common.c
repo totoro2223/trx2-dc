@@ -5,7 +5,9 @@
 #include <trx/debug.h>
 
 #include <ctype.h>
-#include <pcre2.h>
+#if !defined(__DREAMCAST__)
+    #include <pcre2.h>
+#endif
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,6 +116,19 @@ const char *String_CaseSubstring(const char *subject, const char *pattern)
     return nullptr;
 }
 
+#if defined(__DREAMCAST__)
+// ponytail: no regular expressions on the Dreamcast (pcre2 was 85K of code
+// and its tables): the pattern is looked for as plain text, ignoring case.
+// Only Lua's trxc.strings.regex_match reaches this, and no script calls it;
+// the fuzzy finder has its own matching (fuzzy_match.c).
+bool String_Match(const char *const subject, const char *const pattern)
+{
+    if (subject == nullptr || pattern == nullptr) {
+        return false;
+    }
+    return String_CaseSubstring(subject, pattern) != nullptr;
+}
+#else
 bool String_Match(const char *const subject, const char *const pattern)
 {
     if (subject == nullptr || pattern == nullptr) {
@@ -148,6 +163,7 @@ bool String_Match(const char *const subject, const char *const pattern)
 
     return rc > 0;
 }
+#endif
 
 bool String_IsEmpty(const char *const value)
 {
