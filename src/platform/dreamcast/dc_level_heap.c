@@ -46,6 +46,7 @@
 // (DC build 791) and a level load died for the lack of it: a megabyte is what a
 // load needs at its peak.
 #define M_HEAP_RESERVE (1024 * 1024)
+#define M_REGION_MAX (7424 * 1024)
 #define M_PROBE_MAX (12 * 1024 * 1024)
 #define M_PROBE_STEP (64 * 1024)
 #define M_GRAIN 8
@@ -284,6 +285,13 @@ static void M_Init(void)
         free(probe);
     }
     size -= M_HEAP_RESERVE;
+    // Without Lua the biggest load peaks at 6.2 MB (TR3): what the region
+    // does not take stays to newlib's own blocks.
+#ifndef DC_WITH_LUA
+    if (size > M_REGION_MAX) {
+        size = M_REGION_MAX;
+    }
+#endif
     m_Heap.base = malloc(size);
     if (m_Heap.base == nullptr) {
         return;

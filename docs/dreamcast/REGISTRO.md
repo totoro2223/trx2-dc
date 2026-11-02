@@ -1218,3 +1218,11 @@ ni CDI ni Flycast.
   de las ~30 reservas; solo si P11 muestra crecimiento).
 - **Probar primero**: pasada de niveles de TR2 y TR3 con `mem_summary.py`;
   mirar sobre todo las chispas (A2) y los sectores triangulados (D2).
+
+## 02/11/2026 — rama refactorizacion-masiva: sin Lua, región acotada
+
+- Build sin Lua (`dc_lua=false`) compila; pasadas de niveles de los tres juegos OK (logs `build/logs/test-s1`, `test-s2`).
+- Sin la región de Lua, la del nivel tomaba todo lo libre (9727 K) con un pico de 6 MB. `M_REGION_MAX` = 7424 K deja ~2,3 MB más al heap de newlib: P2 TR2 `brk` mínimo 380 K → 2684 K. La macro `DC_WITH_LUA` (meson) mantiene el tope fuera del build con Lua.
+- La interfaz en C (HUD, anillo, pasaporte, ajustes, pantallas) compila y no rompe la carga; su aspecto y manejo siguen SIN VER en Flycast (requiere teclas).
+- Pendiente de PLAN_REFACTOR_RAM: B (niveles horneados), D1, D2 completo, D6, D7 completo, C3.
+- Interfaz en C vista en Flycast (TR2 nivel 1): anillo, opciones, pasaporte (Load/Save/Exit) y Graphic Options (cel shading On->Off) responden sin fallos.

@@ -18,6 +18,7 @@ dc_dependencies = [
 ]
 if get_option('dc_lua')
   dc_dependencies += c_compiler.find_library('lua', dirs: dc_lib_dirs)
+  add_project_arguments('-DDC_WITH_LUA', language: 'c')
 endif
 
 dc_include_directories = include_directories(
