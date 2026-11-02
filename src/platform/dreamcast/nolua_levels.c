@@ -186,7 +186,7 @@ static void M_TR1_Level8c(const bool is_save)
 
 static void M_TR2_Assault(const bool is_save)
 {
-    // UI: assault course timer HUD, phase 2 (docs/dreamcast/PLAN_SIN_LUA.md).
+    DC_NoLua_SetupAssaultHUD();
     M_Holsters();
     if (is_save) {
         return;
@@ -372,7 +372,7 @@ static void M_TR3_Cut8(void)
 
 static void M_TR3_House(const bool is_save)
 {
-    // UI: assault course timer HUD, phase 2 (docs/dreamcast/PLAN_SIN_LUA.md).
+    DC_NoLua_SetupAssaultHUD();
     M_Shoal(55, 22, 2, 10);
     M_Shoal(56, 18, 1, 10);
     M_Shoal(57, 10, 1, 14);

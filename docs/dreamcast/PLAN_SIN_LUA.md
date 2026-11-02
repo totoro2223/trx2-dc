@@ -64,5 +64,18 @@ store, scripts de nivel, hooks). Con la opción de Meson `dc_lua=false`:
     de roofs...). Los tres juegos recorren todos sus niveles (16/18/20
     cargas, sin avisos). En TR2 house la daga va a la cadera: el script Lua
     comparaba un booleano con -1 y nunca la ponía.
-  - Falta: `water_color` (sin él queda el color propio del juego); las líneas
-    de HUD de assault y house de TR3 van con la fase 2.
+  - `water_color`: en DC no hace falta hasta la fase 5 (sin presets, el modo
+    es "custom": el color propio del juego). Fase 1 cerrada.
+- Fase 2 (02/11/2026): escrita, compila, SIN PROBAR.
+  - `nolua_hud.c`: barras (vida/veneno, aire, sprint, exposición,
+    enemigo/aliado), munición, FPS. Aspecto por defecto de cada juego fijo
+    (tr1_pc, tr2_ps1, tr3_ps1); los demás aspectos con la fase 5.
+  - `nolua_ui.c`: fundidos con retención de pantalla (`LUA_UI_*HoldingScreen`
+    en nolua.c ya guarda el estado), inicio de nivel, rótulos y flechas,
+    recogidas, HUD de assault (TR2 assault, TR3 house).
+  - `LUA_DropLevelScript` dispara `LEVEL_UNLOAD` como `lua/scripts.c`.
+  - Siguiente paso: `DC_NOLUA=1 bash tools/dreamcast/build.sh minsize`,
+    `test_levels.ps1 -BuildDir build/dc-minsize-nolua`, y mirar el HUD en
+    Flycast (captura con ventana visible: pedir permiso al usuario).
+  - Último build (con aviso de truncado en `M_FormatPenalty`, ya corregido
+    agrandando `penalty` a 32): OK. El build tras la corrección no se lanzó.

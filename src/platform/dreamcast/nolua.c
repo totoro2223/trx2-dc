@@ -19,7 +19,7 @@
 #include <trx/game/ui/common.h>
 #include <trx/game/ui/regions.h>
 
-#define M_MAX_HANDLERS 4
+#define M_MAX_HANDLERS 8
 
 static DC_EVENT_HANDLER m_Handlers[LUA_EVENT_NUMBER_OF][M_MAX_HANDLERS];
 static int32_t m_Tick = 0;
@@ -113,14 +113,18 @@ bool LUA_UI_IsPainting(void)
     return m_Painting;
 }
 
-// Nothing holds the screen until the C interface does.
+// The C fades (nolua_ui.c) say while one holds the screen: the engine waits on
+// it to start the next screen and to exit.
+static bool m_HoldingScreen = false;
+
 void LUA_UI_SetHoldingScreen(const bool holding)
 {
+    m_HoldingScreen = holding;
 }
 
 bool LUA_UI_IsHoldingScreen(void)
 {
-    return false;
+    return m_HoldingScreen;
 }
 
 void LUA_UI_HideNextFrame(void)
@@ -179,11 +183,16 @@ RESULT LUA_RunStartupScripts(void)
 RESULT LUA_RunGameScript(void)
 {
     DC_NoLua_SetupGame();
+    DC_NoLua_SetupHUD();
+    DC_NoLua_SetupUI();
     return OK;
 }
 
+static bool m_LevelLive = false;
+
 void LUA_RunLevelScript(const GF_LEVEL *const level)
 {
+    m_LevelLive = true;
     DC_NoLua_RunLevelScript(level);
 }
 
@@ -194,12 +203,18 @@ void LUA_ReloadLevelScript(void)
     if (level == nullptr) {
         return;
     }
-    DC_NoLua_DropLevelScript();
-    DC_NoLua_RunLevelScript(level);
+    LUA_DropLevelScript();
+    LUA_RunLevelScript(level);
 }
 
+// The level's modules hear it unload before its script goes, as in
+// lua/scripts.c.
 void LUA_DropLevelScript(void)
 {
+    if (m_LevelLive) {
+        m_LevelLive = false;
+        LUA_FireEvent(LUA_EVENT_LEVEL_UNLOAD);
+    }
     DC_NoLua_DropLevelScript();
 }
 
