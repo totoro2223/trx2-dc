@@ -6,6 +6,7 @@
 #include "pvr.h"
 #include "shadow.h"
 
+#include <stdlib.h>
 #include <platform/dreamcast/dc_bench.h>
 #include <platform/dreamcast/dc_mode.h>
 #include <platform/dreamcast/loading.h>
@@ -285,72 +286,75 @@ static struct {
         uint32_t dt;
         uint32_t stat[M_STAT_COUNT];
     } slow_frames[32];
-} m_Bench = {};
+} *m_Bench = nullptr; // malloc'd by DC_Bench_Begin
 
 static void M_BenchFrame(const uint64_t now, const uint32_t value[])
 {
-    if (!m_Bench.active) {
+    if (m_Bench == nullptr || !m_Bench->active) {
         return;
     }
     // A gap of a second or more is a load, not a frame.
-    if (m_Bench.last_us != 0 && now - m_Bench.last_us < 1000000) {
-        const uint32_t dt = (uint32_t)(now - m_Bench.last_us);
-        m_Bench.frames++;
-        m_Bench.time_us += dt;
-        if (dt > m_Bench.worst_us) {
-            m_Bench.worst_us = dt;
+    if (m_Bench->last_us != 0 && now - m_Bench->last_us < 1000000) {
+        const uint32_t dt = (uint32_t)(now - m_Bench->last_us);
+        m_Bench->frames++;
+        m_Bench->time_us += dt;
+        if (dt > m_Bench->worst_us) {
+            m_Bench->worst_us = dt;
         }
-        if (m_Bench.best_us == 0 || dt < m_Bench.best_us) {
-            m_Bench.best_us = dt;
+        if (m_Bench->best_us == 0 || dt < m_Bench->best_us) {
+            m_Bench->best_us = dt;
         }
         // Slower than 30 fps, with a little room for the timer.
         if (dt > 35000) {
-            m_Bench.slow++;
+            m_Bench->slow++;
         }
         const uint32_t ms = dt / 1000;
-        m_Bench.hist[ms < M_BENCH_HIST_MS ? ms : M_BENCH_HIST_MS]++;
-        if (m_Bench.frames <= 4096) {
-            m_Bench.series[m_Bench.frames - 1] = ms < 255 ? ms : 255;
+        m_Bench->hist[ms < M_BENCH_HIST_MS ? ms : M_BENCH_HIST_MS]++;
+        if (m_Bench->frames <= 4096) {
+            m_Bench->series[m_Bench->frames - 1] = ms < 255 ? ms : 255;
             static const int32_t which[4] = { M_LOGIC, M_DRAW, M_PASS, M_MAP };
             for (int32_t p = 0; p < 4; p++) {
                 const uint32_t q = value[which[p]] / 250;
-                m_Bench.parts[p][m_Bench.frames - 1] = q < 255 ? q : 255;
+                m_Bench->parts[p][m_Bench->frames - 1] = q < 255 ? q : 255;
             }
         }
-        if (dt >= 60000 && m_Bench.slow_count < 32) {
-            m_Bench.slow_frames[m_Bench.slow_count].frame = m_Bench.frames;
-            m_Bench.slow_frames[m_Bench.slow_count].dt = dt;
+        if (dt >= 60000 && m_Bench->slow_count < 32) {
+            m_Bench->slow_frames[m_Bench->slow_count].frame = m_Bench->frames;
+            m_Bench->slow_frames[m_Bench->slow_count].dt = dt;
             memcpy(
-                m_Bench.slow_frames[m_Bench.slow_count].stat, value,
+                m_Bench->slow_frames[m_Bench->slow_count].stat, value,
                 sizeof(uint32_t) * M_STAT_COUNT);
-            m_Bench.slow_count++;
+            m_Bench->slow_count++;
         }
         for (int32_t i = 0; i < M_STAT_COUNT; i++) {
-            m_Bench.sum[i] += value[i];
-            if (value[i] > m_Bench.max[i]) {
-                m_Bench.max[i] = value[i];
+            m_Bench->sum[i] += value[i];
+            if (value[i] > m_Bench->max[i]) {
+                m_Bench->max[i] = value[i];
             }
         }
         for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
-            m_Bench.probe_sum[i] += g_DC_ProbeUs[i];
+            m_Bench->probe_sum[i] += g_DC_ProbeUs[i];
         }
     }
-    m_Bench.last_us = now;
+    m_Bench->last_us = now;
 }
 
 void DC_Bench_Begin(const int32_t demo_num)
 {
-    m_Bench = (typeof(m_Bench)) { .active = true, .demo_num = demo_num };
+    free(m_Bench);
+    m_Bench = calloc(1, sizeof(*m_Bench));
+    m_Bench->active = true;
+    m_Bench->demo_num = demo_num;
 }
 
 // The frame length (ms) that the given share of frames (in thousandths) is
 // no longer than.
 static int32_t M_BenchPercentile(const int32_t per_mille)
 {
-    const int32_t want = (m_Bench.frames * per_mille + 999) / 1000;
+    const int32_t want = (m_Bench->frames * per_mille + 999) / 1000;
     int32_t seen = 0;
     for (int32_t ms = 0; ms <= M_BENCH_HIST_MS; ms++) {
-        seen += m_Bench.hist[ms];
+        seen += m_Bench->hist[ms];
         if (seen >= want) {
             return ms + 1;
         }
@@ -371,24 +375,27 @@ static void M_BenchPrint(const char *const fmt, ...)
 
 void DC_Bench_End(void)
 {
-    m_Bench.active = false;
-    const int32_t n = m_Bench.frames > 0 ? m_Bench.frames : 1;
-    const uint32_t fps10 = m_Bench.time_us > 0
-        ? (uint32_t)((uint64_t)m_Bench.frames * 10000000 / m_Bench.time_us)
+    if (m_Bench == nullptr) {
+        return;
+    }
+    m_Bench->active = false;
+    const int32_t n = m_Bench->frames > 0 ? m_Bench->frames : 1;
+    const uint32_t fps10 = m_Bench->time_us > 0
+        ? (uint32_t)((uint64_t)m_Bench->frames * 10000000 / m_Bench->time_us)
         : 0;
     const uint32_t min10 =
-        m_Bench.worst_us > 0 ? 10000000 / m_Bench.worst_us : 0;
+        m_Bench->worst_us > 0 ? 10000000 / m_Bench->worst_us : 0;
     const int32_t p50 = M_BenchPercentile(500);
     const int32_t p99 = M_BenchPercentile(990);
     // Averages in tenths of a millisecond.
-#define M_AVG(i) ((unsigned)(m_Bench.sum[i] / n / 100))
+#define M_AVG(i) ((unsigned)(m_Bench->sum[i] / n / 100))
 #define M_TENTHS(v) (unsigned)(v) / 10, (unsigned)(v) % 10
     char line1[96];
     char line2[96];
     snprintf(
         line1, sizeof(line1),
-        "BENCH %d frames  avg %u.%u fps  min %u.%u  slow %d%%", m_Bench.frames,
-        M_TENTHS(fps10), M_TENTHS(min10), m_Bench.slow * 100 / n);
+        "BENCH %d frames  avg %u.%u fps  min %u.%u  slow %d%%", m_Bench->frames,
+        M_TENTHS(fps10), M_TENTHS(min10), m_Bench->slow * 100 / n);
     snprintf(
         line2, sizeof(line2),
         "logic %u.%u stage %u.%u pass %u.%u map %u.%u pvr %u.%u ms",
@@ -406,23 +413,23 @@ void DC_Bench_End(void)
         tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     M_BenchPrint("build %s", DC_Loading_GetVersion());
     M_BenchPrint("game tr%d", (int)g_TRVersion);
-    M_BenchPrint("demo %d", (int)m_Bench.demo_num);
+    M_BenchPrint("demo %d", (int)m_Bench->demo_num);
     M_BenchPrint(
         "mode %d (%s), shadows %d, bump %d, %d fps",
         (int)g_Config.rendering.dc_mode,
         DC_PVR_IsLowRes() ? "320x240" : "640x480",
         (int)g_Config.visuals.shadow_type,
         (int)g_Config.rendering.dc_bump_mapping, (int)DC_Mode_GetFPS());
-    M_BenchPrint("frames %d in %u ms", m_Bench.frames,
-        (unsigned)(m_Bench.time_us / 1000));
+    M_BenchPrint("frames %d in %u ms", m_Bench->frames,
+        (unsigned)(m_Bench->time_us / 1000));
     M_BenchPrint(
         "fps avg %u.%u, min %u.%u, best frame %u.%u ms", M_TENTHS(fps10),
-        M_TENTHS(min10), M_TENTHS(m_Bench.best_us / 100));
+        M_TENTHS(min10), M_TENTHS(m_Bench->best_us / 100));
     M_BenchPrint(
         "frame ms: median %d, 99%% under %d, worst %u.%u", p50, p99,
-        M_TENTHS(m_Bench.worst_us / 100));
+        M_TENTHS(m_Bench->worst_us / 100));
     M_BenchPrint(
-        "frames over 35 ms: %d (%d%%)", m_Bench.slow, m_Bench.slow * 100 / n);
+        "frames over 35 ms: %d (%d%%)", m_Bench->slow, m_Bench->slow * 100 / n);
     M_BenchPrint("per frame, average / worst (ms, or counts and KiB):");
     for (int32_t i = 0; i < M_STAT_COUNT; i++) {
         const bool time = i < M_POLYS || i == M_XFORM;
@@ -430,16 +437,16 @@ void DC_Bench_End(void)
         if (time) {
             M_BenchPrint(
                 "  %-6s %u.%u / %u.%u", m_StatNames[i], M_TENTHS(M_AVG(i)),
-                M_TENTHS(m_Bench.max[i] / 100));
+                M_TENTHS(m_Bench->max[i] / 100));
         } else if (count) {
             M_BenchPrint(
                 "  %-6s %u / %u", m_StatNames[i],
-                (unsigned)(m_Bench.sum[i] / n), (unsigned)m_Bench.max[i]);
+                (unsigned)(m_Bench->sum[i] / n), (unsigned)m_Bench->max[i]);
         } else {
             M_BenchPrint(
                 "  %-6s %u / %u KiB", m_StatNames[i],
-                (unsigned)(m_Bench.sum[i] / n / 1024),
-                (unsigned)(m_Bench.max[i] / 1024));
+                (unsigned)(m_Bench->sum[i] / n / 1024),
+                (unsigned)(m_Bench->max[i] / 1024));
         }
     }
     M_BenchPrint("probes, average per frame (us or counts):");
@@ -448,7 +455,7 @@ void DC_Bench_End(void)
         char item[24];
         snprintf(
             item, sizeof(item), " %s=%u", m_ProbeNames[i],
-            (unsigned)(m_Bench.probe_sum[i] / n));
+            (unsigned)(m_Bench->probe_sum[i] / n));
         if (strlen(row) + strlen(item) > 90) {
             M_BenchPrint(" %s", row);
             row[0] = '\0';
@@ -461,13 +468,13 @@ void DC_Bench_End(void)
     M_BenchPrint("frame length histogram (ms: frames):");
     row[0] = '\0';
     for (int32_t ms = 0; ms <= M_BENCH_HIST_MS; ms++) {
-        if (m_Bench.hist[ms] == 0) {
+        if (m_Bench->hist[ms] == 0) {
             continue;
         }
         char item[24];
         snprintf(
             item, sizeof(item), " %s%d:%d", ms == M_BENCH_HIST_MS ? ">" : "",
-            ms, (int)m_Bench.hist[ms]);
+            ms, (int)m_Bench->hist[ms]);
         if (strlen(row) + strlen(item) > 90) {
             M_BenchPrint(" %s", row);
             row[0] = '\0';
@@ -478,12 +485,12 @@ void DC_Bench_End(void)
         M_BenchPrint(" %s", row);
     }
     M_BenchPrint("frame length by frame (ms), 24 a line, from the middle:");
-    for (int32_t i = m_Bench.frames / 2 - 48; i < m_Bench.frames / 2 + 48 && i < 4096;
+    for (int32_t i = m_Bench->frames / 2 - 48; i < m_Bench->frames / 2 + 48 && i < 4096;
          i += 24) {
         char text[110] = "";
-        for (int32_t j = i; j < i + 24 && j < m_Bench.frames && j < 4096; j++) {
+        for (int32_t j = i; j < i + 24 && j < m_Bench->frames && j < 4096; j++) {
             char item[8];
-            snprintf(item, sizeof(item), " %d", (int)m_Bench.series[j]);
+            snprintf(item, sizeof(item), " %d", (int)m_Bench->series[j]);
             strcat(text, item);
         }
         M_BenchPrint(" %04d:%s", (int)i, text);
@@ -492,33 +499,33 @@ void DC_Bench_End(void)
     // the frame spent, in quarters of a millisecond.
     {
         static const char *const names[4] = { "logic", "stage", "pass", "map" };
-        const int32_t from = m_Bench.frames / 2;
+        const int32_t from = m_Bench->frames / 2;
         for (int32_t p = 0; p < 4; p++) {
             char text[110] = "";
-            for (int32_t j = from; j < from + 24 && j < m_Bench.frames && j < 4096;
+            for (int32_t j = from; j < from + 24 && j < m_Bench->frames && j < 4096;
                  j++) {
                 char item[8];
-                snprintf(item, sizeof(item), " %d", (int)m_Bench.parts[p][j]);
+                snprintf(item, sizeof(item), " %d", (int)m_Bench->parts[p][j]);
                 strcat(text, item);
             }
             M_BenchPrint(" %s (1/4 ms) from frame %d:%s", names[p], (int)from, text);
         }
         char text[110] = "";
-        for (int32_t j = from; j < from + 24 && j < m_Bench.frames && j < 4096; j++) {
+        for (int32_t j = from; j < from + 24 && j < m_Bench->frames && j < 4096; j++) {
             char item[8];
-            snprintf(item, sizeof(item), " %d", (int)m_Bench.series[j]);
+            snprintf(item, sizeof(item), " %d", (int)m_Bench->series[j]);
             strcat(text, item);
         }
         M_BenchPrint(" frame (ms) from frame %d:%s", (int)from, text);
     }
     M_BenchPrint("slow frames (60 ms or more), times in tenths of ms:");
-    for (int32_t i = 0; i < m_Bench.slow_count; i++) {
-        const uint32_t *const s = m_Bench.slow_frames[i].stat;
+    for (int32_t i = 0; i < m_Bench->slow_count; i++) {
+        const uint32_t *const s = m_Bench->slow_frames[i].stat;
         M_BenchPrint(
             " #%d %ums logic %u stage %u pass %u submit %u map %u mwait %u "
             "wait %u pvr %u polys %u inst %u verts %u",
-            (int)m_Bench.slow_frames[i].frame,
-            (unsigned)(m_Bench.slow_frames[i].dt / 1000),
+            (int)m_Bench->slow_frames[i].frame,
+            (unsigned)(m_Bench->slow_frames[i].dt / 1000),
             (unsigned)(s[M_LOGIC] / 100), (unsigned)(s[M_DRAW] / 100),
             (unsigned)(s[M_PASS] / 100), (unsigned)(s[M_SUBMIT] / 100),
             (unsigned)(s[M_MAP] / 100), (unsigned)(s[M_MAP_WAIT] / 100),

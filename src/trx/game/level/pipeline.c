@@ -406,6 +406,8 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
 
 #if defined(__DREAMCAST__)
     DC_Loading_End();
+    LUA_DC_CollectGarbage();
+    DC_LevelHeap_Trim();
     #if defined(TRX_DC_WATCHDOG)
     GameBuf_DumpSizes();
     #endif

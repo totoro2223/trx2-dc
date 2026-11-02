@@ -4,6 +4,7 @@
 #include <trx/core/handle.h>
 #include <trx/core/json/util/read_io.h>
 #include <trx/core/json/util/write_io.h>
+#include <trx/core/memory.h>
 #include <trx/core/utils.h>
 #include <trx/debug.h>
 #include <trx/game/effects.h>
@@ -32,7 +33,8 @@ typedef struct {
     uint8_t flags;
 } M_SPARK_DYNAMIC;
 
-static SPARK m_Sparks[M_MAX_SPARKS];
+// Made at each level load, in the level's memory, not kept in .bss.
+static SPARK *m_Sparks = nullptr;
 static uint32_t m_SparkGens[M_MAX_SPARKS];
 static HANDLE_REGISTRY m_SparkHandles = {
     .gens = m_SparkGens,
@@ -496,6 +498,8 @@ void Sparks_FreeDynamic(const int8_t idx)
 
 void Sparks_Reset(void)
 {
+    Memory_FreePointer(&m_Sparks);
+    m_Sparks = Memory_Alloc(sizeof(SPARK) * M_MAX_SPARKS);
     for (int32_t i = 0; i < M_MAX_SPARKS; i++) {
         m_Sparks[i] = (SPARK) {};
         m_Sparks[i].dynamic = -1;

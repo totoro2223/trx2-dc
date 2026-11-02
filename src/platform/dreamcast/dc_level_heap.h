@@ -11,6 +11,8 @@
 // builds. They nest.
 void DC_LevelHeap_Enter(void);
 void DC_LevelHeap_Leave(void);
+// Gives newlib's free top back to the system, for after a load or a save.
+void DC_LevelHeap_Trim(void);
 
 // A block from the region, the level's end of it between Enter and Leave;
 // nullptr before the first level load or when the region is full.

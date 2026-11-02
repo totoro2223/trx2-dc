@@ -1038,6 +1038,7 @@ endif
 
 if is_dreamcast
   dc_filtered_sources = []
+  dc_cold_files = []
   foreach source : common_sources
     excluded = false
     foreach prefix : dc_excluded_sources
@@ -1046,13 +1047,35 @@ if is_dreamcast
       endif
     endforeach
     if not excluded
-      dc_filtered_sources += [source]
+      cold = false
+      foreach prefix : dc_cold_sources
+        if source.startswith(prefix)
+          cold = true
+        endif
+      endforeach
+      if cold
+        dc_cold_files += [source]
+      else
+        dc_filtered_sources += [source]
+      endif
     endif
   endforeach
   common_sources = dc_filtered_sources + dc_sources
   link_args += dc_link_args
   trx_include_directories = dc_include_directories
   trx_link_whole = dc_link_whole
+  # Code that runs once per level or per menu, in -Os: the rest stays at the
+  # build's -O2.
+  if dc_cold_files.length() > 0
+    trx_link_whole += [static_library(
+      'dc_cold',
+      dc_cold_files,
+      dependencies: dependencies,
+      c_args: ['-I.'],
+      include_directories: trx_include_directories,
+      override_options: ['optimization=s'],
+    )]
+  endif
   trx_name_suffix = 'elf'
 endif
 

@@ -372,8 +372,6 @@ void Room_PopulateSectorData(
     sector->ceiling.type = SURFACE_CEILING;
     sector->floor.tilt = (XZ_16) {};
     sector->ceiling.tilt = (XZ_16) {};
-    sector->floor.split.type = SPLIT_NONE;
-    sector->ceiling.split.type = SPLIT_NONE;
     sector->floor.is_split = false;
     sector->ceiling.is_split = false;
     sector->portal_room.wall = NO_ROOM;
@@ -401,11 +399,19 @@ void Room_PopulateSectorData(
 
         switch (M_ENTRY_TYPE(fd_entry)) {
         case FT_TILT:
-            L_TILT(sector->floor.tilt);
+            if (sector->floor.is_split) {
+                data++;
+            } else {
+                L_TILT(sector->floor.tilt);
+            }
             break;
 
         case FT_ROOF:
-            L_TILT(sector->ceiling.tilt);
+            if (sector->ceiling.is_split) {
+                data++;
+            } else {
+                L_TILT(sector->ceiling.tilt);
+            }
             break;
 
         case FT_DOOR:
@@ -470,45 +476,53 @@ void Room_PopulateSectorData(
 void Room_ReadTriangulation(
     SURFACE *const surface, const int16_t func_data, const int16_t tilt_data)
 {
+    SPLIT_TYPE type;
     switch (M_ENTRY_TYPE(func_data)) {
     case FT_FLOOR_NWSE_SOLID:
     case FT_ROOF_NWSE_SOLID:
-        surface->split.type = SPLIT_NWSE_SOLID;
+        type = SPLIT_NWSE_SOLID;
         break;
     case FT_FLOOR_NESW_SOLID:
     case FT_ROOF_NESW_SOLID:
-        surface->split.type = SPLIT_NESW_SOLID;
+        type = SPLIT_NESW_SOLID;
         break;
     case FT_FLOOR_NWSE_PORTAL_SW:
     case FT_ROOF_NWSE_PORTAL_SW:
-        surface->split.type = SPLIT_NWSE_PORTAL_SW;
+        type = SPLIT_NWSE_PORTAL_SW;
         break;
     case FT_FLOOR_NWSE_PORTAL_NE:
     case FT_ROOF_NWSE_PORTAL_NE:
-        surface->split.type = SPLIT_NWSE_PORTAL_NE;
+        type = SPLIT_NWSE_PORTAL_NE;
         break;
     case FT_FLOOR_NESW_PORTAL_SE:
     case FT_ROOF_NESW_PORTAL_SE:
-        surface->split.type = SPLIT_NESW_PORTAL_SE;
+        type = SPLIT_NESW_PORTAL_SE;
         break;
     case FT_FLOOR_NESW_PORTAL_NW:
     case FT_ROOF_NESW_PORTAL_NW:
-        surface->split.type = SPLIT_NESW_PORTAL_NW;
+        type = SPLIT_NESW_PORTAL_NW;
         break;
     default:
         return;
     }
 
+    // A second entry on a surface rewrites the block it already has.
+    SPLIT *split = surface->is_split ? (SPLIT *)surface->split : nullptr;
+    if (split == nullptr) {
+        split = GameBuf_Alloc(sizeof(SPLIT), GBUF_ROOM_SECTORS);
+    }
+    split->type = type;
+    surface->split = split;
     surface->is_split = true;
     const int32_t split_1 = (func_data & 0x03E0) >> 5;
     const int32_t split_2 = (func_data & 0x7C00) >> 10;
-    surface->split.h1 = M_DecodeSplit(split_1);
-    surface->split.h2 = M_DecodeSplit(split_2);
+    split->h1 = M_DecodeSplit(split_1);
+    split->h2 = M_DecodeSplit(split_2);
 
     for (int32_t i = 0; i < 4; i++) {
-        surface->split.tilts[i] = (tilt_data >> (i * 4)) & 0xF;
+        split->tilts[i] = (tilt_data >> (i * 4)) & 0xF;
         if (surface->type == SURFACE_CEILING) {
-            surface->split.tilts[i] *= -1;
+            split->tilts[i] *= -1;
         }
     }
 }

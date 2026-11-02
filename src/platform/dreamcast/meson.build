@@ -49,6 +49,23 @@ dc_excluded_sources = [
   'trx/game/output/sources/ui.c',
 ]
 
+# Path prefixes (relative to src/) of code that runs once per level, per menu
+# or per save, built with -Os (the Lua bridge stays out: it runs every frame).
+dc_cold_sources = [
+  'trx/config/',
+  'trx/game/catalog/',
+  'trx/game/console/',
+  'trx/game/cutseq/',
+  'trx/game/game_flow/',
+  'trx/game/game_strings/',
+  'trx/game/inject/',
+  'trx/game/level/',
+  'trx/game/locale/',
+  'trx/game/replay/',
+  'trx/game/savegame/',
+  'trx/game/ui/',
+]
+
 dc_sources = files(
   'audio.c',
   'av_stub.c',

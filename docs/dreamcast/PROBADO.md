@@ -6,7 +6,7 @@ sin un dato nuevo (otro hardware, otro nivel). Los detalles y las cifras
 completas, en [REGISTRO.md](REGISTRO.md) (cronológico). Lo que falta por hacer,
 en [TAREAS.md](TAREAS.md).
 
-Actualizado el 26/10/2026. Todo se midió en **Flycast** (no modela las cachés
+Actualizado el 02/11/2026. Todo se midió en **Flycast** (no modela las cachés
 del SH-4) y nada se ha probado en consola real. "Venecia" = `venice.tr2`,
 "Londres" = demo de Aldwych de TR3 (benchmark). Estados:
 
@@ -121,6 +121,12 @@ Por defecto, el modo Gráficos usa Soft (high).
 | Rama `refactorizacion-masiva`: fotogramas en palabras de TR2, `MAX_ITEMS` 512, topes de tiempo/relieve/chispas, Lua grande 512 K, sin pcre2 | OK (Flycast) | Región del nivel 6336 → 7231 K; Barkhang 3391 → 3077 K; pico de carga 78-86 % (antes 87-100 %); TR1/TR2/TR3 todos los niveles `[levels] done` (02/11/2026) |
 | `SURFACE` con altura de 16 bits | FALLIDO | `NO_HEIGHT` de TRX es −3 251 200, no cabe en 16 bits |
 | Árbol BSON leído en trozos con la arena del guardado (`DC_SaveArena_IsOpen`) | OK en corto | TR3: árbol de 154 K → ~67 000 nodos en 6 trozos, 448 K de la región + 484–496 K de newlib; ya no hay petición de 700 K; 5 niveles `[levels] done` (build 805) |
+| Plan RAM 02/11 (rama `refactorizacion-masiva`): `.bss` a demanda (clima, luces de ítem TR3/TR4, chispas, cola de relieve, bench) | SIN VER | `.bss` 602 → 498 K; compila | local |
+| Plan RAM: `-Os` en código de carga/menús (`dc_cold_sources`, librería `dc_cold`) | SIN VER | compila; `.text` sin medir | local |
+| Plan RAM: GC de Lua y `malloc_trim` tras cargar y tras guardar (C1/C2) | SIN VER | compila | local |
+| Plan RAM: triangulación de sectores en bloque aparte (D2 reducido) | SIN VER | `SECTOR` 56 → 48 B; compila | local |
+| Plan RAM: catálogo sin cadenas duplicadas (D7 parcial) | SIN VER | ~75 K estimados, sin medir | local |
+| Plan RAM: mapa de solapes liberado en `Level_Unload` (C4) | SIN VER | compila | local |
 
 ## Sonido, entrada y juego
 

@@ -4,6 +4,7 @@
 #include <trx/core/json/util/read_io.h>
 #include <trx/core/json/util/write_io.h>
 #include <trx/core/math.h>
+#include <trx/core/memory.h>
 #include <trx/core/utils.h>
 #include <trx/game/camera.h>
 #include <trx/game/fx/common.h>
@@ -64,15 +65,26 @@ typedef struct {
 } M_SNOWFLAKE;
 
 // A zero pos.x marks a free slot.
-static M_RAINDROP m_Raindrops[M_MAX_WEATHER];
-static M_SNOWFLAKE m_Snowflakes[M_MAX_WEATHER];
+// Made when a level sets its weather and let go at the next reset, so levels
+// without any carry none of it.
+static M_RAINDROP *m_Raindrops = nullptr;
+static M_SNOWFLAKE *m_Snowflakes = nullptr;
 static WEATHER_TYPE m_WeatherType = WEATHER_NONE;
 static float m_Severity = 1.0f;
 
 static void M_ClearWeather(void)
 {
-    memset(m_Raindrops, 0, sizeof(m_Raindrops));
-    memset(m_Snowflakes, 0, sizeof(m_Snowflakes));
+    Memory_FreePointer(&m_Raindrops);
+    Memory_FreePointer(&m_Snowflakes);
+}
+
+static void M_Ensure(const WEATHER_TYPE type)
+{
+    if (type == WEATHER_RAIN && m_Raindrops == nullptr) {
+        m_Raindrops = Memory_Alloc(sizeof(M_RAINDROP) * M_MAX_WEATHER);
+    } else if (type == WEATHER_SNOW && m_Snowflakes == nullptr) {
+        m_Snowflakes = Memory_Alloc(sizeof(M_SNOWFLAKE) * M_MAX_WEATHER);
+    }
 }
 
 // A slot past the count is left alone rather than emptied, so lowering the
@@ -509,6 +521,7 @@ static RESULT M_LoadVelocity(JSON_READ_IO *const io, XYZ_32 *const vel)
 
 static RESULT M_LoadRain(JSON_READ_IO *const io)
 {
+    M_Ensure(WEATHER_RAIN);
     const int32_t count = JSON_ARRAY_LEN(io);
     for (int32_t i = 0; i < count; i++) {
         if (i >= M_MAX_WEATHER) {
@@ -532,6 +545,7 @@ static RESULT M_LoadRain(JSON_READ_IO *const io)
 
 static RESULT M_LoadSnow(JSON_READ_IO *const io)
 {
+    M_Ensure(WEATHER_SNOW);
     const int32_t count = JSON_ARRAY_LEN(io);
     for (int32_t i = 0; i < count; i++) {
         if (i >= M_MAX_WEATHER) {
@@ -618,6 +632,7 @@ WEATHER_TYPE FX_Weather_GetWeather(void)
 void FX_Weather_SetWeather(const WEATHER_TYPE weather_type)
 {
     m_WeatherType = weather_type;
+    M_Ensure(weather_type);
 }
 
 float FX_Weather_GetSeverity(void)

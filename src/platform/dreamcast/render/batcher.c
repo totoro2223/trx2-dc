@@ -5049,7 +5049,7 @@ typedef struct {
 
 // Flushed whenever full: 1024 entries were 45K of RAM for no fewer draws.
 #define M_BUMP_QUEUE 256
-static M_BUMP_ENTRY m_BumpQueue[M_BUMP_QUEUE];
+static M_BUMP_ENTRY *m_BumpQueue = nullptr; // malloc'd at the first relief
 
 static int M_BumpEntryOrder(const void *const a, const void *const b)
 {
@@ -5189,6 +5189,9 @@ static void M_EmitBumpRange(
             for (int32_t c = 0; c < step; c++) {
                 k[c] = (k[c] & ~0xFFu) | mid_q;
             }
+        }
+        if (m_BumpQueue == nullptr) {
+            m_BumpQueue = malloc(sizeof(M_BUMP_ENTRY) * M_BUMP_QUEUE);
         }
         M_BUMP_ENTRY *const e = &m_BumpQueue[queued++];
         e->first = i;

@@ -24,6 +24,8 @@
 
 #include "dc_level_heap.h"
 
+#include <malloc.h>
+
 #include <kos/mutex.h>
 
 // A diagnostic, built in with -DTRX_DC_HEAP_CENSUS: who holds what the region
@@ -435,6 +437,11 @@ void DC_LevelHeap_Enter(void)
 void DC_LevelHeap_Leave(void)
 {
     m_Heap.depth--;
+}
+
+void DC_LevelHeap_Trim(void)
+{
+    malloc_trim(0);
 }
 
 

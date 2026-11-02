@@ -96,7 +96,7 @@ typedef struct {
 #if defined(__DREAMCAST__)
 // A level holds some ten thousand sectors (TR3's jungles twice TR2's), so the
 // Dreamcast keeps them narrow, ordered to leave no padding: 100 bytes a
-// sector down to 56. A split rises 15 clicks at most (M_DecodeSplit) and a
+// sector down to 48, the rare split kept apart in a block of its own. A split rises 15 clicks at most (M_DecodeSplit) and a
 // tilt 15, and every enum here is under 256 (kept in a byte).
 typedef struct {
     int16_t h1;
@@ -109,7 +109,7 @@ typedef struct {
     int32_t height;
     union {
         XZ_16 tilt;
-        SPLIT split;
+        const SPLIT *split; // when is_split
     };
     uint8_t type; // SURFACE_TYPE
     bool is_split;
@@ -147,7 +147,7 @@ typedef struct {
     bool is_split;
     union {
         XZ_16 tilt;
-        SPLIT split;
+        const SPLIT *split; // when is_split
     };
 } SURFACE;
 

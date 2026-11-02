@@ -80,6 +80,8 @@ bool Room_CheckOverlap(int16_t room_num_0, int16_t room_num_1);
 // Builds the per-room overlap map after room bounds are finalized. A room and
 // its flip alternative occupy the same space by design and do not count.
 void Room_InitialiseOverlapMap(void);
+// Lets the map go with the level, not at the next one's load.
+void Room_ReleaseOverlapMap(void);
 
 // Returns whether the room shares space with any other non-flip room.
 bool Room_IsOverlapping(int16_t room_num);

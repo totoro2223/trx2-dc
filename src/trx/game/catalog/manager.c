@@ -31,7 +31,10 @@ typedef struct {
 // Internal map from a name to the CATALOG_ID it resolves to. One identity has
 // one entry for its canonical key and one for each of its aliases.
 typedef struct {
-    char *name_str;
+    const char *name_str;
+    // Whether name_str is the entry's own copy (the key an identity is named
+    // by shares it: m_Keys never frees what it holds) or a literal.
+    bool owned;
     int32_t enum_value;
     UT_hash_handle hh;
 } M_NAME_ENTRY;
@@ -82,7 +85,7 @@ static M_GAME_ID_ENTRY *m_GameID2EnumMap[CATALOG_CONTEXT_MAX] = { nullptr };
 
 // The identities of each context. A resolve reads m_GameIDs by ID, so this is
 // a flat array rather than anything with a lookup in it.
-static char **m_Keys[CATALOG_CONTEXT_MAX] = { nullptr };
+static const char **m_Keys[CATALOG_CONTEXT_MAX] = { nullptr };
 static int32_t *m_GameIDs[CATALOG_CONTEXT_MAX] = { nullptr };
 static int32_t m_Counts[CATALOG_CONTEXT_MAX] = {};
 
@@ -100,19 +103,34 @@ static void M_ClearGameIDMap(M_GAME_ID_ENTRY **const map)
     }
 }
 
+static void M_FreeNameEntry(M_NAME_ENTRY *const entry)
+{
+    if (entry->owned) {
+        Memory_Free((void *)entry->name_str);
+    }
+    Memory_Free(entry);
+}
+
+// `literal` names that outlive the catalog (the built-ins' C spellings) are
+// held as they are, the others copied. The name held is given back in `held`.
 static RESULT M_AddName(
-    const CATALOG_CONTEXT context, const CATALOG_ID id, const char *const name)
+    const CATALOG_CONTEXT context, const CATALOG_ID id, const char *const name,
+    const bool literal, const char **const held)
 {
     FAIL_IF(
         Catalog_KeyToID(context, name, -1) >= 0,
         "context %d already holds the name '%s'", context, name);
 
     M_NAME_ENTRY *const entry = Memory_Alloc(sizeof(*entry));
-    entry->name_str = Memory_DupStr(name);
+    entry->owned = !literal;
+    entry->name_str = literal ? name : Memory_DupStr(name);
     entry->enum_value = id;
     HASH_ADD_KEYPTR(
         hh, m_Name2EnumMap[context], entry->name_str,
         (uint32_t)strlen(entry->name_str), entry);
+    if (held != nullptr) {
+        *held = entry->name_str;
+    }
     return OK;
 }
 
@@ -131,7 +149,7 @@ __attribute__((constructor)) static void M_MintBuiltIns(void)
             "cannot seed the catalog");
         ASSERT(id == m_CatalogEntryDefs[idx].id);
         // Bind catalogue CSV entries that use the C spelling.
-        IGNORE(Catalog_AddAlias(ctx, id, enum_name));
+        IGNORE(M_AddName(ctx, id, enum_name, true, nullptr));
     }
     for (size_t ctx = 0; ctx < CATALOG_CONTEXT_MAX; ctx++) {
         m_BuiltInCounts[ctx] = m_Counts[ctx];
@@ -155,12 +173,10 @@ static void M_Shutdown(void)
                 continue;
             }
             HASH_DEL(m_Name2EnumMap[ctx], cur);
-            Memory_FreePointer(&cur->name_str);
-            Memory_Free(cur);
+            M_FreeNameEntry(cur);
         }
-        while (m_Counts[ctx] > m_BuiltInCounts[ctx]) {
-            Memory_FreePointer(&m_Keys[ctx][--m_Counts[ctx]]);
-        }
+        // The keys are the names' strings, let go with them.
+        m_Counts[ctx] = m_BuiltInCounts[ctx];
         for (int32_t id = 0; id < m_Counts[ctx]; id++) {
             m_GameIDs[ctx][id] = -1;
         }
@@ -178,18 +194,16 @@ __attribute__((destructor)) static void M_Release(void)
         HASH_ITER(hh, m_Name2EnumMap[ctx], cur, tmp)
         {
             HASH_DEL(m_Name2EnumMap[ctx], cur);
-            Memory_FreePointer(&cur->name_str);
-            Memory_Free(cur);
+            M_FreeNameEntry(cur);
         }
-        while (m_Counts[ctx] > 0) {
-            Memory_FreePointer(&m_Keys[ctx][--m_Counts[ctx]]);
-        }
+        m_Counts[ctx] = 0;
         Memory_FreePointer(&m_Keys[ctx]);
         Memory_FreePointer(&m_GameIDs[ctx]);
         m_BuiltInCounts[ctx] = 0;
     }
 }
 
+// `key` is held, not copied: the name entry made for it owns the string.
 static CATALOG_ID M_Add(const CATALOG_CONTEXT context, const char *const key)
 {
     const CATALOG_ID id = m_Counts[context];
@@ -198,7 +212,7 @@ static CATALOG_ID M_Add(const CATALOG_CONTEXT context, const char *const key)
         Memory_Realloc(m_Keys[context], sizeof(char *) * m_Counts[context]);
     m_GameIDs[context] =
         Memory_Realloc(m_GameIDs[context], sizeof(int32_t) * m_Counts[context]);
-    m_Keys[context][id] = key != nullptr ? Memory_DupStr(key) : nullptr;
+    m_Keys[context][id] = key;
     m_GameIDs[context][id] = -1;
     CatalogTable_Reserve(context, m_Counts[context]);
     return id;
@@ -216,8 +230,9 @@ RESULT Catalog_CreateKey(
     FAIL_IF(
         !Catalog_IsValidKey(key), "'%s' is not a name an identity may take",
         key);
-    MUST(M_AddName(context, m_Counts[context], key));
-    *out_id = M_Add(context, key);
+    const char *held;
+    MUST(M_AddName(context, m_Counts[context], key, false, &held));
+    *out_id = M_Add(context, held);
     return OK;
 }
 
@@ -227,7 +242,7 @@ RESULT Catalog_AddAlias(
     FAIL_IF(
         id < 0 || id >= m_Counts[context], "context %d holds no ID %d", context,
         id);
-    return M_AddName(context, id, alias);
+    return M_AddName(context, id, alias, false, nullptr);
 }
 
 const char *Catalog_IDToKey(const CATALOG_CONTEXT context, const CATALOG_ID id)

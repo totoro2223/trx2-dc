@@ -114,7 +114,8 @@ typedef struct {
 static M_ROOM_BAKE *m_RoomBake = nullptr;
 static int32_t m_RoomBakeCount = 0;
 
-static M_ITEM_LIGHT m_ItemLights[MAX_ITEMS] = {};
+// Made at the first item lit and let go with the level.
+static M_ITEM_LIGHT *m_ItemLights = nullptr;
 static M_ITEM_LIGHT m_ScratchLight = {}; // the OG StaticMeshLightItem
 static const ITEM *m_LooseLightKeys[M_MAX_LOOSE_LIGHTS] = {};
 static M_ITEM_LIGHT m_LooseLights[M_MAX_LOOSE_LIGHTS] = {};
@@ -603,6 +604,9 @@ static M_ITEM_LIGHT *M_GetItemLight(const ITEM *const item)
     // int16_t result would wrap a stray pointer into a real item's slot.
     const ITEM *const pool = Item_Get(0);
     if (pool != nullptr && item >= pool && item < pool + MAX_ITEMS) {
+        if (m_ItemLights == nullptr) {
+            m_ItemLights = Memory_Alloc(sizeof(M_ITEM_LIGHT) * MAX_ITEMS);
+        }
         return &m_ItemLights[item - pool];
     }
     return M_GetLooseItemLight(item);
@@ -880,7 +884,7 @@ static void M_Shutdown(void)
 
 static void M_ObserveLevelLoad(void)
 {
-    memset(m_ItemLights, 0, sizeof(m_ItemLights));
+    Memory_FreePointer(&m_ItemLights);
     memset(&m_ScratchLight, 0, sizeof(m_ScratchLight));
     memset(m_LooseLightKeys, 0, sizeof(m_LooseLightKeys));
     memset(m_LooseLights, 0, sizeof(m_LooseLights));

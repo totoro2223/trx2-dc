@@ -44,10 +44,8 @@ static int32_t M_GetTriggerTriangleIndices(
 {
     int32_t skip = -1;
 
-    SPLIT_TYPE split = sector->floor.split.type;
-    if (!sector->floor.is_split) {
-        split = SPLIT_NONE;
-    }
+    const SPLIT_TYPE split =
+        sector->floor.is_split ? sector->floor.split->type : SPLIT_NONE;
 
     switch (split) {
     case SPLIT_NONE:

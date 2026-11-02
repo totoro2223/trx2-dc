@@ -84,7 +84,7 @@ static inline XZ_16 M_GetSplitTilt(
     int32_t *const shift)
 {
     const bool is_ceiling = surface->type == SURFACE_CEILING;
-    const SPLIT split = surface->split;
+    const SPLIT split = *surface->split;
     const int32_t dx = x & M_WALL_MASK;
     const int32_t dz = z & M_WALL_MASK;
     const int16_t t0 = split.tilts[0];
@@ -122,8 +122,8 @@ static int32_t M_GetSplitSurfaceHeight(
 {
     const bool is_ceiling = surface.type == SURFACE_CEILING;
     if (Camera_IsChunky()) {
-        const int32_t ch1 = surface.height + surface.split.h2;
-        const int32_t ch2 = surface.height + surface.split.h1;
+        const int32_t ch1 = surface.height + surface.split->h2;
+        const int32_t ch2 = surface.height + surface.split->h1;
         return is_ceiling ? MAX(ch1, ch2) : MIN(ch1, ch2);
     }
 
@@ -171,7 +171,7 @@ static bool M_IsPortalSolid(
     const int32_t dz = z & M_WALL_MASK;
     const bool is_ceiling = surface.type == SURFACE_CEILING;
 
-    switch (surface.split.type) {
+    switch (surface.split->type) {
     case SPLIT_NWSE_PORTAL_SW:
         return dx > WALL_L - dz;
     case SPLIT_NWSE_PORTAL_NE:

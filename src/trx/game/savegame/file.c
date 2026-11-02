@@ -195,6 +195,10 @@ static void M_LogRegion(const char *const what)
 }
 #endif
 
+#if defined(__DREAMCAST__)
+int32_t LUA_DC_CollectGarbage(void);
+#endif
+
 static RESULT M_SaveBSON(
     TRX_FILE *const fp, const char *const uncompressed,
     const size_t uncompressed_size, const int32_t counter,
@@ -412,6 +416,8 @@ RESULT SG_File_SaveToFile(TRX_FILE *const fp, SAVEGAME_INFO *const info)
     }
     Memory_Free(bson);
     DC_LevelHeap_Leave();
+    LUA_DC_CollectGarbage();
+    DC_LevelHeap_Trim();
     return result;
 #else
     JSON_WRITE_IO *const io = JSON_WriteIO_Create();

@@ -1,5 +1,6 @@
 #include <trx/config.h>
 #include <trx/core/colors.h>
+#include <trx/core/memory.h>
 #include <trx/core/math/geom.h>
 #include <trx/core/utils.h>
 #include <trx/core/vector.h>
@@ -34,7 +35,16 @@ typedef struct {
     } flags;
 } M_ITEM_LIGHT;
 
-static M_ITEM_LIGHT m_ItemLights[MAX_ITEMS] = {};
+// Made at the first item lit and let go with the level.
+static M_ITEM_LIGHT *m_ItemLights = nullptr;
+
+static M_ITEM_LIGHT *M_GetItemLights(void)
+{
+    if (m_ItemLights == nullptr) {
+        m_ItemLights = Memory_Alloc(sizeof(M_ITEM_LIGHT) * MAX_ITEMS);
+    }
+    return m_ItemLights;
+}
 
 static bool M_IsPS1Light(void)
 {
@@ -224,7 +234,7 @@ static void M_CalculateLightSmoothed(
     if (item != nullptr) {
         const int16_t item_num = Item_GetIndex(item);
         if (item_num >= 0 && item_num < MAX_ITEMS) {
-            il = &m_ItemLights[item_num];
+            il = &M_GetItemLights()[item_num];
             enable_smoothing = true;
         }
     }
@@ -530,12 +540,11 @@ static void M_UploadOwnLight(
 
 static void M_Init(void)
 {
-    memset(m_ItemLights, 0, sizeof(m_ItemLights));
 }
 
 static void M_ObserveLevelLoad(void)
 {
-    memset(m_ItemLights, 0, sizeof(m_ItemLights));
+    Memory_FreePointer(&m_ItemLights);
 }
 
 void Output_Lights_TR3_AddDynamicLight(

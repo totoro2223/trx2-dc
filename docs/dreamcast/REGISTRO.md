@@ -1185,3 +1185,36 @@ Por el camino: `mpeg1.c` no compilaba en este PC (faltaba `mpeg.h`):
 `build_deps.sh` copiaba solo `pl_mpeg.h` del tarball de pl_mpeg 2.0.0; ahora
 copia los dos (el tarball es la etiqueta `v2.0.0` de Dreamcast-Projects/pl_mpeg
 guardada como `deps/dl/libmpeg-2.0.0.tar.gz`).
+
+## 2 de noviembre de 2026 (plan de RAM, sin pruebas)
+
+Aplicado el orden pedido del [plan](PLAN_REFACTOR_RAM.md) en el worktree
+`trx2-dc-refactor`. **Todo compila (`build.sh minsize`) y nada se ha probado**:
+ni CDI ni Flycast.
+
+- **A2**: `m_Raindrops`/`m_Snowflakes` (`fx/weather.c`), `m_ItemLights`
+  (`output/lights/tr3.c`, `tr4.c`), `m_Sparks` (`sparks/manager.c`), la cola de
+  relieve (`render/batcher.c`, `malloc` al primer uso) y el bench
+  (`render/output_common.c`, en `DC_Bench_Begin`) pasan de `.bss` a memoria
+  pedida. `.bss` 602 → 498 K. Las chispas se piden en cada `Sparks_Reset`
+  (+43 K de región por carga).
+- **A3**: `dc_cold_sources` (`platform/dreamcast/meson.build`) se compila como
+  la librería `dc_cold` con `-Os` (`src/meson.build`); el resto sigue en `-O2`.
+- **C1/C2**: tras cargar un nivel y tras guardar, `LUA_DC_CollectGarbage()` y
+  el nuevo `DC_LevelHeap_Trim()` (`malloc_trim(0)`).
+- **D2 (reducido)**: `SURFACE.split` es un puntero a un `SPLIT` reservado en
+  `GBUF_ROOM_SECTORS` solo para sectores triangulados; `SECTOR` 56 → 48 B en
+  DC. `FT_TILT`/`FT_ROOF` ya no escriben la inclinación de una superficie
+  triangulada (compartían la `union`). La decodificación al consultar del plan
+  no se hizo: los sectores cambian en partida (puertas, bloques, disparadores).
+- **D7 (parcial)**: el catálogo (`catalog/manager.c`) comparte la cadena de la
+  clave entre el mapa de nombres y `m_Keys`, y los alias de las constantes
+  propias apuntan al literal (`M_NAME_ENTRY.owned`). ~75 K, sin medir.
+- **C4**: `Room_ReleaseOverlapMap()` desde `Level_Unload`.
+- **No hecho**: **D1** (`ROOM_MESH` lo siguen leyendo sombras
+  `output/sources/shadows.c`, `OutputSource_Rooms_RayBlocked`, el relieve de
+  `batcher.c` y `mesh_builder.c`; hay que precalcular todo eso en el horno de
+  la fase B), **B**, **D6** (tres builds, disco y selector) y **C3** (sin lista
+  de las ~30 reservas; solo si P11 muestra crecimiento).
+- **Probar primero**: pasada de niveles de TR2 y TR3 con `mem_summary.py`;
+  mirar sobre todo las chispas (A2) y los sectores triangulados (D2).

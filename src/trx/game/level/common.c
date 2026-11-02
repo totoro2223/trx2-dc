@@ -76,6 +76,9 @@ void Level_Unload(void)
     DC_TRAIL("unload: objects reset");
     Camera_Reset();
     Walkable_Reset();
+#if defined(__DREAMCAST__)
+    Room_ReleaseOverlapMap();
+#endif
 
     Output_SetTimeInGame(0.0f);
     Output_Overlay_SetLetterbox(0.0f);

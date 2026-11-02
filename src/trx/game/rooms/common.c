@@ -717,6 +717,11 @@ bool Room_CheckOverlap(const int16_t room_num_0, const int16_t room_num_1)
     // clang-format on
 }
 
+void Room_ReleaseOverlapMap(void)
+{
+    Memory_FreePointer(&m_OverlapMap);
+}
+
 void Room_InitialiseOverlapMap(void)
 {
     Memory_FreePointer(&m_OverlapMap);

@@ -206,6 +206,13 @@ Descartado al probarlo:
   inyecta TRX, iguales en todos los niveles).
 - Código solo de TR4: ~7 K, no compensa un ejecutable por juego por eso.
 
+## Rama `refactorizacion-masiva`: segunda tanda (02/11/2026, sin probar)
+
+Compilado, no probado: A2 (`.bss` 602 → 498 K), A3 (`-Os` en carga/menús),
+C1/C2, D2 reducido (`SECTOR` 56 → 48 B), D7 parcial (catálogo sin cadenas
+duplicadas) y C4. Pendiente: B, D1, D2 completo, D6, D7 completo y C3. Detalle
+y motivos en [REGISTRO.md](REGISTRO.md) y TAREAS 75.
+
 ## 5. Orden propuesto
 
 A5 + D0 (medidos el 02/11) → **D4 (fotogramas, ~0,8 MB)** → D3 (ítems) → A1

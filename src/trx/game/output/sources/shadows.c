@@ -915,7 +915,7 @@ static void M_CollectSectorFacets(
                 M_POLY facet = cell;
                 if (is_split) {
                     M_ClipToSplitHalf(
-                        &facet, sector->floor.split.type, sector_x, sector_z,
+                        &facet, sector->floor.split->type, sector_x, sector_z,
                         half == 1);
                 }
                 if (facet.count < 3
