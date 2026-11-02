@@ -1228,3 +1228,5 @@ ni CDI ni Flycast.
 - Interfaz en C vista en Flycast (TR2 nivel 1): anillo, opciones, pasaporte (Load/Save/Exit) y Graphic Options (cel shading On->Off) responden sin fallos.
 
 - 02/11/2026 perfilador de carga: `build.sh` acepta `DC_PROFILE=1` (carpeta `dc-minsize-prof`). Resultado en PROBADO.md. Los discos normales ya no sacan log serie; los de prueba (cualquier `TRX_DC_*` de gancho o `TRX_DC_LOG=1`) sí. Para leer el log de un disco normal: `TRX_DC_LOG=1 make_disc.sh ...`.
+
+- 02/11/2026 optimización del relieve (bump): caché por esquina de lo que no cambia con la cámara (`M_BUMP_CORNER`, clave = posición en la lista de índices, no el vértice, porque cada cara tiene su propio marco), invalidada por firma de luces de la sala; caras a más de 2,5 bloques usan un solo valor en su centro; brillo con alcance más corto y descarte exacto de caras cuyo desvanecimiento máximo es menor que `M_BUMP_MIN_FADE`. Medidas en PROBADO.md.
