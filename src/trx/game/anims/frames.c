@@ -10,6 +10,7 @@
 #include <trx/version.h>
 
 #include <math.h>
+#include <string.h>
 
 typedef enum {
     ROTATE_ALL = 0,
@@ -28,27 +29,90 @@ static int32_t m_FrameCap = 0;
 #define M_ROT_BUFFERS 32
 static XYZ_16 m_RotBuffers[M_ROT_BUFFERS][M_MAX_FRAME_MESHES];
 static int32_t m_NextRotBuffer = 0;
+// The words of all the frames' rotations, carved from blocks of the level's
+// buffer in turn: one allocation a frame lost ~4 bytes each to alignment.
+#define M_ROT_POOL_WORDS 8192
+static uint16_t *m_RotPool = nullptr;
+static int32_t m_RotPoolLeft = 0;
 #endif
 
 const XYZ_16 *Anim_GetFrameRots(const ANIM_FRAME *const frame)
 {
 #if defined(__DREAMCAST__)
-    if (frame->packed_rots == nullptr) {
+    if (frame->rots == nullptr) {
         return nullptr;
     }
     XYZ_16 *const out = m_RotBuffers[m_NextRotBuffer];
     m_NextRotBuffer = (m_NextRotBuffer + 1) % M_ROT_BUFFERS;
+    const uint16_t *in = frame->rots;
     for (int32_t i = 0; i < frame->mesh_count; i++) {
-        const uint32_t packed = frame->packed_rots[i];
-        out[i].x = (int16_t)(((packed >> 20) & 0x3FF) << 6);
-        out[i].y = (int16_t)(((packed >> 10) & 0x3FF) << 6);
-        out[i].z = (int16_t)((packed & 0x3FF) << 6);
+        const uint16_t w1 = *in++;
+        XYZ_16 *const rot = &out[i];
+        rot->x = 0;
+        rot->y = 0;
+        rot->z = 0;
+        switch (w1 >> 14) {
+        case 1:
+            rot->x = (int16_t)((w1 & 0x3FF) << 6);
+            break;
+        case 2:
+            rot->y = (int16_t)((w1 & 0x3FF) << 6);
+            break;
+        case 3:
+            rot->z = (int16_t)((w1 & 0x3FF) << 6);
+            break;
+        default: {
+            const uint16_t w2 = *in++;
+            rot->x = (int16_t)((w1 & 0x3FF0) << 2);
+            rot->y = (int16_t)((((w1 & 0xF) << 6) | (w2 >> 10)) << 6);
+            rot->z = (int16_t)((w2 & 0x3FF) << 6);
+            break;
+        }
+        }
     }
     return out;
 #else
     return frame->mesh_rots;
 #endif
 }
+
+#if defined(__DREAMCAST__)
+// One rotation in TR2's words (see ANIM_FRAME): returns how many it wrote.
+static int32_t M_EncodeRotation(const XYZ_16 rot, uint16_t *const out)
+{
+    const uint16_t x = ((uint16_t)rot.x >> 6) & 0x3FF;
+    const uint16_t y = ((uint16_t)rot.y >> 6) & 0x3FF;
+    const uint16_t z = ((uint16_t)rot.z >> 6) & 0x3FF;
+    if (y == 0 && z == 0) {
+        out[0] = (uint16_t)(1 << 14) | x;
+        return 1;
+    }
+    if (x == 0 && z == 0) {
+        out[0] = (uint16_t)(2 << 14) | y;
+        return 1;
+    }
+    if (x == 0 && y == 0) {
+        out[0] = (uint16_t)(3 << 14) | z;
+        return 1;
+    }
+    out[0] = (uint16_t)((x << 4) | (y >> 6));
+    out[1] = (uint16_t)(((y & 0x3F) << 10) | z);
+    return 2;
+}
+
+static uint16_t *M_TakeRotWords(const int32_t count)
+{
+    if (count > m_RotPoolLeft) {
+        const int32_t words = MAX(count, M_ROT_POOL_WORDS);
+        m_RotPool = GameBuf_Alloc(sizeof(uint16_t) * words, GBUF_ANIM_FRAMES);
+        m_RotPoolLeft = words;
+    }
+    uint16_t *const result = m_RotPool;
+    m_RotPool += count;
+    m_RotPoolLeft -= count;
+    return result;
+}
+#endif
 
 static int32_t M_GetAnimFrameCount(
     const LEVEL_FORMAT_LOADER *const loader, const int32_t anim_idx,
@@ -171,14 +235,19 @@ static int32_t M_ParseFrame(
     // their low two, if the Dreamcast ever loads TR4.
     ASSERT(mesh_count <= M_MAX_FRAME_MESHES);
     frame->mesh_count = (uint8_t)mesh_count;
-    frame->packed_rots =
-        GameBuf_Alloc(sizeof(uint32_t) * mesh_count, GBUF_ANIM_FRAMES);
+    uint16_t words[M_MAX_FRAME_MESHES * 2];
+    int32_t word_count = 0;
     for (int32_t i = 0; i < mesh_count; i++) {
         XYZ_16 rot;
         M_ParseMeshRotation(loader, &rot, &data_ptr);
-        frame->packed_rots[i] = ((uint32_t)(uint16_t)rot.x >> 6 << 20)
-            | ((uint32_t)(uint16_t)rot.y >> 6 << 10)
-            | ((uint32_t)(uint16_t)rot.z >> 6);
+        word_count += M_EncodeRotation(rot, &words[word_count]);
+    }
+    // (A frame of no meshes keeps a pointer, as its zero-size block did.)
+    static uint16_t no_rots[1];
+    frame->rots = no_rots;
+    if (word_count > 0) {
+        frame->rots = M_TakeRotWords(word_count);
+        memcpy(frame->rots, words, sizeof(uint16_t) * word_count);
     }
 #else
     frame->mesh_rots =
@@ -201,15 +270,35 @@ int32_t Anim_GetTotalFrameCount(
 {
     const int32_t anim_count = Anim_GetTotalCount();
     int32_t total_frame_count = 0;
+#if defined(__DREAMCAST__)
+    // Only the frames Anim_LoadFrames parses: those of the anims from the
+    // first loaded object on (some 2800 frames of 24 bytes fewer a level).
+    OBJECT **const anim_objects = M_BuildAnimObjects(anim_count);
+    bool counting = false;
+    for (int32_t i = 0; i < anim_count; i++) {
+        counting |= anim_objects[i] != nullptr;
+        if (counting) {
+            total_frame_count +=
+                M_GetAnimFrameCount(loader, i, frame_data_length);
+        }
+    }
+    Memory_Free(anim_objects);
+#else
     for (int32_t i = 0; i < anim_count; i++) {
         total_frame_count += M_GetAnimFrameCount(loader, i, frame_data_length);
     }
+#endif
     return total_frame_count;
 }
 
 void Anim_InitialiseFrames(const int32_t num_frames)
 {
     LOG_INFO("%d anim frames", num_frames);
+#if defined(__DREAMCAST__)
+    // The previous level's pool went with its buffer.
+    m_RotPool = nullptr;
+    m_RotPoolLeft = 0;
+#endif
     m_FrameCap = num_frames;
     m_Frames = GameBuf_Alloc(sizeof(ANIM_FRAME) * num_frames, GBUF_ANIM_FRAMES);
 }

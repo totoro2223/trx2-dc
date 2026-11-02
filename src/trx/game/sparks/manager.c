@@ -14,7 +14,12 @@
 #include <trx/game/random.h>
 #include <trx/version.h>
 
-#define M_MAX_SPARKS 400
+#if defined(__DREAMCAST__)
+    // TR3's own pool held 256; 400 were 15K more of RAM.
+    #define M_MAX_SPARKS 256
+#else
+    #define M_MAX_SPARKS 400
+#endif
 #define M_MAX_SPARK_DYNAMICS 32
 
 // Half a turn in the 4096-unit angle space of the TR3 wind.

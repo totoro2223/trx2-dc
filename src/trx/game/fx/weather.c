@@ -23,7 +23,14 @@
 
 #define M_BASE_WEATHER 256
 #define M_BASE_WEATHER_ALIVE 16
-#define M_MAX_WEATHER (M_BASE_WEATHER * WEATHER_SEVERITY_MAX)
+#if defined(__DREAMCAST__)
+    // Twice the base at most: 1024 drops and 1024 flakes took 98K of RAM
+    // the PowerVR could not draw at speed anyway. Past severity 2 the
+    // spawn just finds no free slot.
+    #define M_MAX_WEATHER (M_BASE_WEATHER * 2)
+#else
+    #define M_MAX_WEATHER (M_BASE_WEATHER * WEATHER_SEVERITY_MAX)
+#endif
 
 #define M_RAIN_MAX_DISTANCE 6000
 #define M_RAIN_BASE_Y_OFF (-WALL_L)

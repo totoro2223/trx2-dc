@@ -44,11 +44,12 @@ typedef struct {
     BOUNDS_16 bounds;
     XYZ_16 offset;
 #if defined(__DREAMCAST__)
-    // Each rotation as three 10-bit angles in one word, as the level stores
-    // them: two thirds of the room of XYZ_16, over ~20000 frames. Read them
-    // through Anim_GetFrameRots.
+    // The rotations as TR2 stores them: one 16-bit word for a turn about one
+    // axis, two for the rest (10-bit angles). The ~17000 frames of a level
+    // took 1.3 MB as one 32-bit word a rotation. Read them through
+    // Anim_GetFrameRots.
     uint8_t mesh_count;
-    uint32_t *packed_rots;
+    uint16_t *rots;
 #else
     XYZ_16 *mesh_rots;
 #endif

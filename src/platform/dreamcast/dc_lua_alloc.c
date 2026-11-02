@@ -27,9 +27,11 @@
 #include <string.h>
 
 #define M_SMALL_SIZE (1280 * 1024)
-// The graphics dialog, the largest Lua the Dreamcast opens, peaks at ~950K
-// here (DC build 149); past this, blocks spill into the heap.
-#define M_BIG_SIZE (1024 * 1024)
+// Play holds 250-400K here (DC builds 413-415); the graphics dialog, the
+// largest Lua the Dreamcast opens, peaks at ~950K (DC build 149) and spills
+// the rest into the heap while it is open. A whole megabyte kept that room
+// from everything else for the whole game.
+#define M_BIG_SIZE (512 * 1024)
 #define M_GRAIN 8
 #define M_SMALL_MAX 256
 #define M_SMALL_CLASSES (M_SMALL_MAX / M_GRAIN)

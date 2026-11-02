@@ -5047,7 +5047,8 @@ typedef struct {
     float z_min;
 } M_BUMP_ENTRY;
 
-#define M_BUMP_QUEUE 1024
+// Flushed whenever full: 1024 entries were 45K of RAM for no fewer draws.
+#define M_BUMP_QUEUE 256
 static M_BUMP_ENTRY m_BumpQueue[M_BUMP_QUEUE];
 
 static int M_BumpEntryOrder(const void *const a, const void *const b)
