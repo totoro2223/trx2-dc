@@ -1099,3 +1099,50 @@ los acordes L+R+B y L+R+Arriba; `debug_boxes.c` dibuja las cajas de objetos y de
 salas. Los secretos se cuentan al cargar el nivel (`Stats_ScanLevel` en
 `pipeline.c`). El quicksave colgaba por bloquear un frame Maple no enviado. Pruebas
 pendientes en `PRUEBAS_PENDIENTES.md` T72-T78.
+## 30/10/2026 - FMV en MPEG-1 (DC builds 861-862)
+
+Hecho el plan de `PLAN_FMV_MPEG1.md` (P1 a P5) sin la comparativa P0 y sin
+medir, a petición del usuario. TR4 en Dreamcast usa Sofdec (`FMV/DC_FMV*.SFD`:
+MPEG-1 320x240 a 25 fps, 2.000 kb/s, y audio ADX); aquí se toma solo el vídeo
+MPEG-1.
+
+- `tools/dreamcast/build_deps.sh` copia `pl_mpeg.h` (fork de libmpeg de
+  Dreamcast-Projects, MIT, con rutinas SH4 y salida en macrobloques para el
+  convertidor YUV) del tar de `deps/dl/libmpeg-1.0.0.tar.gz` a `deps/dc/include`.
+  Solo el decodificador: el reproductor de libmpeg ocupa la pantalla.
+- `src/platform/dreamcast/mpeg1.c` + `dc_mpeg.h`: envoltorio mínimo (buffer,
+  decodificador sin B).
+- `render/pvr.c`: `DC_PVR_SetVideoYUV` reserva una textura YUV422 de 512x256
+  (262 KB de VRAM), configura `PVR_YUV_ADDR/CFG` y manda los macrobloques con
+  `sq_cpy` (más los macrobloques vacíos hasta 32 por fila). Con ella,
+  `DC_PVR_SetVideoFrame` no hace nada; `DC_PVR_DrawVideo` usa solo la parte de
+  la textura que cubre la imagen.
+- `video.c`: versión 3 de `TRXV`: por fotograma `u32` tamaño, imagen MPEG-1 y
+  audio. Se lee todo lo que pide el audio; la imagen es pequeña y se guarda
+  hasta decodificarla. Se decodifican hasta 4 imágenes por llamada para
+  alcanzar el reloj del sonido (cada una necesita la anterior) y se muestra la
+  última. La versión 2 (VQ) sigue funcionando.
+- `tools/dreamcast/fmvmux.c`: trocea el flujo de ffmpeg en imágenes (la
+  cabecera de secuencia y de grupo van con la imagen que sigue) y las junta con
+  el audio. MPEG-1 no tiene 15 fps (TR1 y TR2): se codifica a 30 repitiendo
+  fotogramas, que cuestan casi nada al codificador y al decodificador.
+- Disco de prueba: `TRX-tr2-mpeg1.cdi` (DC build 862; mini de TR2 con `wall` y
+  `title`, solo la película `ancient`, sin música).
+
+Riesgos sin ver: tiempo de la SH4 por fotograma (hace falta consola, GDEMU);
+las bandas de la textura (el ancho de 512 y los macrobloques vacíos son como en
+libmpeg); que `libmpeg` fija `PVR_TXRFMT_STRIDE` en su cabecera y aquí no
+(512 es potencia de 2); películas de más de 512x256 (ninguna conocida).
+
+Pruebas en Flycast (DC builds 862-865): la build 862 mostraba ruido de colores
+y 13 fps: el convertidor YUV del PVR da la textura por completa solo cuando
+recibe sus 512 macroblocks y se mandaban los de las filas de la imagen, así que
+cada fotograma empezaba descuadrado; `DC_PVR_SetVideoYUV` completa ahora la
+textura con macroblocks vacíos (build 863, imagen correcta). También se pasó
+de repetir cada fotograma a 30 fps a una imagen por fotograma real
+(`setpts=N/30/TB`; `ancient` baja a 29 MB). Con la 863: 21 ms por imagen
+decodificada en Flycast, ~3 imágenes por vuelta del bucle, 3,8 ms de
+presentación, y solo 5-7 fps visibles aunque el sonido y la imagen van
+sincronizados (179 imágenes en 12 s). La build 865 mide el tiempo entre
+vueltas del bucle de `fmv.c`; sin leer. Los 130 ms por vuelta que no explica el
+reproductor son lo primero que hay que encontrar.

@@ -99,6 +99,10 @@ if [ -n "${TRX_DC_EXIT:-}" ]; then
   # The game is left that many frames into the level (a test of the exit).
   echo "$TRX_DC_EXIT" > "$STAGE/EXIT.TXT"
 fi
+if [ -n "${TRX_DC_COMPLETE:-}" ]; then
+  # The level is completed that many frames into it (a test of what follows).
+  echo "$TRX_DC_COMPLETE" > "$STAGE/COMPLETE.TXT"
+fi
 if [ -n "${TRX_DC_GIVE:-}" ]; then
   # Lara is handed that weapon (a LARA_GUN_TYPE) a moment into the level.
   echo "$TRX_DC_GIVE" > "$STAGE/GIVE.TXT"
@@ -194,7 +198,10 @@ for f in "$GAME_DATA"/* "$GAME_DATA"/../cuts/*; do
   case "$lower" in
     *.tr2 | *.phd)
       # TRX_DC_KEEP="wall title": a small test disc with only those levels.
+      # The others stay as empty files: the gameflow and the strings list
+      # every level, and the engine does not start when one is not there.
       if [ -n "${TRX_DC_KEEP:-}" ] && [[ " $TRX_DC_KEEP " != *" ${lower%.*} "* ]]; then
+        : > "$STAGE/games/$GAME/levels/$lower"
         continue
       fi
       cp "$f" "$STAGE/games/$GAME/levels/$lower" ;;
@@ -418,8 +425,13 @@ echo "== films"
 # each frame a VQ texture of 256x256 the PowerVR decodes itself, and the sound
 # as the music is, Yamaha ADPCM at 44.1 kHz in a WAV beside it. Kept between
 # discs. TRX_DC_FMV=0 makes a disc with no films; TRX_DC_FMV="ancient ms"
-# only those (by name).
+# only those (by name). TRX_DC_FMV_CODEC=mpeg1 makes them MPEG-1, as Tomb
+# Raider 4's (tools/dreamcast/fmvmux.c; the SH4 decodes them): about half the
+# size, at TRX_DC_FMV_KBPS kilobits a second (900). Films for that are kept
+# apart from the others.
+FMV_CODEC="${TRX_DC_FMV_CODEC:-mpeg1}"
 FMV_CACHE="$BUILD_DIR/fmv-$GAME-$SOURCE"
+[ "$FMV_CODEC" = mpeg1 ] && FMV_CACHE="$FMV_CACHE-mpeg1"
 mkdir -p "$FMV_CACHE" "$STAGE/games/$GAME/fmv"
 if [ "${TRX_DC_FMV:-all}" = 0 ] || ! command -v ffmpeg > /dev/null; then
   FMV_FILES=()
@@ -436,8 +448,13 @@ if [ -n "${TRX_DC_FMV_EXTRA:-}" ] && [ -d "$TRX_DC_FMV_EXTRA" ] && [ "${TRX_DC_F
 fi
 FMV_SEEN=" "
 FMV_TOOL="$BUILD_DIR/fmvconv.exe"
-if [ ${#FMV_FILES[@]} -gt 0 ] && { [ ! -f "$FMV_TOOL" ] || [ "$ROOT/tools/dreamcast/fmvconv.c" -nt "$FMV_TOOL" ]; }; then
-  gcc -O2 -fopenmp -o "$FMV_TOOL" "$ROOT/tools/dreamcast/fmvconv.c"
+FMV_SRC="$ROOT/tools/dreamcast/fmvconv.c"
+if [ "$FMV_CODEC" = mpeg1 ]; then
+  FMV_TOOL="$BUILD_DIR/fmvmux.exe"
+  FMV_SRC="$ROOT/tools/dreamcast/fmvmux.c"
+fi
+if [ ${#FMV_FILES[@]} -gt 0 ] && { [ ! -f "$FMV_TOOL" ] || [ "$FMV_SRC" -nt "$FMV_TOOL" ]; }; then
+  gcc -O2 -fopenmp -o "$FMV_TOOL" "$FMV_SRC"
 fi
 for f in "${FMV_FILES[@]}"; do
   [ -f "$f" ] || continue
@@ -465,15 +482,46 @@ for f in "${FMV_FILES[@]}"; do
     # Windows' ffprobe ends its lines with a carriage return.
     fr="${fr//[!0-9\/]/}"
     fps=$(( ${fr%/*} / ${fr#*/} ))
+    # Some films (the remaster's TR2 ones) say 15 frames a second but have the
+    # pictures of 30: the sound, which keeps its own time, then ends at half
+    # the film. The pictures over the sound's length tell.
+    adur="$(ffmpeg -hide_banner -i "$f" -vn -f null - 2>&1 | grep -o 'time=[0-9:.]*' | tail -1 | cut -d= -f2 | awk -F: '{print $1*3600+$2*60+$3}')"
+    nfr="$(ffmpeg -hide_banner -i "$f" -an -f null - 2>&1 | grep -o 'frame= *[0-9]*' | tail -1 | tr -dc 0-9)"
+    if [ "$fps" -lt 20 ] && [ -n "$adur" ] && [ "${nfr:-0}" -gt 0 ] \
+      && awk -v n="$nfr" -v d="$adur" 'BEGIN { exit !(d > 0 && n / d > 22) }'; then
+      echo "$lower: $nfr pictures in $adur s, so 30 fps (it says $fps)"
+      fps=30
+    fi
+    # The rate that makes the pictures last as long as the sound (within 1%):
+    # 4370 pictures over 145.86 s are 29.96 a second, not 30, and at 30 the
+    # picture would run ahead of the sound a little more all the time.
+    vrate="$fps"
+    if [ -n "$adur" ] && [ "${nfr:-0}" -gt 0 ]; then
+      vrate="$(awk -v n="$nfr" -v d="$adur" -v f="$fps" 'BEGIN { r = n / d; if (r > f * 0.99 && r < f * 1.01) printf "%.4f", r; else print f }')"
+    fi
     # The sound first (Yamaha ADPCM, as the music), then the picture with it.
     SOUND=()
     if ffmpeg -hide_banner -loglevel error -y -i "$f" -vn -ac 2 -ar 44100 \
       -c:a adpcm_yamaha "$FMV_CACHE/$lower.wav"; then
       SOUND=("$FMV_CACHE/$lower.wav")
     fi
-    ffmpeg -hide_banner -loglevel error -y -i "$f" \
-      -vf "fps=$fps,scale=256:256:flags=lanczos" -f rawvideo -pix_fmt rgb24 - \
-      | "$FMV_TOOL" "$out.tmp" "$fps" "$fw" "$fh" "${SOUND[@]}" 2> /dev/null
+    if [ "$FMV_CODEC" = mpeg1 ]; then
+      # MPEG-1 has no 15 frames a second (TR1 and TR2's): the stream says 30
+      # (the player ignores that and keeps the film's own rate), so each
+      # picture is one real frame, not a repeated one. No B pictures.
+      kbps="${TRX_DC_FMV_KBPS:-900}"
+      ffmpeg -hide_banner -loglevel error -y -i "$f" \
+        -vf "setpts=N/($vrate*TB),fps=$fps,setpts=N/30/TB,scale=$fw:$fh:flags=lanczos" -r 30 \
+        -c:v mpeg1video \
+        -b:v "${kbps}k" -maxrate "$((kbps * 2))k" -bufsize 320k -g 15 -bf 0 \
+        -pix_fmt yuv420p -f mpeg1video "$out.m1v"
+      "$FMV_TOOL" "$out.tmp" "$fps" "$fw" "$fh" "$out.m1v" "${SOUND[@]}" 2> /dev/null
+      rm -f "$out.m1v"
+    else
+      ffmpeg -hide_banner -loglevel error -y -i "$f" \
+        -vf "setpts=N/($vrate*TB),fps=$fps,scale=256:256:flags=lanczos" -f rawvideo -pix_fmt rgb24 - \
+        | "$FMV_TOOL" "$out.tmp" "$fps" "$fw" "$fh" "${SOUND[@]}" 2> /dev/null
+    fi
     mv "$out.tmp" "$out"
     rm -f "$FMV_CACHE/$lower.wav"
   fi
@@ -488,8 +536,15 @@ if [ -n "$SUBDIR" ]; then
 fi
 echo "== image"
 bash "$(dirname "$0")/disc_sort.sh" "$STAGE" > "$TMP/sort.txt"
-mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
-  -sort "$TMP/sort.txt" -o "$TMP/TRX.iso" "$STAGE"
-cdi4dc "$TMP/TRX.iso" "$OUT" > /dev/null
+if [[ "$OUT" == *.iso ]]; then
+  # A plain ISO of one session for DreamShell's loader (SD card): without the
+  # second session's offset (-C) that the CDI's extents carry.
+  mkisofs -quiet -V TRX -G "$TMP/IP.BIN" -r -J -l \
+    -sort "$TMP/sort.txt" -o "$OUT" "$STAGE"
+else
+  mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
+    -sort "$TMP/sort.txt" -o "$TMP/TRX.iso" "$STAGE"
+  cdi4dc "$TMP/TRX.iso" "$OUT" > /dev/null
+fi
 rm -rf "$TMP"
 ls -la "$OUT"

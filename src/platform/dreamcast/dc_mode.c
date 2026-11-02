@@ -71,6 +71,7 @@ int32_t g_DC_TestLevelFrames = 0;
 int32_t g_DC_TestFire = 0;
 int32_t g_DC_TestGive = 0;
 int32_t g_DC_TestExit = 0;
+int32_t g_DC_TestComplete = 0;
 int32_t g_DC_TestSave = 0;
 int32_t g_DC_Run = 0;
 

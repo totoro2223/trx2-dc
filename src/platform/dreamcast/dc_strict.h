@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -52,3 +53,36 @@ void DC_Crumb_StartWatch(void);
 void DC_Strict_PoisonRAM(void);
 void DC_Strict_FillNew(void *ptr, size_t size);
 void DC_Strict_FillFreed(void *ptr);
+
+// A failed assertion (trx/debug.h): where, what and the last stages go on the
+// screen and to TRXLOG on the memory card, and it waits 20 s before the
+// restart that follows.
+void DC_Crumb_Fatal(const char *file, int line, const char *message);
+
+// The engine's fatal error, kept for the next boot's report.
+void DC_Crumb_Error(const char *message);
+
+// With the PowerVR up (the first loading screen): the report of a run that
+// ended badly, if there was one, on the screen.
+void DC_Crumb_ShowPrevious(void);
+
+void DC_TrailF(const char *fmt, ...);
+void DC_TraceOn(bool on);
+void DC_TraceF(const char *fmt, ...);
+
+// TEMP: one step of the trail, on the screen for a moment and kept in RAM.
+void DC_Trail(const char *text);
+
+// TEMP: the engine ends: why, on the screen for 15 s and in TRXLOG.
+void DC_Crumb_Exit(int code);
+
+// First thing at boot: if the last run ended in an exception or an error,
+// shows why for 15 s and writes it to TRXLOG.
+void DC_Crumb_ReportLast(void);
+
+// A processor exception: its code, the program counter, return address, stack
+// and faulting address on the screen for 20 s (spinning, as it runs in the
+// exception handler).
+void DC_Crumb_Exception(
+    unsigned code, unsigned long pc, unsigned long pr, unsigned long sp,
+    unsigned long tea);

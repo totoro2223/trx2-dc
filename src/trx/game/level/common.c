@@ -1,4 +1,5 @@
 #include <trx/config.h>
+#include <trx/debug.h>
 #include <trx/core/benchmark.h>
 #include <trx/core/log.h>
 #include <trx/game/camera.h>
@@ -41,17 +42,22 @@ static bool m_WorldLoaded = false;
 void Level_Unload(void)
 {
     m_WorldLoaded = false;
+    DC_TRAIL("unload: begin");
 
     // First, so the end event a dropped cutscene fires reaches a script that
     // can still read the world it played in.
     CutSeq_Reset();
+    DC_TRAIL("unload: cutscene reset");
 
     // And then the script itself, before the world it was written against is
     // taken apart under it.
     LUA_DropLevelScript();
+    DC_TRAIL("unload: level script dropped");
 
     Music_ResetTrackStates();
+    DC_TRAIL("unload: music states reset");
     Sound_ResetSamples();
+    DC_TRAIL("unload: samples reset");
 
     Lara_InitialiseLoad(NO_ITEM);
     Lara_Mesh_Reset();
@@ -61,10 +67,13 @@ void Level_Unload(void)
     Gym_TrackManager_Reset(GYM_TRACK_QUAD);
     Creature_Reset();
     Anim_Reset();
+    DC_TRAIL("unload: anims reset");
     Item_Reset();
+    DC_TRAIL("unload: items reset");
     // Before the objects go: what it holds are objects this level minted.
     Lara_Skin_Reset();
     Object_Reset();
+    DC_TRAIL("unload: objects reset");
     Camera_Reset();
     Walkable_Reset();
 
@@ -72,6 +81,7 @@ void Level_Unload(void)
     Output_Overlay_SetLetterbox(0.0f);
     Output_Overlay_SetFade(0.0f);
     Output_DispatchLevelUnload();
+    DC_TRAIL("unload: output unloaded");
 
     Sound_StopAll();
     Viewport_AlterFOV(-1, FOV_MODE_GAME);
@@ -92,6 +102,10 @@ RESULT Level_Initialise(
     const GF_LEVEL *const level, const GF_SEQUENCE_CONTEXT seq_ctx)
 {
     BENCHMARK benchmark = Benchmark_Start();
+#if defined(__DREAMCAST__)
+    DC_TraceOn(false);
+#endif
+    DC_TRAIL("init: level %d begins", (int)level->num);
     LOG_DEBUG("num=%d (%s)", level->num, level->path);
     if (level->type == GFL_DEMO) {
         Demo_Initialise();
@@ -113,9 +127,12 @@ RESULT Level_Initialise(
     // first collection frees may hold others). The loads that aborted in
     // Jungle, in TR1's levels and on opening the save menu were all at the
     // end of the memory.
+    DC_TRAIL("init: unloaded");
     OutputSource_Objects_EvictUnused(0);
+    DC_TRAIL("init: meshes evicted");
     LUA_DC_CollectGarbage();
     LUA_DC_CollectGarbage();
+    DC_TRAIL("init: garbage collected");
 #endif
 #if defined(__DREAMCAST__)
     // What the level loads and builds goes in its own memory, empty again
@@ -152,8 +169,10 @@ RESULT Level_Initialise(
     // by any other path - the title screen among them - still runs its own.
     LUA_RunLevelScript(level);
 
+    DC_TRAIL("init: script ran");
     MUST(Level_Pipeline_Load(level));
     m_WorldLoaded = true;
+    DC_TRAIL("init: level loaded");
 
     // The level script ran before any of this was here, so the watchers it
     // attached are still owed the call for the value in force.

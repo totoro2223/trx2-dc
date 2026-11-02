@@ -1,4 +1,5 @@
 #include <trx/game/phase/phase_stats.h>
+#include <trx/debug.h>
 
 #include <trx/core/memory.h>
 #include <trx/game/game.h>
@@ -6,6 +7,10 @@
 #include <trx/game/input.h>
 #include <trx/game/shell.h>
 #include <trx/game/ui/takeover.h>
+
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_strict.h>
+#endif
 
 // A script draws the screen, its backdrop and its fades, and ends it with a
 // choice. Without one there is nothing to show.
@@ -28,6 +33,9 @@ static PHASE_CONTROL M_Start(PHASE *const phase)
         GFLT_MAIN,
         p->args.level_num != -1 ? p->args.level_num
                                 : Game_GetCurrentLevel()->num);
+#if defined(__DREAMCAST__)
+    DC_Trail("stats phase: offering the screen to Lua");
+#endif
     p->is_held = UI_Takeover_Offer(
         UI_TAKEOVER_STATS,
         (UI_TAKEOVER_ARGS) {
@@ -36,6 +44,9 @@ static PHASE_CONTROL M_Start(PHASE *const phase)
             .is_bare = p->args.use_bare_style,
             .background = p->args.background_path,
         });
+#if defined(__DREAMCAST__)
+    DC_Trail(p->is_held ? "stats phase: Lua took it" : "stats phase: Lua declined");
+#endif
     if (!p->is_held) {
         return (PHASE_CONTROL) {
             .action = PHASE_ACTION_END,

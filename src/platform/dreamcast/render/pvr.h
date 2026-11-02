@@ -153,6 +153,9 @@ void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *tris, int32_t count);
 // else.
 bool DC_PVR_BeginCaptureFrame(void);
 
+// Whether a frame is open (between DC_PVR_BeginFrame and DC_PVR_EndFrame).
+bool DC_PVR_IsInFrame(void);
+
 // A frame drawn into the shadow map instead of onto the screen, closed by
 // DC_PVR_EndFrame: cell k spans x from k * SIZE to (k + 1) * SIZE. False when
 // no frame can start.
@@ -171,9 +174,16 @@ void DC_PVR_SetPicture(const char *name);
 void DC_PVR_DrawPicture(float brightness);
 // Puts a frame of a film in video memory, and lets it go when asked.
 void DC_PVR_SetVideoFrame(const uint8_t *frame);
+// An MPEG-1 film's frame, as the macroblocks DC_Mpeg_Decode gives; after it
+// DC_PVR_SetVideoFrame does nothing, until DC_PVR_FreeVideo.
+void DC_PVR_SetVideoYUV(
+    const uint32_t *macroblocks, int32_t width, int32_t height);
 void DC_PVR_FreeVideo(void);
 // Draws it in a box of the 640x480 screen, over the interface.
 void DC_PVR_DrawVideo(float x0, float y0, float x1, float y1);
+// TEMP: bars under the film, how far its picture and sound have played (0 to
+// 1; below 0 for none).
+void DC_PVR_SetFilmBars(float picture, float sound);
 // Whether a picture is in video memory (it is not if the disc lacks it).
 bool DC_PVR_HasPicture(void);
 // The same, inside a box given as fractions of the screen, fading in with

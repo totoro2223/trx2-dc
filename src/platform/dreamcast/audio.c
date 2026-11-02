@@ -17,6 +17,7 @@
 
 #include <trx/core/log.h>
 #include <trx/core/memory.h>
+#include <trx/debug.h>
 #include <trx/version.h>
 
 #include <dc/sound/aica_comm.h>
@@ -44,6 +45,9 @@
 #define M_POLL_MS 20
 // How long a stream's last data take to play out of its buffer.
 #define M_TAIL_MS 600
+// How far, in seconds, the read position may stray from a cutscene's clock
+// (the buffer's own lead apart) before the stream is sought.
+#define M_SYNC_TOLERANCE 1.0
 
 typedef struct {
     uint32_t addr; // in sound RAM, 0 when none
@@ -582,6 +586,7 @@ int32_t Audio_Sample_Play(
     const int32_t sample_id, const int32_t volume, const float pitch,
     const int32_t pan, const bool is_looped)
 {
+    DC_TRACE("audio: sample %d play", (int)sample_id);
     // How each sample fares, for the log: asked, not in sound RAM, no channel.
     static uint16_t asked[AUDIO_MAX_SAMPLES];
     static uint16_t missing[AUDIO_MAX_SAMPLES];
@@ -749,6 +754,32 @@ static bool M_IsStream(const int32_t sound_id)
         && m_Streams[sound_id].used;
 }
 
+// The AICA channel that plays the film's sound (the stream's first), and the
+// samples it has played, read from the channel's own position: that is what
+// is heard, whatever the stream has been handed.
+static int32_t m_FilmChannel = -1;
+static uint64_t m_FilmPlayed;
+static uint32_t m_FilmLastPos;
+// Bytes of silence put in the film's sound while the player had none ready:
+// time the AICA plays that is not the film's.
+static uint64_t m_FilmSilence;
+
+bool DC_Audio_FilmSeconds(double *const seconds)
+{
+    if (m_FilmChannel < 0) {
+        return false;
+    }
+    // The buffer of one channel, in samples (two to a byte of ADPCM).
+    const uint32_t size = M_STREAM_BUFFER * 2;
+    const uint32_t pos = snd_get_pos((unsigned)m_FilmChannel);
+    if (pos < size) {
+        m_FilmPlayed += (pos + size - m_FilmLastPos) % size;
+        m_FilmLastPos = pos;
+    }
+    *seconds = (double)m_FilmPlayed / 44100.0;
+    return true;
+}
+
 // Bytes of data for a time, on a whole byte of every channel.
 static uint32_t M_StreamBytes(const M_STREAM *const s, const double seconds)
 {
@@ -809,6 +840,7 @@ static void *M_StreamFeed(
                     break;
                 }
                 memset(m_StreamBuffer + got, 0, read);
+                m_FilmSilence += (uint64_t)read;
             }
             got += read;
             s->pos += read;
@@ -841,6 +873,9 @@ static void M_StreamRelease(
     if (finish != nullptr) {
         *finish = s->finish;
         *finish_data = s->finish_data;
+    }
+    if (s->film) {
+        m_FilmChannel = -1;
     }
     if (s->playing) {
         snd_stream_stop(s->hnd);
@@ -896,6 +931,7 @@ static void *M_StreamThread(void *const arg)
 RESULT Audio_Stream_CreateFromFile(
     const char *const path, int32_t *const out_sound_id)
 {
+    DC_TRACE("audio: stream open %.40s", path);
     MUST(Audio_Init());
     // A film's sound comes from the film player's queue (video.c), not from
     // the disc: the film's file is read in one pass, picture and sound.
@@ -915,6 +951,11 @@ RESULT Audio_Stream_CreateFromFile(
                 break;
             }
         }
+        // The stream takes the lowest free channel: this one.
+        const int32_t film_channel = snd_sfx_chn_alloc();
+        if (film_channel >= 0) {
+            snd_sfx_chn_free(film_channel);
+        }
         const snd_stream_hnd_t hnd = id < 0
             ? SND_STREAM_INVALID
             : snd_stream_alloc(M_StreamFeed, M_STREAM_BUFFER);
@@ -922,6 +963,10 @@ RESULT Audio_Stream_CreateFromFile(
             mutex_unlock(&m_StreamLock);
             return FAIL("every stream is in use");
         }
+        m_FilmChannel = film_channel;
+        m_FilmPlayed = 0;
+        m_FilmSilence = 0;
+        m_FilmLastPos = 0;
         M_STREAM *const s = &m_Streams[id];
         *s = (M_STREAM) {
             .used = true,
@@ -999,6 +1044,7 @@ RESULT Audio_Stream_CreateFromMemory(
 
 RESULT Audio_Stream_Close(const int32_t sound_id)
 {
+    DC_TRACE("audio: stream %d close", (int)sound_id);
     mutex_lock(&m_StreamLock);
     const bool ok = M_IsStream(sound_id);
     if (ok) {
@@ -1181,9 +1227,24 @@ RESULT Audio_Stream_SetStopTimestamp(
 RESULT Audio_Stream_SyncTimestamp(const int32_t sound_id, const double timestamp)
 {
     FAIL_IF(!M_IsStream(sound_id), "stream %d is not open", sound_id);
-    const double drift = Audio_Stream_GetTimestamp(sound_id) - timestamp;
-    if (drift > AUDIO_DRIFT_THRESHOLD || drift < -AUDIO_DRIFT_THRESHOLD) {
-        return Audio_Stream_SeekTimestamp(sound_id, timestamp);
+    // The stream's position is what has been read from the disc, which runs
+    // ahead of what is heard by the AICA's buffer (some 0.4 to 0.7 s). Held to
+    // the clock as it is, every call of a cutscene's frame sent the reading
+    // back and repeated the last bit of sound: the stutter, and the swell of
+    // volume from the ADPCM restarting in mid-wave.
+    const M_STREAM *const s = &m_Streams[sound_id];
+    const double buffered =
+        (double)M_STREAM_BUFFER * 2.0 / s->channels / s->rate;
+    const double ahead = Audio_Stream_GetTimestamp(sound_id) - timestamp;
+    // A seek restarts each channel's ADPCM predictor on data it was not
+    // following: the level swells and the channels part. So it is left to a
+    // clock that is far off (a cutscene running slower than its sound is not
+    // worth that), not the 0.2 s that suits the desktop's mixer.
+    if (ahead > buffered + M_SYNC_TOLERANCE || ahead < -M_SYNC_TOLERANCE) {
+        printf("[sync] seek: read %.2f s ahead of the clock\n", ahead);
+        // Lands in the buffer's middle, where reading normally stays.
+        return Audio_Stream_SeekTimestamp(
+            sound_id, timestamp + buffered * 0.5);
     }
     return OK;
 }
@@ -1299,4 +1360,9 @@ void Audio_SetReverbType(const uint8_t reverb_type)
 uint8_t Audio_GetReverbType(void)
 {
     return m_Reverb;
+}
+
+double DC_Audio_FilmSilenceSeconds(void)
+{
+    return (double)m_FilmSilence / 44100.0;
 }

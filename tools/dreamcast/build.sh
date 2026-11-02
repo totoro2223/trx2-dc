@@ -17,6 +17,12 @@ BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE"
 # garbage as the console has it (dc_strict option); DC_TEST_HANG=N also hangs
 # the game at frame N, to try the hang report.
 [ "${DC_STRICT:-0}" = 1 ] && BUILD_DIR="$ROOT/build/dc-$BUILD_TYPE-strict"
+# DC_ISO_DMA=1 reads the GD-ROM by DMA (dc_iso_dma), DC_BOXES=1 puts the room
+# boxes and numbers on the d-pad's up (dc_debug_boxes): each in a directory of
+# its own.
+[ "${DC_ISO_DMA:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-dma"
+[ "${DC_BOXES:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-boxes"
+[ "${DC_MAGENTA:-0}" = 1 ] && BUILD_DIR="$BUILD_DIR-magenta"
 CROSS="$ROOT/build/dc-cross.ini"
 
 win() { cygpath -m "$1"; }
@@ -97,6 +103,13 @@ want=false
 if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk '$1 == "dc_probes" { print $2 }')" != "$want" ]; then
   meson configure "$BUILD_DIR" -Ddc_probes="$want"
 fi
+for opt in "dc_iso_dma:${DC_ISO_DMA:-0}" "dc_debug_boxes:${DC_BOXES:-0}" "dc_bg_magenta:${DC_MAGENTA:-0}"; do
+  want=false
+  [ "${opt#*:}" = 1 ] && want=true
+  if [ "$(meson configure "$BUILD_DIR" 2>/dev/null | awk -v o="${opt%:*}" '$1 == o { print $2 }')" != "$want" ]; then
+    meson configure "$BUILD_DIR" "-D${opt%:*}=$want"
+  fi
+done
 if [ "${DC_STRICT:-0}" = 1 ]; then
   meson configure "$BUILD_DIR" -Ddc_strict=true -Ddc_test_hang="${DC_TEST_HANG:-0}"
 fi

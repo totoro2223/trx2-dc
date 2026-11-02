@@ -35,7 +35,11 @@ void Log_Init(const char *path, const LOG_LEVEL min_level)
         fclose(m_LogHandle);
         m_LogHandle = nullptr;
     }
+#if defined(TRX_DC_QUIET)
+    m_LogLevel = LOG_LEVEL_WARNING;
+#else
     m_LogLevel = min_level;
+#endif
     m_UseAnsiColors = Log_ShouldUseAnsiColors();
     if (path != nullptr) {
         m_LogHandle = fopen(path, "w");

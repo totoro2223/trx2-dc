@@ -95,6 +95,14 @@ static bool m_QuickLoadPressed = false;
 // L + R + B: the next thing on the VMU's screen (vmu_hud.c).
 static bool m_VMUModeHeld = false;
 static bool m_VMUModePressed = false;
+// L + R + Left: the next way to cut out the colour-keyed faces (pvr.c, a
+// test of the console's punch-through).
+static bool m_PtHeld = false;
+static bool m_PtPressed = false;
+// L + R + Right: the next test of what blacks out a room under water
+// (batcher.c).
+static bool m_WaterHeld = false;
+static bool m_WaterPressed = false;
 // L + R + Up: the debug bounding boxes on and off.
 static bool m_BoxesHeld = false;
 static bool m_BoxesPressed = false;
@@ -305,6 +313,16 @@ static void M_PollController(void)
         m_VMUModePressed = true;
     }
     m_VMUModeHeld = vmu_mode;
+    const bool pt_variant = chord && (b & CONT_DPAD_LEFT);
+    if (pt_variant && !m_PtHeld) {
+        m_PtPressed = true;
+    }
+    m_PtHeld = pt_variant;
+    const bool water_debug = chord && (b & CONT_DPAD_RIGHT);
+    if (water_debug && !m_WaterHeld) {
+        m_WaterPressed = true;
+    }
+    m_WaterHeld = water_debug;
     const bool boxes = chord && (b & CONT_DPAD_UP);
     if (boxes && !m_BoxesHeld) {
         m_BoxesPressed = true;
@@ -370,6 +388,22 @@ bool DC_Input_TakeVMUMode(void)
 {
     const bool pressed = m_VMUModePressed;
     m_VMUModePressed = false;
+    return pressed;
+}
+
+// Whether L + R + Right was pressed since last asked.
+bool DC_Input_TakeWaterDebug(void)
+{
+    const bool pressed = m_WaterPressed;
+    m_WaterPressed = false;
+    return pressed;
+}
+
+// Whether L + R + Left was pressed since last asked.
+bool DC_Input_TakePtVariant(void)
+{
+    const bool pressed = m_PtPressed;
+    m_PtPressed = false;
     return pressed;
 }
 

@@ -104,6 +104,7 @@ void DC_Loading_Begin(const uint64_t total_bytes, const char *const picture)
 {
     // Read before the disc reads are watched: reading it would draw again.
     DC_Crumb(DC_CRUMB_LOADING, "loading");
+    DC_Crumb_ShowPrevious();
     M_GetVersion();
     DC_PVR_SetPicture(picture);
     m_Priv = (typeof(m_Priv)) {

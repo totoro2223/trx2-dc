@@ -1,4 +1,5 @@
 #include <trx/config.h>
+#include <trx/debug.h>
 #include <trx/core/benchmark.h>
 #include <trx/core/file.h>
 #include <trx/core/filesystem.h>
@@ -333,10 +334,13 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
     #endif
     // The previous level's data goes before the injections are read: both at
     // once do not fit, and a restart or a level change ran out of memory.
+    DC_TRAIL("load: game buffer reset...");
     GameBuf_Reset();
+    DC_TRAIL("load: game buffer reset");
     // Lua's garbage is spread over what the previous level held; letting it
     // go leaves room for the next level's big blocks.
     LUA_DC_CollectGarbage();
+    DC_TRAIL("load: garbage collected");
     {
         // The room the level loads into: the largest free span is what
         // counts, and should stay near the whole of what is free.
@@ -374,7 +378,9 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
     DC_Loading_Begin(M_GetLoadSize(level), picture);
 #endif
 
+    DC_TRAIL("load: injections...");
     Inject_InitLevel(level, INJECTION_MODE_FULL);
+    DC_TRAIL("load: injections read");
 #if defined(__DREAMCAST__) && defined(TRX_DC_WATCHDOG)
     {
         // What the injections take while the level reads beside them: the
@@ -388,11 +394,15 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
     }
 #endif
     const LEVEL_FORMAT_LOADER *loader = nullptr;
+    DC_TRAIL("load: level file...");
     const RESULT result = Level_Format_LoadFromFile(level, &loader);
+    DC_TRAIL("load: level file read");
     if (IS_OK(result)) {
         M_CompleteSetup(loader, level);
+        DC_TRAIL("load: setup done");
     }
     Inject_Cleanup();
+    DC_TRAIL("load: injections cleaned");
 
 #if defined(__DREAMCAST__)
     DC_Loading_End();

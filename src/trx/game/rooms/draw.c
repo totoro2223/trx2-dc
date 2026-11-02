@@ -774,6 +774,7 @@ static void M_DrawSingleRoom(const ROOM *const room)
         DC_PROBE(DC_PROBE_S_ROOMGEO, Output_DrawRoom(room, false));
     }
 #if defined(__DREAMCAST__)
+    DC_Debug_RoomLabel(room, g_WMatrixPtr);
     if (bind->occluded) {
         DC_Debug_RoomBox(room, g_WMatrixPtr, 0xC0FF00FFu);
     }

@@ -36,6 +36,17 @@ rm -f "$PREFIX/lib/libpcre2-8.a"
 kos-ar rcs "$PREFIX/lib/libpcre2-8.a" "${OBJS[@]}"
 cp "$BUILD/pcre2.h" "$PREFIX/include/"
 
+# pl_mpeg.h (MIT), the Dreamcast fork of kos-ports' libmpeg (MPEG-1 video
+# with the SH4 routines), for the films (src/platform/dreamcast/mpeg1.c). Only
+# the header is used: the library's own player takes the screen over.
+MPEG_TAR="$DEPS/dl/libmpeg-2.0.0.tar.gz"
+if [ -f "$MPEG_TAR" ]; then
+  MPEG_BUILD="$DEPS/build/libmpeg"
+  rm -rf "$MPEG_BUILD" && mkdir -p "$MPEG_BUILD"
+  tar xzf "$MPEG_TAR" -C "$MPEG_BUILD"
+  cp "$MPEG_BUILD"/pl_mpeg-2.0.0/pl_mpeg.h "$PREFIX/include/"
+fi
+
 # luac for this PC, configured as kos-ports configures the Dreamcast's Lua
 # (LUA_32BITS is all it changes), so that the build can embed the engine's
 # scripts as bytecode the console loads as it is.

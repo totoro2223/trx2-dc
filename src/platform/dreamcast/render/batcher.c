@@ -27,6 +27,7 @@
 #include <trx/core/memory.h>
 #include <trx/core/vector.h>
 #include <trx/debug.h>
+#include <trx/game/console.h>
 #include <trx/game/const.h>
 #include <trx/game/lara/common.h>
 #include <trx/game/output.h>
@@ -36,6 +37,7 @@
 #include <trx/game/output/sources/objects.h> // g_DC_FrameCount
 #include <trx/game/output/textures.h>
 #include <trx/game/output/utils.h>
+#include <trx/game/rooms/common.h>
 #include <trx/game/output/vertex_range.h>
 #include <trx/game/viewport.h>
 #include <trx/version.h>
@@ -52,6 +54,7 @@
 #include <float.h>
 #include <malloc.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <uthash.h>
@@ -178,6 +181,12 @@ typedef struct M_BINDING {
     UT_hash_handle hh;
 } M_BINDING;
 
+// TEST (L + R + Right steps through it): 0 as it is; 1 the caustics of the
+// rooms under water off; 2 the lighting off, so that every vertex is white.
+// A room under water that comes out black on a console tells which it is.
+static int32_t m_WaterDebug = 0;
+bool DC_Input_TakeWaterDebug(void);
+
 // TEMP: boxes of the rooms and their chunks, drawn over the scene while the
 // d-pad's up has them on (DC_Debug_DrawRoomBoxes).
 #define M_DEBUG_BOXES 480
@@ -189,6 +198,16 @@ typedef struct {
 } M_DEBUG_BOX;
 static M_DEBUG_BOX m_DebugBoxList[M_DEBUG_BOXES];
 static int32_t m_DebugBoxCount = 0;
+// The room numbers to write: where (the room's middle, in the room's matrix)
+// and what.
+#define M_DEBUG_LABELS 64
+typedef struct {
+    MATRIX w;
+    float at[3];
+    int32_t id;
+} M_DEBUG_LABEL;
+static M_DEBUG_LABEL m_DebugLabelList[M_DEBUG_LABELS];
+static int32_t m_DebugLabelCount = 0;
 static bool m_DebugRooms = false;
 // TEMP: R + d-pad up turns the occlusion (rays, chunks, rooms, objects) off and
 // on, to see a view with and without it.
@@ -275,8 +294,8 @@ _Static_assert(
 #define M_SOFT_REACH 3072.0f
 // How much of a face's colour the shadow takes away, from a light at the end
 // of its reach to one up close: the nearer the light, the darker.
-#define M_SOFT_STRENGTH_MIN 0.6f
-#define M_SOFT_STRENGTH_MAX 0.9f
+#define M_SOFT_STRENGTH_MIN 0.7f
+#define M_SOFT_STRENGTH_MAX 0.95f
 // How strong a shadow is without a light near, as a light's weight.
 #define M_SOFT_NO_LIGHT_WEIGHT 0.3f
 // The fade length of a shadow without a light of its own: about Lara's
@@ -1192,7 +1211,8 @@ static void M_PrepareInstanceLight(
     out->adder = 0.0f;
     out->num_rgb = 0;
     out->tr3 = g_TRVersion == 3;
-    out->caustics = inst->water_effect == 1 && g_TRVersion <= 2;
+    out->caustics =
+        inst->water_effect == 1 && g_TRVersion <= 2 && m_WaterDebug != 1;
     out->water_scheme = -1;
     if (g_TRVersion == 3 && inst->water_effect >= 2 && bind != nullptr
         && (bind->flags_or & (VERT_MOVE | VERT_GLOW)) != 0) {
@@ -5660,7 +5680,14 @@ static void M_PrepareFrame(void)
         m_Frame.near_z = -1.0e30f;
     }
 
-    m_Frame.lighting = general->lighting_enabled != 0;
+    if (DC_Input_TakeWaterDebug()) {
+        static const char *const names[3] = {
+            "0 normal", "1 no caustics", "2 no lighting",
+        };
+        m_WaterDebug = (m_WaterDebug + 1) % 3;
+        Console_Info("Water test: %s", names[m_WaterDebug]);
+    }
+    m_Frame.lighting = general->lighting_enabled != 0 && m_WaterDebug != 2;
     m_Frame.cel = M_CelOn();
     m_Frame.room_cel = g_Config.rendering.dc_room_cel;
     m_Frame.bump = g_Config.rendering.dc_bump_mapping
@@ -7632,13 +7659,98 @@ void DC_Debug_RoomBox(
     M_DebugBox(w, lo, hi, argb);
 }
 
-// In a build with the probes (build.sh DC_PROBES=1) the d-pad's up switches the
-// boxes on and off (only with a level in view), and while they are on they are
+void DC_Debug_RoomLabel(const ROOM *const room, const MATRIX *const w)
+{
+    if (!m_DebugRooms || room == nullptr
+        || m_DebugLabelCount >= M_DEBUG_LABELS) {
+        return;
+    }
+    M_DEBUG_LABEL *const label = &m_DebugLabelList[m_DebugLabelCount++];
+    label->w = *w;
+    label->at[0] = room->size.x * WALL_L * 0.5f;
+    label->at[1] = (room->max_ceiling + room->min_floor) * 0.5f - room->pos.y;
+    label->at[2] = room->size.z * WALL_L * 0.5f;
+    label->id = Room_GetIndex(room);
+}
+
+// A seven-segment digit on the screen (x, y its top left corner, in pixels of
+// the 640x480 screen), as flat quads in front of everything.
+static void M_DebugDigit(
+    const float x, const float y, const int32_t digit, const uint32_t argb)
+{
+    // Segments a to g: top, top right, bottom right, bottom, bottom left,
+    // top left, middle.
+    static const uint8_t segments[10] = {
+        0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F,
+    };
+    // Per segment: x, y, width, height in a 10x18 cell.
+    static const uint8_t rect[7][4] = {
+        { 1, 0, 8, 2 }, { 8, 1, 2, 8 }, { 8, 9, 2, 8 }, { 1, 16, 8, 2 },
+        { 0, 9, 2, 8 }, { 0, 1, 2, 8 }, { 1, 8, 8, 2 },
+    };
+    const float k = m_Frame.screen_scale;
+    for (int32_t i = 0; i < 7; i++) {
+        if (!(segments[digit] & (1 << i))) {
+            continue;
+        }
+        const float x0 = (x + rect[i][0]) * k;
+        const float y0 = (y + rect[i][1]) * k;
+        const float x1 = x0 + rect[i][2] * k;
+        const float y1 = y0 + rect[i][3] * k;
+        DC_PVR_VERTEX v[4] = {};
+        v[0].x = x0;
+        v[0].y = y0;
+        v[1].x = x1;
+        v[1].y = y0;
+        v[2].x = x0;
+        v[2].y = y1;
+        v[3].x = x1;
+        v[3].y = y1;
+        for (int32_t j = 0; j < 4; j++) {
+            v[j].z = M_Depth(1.0f);
+            v[j].argb = argb;
+        }
+        DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
+    }
+}
+
+// The room's number, centred on where the room's middle falls on the screen.
+static void M_DebugNumber(const M_DEBUG_LABEL *const label)
+{
+    float mv[4][4];
+    float scale;
+    M_ModelView(&label->w, mv, &scale);
+    float p[3];
+    for (int32_t r = 0; r < 3; r++) {
+        p[r] = mv[0][r] * label->at[0] + mv[1][r] * label->at[1]
+            + mv[2][r] * label->at[2] + mv[3][r];
+    }
+    if (p[2] < m_Frame.near_z) {
+        return;
+    }
+    const float inv = 1.0f / p[2];
+    // In the 640x480 screen's pixels.
+    const float sx = m_Frame.center_x + m_Frame.proj_x * p[0] * inv;
+    const float sy = m_Frame.center_y + m_Frame.proj_y * p[1] * inv;
+    char text[8];
+    const int32_t n = snprintf(text, sizeof(text), "%d", (int)label->id);
+    const float left = sx - n * 6.0f;
+    for (int32_t i = 0; i < n; i++) {
+        if (text[i] >= '0' && text[i] <= '9') {
+            // A dark shadow under the white digit keeps it readable.
+            M_DebugDigit(left + i * 12.0f + 1.0f, sy - 8.0f, text[i] - '0', 0xFF000000u);
+            M_DebugDigit(left + i * 12.0f, sy - 9.0f, text[i] - '0', 0xFFFFFFFFu);
+        }
+    }
+}
+
+// In a build with the probes (build.sh DC_PROBES=1) or the boxes (DC_BOXES=1)
+// the d-pad's up switches the boxes on and off (only with a level in view), and while they are on they are
 // drawn over the scene, once the passes are done: green the chunks drawn, red those the walls hide, cyan a room with no
 // chunks, magenta a room the portals' walls hide.
 void DC_Debug_DrawRoomBoxes(void)
 {
-#if defined(TRX_DC_PROBES)
+#if defined(TRX_DC_PROBES) || defined(TRX_DC_BOXES)
     static bool was_up = false;
     const maple_device_t *const pad = maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
     const cont_state_t *const state =
@@ -7683,7 +7795,13 @@ void DC_Debug_DrawRoomBoxes(void)
             }
         }
     }
+    if (m_DebugRooms) {
+        for (int32_t n = 0; n < m_DebugLabelCount; n++) {
+            M_DebugNumber(&m_DebugLabelList[n]);
+        }
+    }
     m_DebugBoxCount = 0;
+    m_DebugLabelCount = 0;
 }
 
 void DC_Shadow_DrawVolumes(void)

@@ -1,4 +1,5 @@
 #include <trx/game/lara/cheat_keys.h>
+#include <trx/debug.h>
 
 #include <trx/game/game.h>
 #include <trx/game/gun.h>
@@ -131,6 +132,7 @@ static LARA_STATE_SLOT M_GetBackstepState(void)
 
 #if defined(__DREAMCAST__)
 bool DC_Input_TakeEndLevelCombo(void);
+void DC_Trail(const char *text);
 #endif
 
 void Lara_Cheat_CheckKeys(void)
@@ -139,6 +141,7 @@ void Lara_Cheat_CheckKeys(void)
     // L, R, X and Y pressed together: the end of the dance, without it, and
     // in Lara's home too, which the dance leaves alone.
     if (DC_Input_TakeEndLevelCombo()) {
+        DC_Trail("combo: end level");
         M_CompleteLevel();
         return;
     }

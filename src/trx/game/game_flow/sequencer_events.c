@@ -27,6 +27,15 @@
 #include <trx/game/ui/menu.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <trx/game/output/sources/objects.h>
+
+#include <platform/dreamcast/dc_level_heap.h>
+
+int32_t LUA_DC_CollectGarbage(void);
+void DC_Trail(const char *text);
+#endif
+
 #define M_GF_HANDLER(name)                                                     \
     static RESULT name(                                                        \
         const GF_LEVEL *const level, const GF_SEQUENCE *const sequence,        \
@@ -113,7 +122,9 @@ M_GF_HANDLER(M_HandleLevelComplete)
         *out_cmd = (GF_COMMAND) { .action = GF_NOOP };
         return OK;
     }
+    DC_TRAIL("complete: begin");
     M_FinishLevelBasic();
+    DC_TRAIL("complete: level finished");
     const GF_LEVEL *const current_level = Game_GetCurrentLevel();
     const GF_LEVEL *const next_hub_level = Hub_GetNextLevel();
     const GF_LEVEL *const next_level = next_hub_level != nullptr
@@ -121,11 +132,15 @@ M_GF_HANDLER(M_HandleLevelComplete)
         : M_GetCanonicalNextLevel(current_level);
 
     if (next_level == nullptr) {
+        DC_TRAIL("complete: no next level");
         *out_cmd = (GF_COMMAND) { .action = GF_NOOP };
         return OK;
     }
+    DC_TRAIL("complete: next is %d", (int)next_level->num);
     SG_Resume_StoreGameToEntry(next_level);
+    DC_TRAIL("complete: game stored");
     GF_InventoryModifier_ApplyHubReset(current_level, next_level);
+    DC_TRAIL("complete: hub reset done");
     RESUME_INFO *const next_resume = SG_Resume_GetEntry(next_level);
     if (next_resume != nullptr) {
         next_resume->prev_level = current_level->num;
@@ -222,6 +237,9 @@ M_GF_HANDLER(M_HandlePlayLevel)
         gf_cmd = GF_RunGame(level, seq_ctx);
     }
     if (gf_cmd.action == GF_LEVEL_COMPLETE) {
+#if defined(__DREAMCAST__)
+        DC_Trail("loop_game returned: level complete");
+#endif
         gf_cmd.action = GF_NOOP;
     }
     *out_cmd = gf_cmd;
@@ -453,6 +471,20 @@ M_GF_HANDLER(M_HandleInventoryModifier)
     return OK;
 }
 
+#if defined(__DREAMCAST__)
+// TEMP: the game's memory at a step of the results screen, in the trail.
+static void M_TrailHeap(const char *const label)
+{
+    DC_LEVEL_HEAP_STATS heap;
+    DC_LevelHeap_GetStats(&heap);
+    char text[96];
+    snprintf(
+        text, sizeof(text), "%s used %dK peak %dK free span %dK", label,
+        heap.used_kb, heap.peak_kb, heap.largest_free_kb);
+    DC_Trail(text);
+}
+#endif
+
 M_GF_HANDLER(M_HandleLevelStats)
 {
     GF_COMMAND gf_cmd = { .action = GF_NOOP };
@@ -461,12 +493,37 @@ M_GF_HANDLER(M_HandleLevelStats)
         return OK;
     }
 
+#if defined(__DREAMCAST__)
+    // TEMP: the results screen stops the console for good (no restart, no
+    // error: the PowerVR or the interface draw hangs inside its frame), so the
+    // game goes straight to the next level until that is found.
+    *out_cmd = gf_cmd;
+    return OK;
+#endif
+#if defined(__DREAMCAST__)
+    // The results screen is built with the level still in memory, which is
+    // nearly all the heap there is: what can be built again later goes, and the
+    // scripts' garbage is collected, as when a level loads.
+    DC_Trail("stats: begin");
+    M_TrailHeap("stats: begin heap");
+    OutputSource_Objects_EvictUnused(0);
+    DC_Trail("stats: meshes evicted");
+    LUA_DC_CollectGarbage();
+    LUA_DC_CollectGarbage();
+    DC_Trail("stats: after gc");
+#endif
     PHASE *const phase = Phase_Stats_Create((PHASE_STATS_ARGS) {
         .level_num = -1,
         .show_final_stats = false,
         .use_bare_style = g_Config.ui.stats.style == STATS_STYLE_BARE,
     });
+#if defined(__DREAMCAST__)
+    M_TrailHeap("stats: created heap");
+#endif
     gf_cmd = PhaseExecutor_Run(phase);
+#if defined(__DREAMCAST__)
+    M_TrailHeap("stats: done heap");
+#endif
     Phase_Stats_Destroy(phase);
     *out_cmd = gf_cmd;
     return OK;

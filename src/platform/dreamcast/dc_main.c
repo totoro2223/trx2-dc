@@ -59,6 +59,9 @@ static void M_Recover(
     printf(
         "TRX: exception %04x at %08lx: starting the disc over\n",
         (unsigned)code, (unsigned long)context->pc);
+    DC_Crumb_Exception(
+        (unsigned)code, (unsigned long)context->pc, (unsigned long)context->pr,
+        (unsigned long)context->r[15], *(volatile unsigned long *)0xFF00000Cu);
     if (DC_Games_Recover()) {
         arch_reboot();
     }
@@ -69,7 +72,10 @@ static void M_InstallRecovery(void)
 {
     static const irq_t codes[] = {
         EXC_ILLEGAL_INSTR, EXC_SLOT_ILLEGAL_INSTR, EXC_DATA_ADDRESS_READ,
-        EXC_DATA_ADDRESS_WRITE, EXC_TRAPA,
+        EXC_DATA_ADDRESS_WRITE, EXC_TRAPA, EXC_DMA_DMAE, EXC_GENERAL_FPU,
+        EXC_SLOT_FPU, EXC_FPU, EXC_NMI, EXC_DTLB_MISS_READ, EXC_DTLB_MISS_WRITE,
+        EXC_DTLB_PV_READ, EXC_DTLB_PV_WRITE, EXC_ITLB_PV,
+        EXC_INITIAL_PAGE_WRITE,
     };
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
         irq_set_handler(codes[i], M_Recover, nullptr);
@@ -284,6 +290,16 @@ static int M_RunGame(int argc, char *argv[])
         }
         fclose(leave);
     }
+    // A test disc that completes the level after n frames (make_disc.sh's
+    // TRX_DC_COMPLETE).
+    FILE *const complete = M_Open("COMPLETE.TXT");
+    if (complete != nullptr) {
+        int number = 0;
+        if (fscanf(complete, "%d", &number) == 1) {
+            g_DC_TestComplete = number;
+        }
+        fclose(complete);
+    }
     // A test disc that saves and loads games (make_disc.sh's TRX_DC_SAVE).
     FILE *const saves = M_Open("SAVE.TXT");
     if (saves != nullptr) {
@@ -425,6 +441,7 @@ int __wrap_main(int argc, char *argv[])
     int result;
     while (true) {
         M_SetupEnvironment();
+        DC_Crumb_ReportLast();
         printf("TRX: Dreamcast platform layer ready\n");
         result = M_RunGame(argc, argv);
         // The title or the level list asked for another game: it starts here,

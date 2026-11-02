@@ -41,6 +41,8 @@ void DC_Debug_DrawRoomBoxes(void);
 void DC_Debug_RoomBox(const ROOM *room, const MATRIX *w, uint32_t argb);
 // The same for any box (lo, hi in the space of w): an object the walls hide.
 void DC_Debug_Box(const MATRIX *w, const float lo[3], const float hi[3], uint32_t argb);
+// Puts the room's number over its box while the boxes are on.
+void DC_Debug_RoomLabel(const ROOM *room, const MATRIX *w);
 
 // Draws the shadow map from the casters the last frame kept. Goes before the
 // frame starts.

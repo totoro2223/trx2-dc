@@ -59,6 +59,8 @@ extern int32_t g_DC_TestGive;
 // A test disc leaves the game this many frames into the level (the console
 // then starts the disc over).
 extern int32_t g_DC_TestExit;
+// A test disc completes the level this many frames into it (0: never).
+extern int32_t g_DC_TestComplete;
 // A test disc saves the game to the next slot every this many frames, and
 // loads the first one back after each fifth (0: never).
 extern int32_t g_DC_TestSave;

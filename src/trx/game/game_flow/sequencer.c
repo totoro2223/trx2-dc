@@ -264,6 +264,7 @@ RESULT GF_InterpretSequence(
 
     // load the level
     const GF_SEQUENCE *const sequence = &level->sequence;
+    DC_TRAIL("seq: level %d, preload events", (int)level->num);
     for (int32_t i = 0; i < sequence->length; i++) {
         if (M_IsPreLoadEvent(sequence->events[i].type)) {
             GF_COMMAND pre_cmd;
@@ -271,16 +272,40 @@ RESULT GF_InterpretSequence(
                 M_RunEvent(level, sequence, i, seq_ctx, seq_ctx_arg, &pre_cmd));
         }
     }
+    // The films the sequence opens with play before the level loads, as on the
+    // discs: the Dreamcast has no memory to spare for a film and a level at
+    // once (the player can skip them with Start).
+    uint64_t films_played = 0;
+#if defined(__DREAMCAST__)
+    if (seq_ctx != GFSC_STORY || level->type == GFL_CUTSCENE) {
+        for (int32_t i = 0; i < sequence->length && i < 64; i++) {
+            if (sequence->events[i].type == GFS_LOOP_GAME) {
+                break;
+            }
+            if (sequence->events[i].type != GFS_PLAY_FMV) {
+                continue;
+            }
+            GF_COMMAND film_cmd;
+            MUST(M_RunEvent(
+                level, sequence, i, seq_ctx, seq_ctx_arg, &film_cmd));
+            films_played |= UINT64_C(1) << i;
+        }
+    }
+#endif
+    DC_TRAIL("seq: films done, loading");
     if (seq_ctx != GFSC_STORY || level->type == GFL_CUTSCENE) {
         EXIT_ON_FAIL(
             Level_Initialise(level, seq_ctx), "TRX cannot load the level");
     }
+    DC_TRAIL("seq: level in memory");
 
     for (int32_t i = 0; i < sequence->length; i++) {
         const GF_SEQUENCE_EVENT *const event = &sequence->events[i];
-        if (M_IsPreLoadEvent(event->type)) {
+        if (M_IsPreLoadEvent(event->type)
+            || (i < 64 && ((films_played >> i) & 1))) {
             continue;
         }
+        DC_TRAIL("seq: event %d type %d", (int)i, (int)event->type);
         MUST(M_RunEvent(level, sequence, i, seq_ctx, seq_ctx_arg, &gf_cmd));
         if (gf_cmd.action != GF_NOOP) {
             *out_cmd = gf_cmd;

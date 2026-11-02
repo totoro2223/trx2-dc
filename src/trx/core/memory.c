@@ -89,7 +89,14 @@ void *Memory_Realloc(void *const memory, const size_t size)
         return Memory_Alloc(size);
     }
     if (DC_LevelHeap_Owns(memory)) {
-        void *const result = DC_LevelHeap_Realloc(memory, size);
+        void *result = DC_LevelHeap_Realloc(memory, size);
+        // Neither the region nor the heap had room for the grown block and the
+        // old one together (a quick save's buffer doubling in TR3): what can
+        // be built again is let go, as the other paths do, and it is tried
+        // once more.
+        if (result == nullptr && Memory_HandleLowMemory()) {
+            result = DC_LevelHeap_Realloc(memory, size);
+        }
         ASSERT(result != nullptr);
         return result;
     }

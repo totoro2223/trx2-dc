@@ -37,11 +37,12 @@
 #define M_HOLD_LENGTH (LOGIC_FPS * 3)
 #define M_BEEP_TONE 0x000065F0
 // The finder's three ranges and the seconds between beeps in each; further
-// than the last it keeps quiet. Calibrate by ear: the secret is a sector
-// (WALL_L, about 2.3 m) wide.
-#define M_NEAR (WALL_L * 3)
-#define M_MIDDLE (WALL_L * 8)
-#define M_FAR (WALL_L * 16)
+// than the last (10 m) it keeps quiet. Units to the metre as the statistics
+// count them.
+#define M_METRE 445
+#define M_NEAR (M_METRE * 3)
+#define M_MIDDLE (M_METRE * 6)
+#define M_FAR (M_METRE * 10)
 #define M_NEAR_PERIOD 2
 #define M_MIDDLE_PERIOD 3
 #define M_FAR_PERIOD 5
@@ -66,6 +67,9 @@ static int32_t m_Tick = 0;
 static int32_t m_Hold = 0;
 static int32_t m_NextBeep = 0;
 static int32_t m_BeepOff = -1;
+// Until when a beep keeps the finder on the screen, outside its own mode.
+static int32_t m_RadarUntil = 0;
+static bool m_RadarShown = false;
 
 static const GF_LEVEL *m_SpotsLevel = nullptr;
 static int32_t m_SpotCount = 0;
@@ -220,16 +224,19 @@ static bool M_FindNearest(
     return found;
 }
 
-static void M_RunFinder(maple_device_t *const vmu)
+// Beeps when a secret is within range, and draws the finder if asked. Says
+// whether it beeped.
+static bool M_RunFinder(maple_device_t *const vmu, const bool draw)
 {
     const ITEM *const lara = Lara_GetItem();
     if (lara == nullptr) {
-        return;
+        return false;
     }
     XYZ_32 target;
     int32_t distance;
     const bool found = M_FindNearest(lara->pos, &target, &distance);
 
+    bool beeped = false;
     if (found && distance <= M_FAR && m_Tick >= m_NextBeep && m_BeepOff < 0) {
         if (vmu_beep_raw(vmu, M_BEEP_TONE) != MAPLE_EAGAIN) {
             const int32_t period = distance <= M_NEAR ? M_NEAR_PERIOD
@@ -237,7 +244,11 @@ static void M_RunFinder(maple_device_t *const vmu)
                                                       : M_FAR_PERIOD;
             m_NextBeep = m_Tick + period * LOGIC_FPS;
             m_BeepOff = m_Tick + M_BEEP_LENGTH;
+            beeped = true;
         }
+    }
+    if (!draw) {
+        return beeped;
     }
 
     vmufb_t fb;
@@ -246,7 +257,7 @@ static void M_RunFinder(maple_device_t *const vmu)
         vmufb_print_string_into(
             &fb, nullptr, 0, 8, VMU_SCREEN_WIDTH, 16, 2, "NO SECRETS\n   LEFT");
         vmufb_present(&fb, vmu);
-        return;
+        return beeped;
     }
 
     // Up the screen is where the camera looks; a positive angle turns right.
@@ -279,6 +290,19 @@ static void M_RunFinder(maple_device_t *const vmu)
         vmufb_print_string_into(&fb, nullptr, 0, 0, 8, 6, 0, "DN");
     }
     vmufb_present(&fb, vmu);
+    return beeped;
+}
+
+// With any other screen up, a secret in range still beeps, and the finder
+// shows for a second with each beep.
+static void M_RunRadar(maple_device_t *const vmu)
+{
+    const bool showing = m_Tick < m_RadarUntil;
+    if (M_RunFinder(vmu, showing) && !showing) {
+        m_RadarUntil = m_Tick + LOGIC_FPS;
+        m_RadarShown = true;
+        M_RunFinder(vmu, true);
+    }
 }
 
 void DC_VMU_Hud_Update(void)
@@ -294,6 +318,8 @@ void DC_VMU_Hud_Update(void)
         Console_Info("%s", names[m_Mode]);
         m_Hold = 0;
         m_NextBeep = m_Tick;
+        m_RadarShown = false;
+        m_RadarUntil = 0;
         if (m_Mode == M_MODE_LOGO) {
             DC_VMU_DrawLogo();
         }
@@ -313,6 +339,24 @@ void DC_VMU_Hud_Update(void)
         return;
     }
 
+    if (m_Mode != M_MODE_FINDER) {
+        if (m_Tick % M_FINDER_PERIOD == 0) {
+            M_RunRadar(vmu);
+        }
+        if (m_RadarShown && m_Tick >= m_RadarUntil) {
+            // Back to the screen that was up.
+            m_RadarShown = false;
+            if (m_Mode == M_MODE_LOGO) {
+                DC_VMU_DrawLogo();
+            } else {
+                M_ShowStats(vmu);
+            }
+        }
+        if (m_RadarShown) {
+            return;
+        }
+    }
+
     switch (m_Mode) {
     case M_MODE_STATS:
         if (m_Tick % M_STATS_PERIOD == 0) {
@@ -321,7 +365,7 @@ void DC_VMU_Hud_Update(void)
         break;
     case M_MODE_FINDER:
         if (m_Tick % M_FINDER_PERIOD == 0) {
-            M_RunFinder(vmu);
+            M_RunFinder(vmu, true);
         }
         break;
     default:

@@ -20,6 +20,7 @@
 #include <trx/core/log.h>
 #include <trx/core/math/const.h>
 #include <trx/core/utils.h>
+#include <trx/game/console.h>
 #include <trx/game/output/const.h>
 #include <trx/game/level/texture_pages_16.h>
 #include <trx/game/output/sources/objects.h>
@@ -28,6 +29,7 @@
 #include <arch/timer.h>
 #include <dc/biosfont.h>
 #include <dc/pvr.h>
+#include <dc/sq.h>
 #include <dc/video.h>
 
 #include <malloc.h>
@@ -203,6 +205,27 @@ static pvr_ptr_t m_LoadingText = nullptr;
     (M_PICTURE_SIZE * M_PICTURE_SIZE * sizeof(uint16_t))
 static pvr_ptr_t m_Picture = nullptr;
 static pvr_ptr_t m_Video = nullptr;
+// How the colour-keyed faces are cut out (L + R + Left steps through the
+// ways, to try them on a console): 0 punch-through; 1 punch-through with the
+// header's alpha off; 2 punch-through cut at the lowest alpha; 3 blended
+// through the translucent list; 4 punch-through with the filter off. The
+// console's punch-through list left the keyed texels as black faces in every
+// way (DC build 909-911, TR1-TR3), where Flycast cuts them; blending cuts
+// them there, so it is the way the game starts with.
+#define M_PT_VARIANTS 5
+static int32_t m_PtVariant = 3;
+bool DC_Input_TakePtVariant(void);
+// The film's frame is a YUV422 texture the YUV converter fills from an MPEG-1
+// film's macroblocks (DC_PVR_SetVideoYUV) instead of a VQ one; the part of it
+// the picture covers is m_VideoU by m_VideoV.
+#define M_VIDEO_YUV_WIDTH 512
+#define M_VIDEO_YUV_HEIGHT 256
+static bool m_VideoYuv = false;
+// TEMP: the film's progress bars, the picture's and the sound's (0 to 1);
+// below 0 for none.
+static float m_FilmBars[2] = { -1.0f, -1.0f };
+static float m_VideoU = 1.0f;
+static float m_VideoV = 1.0f;
 
 static void M_ResetFrame(void);
 static void M_InitHardware(void);
@@ -426,6 +449,7 @@ static void M_SetLowRes(const bool low_res)
     m_LoadingText = nullptr;
     m_Picture = nullptr;
     m_Video = nullptr;
+    m_VideoYuv = false;
     M_BringUpHardware();
     m_LowRes = low_res;
     LOG_INFO("Screen now %s", low_res ? "320x240" : "640x480");
@@ -492,7 +516,11 @@ static void M_InitHardware(void)
         .vbuf_doublebuf_disabled = 0,
     };
     pvr_init(&params);
+#if defined(TRX_DC_BG_MAGENTA)
+    pvr_set_bg_color(1.0f, 0.0f, 1.0f);
+#else
     pvr_set_bg_color(0.0f, 0.0f, 0.0f);
+#endif
     pvr_set_zclip(M_BACKGROUND_PLANE_DEPTH);
     // Polygons inside a shadow volume keep this much of their colour.
     pvr_set_shadow_scale(true, M_SHADOW_SCALE);
@@ -950,6 +978,9 @@ void DC_PVR_DrawPicture(const float brightness)
 
 void DC_PVR_SetVideoFrame(const uint8_t *const frame)
 {
+    if (m_VideoYuv) {
+        return;
+    }
     if (m_Video == nullptr) {
         m_Video = pvr_mem_malloc(DC_PVR_VIDEO_FRAME_BYTES);
         if (m_Video == nullptr) {
@@ -965,6 +996,51 @@ void DC_PVR_SetVideoFrame(const uint8_t *const frame)
         DC_PVR_VIDEO_FRAME_BYTES / 2);
 }
 
+void DC_PVR_SetVideoYUV(
+    const uint32_t *macroblocks, const int32_t width, const int32_t height)
+{
+    if (m_Video == nullptr) {
+        m_Video = pvr_mem_malloc(M_VIDEO_YUV_WIDTH * M_VIDEO_YUV_HEIGHT * 2);
+        if (m_Video == nullptr) {
+            return;
+        }
+        m_VideoYuv = true;
+        m_HeaderGen++;
+    } else {
+        // The last frame may still be drawing from it.
+        pvr_wait_ready();
+    }
+    // Half a texel in from the picture's edge, so that the filter does not
+    // draw what the converter has not written.
+    m_VideoU = ((float)width - 0.5f) / M_VIDEO_YUV_WIDTH;
+    m_VideoV = ((float)height - 0.5f) / M_VIDEO_YUV_HEIGHT;
+    PVR_SET(PVR_YUV_ADDR, ((uint32_t)m_Video) & 0xffffff);
+    PVR_SET(
+        PVR_YUV_CFG,
+        (((M_VIDEO_YUV_HEIGHT / 16) - 1) << 8)
+            | ((M_VIDEO_YUV_WIDTH / 16) - 1));
+    PVR_GET(PVR_YUV_CFG);
+    // The converter wants rows of M_VIDEO_YUV_WIDTH / 16 macroblocks.
+    const int32_t across = (width + 15) / 16;
+    const int32_t down = (height + 15) / 16;
+    for (int32_t y = 0; y < down; y++) {
+        for (int32_t x = 0; x < across; x++, macroblocks += 96) {
+            sq_cpy((void *)PVR_TA_YUV_CONV, macroblocks, 384);
+        }
+        for (int32_t x = across; x < M_VIDEO_YUV_WIDTH / 16; x++) {
+            sq_set((void *)PVR_TA_YUV_CONV, 0, 384);
+        }
+    }
+    // The converter finishes a texture only when it has had all of its
+    // macroblocks; the rest of the rows complete it, or the next frame
+    // starts where this one stopped.
+    for (int32_t y = down; y < M_VIDEO_YUV_HEIGHT / 16; y++) {
+        for (int32_t x = 0; x < M_VIDEO_YUV_WIDTH / 16; x++) {
+            sq_set((void *)PVR_TA_YUV_CONV, 0, 384);
+        }
+    }
+}
+
 void DC_PVR_FreeVideo(void)
 {
     if (m_Video != nullptr) {
@@ -973,6 +1049,9 @@ void DC_PVR_FreeVideo(void)
         m_Video = nullptr;
         m_HeaderGen++;
     }
+    m_VideoYuv = false;
+    m_VideoU = 1.0f;
+    m_VideoV = 1.0f;
 }
 
 void DC_PVR_DrawVideo(
@@ -986,11 +1065,44 @@ void DC_PVR_DrawVideo(
     const uint32_t white = 0xFFFFFFFF;
     const DC_PVR_VERTEX v[4] = {
         { .x = x0, .y = y0, .z = z, .u = 0, .v = 0, .argb = white },
-        { .x = x1, .y = y0, .z = z, .u = 1, .v = 0, .argb = white },
-        { .x = x0, .y = y1, .z = z, .u = 0, .v = 1, .argb = white },
-        { .x = x1, .y = y1, .z = z, .u = 1, .v = 1, .argb = white },
+        { .x = x1, .y = y0, .z = z, .u = m_VideoU, .v = 0, .argb = white },
+        { .x = x0, .y = y1, .z = z, .u = 0, .v = m_VideoV, .argb = white },
+        { .x = x1, .y = y1, .z = z, .u = m_VideoU, .v = m_VideoV, .argb = white },
     };
     DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
+
+    // TEMP: how far the picture (blue) and the sound (green) have played.
+    if (m_FilmBars[0] >= 0.0f) {
+        DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_NO_TEXTURE, false);
+        for (int32_t i = 0; i < 2; i++) {
+            const float y = 440.0f + 16.0f * i;
+            const float zb = DC_PVR_Depth2D(0.6f);
+            const float fill = 20.0f + 600.0f * m_FilmBars[i];
+            const uint32_t track = 0xA0303030;
+            const uint32_t bar = i == 0 ? 0xFF3060FF : 0xFF30D030;
+            const DC_PVR_VERTEX t[4] = {
+                { .x = 20, .y = y, .z = zb, .argb = track },
+                { .x = 620, .y = y, .z = zb, .argb = track },
+                { .x = 20, .y = y + 10, .z = zb, .argb = track },
+                { .x = 620, .y = y + 10, .z = zb, .argb = track },
+            };
+            DC_PVR_Quad(&t[0], &t[1], &t[2], &t[3]);
+            const float zf = DC_PVR_Depth2D(0.7f);
+            const DC_PVR_VERTEX f[4] = {
+                { .x = 20, .y = y, .z = zf, .argb = bar },
+                { .x = fill, .y = y, .z = zf, .argb = bar },
+                { .x = 20, .y = y + 10, .z = zf, .argb = bar },
+                { .x = fill, .y = y + 10, .z = zf, .argb = bar },
+            };
+            DC_PVR_Quad(&f[0], &f[1], &f[2], &f[3]);
+        }
+    }
+}
+
+void DC_PVR_SetFilmBars(const float picture, const float sound)
+{
+    m_FilmBars[0] = picture;
+    m_FilmBars[1] = sound;
 }
 
 bool DC_PVR_HasPicture(void)
@@ -1216,11 +1328,32 @@ bool DC_PVR_IsLowRes(void)
 
 void DC_PVR_SetBackgroundColor(const float r, const float g, const float b)
 {
+#if defined(TRX_DC_BG_MAGENTA)
+    pvr_set_bg_color(1.0f, 0.0f, 1.0f);
+#else
     pvr_set_bg_color(r, g, b);
+#endif
+}
+
+static void M_NextPtVariant(void)
+{
+    static const char *const names[M_PT_VARIANTS] = {
+        "0 normal", "1 header alpha off", "2 cut at alpha 1",
+        "3 blended (translucent list)", "4 no filter",
+    };
+    m_PtVariant = (m_PtVariant + 1) % M_PT_VARIANTS;
+    PVR_SET(PVR_PT_ALPHA_REF, m_PtVariant == 2 ? 0x01 : 0x80);
+    m_HeaderGen++;
+    m_StateDirty = true;
+    Console_Info("Cutouts: %s", names[m_PtVariant]);
+    LOG_INFO("punch-through variant %s", names[m_PtVariant]);
 }
 
 static void M_ResetFrame(void)
 {
+    if (DC_Input_TakePtVariant()) {
+        M_NextPtVariant();
+    }
     M_Repartition();
     for (int32_t i = 0; i < M_LIST_COUNT; i++) {
         m_Lists[i].frame_written = 0;
@@ -1418,6 +1551,11 @@ void DC_PVR_EndFrame(void)
             (unsigned)(m_Lists[1].frame_written / 1024),
             (unsigned)(m_Lists[2].frame_written / 1024));
     }
+}
+
+bool DC_PVR_IsInFrame(void)
+{
+    return m_InFrame;
 }
 
 void DC_PVR_NextDepthLayer(void)
@@ -1768,8 +1906,11 @@ static pvr_ptr_t M_CurrentHalfPage(void)
 }
 
 void DC_PVR_SetState(
-    const DC_BLEND blend, const int32_t page, const bool depth_test)
+    DC_BLEND blend, const int32_t page, const bool depth_test)
 {
+    if (blend == DC_BLEND_PUNCH && m_PtVariant == 3) {
+        blend = DC_BLEND_ALPHA;
+    }
     m_Blend = blend;
     if (page == DC_PVR_SCREEN_CAPTURE) {
         m_Page = m_Capture.valid ? page : DC_PVR_NO_TEXTURE;
@@ -1853,6 +1994,13 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
             PVR_FILTER_BILINEAR);
         cxt.txr.env = PVR_TXRENV_MODULATE;
         cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
+    } else if (m_Page == DC_PVR_VIDEO && m_VideoYuv) {
+        pvr_poly_cxt_txr(
+            &cxt, list, PVR_TXRFMT_YUV422 | PVR_TXRFMT_NONTWIDDLED,
+            M_VIDEO_YUV_WIDTH, M_VIDEO_YUV_HEIGHT, m_Video,
+            PVR_FILTER_BILINEAR);
+        cxt.txr.env = PVR_TXRENV_MODULATE;
+        cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
     } else if (m_Page == DC_PVR_VIDEO) {
         pvr_poly_cxt_txr(
             &cxt, list,
@@ -1889,7 +2037,9 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
             half != nullptr ? TEXTURE_PAGE_WIDTH / 2 : TEXTURE_PAGE_WIDTH,
             half != nullptr ? TEXTURE_PAGE_HEIGHT / 2 : TEXTURE_PAGE_HEIGHT,
             half != nullptr ? half : m_Pages.ptr[m_Page],
-            m_Bilinear ? PVR_FILTER_BILINEAR : PVR_FILTER_NEAREST);
+            m_Bilinear && !(m_Blend == DC_BLEND_PUNCH && m_PtVariant == 4)
+                ? PVR_FILTER_BILINEAR
+                : PVR_FILTER_NEAREST);
         cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
         cxt.txr.uv_clamp = PVR_UVCLAMP_NONE;
         // The levels it keeps, picked by bilinear filtering alone (trilinear
@@ -1905,8 +2055,10 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
     cxt.gen.culling = PVR_CULLING_NONE;
     cxt.gen.specular = true;
     // (Without it the vertex alpha reads as whole.)
-    cxt.gen.alpha =
-        m_Blend >= DC_BLEND_ALPHA || m_Blend == DC_BLEND_PUNCH_SHADE;
+    // A console's punch-through polygons need it too: the hardware reads the
+    // texture's alpha for the cut only with it on (Flycast cuts either way).
+    cxt.gen.alpha = m_Blend != DC_BLEND_OPAQUE
+        && !(m_Blend == DC_BLEND_PUNCH && m_PtVariant == 1);
     cxt.depth.comparison =
         m_DepthTest ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
     // The field goes straight into the hardware's "depth write disable" bit,

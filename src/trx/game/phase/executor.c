@@ -5,6 +5,7 @@
 #include <trx/core/log.h>
 #include <trx/core/memory.h>
 #include <trx/core/strings.h>
+#include <trx/debug.h>
 #include <trx/game/clock.h>
 #include <trx/game/console/common.h>
 #include <trx/game/const.h>
@@ -176,6 +177,7 @@ static int32_t level_next = -1;
 static int32_t save_frames = 0;
 static int32_t saved = 0;
 static int32_t exit_frames = 0;
+static int32_t complete_frames = 0;
 static int32_t give_frames = 0;
 static int32_t fire_frames = 0;
 static int32_t frames = 0;
@@ -196,6 +198,7 @@ static void M_ReportWork(const Uint64 start)
         save_frames = 0;
         saved = 0;
         exit_frames = 0;
+        complete_frames = 0;
         give_frames = 0;
         fire_frames = 0;
         frames = 0;
@@ -239,6 +242,14 @@ static void M_ReportWork(const Uint64 start)
             LOG_ERROR("test: %s", result.message);
         }
         LUA_FreeResult(&result);
+    }
+    if (g_DC_TestComplete < 0 && ++complete_frames == -g_DC_TestComplete) {
+        // A failure on purpose, to see what the console shows of one.
+        ASSERT_FAIL_FMT("test: a failure on purpose at frame %d", (int)complete_frames);
+    }
+    if (g_DC_TestComplete > 0 && ++complete_frames == g_DC_TestComplete) {
+        LOG_INFO("test: the level is completed");
+        Game_SetIsLevelComplete(true);
     }
     if (g_DC_TestExit > 0 && ++exit_frames == g_DC_TestExit) {
         LOG_INFO("test: leaving the game");
@@ -460,7 +471,9 @@ static PHASE_CONTROL M_Control(PHASE *const phase)
         Output_DropPendingFog();
         const bool was_closed = UI_Takeover_IsAnyClosed();
         const PHASE_CONTROL control = phase->control(phase);
+        DC_TRACE("exec: phase control done");
         LUA_Tick();
+        DC_TRACE("exec: lua ticked");
         // Runs the phase again before the next draw when a script closes a
         // screen during the tick. Otherwise one frame shows the screen
         // without the script's layers.
@@ -490,9 +503,11 @@ static void M_Draw(PHASE *const phase)
 #else
     DC_PROBE(DC_PROBE_S_UI, UI_BeginScene());
 #endif
+    DC_TRACE("draw: scene begun");
     if (phase != nullptr && phase->draw != nullptr) {
         phase->draw(phase);
     }
+    DC_TRACE("draw: phase drew");
 
     DC_PROBE_START(probe_ui);
 #if defined(__DREAMCAST__)
@@ -511,11 +526,16 @@ static void M_Draw(PHASE *const phase)
 #endif
     DC_PROBE_STOP(DC_PROBE_S_UI, probe_ui);
 
+    DC_TRACE("draw: script ui ended");
     DC_PROBE(DC_PROBE_S_SCENE, Output_SwitchViewport(VIEWPORT_UI));
+    DC_TRACE("draw: viewport switched");
     DC_PROBE(DC_PROBE_S_UI, DC_PROBE(DC_PROBE_U_DRAW, UI_Draw()));
+    DC_TRACE("draw: ui drawn");
 
     DC_PROBE(DC_PROBE_S_OFLUSH, Output_Flush());
+    DC_TRACE("draw: flushed");
     DC_PROBE(DC_PROBE_S_SCENE, Output_EndScene());
+    DC_TRACE("draw: scene ended");
 
     TRX_GL_GpuTimer_Collect();
     if (Shell_GetArgs()->debug_render_performance) {
@@ -543,7 +563,9 @@ static void M_Draw(PHASE *const phase)
     if (!Output_IsHeadless()
         || TRX_GL_Context_GetScheduledScreenshotPath() != nullptr) {
         const Uint64 flip_start = SDL_GetPerformanceCounter();
+        DC_TRACE("draw: flipping");
         DC_PROBE(DC_PROBE_FLIP, Output_FlipScreen());
+        DC_TRACE("draw: flipped");
         m_LastFlipMs = (double)(SDL_GetPerformanceCounter() - flip_start)
             * 1000.0 / (double)SDL_GetPerformanceFrequency();
     } else {
@@ -608,10 +630,13 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
 #if defined(__DREAMCAST__)
         const Uint64 work_start = SDL_GetPerformanceCounter();
 #endif
+        DC_TRACE("exec: %d ticks due", (int)nframes);
         int32_t frame = 0;
         while (frame < nframes) {
             PHASE_CONTROL control;
+            DC_TRACE("exec: control");
             DC_PROBE(DC_PROBE_MCONTROL, control = M_Control(phase));
+            DC_TRACE("exec: controlled");
             if (control.action == PHASE_ACTION_END
                 || control.action == PHASE_ACTION_END_FAST) {
                 if (Shell_IsExiting()) {
@@ -657,7 +682,9 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
         Interpolation_SetRate(1.0);
         Output_SetTime(m_CurrentFrame);
         Output_SetControlFrame(true);
+        DC_TRACE("exec: draw");
         M_Draw(phase);
+        DC_TRACE("exec: drawn");
         Output_SetControlFrame(false);
         M_ReportWork(work_start);
     }

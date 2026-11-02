@@ -112,6 +112,14 @@ static CLIP M_GetClip(const OBJECT *const obj, const BOUNDS_16 *const bounds)
         : CLIP_FULLY_VISIBLE;
 }
 
+#if defined(__DREAMCAST__)
+// Past this depth (the fog starts at 12 blocks) an enemy loses the meshes of
+// no more than so many vertices and so small a radius.
+    #define M_FAR_ENEMY_DEPTH (14 * WALL_L)
+    #define M_FAR_ENEMY_MESH_VERTICES 8
+    #define M_FAR_ENEMY_MESH_RADIUS 300
+#endif
+
 static bool M_DrawInterpolatedObject(
     const OBJECT *const obj, const uint32_t mesh_mask,
     const int16_t *extra_rotation, const ANIM_FRAME *const frame1,
@@ -150,8 +158,24 @@ static bool M_DrawInterpolatedObject(
             .applies_base_rot = true,
             .skips_frame_offset = skips_frame_offset,
         });
+#if defined(__DREAMCAST__)
+    // Far enemies, already lost in the fog, leave out their smallest meshes
+    // (hands, feet): each one costs a staging, a transform and its polygons.
+    const bool far_enemy = obj->intelligent
+        && ((int32_t)g_MatrixPtr->_23 >> W2V_SHIFT) > M_FAR_ENEMY_DEPTH;
+#endif
     while (Anim_Walk_Next(&walk)) {
         const int32_t mesh_idx = walk.joint;
+#if defined(__DREAMCAST__)
+        if (far_enemy && mesh_swap == nullptr && mesh_idx != 0) {
+            const OBJECT_MESH *const mesh =
+                Object_GetMesh(obj->mesh_idx + mesh_idx);
+            if (mesh->num_vertices <= M_FAR_ENEMY_MESH_VERTICES
+                && mesh->radius < M_FAR_ENEMY_MESH_RADIUS) {
+                continue;
+            }
+        }
+#endif
         if ((mesh_mask & (1u << mesh_idx)) != 0) {
             Object_DrawMesh(obj->mesh_idx + mesh_idx, clip, walk.interpolated);
         } else if (mesh_swap != nullptr) {

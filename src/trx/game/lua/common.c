@@ -27,6 +27,7 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_lua_alloc.h>
+    #include <platform/dreamcast/dc_strict.h>
     #include <platform/dreamcast/render/pvr.h>
 #endif
 
@@ -636,6 +637,17 @@ int32_t LUA_DC_CollectGarbage(void)
 }
 #endif
 
+#if defined(__DREAMCAST__)
+// An error no script caught: the reason on the screen, and then Lua aborts.
+static int M_DC_LuaPanic(lua_State *const L)
+{
+    const char *const message = lua_tostring(L, -1);
+    DC_Crumb_Fatal(
+        "lua", 0, message != nullptr ? message : "Lua panic with no message");
+    return 0;
+}
+#endif
+
 RESULT LUA_Init(void)
 {
 #if defined(__DREAMCAST__)
@@ -652,6 +664,7 @@ RESULT LUA_Init(void)
     // What the state took before this goes back to the heap: the region
     // only takes what lies inside it.
     lua_setallocf(L, DC_LuaAlloc, nullptr);
+    lua_atpanic(L, M_DC_LuaPanic);
     // The UI scripts leave garbage every frame. By default the collector lets
     // the heap reach well over twice what is live before it starts, which the
     // Dreamcast's 16 MiB cannot carry. The generational collector sweeps each

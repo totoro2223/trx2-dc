@@ -1,4 +1,8 @@
 #include <trx/config.h>
+#include <trx/debug.h>
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_strict.h>
+#endif
 #include <trx/game/camera.h>
 #include <trx/game/clock.h>
 #include <trx/game/console.h>
@@ -116,8 +120,18 @@ GF_COMMAND Game_Control(const bool demo_mode)
     }
 
     if (Game_IsLevelComplete()) {
+#if defined(__DREAMCAST__)
+        DC_TraceOn(true);
+        DC_Trail("level complete: stopping sounds");
+#endif
         Sound_StopAll();
+#if defined(__DREAMCAST__)
+        DC_Trail("sounds stopped: stopping music");
+#endif
         Music_Stop();
+#if defined(__DREAMCAST__)
+        DC_Trail("music stopped");
+#endif
         return (GF_COMMAND) { .action = GF_LEVEL_COMPLETE };
     }
 
@@ -196,6 +210,7 @@ GF_COMMAND Game_Control(const bool demo_mode)
 #if defined(__DREAMCAST__)
                 if (!save_now) {
                     Console_Info("%s", "Quick saving... Do not remove the VMU");
+                    DC_VMU_ShowSaving();
                     m_QuickSaveWait = 2;
                 } else {
                     DC_Loading_SaveDone(Savegame_Save(slot));

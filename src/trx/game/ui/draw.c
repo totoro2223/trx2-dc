@@ -963,16 +963,20 @@ bool UI_AreScriptDrawsKept(void)
 
 void UI_Draw(void)
 {
+    DC_TRACE("ui draw: begin");
     SOFT_ASSERT(
         !OutputSource_UI_HasStaged() && !Output_Overlay_HasPending(),
         "a draw was staged outside the interface layers");
+    DC_TRACE("ui draw: checked");
     for (int32_t layer = 0; layer < UI_LAYER_NUMBER_OF; layer++) {
+        DC_TRACE("ui draw: layer %d", (int)layer);
         const VECTOR *const ops = m_Priv.ops[layer];
 #if defined(__DREAMCAST__)
         g_DC_ProbeUs[DC_PROBE_U_OPS] += ops->count; // TEMP
 #endif
         for (int32_t i = 0; i < ops->count; i++) {
             const M_DRAW_OP *const op = *(M_DRAW_OP **)Vector_Get(ops, i);
+            DC_TRACE("ui op L%d #%d %08x", (int)layer, (int)i, (unsigned)(uintptr_t)op->draw);
             op->draw(op);
         }
 #if defined(__DREAMCAST__)
@@ -980,6 +984,7 @@ void UI_Draw(void)
         for (int32_t i = 0; i < script_ops->count; i++) {
             const M_DRAW_OP *const op =
                 *(M_DRAW_OP **)Vector_Get(script_ops, i);
+            DC_TRACE("ui sop L%d #%d %08x", (int)layer, (int)i, (unsigned)(uintptr_t)op->draw);
             op->draw(op);
         }
 #endif

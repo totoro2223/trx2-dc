@@ -28,6 +28,11 @@ bool DC_VMU_StoreSmall(const char *path, const char *title);
 // refused it (no room, or it failed), 3 no card in the console.
 int DC_VMU_LastResult(void);
 
+// Says on the card's screen that a save is on its way (a quick save asks for
+// it a couple of frames before it writes, as the passport's box does), and
+// keeps the statistics from covering it.
+void DC_VMU_ShowSaving(void);
+
 // Removes a saved game's copy from the memory card.
 void DC_VMU_DeleteSave(const char *path);
 
@@ -46,6 +51,13 @@ void DC_VMU_Hud_Hold(void);
 // Whether L + R + B was pressed since last asked (sdl_compat.c).
 bool DC_Input_TakeVMUMode(void);
 
+// TEMP: lights `step` blocks on the VMU's screen (dc_strict.c's trail).
+void DC_VMU_ShowStep(int step);
+
 // Writes a text file to the memory card (the hang report of dc_strict.c).
 // False if there is no card or no room left on it.
 bool DC_VMU_WriteLog(const char *card_name, const char *text);
+
+// Reads such a file into out and deletes it from the card. False if there is
+// none.
+bool DC_VMU_TakeLog(const char *card_name, char *out, size_t size, bool keep);

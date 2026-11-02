@@ -454,6 +454,7 @@ RESULT GF_RunUntilExit(GF_COMMAND gf_cmd)
         LOG_INFO(
             "action=%s param=%d", ENUM_MAP_TO_STRING(GF_ACTION, gf_cmd.action),
             gf_cmd.param);
+        DC_TRAIL("flow: action %d param %d", (int)gf_cmd.action, (int)gf_cmd.param);
 
         switch (gf_cmd.action) {
         case GF_START_GAME:

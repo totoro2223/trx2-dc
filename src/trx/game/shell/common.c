@@ -22,6 +22,7 @@
     #include <trx/game/phase/executor.h>
 
     #include <platform/dreamcast/dc_games.h>
+    #include <platform/dreamcast/dc_strict.h>
 #endif
 
 // Limits the fatal error dialog width, in characters.
@@ -47,6 +48,9 @@ static void M_ShowFatalError(
 {
     LOG_ERROR("%s", log_message);
     Log_Flush();
+#if defined(__DREAMCAST__)
+    DC_Crumb_Error(log_message);
+#endif
     if (M_IsInteractive()) {
         // The dialog is placed over its parent window. Until the game window is
         // shown, it is still hidden at the position the config named, so the
@@ -77,6 +81,9 @@ const char *Shell_GetCacheDir(void)
 
 void Shell_Terminate(int32_t exit_code)
 {
+#if defined(__DREAMCAST__)
+    DC_Crumb_Exit(exit_code);
+#endif
     Shell_Shutdown();
 
     SDL_Window *const window = Shell_GetWindow();

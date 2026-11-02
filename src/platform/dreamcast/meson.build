@@ -103,6 +103,17 @@ endif
 if get_option('dc_probes')
   add_project_arguments('-DTRX_DC_PROBES', language: 'c')
 endif
+if get_option('dc_bg_magenta')
+  add_project_arguments('-DTRX_DC_BG_MAGENTA', language: 'c')
+endif
+if get_option('dc_debug_boxes')
+  add_project_arguments('-DTRX_DC_BOXES', language: 'c')
+endif
+# A release build is the console's: only warnings and errors go to the serial
+# port (unless the probes need their reports).
+if get_option('buildtype') == 'release' and not get_option('dc_probes')
+  add_project_arguments('-DTRX_DC_QUIET', language: 'c')
+endif
 if get_option('dc_sq_vertices')
   add_project_arguments('-DTRX_DC_SQ_VERTICES', language: 'c')
 endif
@@ -150,10 +161,18 @@ dc_strict_lib = static_library(
   'dc_strict.c',
   c_args: dc_strict_warnings + ['-Werror'],
 )
-dc_link_whole = [dc_kos_overrides, dc_strict_lib]
+# The film decoder: libmpeg 2.0's header is GNU C (raw strings in its SH4
+# assembly), which the engine's c2x does not accept.
+dc_mpeg_lib = static_library(
+  'dc_mpeg',
+  'mpeg1.c',
+  override_options: ['c_std=gnu11', 'warning_level=0'],
+  c_args: ['-w'],
+)
+dc_link_whole = [dc_kos_overrides, dc_strict_lib, dc_mpeg_lib]
 
 # dc_main.c runs ahead of the engine's main.
-dc_link_args = ['-Wl,--wrap=main']
+dc_link_args = ['-Wl,--wrap=main', '-Wl,--wrap=abort', '-Wl,--wrap=arch_panic', '-Wl,--wrap=arch_abort']
 
 if get_option('buildtype') != 'release'
   dc_sources += files('dc_alloc_trace.c')

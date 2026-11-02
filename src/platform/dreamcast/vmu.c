@@ -31,6 +31,8 @@
 #define M_FILE_PREFIX "TRX_"
 #define M_NAME_SIZE 32
 #define M_ICON_SIZE 32
+// How long the saving notice is on the card's screen before the write starts.
+#define M_SAVING_MS 400
 
 static char m_SavesDir[128] = "";
 static int m_LastResult = 0;
@@ -156,6 +158,33 @@ void DC_VMU_DrawLogo(void)
         }
     }
     screen[VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT] = '\0';
+    vmu_set_icon(screen);
+}
+
+void DC_VMU_ShowStep(const int step)
+{
+    for (int i = 0;; i++) {
+        maple_device_t *const dev = maple_enum_type(i, MAPLE_FUNC_LCD);
+        if (dev == nullptr) {
+            break;
+        }
+        M_WaitIdle(dev);
+    }
+    // One block more for each step, twelve to a row: the screen keeps what it
+    // was last given through a restart, so the last block lit says how far the
+    // game got.
+    char screen[VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT + 1];
+    memset(screen, ' ', sizeof(screen) - 1);
+    screen[sizeof(screen) - 1] = '\0';
+    for (int s = 0; s < step && s < 80; s++) {
+        const int left = (s % 16) * 3;
+        const int top = (s / 16) * 6;
+        for (int y = 0; y < 5; y++) {
+            for (int x = 0; x < 2; x++) {
+                screen[(top + y) * VMU_SCREEN_WIDTH + left + x] = '.';
+            }
+        }
+    }
     vmu_set_icon(screen);
 }
 
@@ -292,6 +321,16 @@ void DC_VMU_RestoreSaves(const char *const saves_dir)
 
 static bool M_Store(const char *path, const char *title, bool icon);
 
+void DC_VMU_ShowSaving(void)
+{
+    maple_device_t *const card = M_GetCard();
+    if (card == nullptr) {
+        return;
+    }
+    M_ShowText(card, "SAVING...\nDO NOT\nREMOVE");
+    DC_VMU_Hud_Hold();
+}
+
 bool DC_VMU_StoreSave(const char *const path, const char *const title)
 {
     return M_Store(path, title, true);
@@ -365,6 +404,10 @@ static bool M_Store(
         // Saved games (the ones with an icon) say so on the card's own screen.
         if (icon) {
             M_ShowText(card, "SAVING...\nDO NOT\nREMOVE");
+            // The write takes the card's one command slot: the picture goes
+            // first, and is seen for a moment, quick save or not.
+            M_WaitIdle(card);
+            thd_sleep(M_SAVING_MS);
         }
         ok = vmufs_write(card, card_name, file, file_size, VMUFS_OVERWRITE) == 0;
         if (icon) {
@@ -401,6 +444,48 @@ void DC_VMU_DeleteSave(const char *const path)
     char card_name[VMU_FILENAME_SIZE + 1];
     M_GetCardName(name, card_name);
     vmufs_delete(card, card_name);
+}
+
+bool DC_VMU_TakeLog(const char *const card_name, char *const out, const size_t size, const bool keep)
+{
+    maple_device_t *const card = M_GetCard();
+    if (card == nullptr || size == 0) {
+        return false;
+    }
+    // The directory's entry, as the saves are read.
+    vmu_dir_t *entries = nullptr;
+    int count = 0;
+    if (vmufs_readdir(card, &entries, &count) < 0) {
+        return false;
+    }
+    int found = -1;
+    for (int i = 0; i < count; i++) {
+        if (entries[i].filetype != 0
+            && strncmp(entries[i].filename, card_name, VMU_FILENAME_SIZE) == 0) {
+            found = i;
+        }
+    }
+    void *raw = nullptr;
+    int raw_size = 0;
+    if (found < 0 || vmufs_read_dirent(card, &entries[found], &raw, &raw_size) < 0) {
+        free(entries);
+        return false;
+    }
+    free(entries);
+    bool ok = false;
+    vmu_pkg_t pkg;
+    if (vmu_pkg_parse(raw, (size_t)raw_size, &pkg) == 0 && pkg.data_len > 0) {
+        const size_t n = (size_t)pkg.data_len < size - 1 ? (size_t)pkg.data_len
+                                                         : size - 1;
+        memcpy(out, pkg.data, n);
+        out[n] = '\0';
+        ok = true;
+    }
+    free(raw);
+    if (!keep) {
+        vmufs_delete(card, card_name);
+    }
+    return ok;
 }
 
 bool DC_VMU_WriteLog(const char *const card_name, const char *const text)
