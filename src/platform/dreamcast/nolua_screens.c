@@ -1,8 +1,7 @@
 // The screens the engine offers besides the ring's: pause, statistics,
 // pictures and the level view (screens/*.lua), without Lua.
 //
-// shortcut: the globe, examine and combine are not defined, so the engine
-// leaves the globe for the title and the ring puts those entries back. The
+// shortcut: the globe, examine and combine are plain lists and boxes. The
 // statistics list the same rows in one box, without the per-game looks or the
 // assault course page.
 #include "nolua.h"
@@ -13,8 +12,11 @@
 #include <trx/game/game_flow.h>
 #include <trx/game/game_strings/entries.h>
 #include <trx/game/input.h>
+#include <trx/game/inventory.h>
+#include <trx/game/objects/names.h>
 #include <trx/game/lua/events/ui.h>
 #include <trx/game/paths.h>
+#include <trx/game/savegame/resume.h>
 #include <trx/game/stats.h>
 #include <trx/game/ui/draw.h>
 
@@ -310,6 +312,137 @@ static void M_PicPaint(void)
     }
 }
 
+// --- Globe ---
+
+// shortcut: a list of the areas that can be started next, not the spinning
+// globe; upgrade when the globe model is drawn without Lua.
+static struct {
+    bool open;
+    const char *path;
+    int32_t level[MAX_GLOBE_ZONES];
+    DC_REQ req;
+} m_Globe;
+
+static bool M_GlobeDone(const int32_t ordinal)
+{
+    const GF_LEVEL *const level = GF_GetLevel(GFLT_MAIN, ordinal);
+    const RESUME_INFO *const resume =
+        level != nullptr ? SG_Resume_GetEntry(level) : nullptr;
+    return resume != nullptr && resume->level_completed;
+}
+
+static bool M_GlobeOpen(
+    const UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *const args)
+{
+    m_Globe = (typeof(m_Globe)) {
+        .open = true,
+        .path = args->background != nullptr
+            ? GamePath_PeekResolve(
+                GAME_DYNAMIC_PATH_IMAGE_FILE, args->background)
+            : nullptr,
+    };
+    DC_Req_Init(&m_Globe.req, M_GS("general/globe_select/title", "Next Adventure"), 200.0f, 0.5f);
+    const int32_t count = MIN(GF_GetGlobeEntryCount(), MAX_GLOBE_ZONES);
+    int32_t rows = 0;
+    for (int32_t i = 0; i < count; i++) {
+        const GF_GLOBE_ENTRY *const e = GF_GetGlobeEntry(i);
+        bool ready = e->start_level_ordinal > 0
+            && GF_GetLevel(GFLT_MAIN, e->start_level_ordinal) != nullptr
+            && !M_GlobeDone(e->completion_level_ordinal);
+        for (int32_t bit = 0; bit < count; bit++) {
+            if ((e->prereq_mask & (1u << bit)) != 0
+                && !M_GlobeDone(
+                    GF_GetGlobeEntry(bit)->completion_level_ordinal)) {
+                ready = false;
+            }
+        }
+        if (ready) {
+            char key[40];
+            snprintf(key, sizeof(key), "general/globe_select/area_%d", i + 1);
+            char fallback[16];
+            snprintf(fallback, sizeof(fallback), "Area %d", i + 1);
+            DC_Req_Add(&m_Globe.req, M_GS(key, fallback));
+            m_Globe.level[rows++] = e->start_level_ordinal;
+        }
+    }
+    if (rows == 0) {
+        return false;
+    }
+    return true;
+}
+
+static void M_GlobeRelease(const UI_TAKEOVER screen)
+{
+    m_Globe.open = false;
+}
+
+static void M_GlobeControl(void)
+{
+    const int32_t picked = DC_Req_Control(&m_Globe.req);
+    if (picked >= 0) {
+        GF_OverrideCommand(
+            (GF_COMMAND) {
+                .action = GF_START_GAME,
+                .param = m_Globe.level[picked],
+            },
+            true);
+        DC_Screens_Close(UI_TAKEOVER_GLOBE_SELECT, UI_TAKEOVER_CHOICE_CONFIRM);
+    }
+}
+
+// --- Examine and combine ---
+
+// shortcut: the item's description in a box, not the turning model; and the
+// combine screen joins the item with its one partner at once, without the
+// animation.
+static struct {
+    bool open;
+    bool combine;
+    DC_REQ req;
+} m_Item;
+
+static bool M_ItemOpen(
+    const UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *const args)
+{
+    m_Item = (typeof(m_Item)) {
+        .open = true,
+        .combine = screen == UI_TAKEOVER_COMBINE,
+    };
+    if (m_Item.combine) {
+        OBJECT_ID partner;
+        if (Inv_GetCombinePartners(args->object_id, &partner, 1) < 1
+            || Inv_Combine(args->object_id, partner) == NO_OBJECT) {
+            m_Item.open = false;
+            return false;
+        }
+        return true;
+    }
+    const char *const text = Object_GetDescription(args->object_id);
+    if (text == nullptr) {
+        m_Item.open = false;
+        return false;
+    }
+    DC_Req_Init(&m_Item.req, "", 300.0f, 0.5f);
+    DC_Req_Add(&m_Item.req, text);
+    m_Item.req.selected = -1;
+    return true;
+}
+
+static void M_ItemRelease(const UI_TAKEOVER screen)
+{
+    m_Item.open = false;
+}
+
+static void M_ItemControl(void)
+{
+    if (m_Item.combine || g_InputDB.menu_confirm || g_InputDB.menu_back
+        || g_InputDB.menu_show_info) {
+        DC_Screens_Close(
+            m_Item.combine ? UI_TAKEOVER_COMBINE : UI_TAKEOVER_EXAMINE,
+            UI_TAKEOVER_CHOICE_CONFIRM);
+    }
+}
+
 // --- Events ---
 
 static bool M_OnTick(
@@ -327,6 +460,12 @@ static bool M_OnTick(
     if (m_Pic.open) {
         M_PicControl();
     }
+    if (m_Globe.open) {
+        M_GlobeControl();
+    }
+    if (m_Item.open) {
+        M_ItemControl();
+    }
     return false;
 }
 
@@ -343,6 +482,15 @@ static bool M_OnPaint(
     if (m_Pic.open) {
         M_PicPaint();
     }
+    if (m_Globe.open) {
+        if (m_Globe.path != nullptr) {
+            UI_ScheduleDrawBackground(m_Globe.path, false, 0.0f);
+        }
+        DC_Req_Paint(&m_Globe.req);
+    }
+    if (m_Item.open && !m_Item.combine) {
+        DC_Req_Paint(&m_Item.req);
+    }
     return false;
 }
 
@@ -352,6 +500,9 @@ void DC_NoLua_SetupScreens(void)
     DC_Screens_Define(UI_TAKEOVER_STATS, M_StatsOpen, M_StatsRelease);
     DC_Screens_Define(UI_TAKEOVER_PICTURE, M_PicOpen, M_PicRelease);
     DC_Screens_Define(UI_TAKEOVER_LEVEL_VIEW, M_PicOpen, M_PicRelease);
+    DC_Screens_Define(UI_TAKEOVER_GLOBE_SELECT, M_GlobeOpen, M_GlobeRelease);
+    DC_Screens_Define(UI_TAKEOVER_EXAMINE, M_ItemOpen, M_ItemRelease);
+    DC_Screens_Define(UI_TAKEOVER_COMBINE, M_ItemOpen, M_ItemRelease);
     DC_Events_Listen(LUA_EVENT_TICK, M_OnTick);
     DC_Events_Listen(LUA_EVENT_UI_PAINT, M_OnPaint);
 }
