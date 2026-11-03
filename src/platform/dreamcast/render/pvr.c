@@ -174,8 +174,9 @@ static struct {
 // rendered into a texture costs KOS a wait for the vertical blank). Flycast
 // renders nothing into a texture taller than its width, and stops on a
 // strided texture narrower than the stride; this one is neither.
-#define M_SHADOW_MAP_WIDTH (DC_PVR_SHADOW_MAP_SIZE * DC_PVR_SHADOW_MAP_SLOTS)
-#define M_SHADOW_MAP_BYTES (M_SHADOW_MAP_WIDTH * DC_PVR_SHADOW_MAP_SIZE * 2)
+#define M_SHADOW_MAP_WIDTH DC_PVR_SHADOW_MAP_TEX_W
+#define M_SHADOW_MAP_HEIGHT DC_PVR_SHADOW_MAP_TEX_H
+#define M_SHADOW_MAP_BYTES (M_SHADOW_MAP_WIDTH * M_SHADOW_MAP_HEIGHT * 2)
 static pvr_ptr_t m_ShadowMap = nullptr;
 // The environment map (DC_PVR_ENV_MAP), made by M_MakeEnvMap.
 #define M_ENV_MAP_SIZE 64
@@ -604,7 +605,7 @@ bool DC_PVR_BeginShadowMapFrame(void)
     pvr_wait_ready();
     m_MapWaitUs = (uint32_t)(timer_us_gettime64() - start);
     if (pvr_scene_begin_rtt(
-            m_ShadowMap, M_SHADOW_MAP_WIDTH, DC_PVR_SHADOW_MAP_SIZE,
+            m_ShadowMap, M_SHADOW_MAP_WIDTH, M_SHADOW_MAP_HEIGHT,
             M_SHADOW_MAP_WIDTH)
         != 0) {
         return false;
@@ -2011,7 +2012,7 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
     } else if (m_Page == DC_PVR_SHADOW_MAP) {
         pvr_poly_cxt_txr(
             &cxt, list, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED,
-            M_SHADOW_MAP_WIDTH, DC_PVR_SHADOW_MAP_SIZE, m_ShadowMap,
+            M_SHADOW_MAP_WIDTH, M_SHADOW_MAP_HEIGHT, m_ShadowMap,
             PVR_FILTER_BILINEAR);
         cxt.txr.env = PVR_TXRENV_MODULATE;
         // Past the map's edges it is lit: its white border stretches out.

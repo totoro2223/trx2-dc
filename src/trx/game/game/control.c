@@ -48,6 +48,7 @@
 bool DC_Input_TakeQuickSave(void);
 bool DC_Input_TakeQuickLoad(void);
 bool DC_Input_TakeDebugBoxes(void);
+bool DC_Input_TakeReset(void);
 #endif
 
 #define M_FRAME_BUFFER(key)                                                    \
@@ -181,6 +182,9 @@ GF_COMMAND Game_Control(const bool demo_mode)
     if (m_QuickSaveWait > 0 && --m_QuickSaveWait == 0) {
         g_InputDB.quick_save = true;
         save_now = true;
+    } else if (m_QuickSaveWait > 0) {
+        // The game stands still while the save is under way.
+        return (GF_COMMAND) { .action = GF_NOOP };
     }
     if (!demo_mode) {
         if (DC_Input_TakeQuickSave() && m_QuickSaveWait == 0) {
@@ -190,6 +194,11 @@ GF_COMMAND Game_Control(const bool demo_mode)
             g_InputDB.quick_load = true;
         }
         DC_VMU_Hud_Update();
+        if (DC_Input_TakeReset()) {
+            Sound_StopAll();
+            Music_Stop();
+            return (GF_COMMAND) { .action = GF_EXIT_TO_TITLE };
+        }
         if (DC_Input_TakeDebugBoxes()) {
             CONFIG_TOGGLE(g_Config.debug.enable_debug_bounding_boxes);
             Console_Info(
@@ -209,11 +218,13 @@ GF_COMMAND Game_Control(const bool demo_mode)
             } else {
 #if defined(__DREAMCAST__)
                 if (!save_now) {
-                    Console_Info("%s", "Quick saving... Do not remove the VMU");
+                    DC_QuickSave_Say("Saving to VMU... Do not remove the card", 0);
                     DC_VMU_ShowSaving();
                     m_QuickSaveWait = 2;
+                    return (GF_COMMAND) { .action = GF_NOOP };
                 } else {
                     DC_Loading_SaveDone(Savegame_Save(slot));
+                    return (GF_COMMAND) { .action = GF_NOOP };
                 }
 #else
                 if (Savegame_Save(slot)) {

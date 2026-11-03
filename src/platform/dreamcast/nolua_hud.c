@@ -28,7 +28,17 @@
 #include <trx/game/ui/text.h>
 #include <trx/version.h>
 
+#include <arch/arch.h>
+#include <stdarg.h>
+#include <string.h>
+#include <dc/pvr.h>
+#include <dc/sound/sound.h>
+#include <malloc.h>
 #include <math.h>
+#include <stddef.h>
+#include <unistd.h>
+
+void *sbrk(ptrdiff_t increment);
 #include <stdio.h>
 
 // A bar's size before the player's bar scale, in canvas units, and the bands
@@ -43,7 +53,7 @@
 #define M_HIT_TIME 40
 #define M_OPENING_TIME 100
 #define M_AMMO_SCALE 1.5f
-#define M_MAX_WIDGETS 4
+#define M_MAX_WIDGETS 6
 
 #define M_RGB(hex)                                                             \
     { ((hex) >> 16) & 0xFF, ((hex) >> 8) & 0xFF, (hex) & 0xFF, 0xFF }
@@ -178,6 +188,22 @@ static struct {
     int32_t blink_ticks;
     bool blink;
 } m_Clock;
+
+#define M_MSG_LINES 4
+static struct {
+    char text[40];
+    int32_t ticks;
+} m_Msgs[M_MSG_LINES];
+
+void DC_Msg(const char *const fmt, ...)
+{
+    memmove(&m_Msgs[0], &m_Msgs[1], sizeof(m_Msgs[0]) * (M_MSG_LINES - 1));
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(m_Msgs[M_MSG_LINES - 1].text, sizeof(m_Msgs[0].text), fmt, args);
+    va_end(args);
+    m_Msgs[M_MSG_LINES - 1].ticks = LOGIC_FPS * 5;
+}
 
 static char m_AmmoText[32];
 static char m_FPSText[16];
@@ -373,6 +399,41 @@ static bool M_OnTick(
         M_PushBar(
             M_BOTTOM_LEFT, Creature_IsAlly(target) ? M_BAR_ALLY : M_BAR_ENEMY,
             M_Fraction(target->hit_points, target->max_hit_points));
+    }
+
+    // How full the console's three memories are (render option, off by default),
+    // measured once a second.
+    if (ui_enabled && playing && g_Config.rendering.dc_memory_hud) {
+        static int32_t countdown = 0;
+        static char text[3][24];
+        if (countdown-- <= 0) {
+            countdown = LOGIC_FPS;
+            const struct mallinfo mem = mallinfo();
+            const size_t ram_free = mem.fordblks
+                + ((uintptr_t)_arch_mem_top - (uintptr_t)sbrk(0));
+            snprintf(
+                text[0], sizeof(text[0]), "RAM %u%%",
+                (unsigned)(100 - ram_free * 100 / (16u << 20)));
+            snprintf(
+                text[1], sizeof(text[1]), "VRAM %u%%",
+                (unsigned)(100 - pvr_mem_available() * 100 / (8u << 20)));
+            snprintf(
+                text[2], sizeof(text[2]), "AICA %u%%",
+                (unsigned)(100 - snd_mem_available() * 100 / (2u << 20)));
+        }
+        for (int32_t i = 0; i < 3; i++) {
+            M_Push(M_TOP_RIGHT, -1, 0.0f, text[i], 1.0f);
+        }
+    }
+
+    // The message console: the newest lines DC_Msg was given, oldest on top.
+    for (int32_t i = 0; i < M_MSG_LINES; i++) {
+        if (m_Msgs[i].ticks > 0) {
+            m_Msgs[i].ticks--;
+            if (ui_enabled) {
+                M_Push(M_BOTTOM_LEFT, -1, 0.0f, m_Msgs[i].text, 1.0f);
+            }
+        }
     }
 
     // The position, animation, camera and invulnerability readouts are off

@@ -112,14 +112,19 @@ static size_t M_BuildReport(char *const out, const size_t size, const uint32_t i
         (unsigned)m_Frames);
     // The last steps of the trail, whole lines, then the last stages.
     const char *steps =
-        m_TrailText + (m_TrailLength > 200 ? m_TrailLength - 200 : 0);
+        m_TrailText + (m_TrailLength > 360 ? m_TrailLength - 360 : 0);
     const char *const eol = strchr(steps, '\n');
     if (steps != m_TrailText && eol != NULL) {
         steps = eol + 1;
     }
     at += (size_t)snprintf(out + at, size - at, "%s", steps);
+    const struct mallinfo info = mallinfo();
+    at += (size_t)snprintf(
+        out + at, size - at, "heap %uK free %uK vram %uK\n",
+        (unsigned)(info.uordblks / 1024), (unsigned)(info.fordblks / 1024),
+        (unsigned)(pvr_mem_available() / 1024));
     const uint32_t count = m_Count;
-    const uint32_t first = count > 3 ? count - 3 : 0;
+    const uint32_t first = count > 6 ? count - 6 : 0;
     for (uint32_t i = first; i < count && at < size; i++) {
         const M_CRUMB *const crumb = &m_Ring[i % M_RING];
         at += (size_t)snprintf(
@@ -141,6 +146,48 @@ static size_t M_BuildReport(char *const out, const size_t size, const uint32_t i
 // loading bar and the memory card's notices). Writing into the frame buffer by
 // hand put garbage over the screens instead. Not from an exception, where
 // the PowerVR cannot be driven, and only from the engine's thread.
+// The report in the top left corner of the screen, in the BIOS font on black,
+// written straight into the frame buffer being shown: it needs neither the
+// renderer nor the engine's thread, so it works from the hang watcher and from
+// an exception, where the PowerVR may be stuck.
+static void M_DrawBios(const char *const report)
+{
+    if (vid_mode == NULL || vid_mode->pm != PM_RGB565) {
+        return;
+    }
+    const int width = vid_mode->width;
+    const int cols = width / 12;
+    uint16_t *const fb = (uint16_t *)(0xA5000000u
+        + (*(volatile uint32_t *)0xA05F8050u & 0x00FFFFFFu));
+    int rows = 0;
+    for (const char *p = report; *p != '\0'; p++) {
+        rows += *p == '\n';
+    }
+    rows = rows > 19 ? 19 : rows + 1;
+    memset(fb, 0, (size_t)width * (size_t)(rows * 24) * 2u);
+    bfont_set_foreground_color(0xFFFFFFFFu);
+    bfont_set_background_color(0xFF000000u);
+    const char *p = report;
+    for (int row = 0; row < rows && *p != '\0'; row++) {
+        char line[64];
+        size_t len = 0;
+        while (p[len] != '\0' && p[len] != '\n' && len < (size_t)cols
+               && len < sizeof(line) - 1) {
+            line[len] = p[len];
+            len++;
+        }
+        line[len] = '\0';
+        bfont_draw_str(fb + row * 24 * width, (uint32_t)width, 1, line);
+        p += len;
+        while (*p != '\0' && *p != '\n') {
+            p++;
+        }
+        if (*p == '\n') {
+            p++;
+        }
+    }
+}
+
 static void M_ShowOnScreen(const char *const report)
 {
     if (irq_inside_int()) {
@@ -200,7 +247,10 @@ static void *M_Watch(void *const param)
         vid_border_color(colour[0], colour[1], colour[2]);
         char report[M_REPORT_BYTES];
         M_BuildReport(report, sizeof(report), idle);
-        // Again every few seconds, the count of seconds moving.
+        // On the screen every second (the count of seconds moving), whatever
+        // the engine thread is stuck in.
+        M_DrawBios(report);
+        // Again every few seconds, in the serial log.
         if (idle >= shown_at + 5) {
             shown_at = idle;
             printf("[crumb] %s", report);
@@ -260,6 +310,7 @@ void DC_Crumb_Fatal(const char *const file, const int line, const char *const me
             (unsigned)crumb->frame);
     }
     printf("[fatal] %s", report);
+    M_DrawBios(report);
     if (irq_inside_int()) {
         // An exception: nothing can sleep, draw or reach the card here.
         const uint32_t until = M_Now() + 20000;
@@ -339,6 +390,7 @@ void DC_Crumb_Exception(
     // The screen may be black or not the one shown, and the restart that
     // follows wipes it: the next boot shows the same report (DC_Crumb_ReportLast).
     M_NoteSave(1, code, pc, pr, sp, tea, report + crumbs_at);
+    M_DrawBios(report);
     M_ShowOnScreen(report);
     const uint32_t until = M_Now() + 20000;
     while ((int32_t)(M_Now() - until) < 0) {

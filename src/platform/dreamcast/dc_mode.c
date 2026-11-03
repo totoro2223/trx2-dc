@@ -109,8 +109,10 @@ void DC_Mode_ApplyDefaults(void)
     if (g_DC_TestRoomCel >= 0) {
         CONFIG_SET(g_Config.rendering.dc_room_cel, (bool)(g_DC_TestRoomCel != 0));
     }
-    CONFIG_SET(
-        g_Config.rendering.dc_object_shadows, g_DC_TestObjectShadows > 0);
+    if (g_DC_TestObjectShadows >= 0) {
+        CONFIG_SET(
+            g_Config.rendering.dc_object_shadows, g_DC_TestObjectShadows > 0);
+    }
 }
 
 // Below about 30 frames a second there is no frame between two ticks to

@@ -194,10 +194,18 @@ static void M_Measure(const char *const text, float *const w, float *const h)
     UI_Text_Measure(text, w, h, (UI_TEXT_SETTINGS) { .scale = 1.0f });
 }
 
+// The dialogs go over the models of the ring (the passport's page), which the
+// renderer does for a depth far nearer than the interface's own: each layer a
+// step nearer than the one under it, the text the nearest.
+#define M_Z_BOX (-96)
+#define M_Z_ROW (-98)
+#define M_Z_TEXT (-100)
+
 static void M_Text(
     const char *const text, const float x, const float y, const float scale)
 {
-    UI_Text_Draw(text, x, y, (UI_TEXT_SETTINGS) { .scale = scale });
+    UI_Text_Draw(
+        text, x, y, (UI_TEXT_SETTINGS) { .scale = scale, .z = M_Z_TEXT });
 }
 
 void DC_Req_Init(
@@ -302,12 +310,12 @@ void DC_Req_Paint(const DC_REQ *const req)
     float w;
     float h;
     M_ReqBox(req, &x, &y, &w, &h);
-    DC_UI_Panel(x, y, w, h, 0, TS_BACKGROUND, true);
+    DC_UI_Panel(x, y, w, h, M_Z_BOX, TS_BACKGROUND, true);
     const float pad = M_OuterPad() * s;
     float at = y + pad;
     if (req->title[0] != '\0') {
         const float hh = (M_TEXT_HEIGHT + 2 * M_TitlePadY()) * s;
-        DC_UI_Panel(x + pad, at, w - 2 * pad, hh, 0, TS_HEADING, true);
+        DC_UI_Panel(x + pad, at, w - 2 * pad, hh, M_Z_ROW, TS_HEADING, true);
         float tw;
         float th;
         M_Measure(req->title, &tw, &th);
@@ -333,8 +341,9 @@ void DC_Req_Paint(const DC_REQ *const req)
         const float rh = M_TEXT_HEIGHT * s;
         if (i == req->selected) {
             DC_UI_Panel(
-                left - 2 * s, at - s, right - left + 4 * s, rh + 2 * s, 0,
-                TS_REQUESTED, true);
+                left - 2 * s, at - s, right - left + 4 * s, rh + 2 * s, M_Z_ROW,
+                // The heading's panel is the one that shows over the models.
+                TS_HEADING, true);
         }
         float tw;
         float th;
@@ -370,7 +379,7 @@ void DC_UI_Message(const char *const text, const float anchor)
     const float h = th + 2 * M_MESSAGE_PAD * s;
     const float x = (UI_GetCanvasWidth() - w) / 2.0f;
     const float y = UI_GetCanvasHeight() * anchor - h / 2.0f;
-    DC_UI_Panel(x, y, w, h, 0, TS_BACKGROUND, true);
+    DC_UI_Panel(x, y, w, h, M_Z_BOX, TS_BACKGROUND, true);
     M_Text(text, x + M_MESSAGE_PAD * s, y + M_MESSAGE_PAD * s, 1.0f);
 }
 
@@ -1202,10 +1211,27 @@ static void M_Control(void)
     }
 }
 
+// The box of a quick save in the game, the passport's own: the notice while
+// the card is written, then how it went for a moment (hold ticks; 0 stays
+// until the next one).
+static struct {
+    const char *text;
+    int32_t hold;
+} m_QuickBox = {};
+
+void DC_QuickSave_Say(const char *const text, const int32_t hold)
+{
+    m_QuickBox.text = text;
+    m_QuickBox.hold = hold;
+}
+
 static bool M_OnTick(
     const LUA_EVENT_TYPE ev, const LUA_EVENT_ARG *const args,
     const int32_t arg_count)
 {
+    if (m_QuickBox.hold > 0 && --m_QuickBox.hold == 0) {
+        m_QuickBox.text = nullptr;
+    }
     if (!m_Book.open) {
         return false;
     }
@@ -1220,6 +1246,9 @@ static bool M_OnPaint(
     const LUA_EVENT_TYPE ev, const LUA_EVENT_ARG *const args,
     const int32_t arg_count)
 {
+    if (m_QuickBox.text != nullptr) {
+        DC_UI_Message(m_QuickBox.text, 0.82f);
+    }
     if (!m_Book.open) {
         return false;
     }
@@ -1303,6 +1332,10 @@ static bool M_OpenRingEntry(
         return M_OpenPassport(screen, args);
     } else if (args->object_id == O_SAVE_CRYSTAL_OPTION) {
         return M_OpenCrystal(screen, args);
+    } else if (
+        args->object_id == O_COMPASS_OPTION
+        || args->object_id == O_STOPWATCH_OPTION) {
+        return DC_NoLua_OpenStatsEntry(screen, args);
     }
     return DC_NoLua_OpenSettingsEntry(screen, args);
 }
@@ -1334,7 +1367,7 @@ static void M_ReleaseRingEntry(const UI_TAKEOVER screen)
 {
     if (m_Book.open) {
         M_Release(screen);
-    } else {
+    } else if (!DC_NoLua_ReleaseStatsEntry()) {
         DC_NoLua_ReleaseSettingsEntry(screen);
     }
 }

@@ -6,6 +6,7 @@
 #include "nolua.h"
 
 #include <platform/dreamcast/dc_games.h>
+#include <platform/dreamcast/dc_mode.h>
 #include <trx/config.h>
 #include <trx/core/json/util/file.h>
 #include <trx/core/json/util/read_io.h>
@@ -1677,6 +1678,12 @@ static void M_ControlOpen(void)
             delta = -1;
         } else if (g_InputDB.menu_down && DC_Games_NextId() != 0) {
             delta = 1;
+        }
+        // A test disc (SWITCH.TXT "100 <frame>") presses Down by itself.
+        static int32_t test_frames = 0;
+        if (g_DC_TestSwitchMode == 100 && ++test_frames == g_DC_TestSwitchFrame) {
+            test_frames = 0;
+            delta = DC_Games_NextId() != 0 ? 1 : -1;
         }
         if (delta != 0 && DC_Games_Choose(delta, true)) {
             GF_OverrideCommand((GF_COMMAND) { .action = GF_EXIT_GAME }, true);

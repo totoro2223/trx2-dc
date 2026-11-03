@@ -207,6 +207,11 @@ void Stats_AddDeath(void)
         return;
     }
     stats->death_count++;
+#if defined(__DREAMCAST__)
+    // Rewriting the bound save would hold the game up for seconds on the
+    // card, as Lara falls; the count goes into the next save.
+    return;
+#endif
     const SAVEGAME_SLOT_REF save_slot = SG_Manager_GetBoundSlot();
     if (SG_Manager_IsValidSlotRef(save_slot)) {
         SHOULD(Savegame_UpdateDeathCounters(save_slot, stats->death_count));

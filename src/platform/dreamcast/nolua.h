@@ -26,6 +26,8 @@ void DC_NoLua_SetupGame(void);
 // The interface (phase 2): the overlay (nolua_hud.c) and what is around it,
 // such as fades, captions and pickups (nolua_ui.c). Called once.
 void DC_NoLua_SetupHUD(void);
+// A line for the bottom left corner, for a few seconds (nolua_hud.c).
+void DC_Msg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void DC_NoLua_SetupUI(void);
 
 // The assault course timer and lap times, for the level that has a course
@@ -144,6 +146,10 @@ void DC_NoLua_SetupPassport(void);
 bool DC_NoLua_OpenSettingsEntry(
     UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *args);
 void DC_NoLua_ReleaseSettingsEntry(UI_TAKEOVER screen);
+// The compass and the stopwatch of the ring show the level's statistics.
+bool DC_NoLua_OpenStatsEntry(
+    UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *args);
+bool DC_NoLua_ReleaseStatsEntry(void);
 
 // The other screens the engine offers (nolua_screens.c): pause, statistics,
 // examine, combine, pictures, the level view and the globe.

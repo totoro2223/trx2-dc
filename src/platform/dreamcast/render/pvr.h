@@ -63,7 +63,11 @@ typedef struct {
 #define DC_PVR_SHADOW_MAP_SLOTS 8
 // Each cell's side, in texels.
 // (At 128 the world lost faces in Flycast, TR1 snow caves, 29/10/2026.)
-#define DC_PVR_SHADOW_MAP_SIZE 64
+#define DC_PVR_SHADOW_MAP_SIZE 96
+// The texture holding them: sides are powers of two, the cells fill its
+// lower left.
+#define DC_PVR_SHADOW_MAP_TEX_W 1024
+#define DC_PVR_SHADOW_MAP_TEX_H 128
 // The Lua bytecode of the engine (TRXLUA.BIN on the disc), kept in video
 // memory for good, or in main memory if that has no room. Brings the
 // PowerVR up if it is not. Null if the file cannot be read.

@@ -150,6 +150,10 @@ static struct {
     bool open;
     const GF_LEVEL *level;
     bool is_final;
+    // Opened from the ring by the compass or the stopwatch, rather than at the
+    // end of a level; a compass that shows nothing is put away on a key.
+    bool from_ring;
+    bool hidden;
     DC_REQ req;
 } m_Stats;
 
@@ -231,6 +235,34 @@ static bool M_StatsOpen(
 static void M_StatsRelease(const UI_TAKEOVER screen)
 {
     m_Stats.open = false;
+}
+
+bool DC_NoLua_ReleaseStatsEntry(void)
+{
+    if (!m_Stats.open || !m_Stats.from_ring) {
+        return false;
+    }
+    m_Stats.open = false;
+    return true;
+}
+
+bool DC_NoLua_OpenStatsEntry(
+    const UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *const args)
+{
+    const GF_LEVEL *const level = GF_GetCurrentLevel();
+    if (level == nullptr) {
+        return false;
+    }
+    UI_TAKEOVER_ARGS own = *args;
+    own.level = level;
+    own.is_final = false;
+    if (!M_StatsOpen(screen, &own)) {
+        return false;
+    }
+    m_Stats.from_ring = true;
+    m_Stats.hidden = args->object_id == O_COMPASS_OPTION
+        && !g_Config.gameplay.enable_compass_stats;
+    return true;
 }
 
 // --- Pictures and the level view ---
@@ -455,7 +487,11 @@ static bool M_OnTick(
     if (m_Stats.open
         && (g_InputDB.menu_confirm || g_InputDB.menu_back
             || g_InputDB.menu_skip)) {
-        DC_Screens_Close(UI_TAKEOVER_STATS, UI_TAKEOVER_CHOICE_CONFIRM);
+        const bool from_ring = m_Stats.from_ring;
+        DC_Screens_Close(
+            from_ring ? UI_TAKEOVER_RING_ENTRY : UI_TAKEOVER_STATS,
+            g_InputDB.menu_back ? UI_TAKEOVER_CHOICE_CANCEL
+                                : UI_TAKEOVER_CHOICE_CONFIRM);
     }
     if (m_Pic.open) {
         M_PicControl();
@@ -476,7 +512,7 @@ static bool M_OnPaint(
     if (m_Pause.open) {
         M_PausePaint();
     }
-    if (m_Stats.open) {
+    if (m_Stats.open && !m_Stats.hidden) {
         DC_Req_Paint(&m_Stats.req);
     }
     if (m_Pic.open) {

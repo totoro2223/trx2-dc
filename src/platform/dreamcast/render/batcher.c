@@ -2692,7 +2692,10 @@ static bool M_SphereShows(
 // Whether a wall of the room's grid may hide what lies behind it (the
 // chunks' occlusion, TRX_DC_OCCLUDE).
 #ifndef TRX_DC_OCCLUDE
-    #define TRX_DC_OCCLUDE 1
+    // Off for now (rays that hide rooms, chunks and objects): the old
+    // default is kept here, build with -DTRX_DC_OCCLUDE=1 to bring it back.
+    // #define TRX_DC_OCCLUDE 1
+    #define TRX_DC_OCCLUDE 0
 #endif
 // How thin a face standing in a wall is, and how far it reaches into the
 // sectors on its sides.
@@ -4599,8 +4602,13 @@ static void M_EmitShadowFaces(
                 const float t = face_strength
                     * M_Clamp(1.0f - s[k][2] * inv_fade, 0.0f, 1.0f);
                 M_Project(
-                    xv[k], (slot + s[k][0]) * (1.0f / DC_PVR_SHADOW_MAP_SLOTS),
-                    s[k][1], M_PackARGB(1.0f, t, t, t),
+                    xv[k],
+                    (slot + s[k][0]) * (DC_PVR_SHADOW_MAP_SIZE
+                                        * (1.0f / DC_PVR_SHADOW_MAP_TEX_W)),
+                    s[k][1]
+                        * (DC_PVR_SHADOW_MAP_SIZE
+                           * (1.0f / DC_PVR_SHADOW_MAP_TEX_H)),
+                    M_PackARGB(1.0f, t, t, t),
                     M_PackARGB(1.0f, 1.0f - t, 1.0f - t, 1.0f - t),
                     k == 2 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
             }
@@ -7710,8 +7718,8 @@ void DC_Shadow_RenderMaps(void)
     }
     // Lit everywhere but under the silhouettes.
     DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_NO_TEXTURE, true);
-    const float w = DC_PVR_SHADOW_MAP_SIZE * DC_PVR_SHADOW_MAP_SLOTS;
-    const float h = DC_PVR_SHADOW_MAP_SIZE;
+    const float w = DC_PVR_SHADOW_MAP_TEX_W;
+    const float h = DC_PVR_SHADOW_MAP_TEX_H;
     const float z = DC_PVR_Depth2D(0.1f);
     const DC_PVR_VERTEX lit[4] = {
         { .x = 0.0f, .y = 0.0f, .z = z, .argb = 0xFFFFFFFF },
@@ -7742,12 +7750,15 @@ void DC_Shadow_RenderMaps(void)
 // shading. Returns the volumes sent; dir_out takes the nearest light's way.
 static int32_t M_DrawGroupVolumes(
     const M_CASTER *const casters, const int32_t caster_count,
-    float dir_out[3])
+    float dir_out[3], float *const strength_out)
 {
     float center[3];
     M_CastersCenter(casters, caster_count, center);
     M_SHADOW_LIGHT lights[M_SOFT_MAX_LIGHTS];
-    const int32_t max = MIN(DC_Mode_GetShadowLights(), M_SOFT_MAX_LIGHTS);
+    // Enemies get one shadow (their nearest light); Lara one per light.
+    const int32_t max = casters[0].lara
+        ? MIN(DC_Mode_GetShadowLights(), M_SOFT_MAX_LIGHTS)
+        : 1;
     int32_t light_count = M_GatherShadowLights(casters, center, lights, max);
     if (light_count == 0) {
         lights[0] = (M_SHADOW_LIGHT) {
@@ -7759,12 +7770,15 @@ static int32_t M_DrawGroupVolumes(
     }
     if (casters[0].lara) {
         M_SetCelShade(lights[0].weight);
-        DC_PVR_SetShadowStrength(
-            lights[0].fixed ? M_VOLUME_STRENGTH_NO_LIGHT
-                            : M_VOLUME_STRENGTH_MIN
-                    + (M_VOLUME_STRENGTH_MAX - M_VOLUME_STRENGTH_MIN)
-                        * lights[0].weight);
     }
+    // Every object's nearest light says how dark its shadow goes; the
+    // PowerVR darkens all the volumes alike, so the darkest asked for wins.
+    const float strength = lights[0].fixed
+        ? M_VOLUME_STRENGTH_NO_LIGHT
+        : M_VOLUME_STRENGTH_MIN
+            + (M_VOLUME_STRENGTH_MAX - M_VOLUME_STRENGTH_MIN)
+                * lights[0].weight;
+    *strength_out = MAX(*strength_out, strength);
     memcpy(dir_out, lights[0].dir, sizeof(float) * 3);
 
     // 12 cap triangles and two for each of the box's 12 edges at most: a
@@ -8127,6 +8141,7 @@ void DC_Shadow_DrawVolumes(void)
     // Object by object: each one's casters lie together.
     int32_t volumes = 0;
     float dir[3] = { 0.0f, 1.0f, 0.0f };
+    float strength = 0.0f;
     for (int32_t first = 0; first < m_CasterCount;) {
         int32_t end = first + 1;
         while (end < m_CasterCount
@@ -8135,7 +8150,8 @@ void DC_Shadow_DrawVolumes(void)
         }
         float group_dir[3];
         volumes +=
-            M_DrawGroupVolumes(&m_Casters[first], end - first, group_dir);
+            M_DrawGroupVolumes(
+                &m_Casters[first], end - first, group_dir, &strength);
         if (m_Casters[first].lara) {
             memcpy(dir, group_dir, sizeof(dir));
             if (g_Config.rendering.dc_object_shadows) {
@@ -8143,6 +8159,9 @@ void DC_Shadow_DrawVolumes(void)
             }
         }
         first = end;
+    }
+    if (strength > 0.0f) {
+        DC_PVR_SetShadowStrength(strength);
     }
     m_CasterCount = 0;
 }

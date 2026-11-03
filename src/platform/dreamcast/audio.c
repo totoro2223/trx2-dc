@@ -93,6 +93,8 @@ typedef struct {
     uint32_t end;
     float volume;
     float fade;
+    // The volume last sent to the AICA plus one, 0 when none.
+    int32_t sent_vol;
     float fade_step; // per poll
     bool fading_out;
     // When the last data will have played (ms), or 0 while there is more.
@@ -554,8 +556,10 @@ static void M_Update(const int32_t sound_id)
     int32_t pan;
     int32_t freq;
     M_Params(sound, &vol, &pan, &freq);
-    if (vol == sound->sent_vol && pan == sound->sent_pan
-        && freq == sound->sent_freq) {
+    // Steps too small to hear are not sent: a sound moving past changes all
+    // three every frame, and each is a command for the AICA to work through.
+    if (abs(vol - sound->sent_vol) < 4 && abs(pan - sound->sent_pan) < 4
+        && abs(freq - sound->sent_freq) < sound->sent_freq / 64) {
         return;
     }
     if (freq != sound->sent_freq && !sound->looped) {
@@ -792,10 +796,17 @@ static uint32_t M_StreamBytes(const M_STREAM *const s, const double seconds)
     return bytes < s->data_size ? bytes : s->data_size;
 }
 
-static void M_StreamApplyVolume(const M_STREAM *const s)
+static void M_StreamApplyVolume(M_STREAM *const s)
 {
     const float v = m_Muted ? 0.0f : s->volume * s->fade * 255.0f;
-    snd_stream_volume(s->hnd, v <= 0.0f ? 0 : (v >= 255.0f ? 255 : (int)v));
+    const int vol = v <= 0.0f ? 0 : (v >= 255.0f ? 255 : (int)v);
+    // A film's tick sets the volume every time; each call is commands in the
+    // AICA's queue, which filled and stalled it.
+    if (s->sent_vol == vol + 1) {
+        return;
+    }
+    s->sent_vol = vol + 1;
+    snd_stream_volume(s->hnd, vol);
 }
 
 // What the stream asks for, read from the disc; at the end, back to the
@@ -1067,6 +1078,7 @@ RESULT Audio_Stream_SetPaused(const int32_t sound_id, const bool is_paused)
         } else if (!is_paused && !s->playing) {
             // The stream fills its buffer from where the file stands.
             snd_stream_start_adpcm(s->hnd, s->rate, s->channels == 2);
+            s->sent_vol = 0;
             M_StreamApplyVolume(s);
             s->playing = true;
         }

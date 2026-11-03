@@ -909,6 +909,14 @@ void Inject_Cleanup(void)
         m_RoomMeta = nullptr;
     }
 
+#if defined(__DREAMCAST__)
+    // Render menu "Load cache" off: the decompressed files go with the level,
+    // the next load reads and inflates them again.
+    if (!g_Config.rendering.dc_load_cache) {
+        M_FreePayloadCache();
+    }
+#endif
+
     Benchmark_End(&benchmark, nullptr);
 }
 

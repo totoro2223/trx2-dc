@@ -39,7 +39,23 @@ typedef struct {
     bool is_triangle;
     // Drawn smaller than its texels: from the page at half size.
     bool half;
+    // Drawn over the models, not under them.
+    bool front;
 } M_PRIM;
+
+// A depth this far nearer than the nearest the interface has marks what goes
+// over the models (a list in front of the passport's page): drawn after them,
+// at the depth that many steps farther.
+#define M_FRONT_SHIFT 100
+
+static bool M_TakeFront(int32_t *const z)
+{
+    if (*z >= OUTPUT_UI_NEAR_Z - M_FRONT_SHIFT / 2) {
+        return false;
+    }
+    *z += M_FRONT_SHIFT;
+    return true;
+}
 
 typedef struct {
     SCENE_SOURCE source;
@@ -410,6 +426,20 @@ static void M_RenderBegin(const SCENE_SOURCE *const source)
     p->binocular_mask = false;
 }
 
+static void M_DrawPrim(M_PRIM *const prim)
+{
+    for (int32_t j = 0; j < 4; j++) {
+        prim->v[j].z = DC_PVR_Depth2D(prim->v[j].z);
+    }
+    DC_PVR_SetHalfPages(prim->half);
+    DC_PVR_SetState(DC_BLEND_ALPHA, prim->page, true);
+    if (prim->is_triangle) {
+        DC_PVR_Triangle(&prim->v[0], &prim->v[1], &prim->v[2]);
+    } else {
+        DC_PVR_Quad(&prim->v[0], &prim->v[1], &prim->v[2], &prim->v[3]);
+    }
+}
+
 static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass)
 {
     M_PRIV *const p = &m_Priv;
@@ -420,18 +450,14 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     DC_PVR_SetFilter(
         g_Config.rendering.ui_filter == TEXTURE_FILTER_BILINEAR
         && !DC_PVR_IsLowRes());
+    bool has_front = false;
     for (int32_t i = 0; i < p->prims->count; i++) {
         M_PRIM *const prim = Vector_Get(p->prims, i);
-        for (int32_t j = 0; j < 4; j++) {
-            prim->v[j].z = DC_PVR_Depth2D(prim->v[j].z);
+        if (prim->front) {
+            has_front = true;
+            continue;
         }
-        DC_PVR_SetHalfPages(prim->half);
-        DC_PVR_SetState(DC_BLEND_ALPHA, prim->page, true);
-        if (prim->is_triangle) {
-            DC_PVR_Triangle(&prim->v[0], &prim->v[1], &prim->v[2]);
-        } else {
-            DC_PVR_Quad(&prim->v[0], &prim->v[1], &prim->v[2], &prim->v[3]);
-        }
+        M_DrawPrim(prim);
     }
     DC_PVR_SetHalfPages(false);
 
@@ -439,6 +465,16 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     if (p->meshes->count > 0) {
         DC_PVR_NextDepthLayer();
         M_DrawMeshes(p);
+    }
+    if (has_front) {
+        DC_PVR_NextDepthLayer();
+        for (int32_t i = 0; i < p->prims->count; i++) {
+            M_PRIM *const prim = Vector_Get(p->prims, i);
+            if (prim->front) {
+                M_DrawPrim(prim);
+            }
+        }
+        DC_PVR_SetHalfPages(false);
     }
 }
 
@@ -507,8 +543,9 @@ static bool M_SnapLowRes(float *const lo, float *const hi, const uint16_t size)
     return pixels < texels;
 }
 
-void OutputSource_UI_StageSprite(const OUTPUT_UI_SPRITE sprite)
+void OutputSource_UI_StageSprite(OUTPUT_UI_SPRITE sprite)
 {
+    const bool front = M_TakeFront(&sprite.z);
     const SPRITE_TEXTURE *const tex = Output_GetSpriteTexture(sprite.sprite_idx);
     if (tex == nullptr) {
         return;
@@ -518,7 +555,7 @@ void OutputSource_UI_StageSprite(const OUTPUT_UI_SPRITE sprite)
     const float u1 = u0 + tex->width / 65536.0f;
     const float v1 = v0 + tex->height / 65536.0f;
 
-    M_PRIM prim = { .page = tex->tex_page };
+    M_PRIM prim = { .page = tex->tex_page, .front = front };
     const float x[4] = { sprite.x0, sprite.x1, sprite.x0, sprite.x1 };
     const float y[4] = { sprite.y0, sprite.y0, sprite.y1, sprite.y1 };
     const float u[4] = { u0, u1, u0, u1 };
@@ -542,9 +579,10 @@ void OutputSource_UI_StageSprite(const OUTPUT_UI_SPRITE sprite)
     Vector_Add(m_Priv.prims, &prim);
 }
 
-void OutputSource_UI_StageQuad(const OUTPUT_UI_QUAD quad)
+void OutputSource_UI_StageQuad(OUTPUT_UI_QUAD quad)
 {
-    M_PRIM prim = { .page = DC_PVR_NO_TEXTURE };
+    const bool front = M_TakeFront(&quad.z);
+    M_PRIM prim = { .page = DC_PVR_NO_TEXTURE, .front = front };
     const float x[4] = { quad.x0, quad.x1, quad.x0, quad.x1 };
     const float y[4] = { quad.y0, quad.y0, quad.y1, quad.y1 };
     const RGBA_8888 c[4] = { quad.tl, quad.tr, quad.bl, quad.br };

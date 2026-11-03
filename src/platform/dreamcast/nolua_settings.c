@@ -26,12 +26,15 @@ typedef enum {
     M_ROW_FPS,
     M_ROW_CEL,
     M_ROW_SHADOW,
+    M_ROW_OBJECT_SHADOWS,
     M_ROW_PICKUPS,
     M_ROW_BUMP,
     M_ROW_ROOM_CEL,
     M_ROW_FPS_COUNTER,
     M_ROW_TEXTURE_FILTER,
     M_ROW_UI_FILTER,
+    M_ROW_MEMORY_HUD,
+    M_ROW_LOAD_CACHE,
     M_ROW_NUMBER_OF,
 } M_ROW;
 
@@ -115,6 +118,9 @@ static const char *M_Name(const M_ROW row)
         return M_GS("settings/rendering.dc_cel_shading/title", "Cel shading");
     case M_ROW_SHADOW:
         return M_GS("settings/visuals.shadow_type/title", "Shadows");
+    case M_ROW_OBJECT_SHADOWS:
+        return M_GS(
+            "settings/rendering.dc_object_shadows/title", "Enemy shadows");
     case M_ROW_PICKUPS:
         return M_GS("settings/visuals.enable_3d_pickups/title", "3D pickups");
     case M_ROW_BUMP:
@@ -125,6 +131,10 @@ static const char *M_Name(const M_ROW row)
         return M_GS("settings/ui.enable_fps_counter/title", "FPS counter");
     case M_ROW_TEXTURE_FILTER:
         return M_GS("settings/rendering.texture_filter/title", "Texture filter");
+    case M_ROW_MEMORY_HUD:
+        return M_GS("settings/rendering.dc_memory_hud/title", "Memory use");
+    case M_ROW_LOAD_CACHE:
+        return M_GS("settings/rendering.dc_load_cache/title", "Load cache");
     default:
         return M_GS("settings/rendering.ui_filter/title", "UI filter");
     }
@@ -143,6 +153,8 @@ static const char *M_Value(const M_ROW row)
         return M_OnOff(g_Config.rendering.dc_cel_shading);
     case M_ROW_SHADOW:
         return M_ShadowName(g_Config.visuals.shadow_type);
+    case M_ROW_OBJECT_SHADOWS:
+        return M_OnOff(g_Config.rendering.dc_object_shadows);
     case M_ROW_PICKUPS:
         return M_OnOff(g_Config.visuals.enable_3d_pickups);
     case M_ROW_BUMP:
@@ -153,6 +165,10 @@ static const char *M_Value(const M_ROW row)
         return M_OnOff(g_Config.ui.enable_fps_counter);
     case M_ROW_TEXTURE_FILTER:
         return M_FilterName(g_Config.rendering.texture_filter);
+    case M_ROW_MEMORY_HUD:
+        return M_OnOff(g_Config.rendering.dc_memory_hud);
+    case M_ROW_LOAD_CACHE:
+        return M_OnOff(g_Config.rendering.dc_load_cache);
     default:
         return M_FilterName(g_Config.rendering.ui_filter);
     }
@@ -202,6 +218,9 @@ static void M_Step(const M_ROW row, const int32_t rate)
     case M_ROW_SHADOW:
         CONFIG_CYCLE(g_Config.visuals.shadow_type, rate, SHADOW_TYPE_NUMBER_OF);
         break;
+    case M_ROW_OBJECT_SHADOWS:
+        CONFIG_TOGGLE(g_Config.rendering.dc_object_shadows);
+        break;
     case M_ROW_PICKUPS:
         CONFIG_TOGGLE(g_Config.visuals.enable_3d_pickups);
         break;
@@ -217,6 +236,12 @@ static void M_Step(const M_ROW row, const int32_t rate)
     case M_ROW_TEXTURE_FILTER:
         CONFIG_CYCLE(
             g_Config.rendering.texture_filter, rate, TEXTURE_FILTER_NUMBER_OF);
+        break;
+    case M_ROW_MEMORY_HUD:
+        CONFIG_TOGGLE(g_Config.rendering.dc_memory_hud);
+        break;
+    case M_ROW_LOAD_CACHE:
+        CONFIG_TOGGLE(g_Config.rendering.dc_load_cache);
         break;
     default:
         CONFIG_CYCLE(

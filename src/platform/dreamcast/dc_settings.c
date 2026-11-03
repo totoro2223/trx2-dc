@@ -34,11 +34,11 @@ static char m_Refused[256] = "";
 // The options, as a line of numbers: the file format, the mode, the frame rate,
 // the cel shading switch, a 0 (where the adaptive switch was until format 4),
 // the fps counter, the two filters, the shadow type, the bump mapping and
-// room cel shading switches, and the 3D pickups switch.
+// room cel shading switches, the 3D pickups switch, and the enemy shadows one.
 static void M_Format(char *const out, const size_t size)
 {
     snprintf(
-        out, size, "5 %d %d %d 0 %d %d %d %d %d %d %d\n",
+        out, size, "8 %d %d %d 0 %d %d %d %d %d %d %d %d %d %d\n",
         (int)g_Config.rendering.dc_mode, (int)g_Config.rendering.dc_fps,
         (int)g_Config.rendering.dc_cel_shading,
         (int)g_Config.ui.enable_fps_counter,
@@ -46,7 +46,10 @@ static void M_Format(char *const out, const size_t size)
         (int)g_Config.rendering.ui_filter, (int)g_Config.visuals.shadow_type,
         (int)g_Config.rendering.dc_bump_mapping,
         (int)g_Config.rendering.dc_room_cel,
-        (int)g_Config.visuals.enable_3d_pickups);
+        (int)g_Config.visuals.enable_3d_pickups,
+        (int)g_Config.rendering.dc_object_shadows,
+        (int)g_Config.rendering.dc_memory_hud,
+        (int)g_Config.rendering.dc_load_cache);
 }
 
 void DC_Settings_Load(const char *const saves_dir)
@@ -65,10 +68,11 @@ void DC_Settings_Load(const char *const saves_dir)
         return;
     }
     int version = 0;
-    int v[11] = {};
+    int v[14] = {};
     const int read = fscanf(
-        fp, "%d %d %d %d %d %d %d %d %d %d %d %d", &version, &v[0], &v[1],
-        &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10]);
+        fp, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &version, &v[0],
+        &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10],
+        &v[11], &v[12], &v[13]);
     fclose(fp);
     // The first file format had no bump mapping switch, and the first two no
     // room cel shading one.
@@ -82,6 +86,18 @@ void DC_Settings_Load(const char *const saves_dir)
     if (version <= 4) {
         v[10] = 1;
     }
+    // Before format 6 the enemies cast no shadow volumes.
+    if (version <= 5) {
+        v[11] = 0;
+    }
+    // Before format 7 there was no memory use readout.
+    if (version <= 6) {
+        v[12] = 0;
+    }
+    // Before format 8 there was no load cache switch; it was always on.
+    if (version <= 7) {
+        v[13] = 1;
+    }
     // Before format 4 the 60 fps and adaptive switches were two, and the
     // Original mode came in before Experimental 60's.
     if (version >= 1 && version <= 3) {
@@ -92,8 +108,8 @@ void DC_Settings_Load(const char *const saves_dir)
             v[0] = DC_MODE_EXPERIMENTAL_60;
         }
     }
-    if (version < 1 || version > 5
-        || read != (version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
+    if (version < 1 || version > 8
+        || read != (version >= 8 ? 15 : version >= 7 ? 14 : version >= 6 ? 13 : version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
         || v[0] < 0
         || v[0] >= DC_MODE_NUMBER_OF || v[1] < 0 || v[1] >= DC_FPS_NUMBER_OF
         || v[5] < 0 || v[5] >= TEXTURE_FILTER_NUMBER_OF || v[6] < 0
@@ -117,6 +133,9 @@ void DC_Settings_Load(const char *const saves_dir)
     CONFIG_SET(g_Config.rendering.dc_bump_mapping, (bool)(v[8] != 0));
     CONFIG_SET(g_Config.rendering.dc_room_cel, (bool)(v[9] != 0));
     CONFIG_SET(g_Config.visuals.enable_3d_pickups, (bool)(v[10] != 0));
+    CONFIG_SET(g_Config.rendering.dc_object_shadows, (bool)(v[11] != 0));
+    CONFIG_SET(g_Config.rendering.dc_memory_hud, (bool)(v[12] != 0));
+    CONFIG_SET(g_Config.rendering.dc_load_cache, (bool)(v[13] != 0));
     M_Format(m_Stored, sizeof(m_Stored));
     LOG_INFO("render options loaded from the memory card");
 }

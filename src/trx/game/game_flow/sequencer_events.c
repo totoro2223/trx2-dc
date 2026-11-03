@@ -494,13 +494,6 @@ M_GF_HANDLER(M_HandleLevelStats)
     }
 
 #if defined(__DREAMCAST__)
-    // TEMP: the results screen stops the console for good (no restart, no
-    // error: the PowerVR or the interface draw hangs inside its frame), so the
-    // game goes straight to the next level until that is found.
-    *out_cmd = gf_cmd;
-    return OK;
-#endif
-#if defined(__DREAMCAST__)
     // The results screen is built with the level still in memory, which is
     // nearly all the heap there is: what can be built again later goes, and the
     // scripts' garbage is collected, as when a level loads.
@@ -508,8 +501,10 @@ M_GF_HANDLER(M_HandleLevelStats)
     M_TrailHeap("stats: begin heap");
     OutputSource_Objects_EvictUnused(0);
     DC_Trail("stats: meshes evicted");
+    #if defined(DC_WITH_LUA)
     LUA_DC_CollectGarbage();
     LUA_DC_CollectGarbage();
+    #endif
     DC_Trail("stats: after gc");
 #endif
     PHASE *const phase = Phase_Stats_Create((PHASE_STATS_ARGS) {

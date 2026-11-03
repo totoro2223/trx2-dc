@@ -33,6 +33,11 @@ static bool m_Painting = false;
 void DC_Events_Listen(const LUA_EVENT_TYPE ev, const DC_EVENT_HANDLER handler)
 {
     for (int32_t i = 0; i < M_MAX_HANDLERS; i++) {
+        // The engine starts over for each game of a multi-game disc and the
+        // setups that have no guard come here again with the same handlers.
+        if (m_Handlers[ev][i] == handler) {
+            return;
+        }
         if (m_Handlers[ev][i] == nullptr) {
             m_Handlers[ev][i] = handler;
             return;

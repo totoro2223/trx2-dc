@@ -137,15 +137,13 @@ void DC_Loading_Notice(
 
 void DC_Loading_SaveDone(const bool saved)
 {
-    // On the in-game console, where the notice before it went.
+    // In the box the notice before it was in, as the passport says it.
     const int result = DC_VMU_LastResult();
-    if (!saved || result == 2) {
-        Console_Error("%s", "Could not save the game");
-    } else if (result == 3) {
-        Console_Info("%s", "No VMU found: saved until the console is off");
-    } else {
-        Console_Info("%s", "Saved to the VMU");
-    }
+    DC_QuickSave_Say(
+        !saved || result == 2 ? "Could not save to the VMU"
+            : result == 3     ? "No VMU found: saved until the console is switched off"
+                              : "Saved to the VMU",
+        60);
 }
 
 void DC_Loading_End(void)

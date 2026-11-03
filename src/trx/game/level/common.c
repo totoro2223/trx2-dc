@@ -32,7 +32,10 @@
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_level_heap.h>
     #include <platform/dreamcast/dc_settings.h>
+    #include <platform/dreamcast/nolua.h>
     #include <trx/game/output/sources/objects.h>
+
+    #include <SDL2/SDL_timer.h>
 
 int32_t LUA_DC_CollectGarbage(void);
 #endif
@@ -106,6 +109,7 @@ RESULT Level_Initialise(
 {
     BENCHMARK benchmark = Benchmark_Start();
 #if defined(__DREAMCAST__)
+    const uint32_t load_start = SDL_GetTicks();
     DC_TraceOn(false);
 #endif
     DC_TRAIL("init: level %d begins", (int)level->num);
@@ -214,6 +218,13 @@ RESULT Level_Initialise(
 
 #if defined(__DREAMCAST__)
     DC_LevelHeap_Leave();
+    {
+        const uint32_t ms = SDL_GetTicks() - load_start;
+        DC_Msg(
+            "Load %u.%u s, cache %s", (unsigned)(ms / 1000),
+            (unsigned)(ms % 1000 / 100),
+            g_Config.rendering.dc_load_cache ? "on" : "off");
+    }
 #endif
     Benchmark_End(&benchmark, nullptr);
     return OK;

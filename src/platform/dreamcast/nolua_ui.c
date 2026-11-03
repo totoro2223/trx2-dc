@@ -29,6 +29,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 // --- Shared drawing ---
 
@@ -1305,6 +1306,11 @@ void DC_NoLua_SetupUI(void)
 {
     static bool done = false;
     if (done) {
+        // The engine started over for another game: the exit fade of the
+        // last one (black, held) must not come along onto the new screen.
+        memset(m_Fades, 0, sizeof(m_Fades));
+        M_DropLevel();
+        M_UpdateHold();
         return;
     }
     done = true;

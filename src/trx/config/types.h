@@ -307,6 +307,8 @@ typedef struct {
         bool dc_bump_mapping;
         bool dc_room_cel;
         bool dc_object_shadows;
+        bool dc_memory_hud;
+        bool dc_load_cache;
         DC_FPS dc_fps;
         int32_t fps;
         bool enable_trapezoid_filter;

@@ -226,9 +226,14 @@ static void M_ReportWork(const Uint64 start)
         char code[96];
         if (saved % 6 == 5) {
             LOG_INFO("test: load %d (slot 1)", (int)saved);
-            snprintf(
-                code, sizeof(code),
-                "trx.savegame.load(1, trx.savegame.Pool.NORMAL)");
+            // Test hook: the build has no Lua to load a save with; the level starts
+            // again instead, which loads it as a saved game would.
+            GF_OverrideCommand(
+                (GF_COMMAND) { .action = GF_START_GAME,
+                               .param = g_DC_TestLevelStart },
+                true);
+            saved++;
+            return;
         } else {
             LOG_INFO("test: save %d (slot %d)", (int)saved, (int)(saved % 6 + 1));
             snprintf(

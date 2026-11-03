@@ -86,6 +86,8 @@ static kthread_t *m_LatchThread = nullptr;
 // last DC_Input_TakeEndLevelCombo.
 static bool m_ComboHeld = false;
 static bool m_ComboPressed = false;
+static bool m_ResetPressed = false;
+static bool m_ResetHeld = false;
 // L + R + Start and L + R + Down: the quick save and the quick load, each
 // pressed since last asked for.
 static bool m_QuickSaveHeld = false;
@@ -285,10 +287,14 @@ static void M_PollController(void)
     }
     last_read = now;
     const uint32_t b = state->buttons | latched;
-    if ((state->buttons & CONT_RESET_BUTTONS) == CONT_RESET_BUTTONS) {
-        const SDL_Event quit = { .quit = { .type = SDL_QUIT } };
-        M_PushEvent(&quit);
+    // A + B + X + Y + Start: back to the main menu (game/control.c), once per
+    // press.
+    const bool reset_held =
+        (state->buttons & CONT_RESET_BUTTONS) == CONT_RESET_BUTTONS;
+    if (reset_held && !m_ResetHeld) {
+        m_ResetPressed = true;
     }
+    m_ResetHeld = reset_held;
 
     // L is a modifier: with R it looks (a paddle, so that R alone keeps
     // walking), and in TR3 with Y it crouches and with A it sprints. L + R
@@ -412,6 +418,15 @@ bool DC_Input_TakeDebugBoxes(void)
 {
     const bool pressed = m_BoxesPressed;
     m_BoxesPressed = false;
+    return pressed;
+}
+
+// Whether the reset buttons (A, B, X, Y and Start) were pressed since last
+// asked.
+bool DC_Input_TakeReset(void)
+{
+    const bool pressed = m_ResetPressed;
+    m_ResetPressed = false;
     return pressed;
 }
 

@@ -251,6 +251,18 @@ static void M_Control(const int16_t item_num)
         M_SetupFish(p, item);
     }
 
+#if defined(__DREAMCAST__)
+    // Each fish blends from where the last tick left it. Taken at the end of
+    // a drawn frame instead, it went stale while the shoal was out of sight
+    // (or never at a ratio of exactly 1, at 60 fps), and the fish swam fast.
+    for (int32_t i = 0; i < M_FISH_PER_SHOAL + 1; i++) {
+        M_FISH *const fish = &p->fish[i];
+        fish->interp.prev.pos = fish->pos;
+        fish->interp.prev.angle = fish->angle;
+        fish->interp.prev.swim = fish->swim;
+    }
+#endif
+
     const ITEM *const lara_item = Lara_GetItem();
 
     int32_t piranha_attack = 0;
@@ -663,6 +675,7 @@ static bool M_Draw(const ITEM *const item)
 
     Output_Water_SetupFromRoom(Room_Get(item->room_num));
 
+#if !defined(__DREAMCAST__)
     if (Interpolation_IsActive() && ratio >= 1.0) {
         for (int32_t i = 0; i < M_FISH_PER_SHOAL + 1; i++) {
             p->fish[i].interp.prev.pos = p->fish[i].pos;
@@ -670,6 +683,7 @@ static bool M_Draw(const ITEM *const item)
             p->fish[i].interp.prev.swim = p->fish[i].swim;
         }
     }
+#endif
 
     return true;
 }
