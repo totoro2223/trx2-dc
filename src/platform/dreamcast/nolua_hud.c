@@ -7,11 +7,13 @@
 // stack, as the Lua regions did, so what nolua_ui.c places there stacks
 // beside it rather than over it.
 #include "nolua.h"
+#include "dc_mode.h"
 
 #include <trx/config.h>
 #include <trx/game/creature/common.h>
 #include <trx/game/cutseq/playback.h>
 #include <trx/game/game/state.h>
+#include <trx/game/game_flow/common.h>
 #include <trx/game/gun/common.h>
 #include <trx/game/gun/registry.h>
 #include <trx/game/inventory.h>
@@ -403,7 +405,10 @@ static bool M_OnTick(
 
     // How full the console's three memories are (render option, off by default),
     // measured once a second.
-    if (ui_enabled && playing && g_Config.rendering.dc_memory_hud) {
+    // Also during the demos, which are not "playing" and may hide the UI.
+    const GF_LEVEL *const cur_level = GF_GetCurrentLevel();
+    const bool in_demo = cur_level != nullptr && cur_level->type == GFL_DEMO;
+    if ((playing || in_demo) && g_Config.rendering.dc_memory_hud) {
         static int32_t countdown = 0;
         static char text[3][24];
         if (countdown-- <= 0) {
@@ -424,6 +429,9 @@ static bool M_OnTick(
         for (int32_t i = 0; i < 3; i++) {
             M_Push(M_TOP_RIGHT, -1, 0.0f, text[i], 1.0f);
         }
+        static char cpu[24];
+        snprintf(cpu, sizeof(cpu), "CPU %d%%", (int)g_DC_CpuPercent);
+        M_Push(M_TOP_RIGHT, -1, 0.0f, cpu, 1.0f);
     }
 
     // The message console: the newest lines DC_Msg was given, oldest on top.

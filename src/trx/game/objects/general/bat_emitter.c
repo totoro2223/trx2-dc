@@ -219,7 +219,7 @@ static bool M_Draw(const ITEM *const item)
 
     const RGBA_8888 color = { 0x60, 0xA0, 0xF8, 0xFF };
     const RGBA_8888 tri_color[3] = { color, color, color };
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
 

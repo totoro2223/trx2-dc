@@ -155,9 +155,9 @@ int32_t Item_GetFrames(const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
     const int32_t second_key_frame_num = first_key_frame_num + 1;
 
     int32_t interp_frame_num = cur_frame_num;
-    double interp_frame_sub = 0.0;
-    const double alpha = Interpolation_GetWorldRate();
-    if (alpha >= 0.0 && alpha <= 1.0) {
+    TRX_REAL interp_frame_sub = 0.0f;
+    const TRX_REAL alpha = Interpolation_GetWorldRate();
+    if (alpha >= 0.0f && alpha <= 1.0f) {
         const bool prev_in_anim = item->prev_frame_num >= anim->frame_base
             && item->prev_frame_num <= anim->frame_end;
         if (prev_in_anim) {
@@ -170,7 +170,7 @@ int32_t Item_GetFrames(const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
                     || obj->can_interpolate_func(
                         item, first_key_frame_num, second_key_frame_num);
                 if (allow_interp) {
-                    const double frame_pos =
+                    const TRX_REAL frame_pos =
                         prev_frame_num + (frame_delta * alpha);
                     if (frame_pos < last_frame_num) {
                         interp_frame_num = (int32_t)frame_pos;
@@ -188,7 +188,7 @@ int32_t Item_GetFrames(const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
     frames[1] = &anim->frame_ptr[frame_b];
 
     int32_t denominator = key_frame_span;
-    if (key_frame_shift != 0 || interp_frame_sub > 0.0) {
+    if (key_frame_shift != 0 || interp_frame_sub > 0.0f) {
         const int32_t second_key_frame_num2 =
             (interp_frame_num / key_frame_span + 1) * key_frame_span;
         if (second_key_frame_num2 > anim->frame_end) {
@@ -196,9 +196,9 @@ int32_t Item_GetFrames(const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
         }
     }
 
-    const double numerator = key_frame_shift + interp_frame_sub;
+    const TRX_REAL numerator = key_frame_shift + interp_frame_sub;
     *rate = denominator * M_FRAME_INTERP_SCALE;
-    return (int32_t)((numerator * M_FRAME_INTERP_SCALE) + 0.5);
+    return (int32_t)((numerator * M_FRAME_INTERP_SCALE) + 0.5f);
 }
 
 void Item_Animate(ITEM *const item)

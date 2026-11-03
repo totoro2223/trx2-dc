@@ -886,7 +886,7 @@ void CutSeq_PreDraw(void)
         return;
     }
 
-    double alpha = Interpolation_GetWorldRate();
+    TRX_REAL alpha = Interpolation_GetWorldRate();
     if (alpha < 0.0 || alpha > 1.0) {
         alpha = 1.0;
     }

@@ -30,7 +30,7 @@ static void M_RememberRing(FX_RING *const ring)
 static void M_InterpolateRing(const FX_RING *const ring, FX_RING *const out)
 {
     *out = *ring;
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     out->radius = (int16_t)LERP(ring->prev_radius, ring->radius, ratio);
     out->rot.x = Math_AngleMean(ring->prev_rot.x, ring->rot.x, ratio);
     out->rot.z = Math_AngleMean(ring->prev_rot.z, ring->rot.z, ratio);

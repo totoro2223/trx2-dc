@@ -111,7 +111,7 @@ bool Lara_Poison_GetViewScale(XYZ_32 *const scale)
         return false;
     }
 
-    const double lerp = Interpolation_GetRate();
+    const TRX_REAL lerp = Interpolation_GetRate();
     scale->x = M_AxisScale(
         value, m_PhaseA.x, m_PhaseStepA.x, m_PhaseB.x, m_PhaseStepB.x, lerp);
     scale->y = M_AxisScale(

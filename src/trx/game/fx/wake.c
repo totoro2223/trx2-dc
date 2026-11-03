@@ -164,7 +164,7 @@ void FX_Wake_Draw(const ITEM *const item)
 {
     const int64_t max_origin_dist_sq =
         XYZ_32_GetLength2_64((XYZ_32) { WALL_L / 2, 0, 0 });
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
 

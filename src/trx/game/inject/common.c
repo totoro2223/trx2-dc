@@ -30,11 +30,13 @@ typedef struct {
     const char *path;
 } M_LOAD_JOB;
 
-// Holds one injection file's decompressed payload, keyed by path.
+// Holds one injection file's payload, keyed by path: decompressed, or (on the
+// Dreamcast, uncompressed_size > 0) still deflated.
 typedef struct {
     char *path;
     char *payload;
     int32_t size;
+    int32_t uncompressed_size;
     INJECTION_VERSION version;
     INJECTION_FILE_TYPE type;
     bool trxi;
@@ -360,7 +362,7 @@ static M_PAYLOAD_ENTRY *M_GetCachedPayload(const char *const path)
 
 static void M_StorePayload(
     const char *const path, const char *const payload, const int32_t size,
-    const INJECTION_VERSION version, const INJECTION_FILE_TYPE type,
+    const int32_t uncompressed_size, const INJECTION_VERSION version, const INJECTION_FILE_TYPE type,
     const bool trxi)
 {
     if (path == nullptr) {
@@ -375,6 +377,7 @@ static void M_StorePayload(
             .path = Memory_DupStr(path),
             .payload = Memory_Dup(payload, size),
             .size = size,
+            .uncompressed_size = uncompressed_size,
             .version = version,
             .type = type,
             .trxi = trxi,
@@ -402,7 +405,13 @@ static bool M_LoadFromCache(
     injection->trxi = entry->trxi;
     injection->relevant = M_IsRelevant(&m_Context, entry->type);
     if (injection->relevant) {
-        injection->fp = File_OpenBuffer(entry->payload, entry->size);
+        if (entry->uncompressed_size > 0) {
+            injection->fp = File_OpenZlibBuffer(
+                Memory_Dup(entry->payload, entry->size), entry->size,
+                entry->uncompressed_size);
+        } else {
+            injection->fp = File_OpenBuffer(entry->payload, entry->size);
+        }
         File_SetSoftFailure(injection->fp, true);
     }
     SDL_UnlockMutex(m_PayloadCacheMutex);
@@ -504,6 +513,13 @@ static void M_ReadFile(
         injection->relevant = false;
         goto cleanup;
     }
+    // Render menu "Load cache": the deflated bytes stay for the next load,
+    // which saves reading the disc again (not the inflating).
+    if (g_Config.rendering.dc_load_cache) {
+        M_StorePayload(
+            file_name, compressed, compressed_size, uncompressed_size,
+            injection->version, injection->type, injection->trxi);
+    }
     injection->fp = File_OpenZlibBuffer(
         Memory_Dup(compressed, compressed_size), compressed_size,
         uncompressed_size);
@@ -528,7 +544,7 @@ static void M_ReadFile(
 #if !defined(__DREAMCAST__)
     // The Dreamcast cannot spare the memory to keep payloads between loads.
     M_StorePayload(
-        file_name, payload, uncompressed_size, injection->version,
+        file_name, payload, uncompressed_size, 0, injection->version,
         injection->type, injection->trxi);
 #endif
     injection->fp = File_OpenOwnedBuffer(payload, uncompressed_size);

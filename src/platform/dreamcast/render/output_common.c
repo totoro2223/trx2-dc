@@ -578,6 +578,19 @@ static void M_StatsEndScene(void)
         value[M_LOGIC] = between > slept ? (uint32_t)(between - slept) : 0;
     }
     m_Stats.end_us = now;
+    {
+        static uint64_t busy_us = 0;
+        static uint64_t total_us = 0;
+        const uint64_t waiting = (uint64_t)pvr.wait_us + pvr.map_wait_us + slept;
+        const uint64_t busy = (uint64_t)value[M_LOGIC] + value[M_DRAW]
+            + value[M_PASS] + value[M_SUBMIT] + value[M_MAP];
+        busy_us += busy;
+        total_us += busy + waiting;
+        if (total_us >= 1000000) {
+            g_DC_CpuPercent = (int32_t)(busy_us * 100 / total_us);
+            busy_us = total_us = 0;
+        }
+    }
     M_BenchFrame(now, value);
     g_DC_PassUs = 0;
     g_DC_BatcherFrameInstances = 0;

@@ -163,7 +163,7 @@ static void M_Draw(void)
             Output_Textures_GetSpriteUVWIndex(sprite_idx, 3)),
     };
 
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
 

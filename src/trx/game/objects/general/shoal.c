@@ -554,7 +554,7 @@ static bool M_Draw(const ITEM *const item)
     Output_Water_SetupFromRoom(Room_Get(p->anchor.room_num));
 
     const XYZ_32 base_pos = p->anchor.pos;
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
     OUTPUT_LIGHT_INFO light_info = {};

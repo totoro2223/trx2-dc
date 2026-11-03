@@ -98,7 +98,7 @@ static void M_DrawSplash(const FX_WATER_SPLASH *s)
         return;
     }
 
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
     const int32_t time4 = Output_GetTimeInGame() * 4;
@@ -163,7 +163,7 @@ static void M_DrawSplash(const FX_WATER_SPLASH *s)
 
 static void M_DrawRipple(const FX_WATER_RIPPLE *r)
 {
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
     const int32_t size = do_interp ? (int32_t)LERP(r->prev_size, r->size, ratio)

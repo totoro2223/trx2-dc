@@ -5,6 +5,7 @@
 #include <trx/game/camera/vars.h>
 #include <trx/game/collision/los.h>
 #include <trx/game/creature.h>
+#include <trx/game/game_flow/common.h>
 #include <trx/game/items/carrier.h>
 #include <trx/game/items/const.h>
 #include <trx/game/lara.h>
@@ -28,6 +29,17 @@
 #define M_ROOM_PROBE       32
 #define M_MAX_DISTANCE     (g_TRVersion < 3 ? WALL_L * 30 : STEP_L * 125) // = 30720 (TR1/2), 32000 (TR3+)
 #define M_ATTACK_RANGE     SQUARE(WALL_L * 3) // = 0x900000 = 9437184
+#define M_THINK_NEAR       (WALL_L * 6) // creatures closer than this decide every tick (Dreamcast)
+
+#if defined(__DREAMCAST__)
+// The throttles change the random sequence, so a demo (Lara's inputs replayed
+// against the original enemy behaviour) would drift.
+static bool M_InDemo(void)
+{
+    const GF_LEVEL *const level = GF_GetCurrentLevel();
+    return level != nullptr && level->type == GFL_DEMO;
+}
+#endif
 #define M_ESCAPE_CHANCE    2048
 #define M_RECOVER_CHANCE   256
 #define M_TARGET_TOLERANCE 0x400000
@@ -693,7 +705,21 @@ void Creature_ApplyMood(
     LOT_INFO *const lot = &creature->lot;
     const ITEM *enemy = creature->enemy;
 
-    switch (creature->mood) {
+    MOOD_TYPE mood = creature->mood;
+#if defined(__DREAMCAST__)
+    // A far creature that already follows a route picks its next box every
+    // other tick, each on its own phase. The route search and the steering
+    // below still run every tick. ponytail: fixed range and rate, tune if
+    // the console wants more.
+    if (!M_InDemo() && lot->target_box != NO_BOX
+        && lot->required_box != NO_BOX
+        && info->distance > SQUARE(M_THINK_NEAR)
+        && ((item->frame_num + Item_GetIndex(item)) & 1) != 0) {
+        mood = (MOOD_TYPE)-1;
+    }
+#endif
+
+    switch (mood) {
     case MOOD_BORED: {
         const int16_t box_num =
             lot->node[lot->zone_count * Random_GetControl() / 0x7FFF].box_num;
@@ -1793,6 +1819,17 @@ void Creature_GetAITarget(CREATURE *const creature)
 
     const uint8_t ai_bits = item->ai_bits;
 
+    // With Lara as the target, a creature that carries a marker flag found no
+    // marker on its last scan, since the first scan runs while it has no
+    // target at all. Markers do not move, so it looks again every 16th tick
+    // rather than walking every item of the level on each one.
+    int32_t scan_count = Item_GetTotalCount();
+#if defined(__DREAMCAST__)
+    if (!M_InDemo() && enemy == lara_item && ((item->frame_num + Item_GetIndex(item)) & 15) != 0) {
+        scan_count = 0;
+    }
+#endif
+
     if ((ai_bits & AI_GUARD) != 0) {
         creature->enemy = lara_item;
 
@@ -1811,7 +1848,7 @@ void Creature_GetAITarget(CREATURE *const creature)
                 item->ai_bits |= AI_MODIFY;
             }
         } else if (!creature->patrol_2 && enemy_object_id != O_AI_PATROL_1) {
-            for (int32_t i = 0; i < Item_GetTotalCount(); i++) {
+            for (int32_t i = 0; i < scan_count; i++) {
                 ITEM *const target = Item_Get(i);
 
                 if (target->object_id == O_AI_PATROL_1
@@ -1823,7 +1860,7 @@ void Creature_GetAITarget(CREATURE *const creature)
                 }
             }
         } else if (creature->patrol_2 && enemy_object_id != O_AI_PATROL_2) {
-            for (int32_t i = 0; i < Item_GetTotalCount(); i++) {
+            for (int32_t i = 0; i < scan_count; i++) {
                 ITEM *const target = Item_Get(i);
 
                 if (target->object_id == O_AI_PATROL_2
@@ -1845,7 +1882,7 @@ void Creature_GetAITarget(CREATURE *const creature)
         if (g_TRVersion >= 4 || (ai_bits & AI_MODIFY) != 0
             || creature->hurt_by_lara) {
             if (enemy_object_id != O_AI_AMBUSH) {
-                for (int32_t i = 0; i < Item_GetTotalCount(); i++) {
+                for (int32_t i = 0; i < scan_count; i++) {
                     ITEM *const target = Item_Get(i);
 
                     if (target->object_id == O_AI_AMBUSH
@@ -1888,7 +1925,7 @@ void Creature_GetAITarget(CREATURE *const creature)
         } else if (item->hit_status) {
             item->ai_bits &= ~AI_FOLLOW;
         } else if (enemy_object_id != O_AI_FOLLOW) {
-            for (int32_t i = 0; i < Item_GetTotalCount(); i++) {
+            for (int32_t i = 0; i < scan_count; i++) {
                 ITEM *const target = Item_Get(i);
 
                 if (target->object_id == O_AI_FOLLOW
@@ -1914,7 +1951,7 @@ void Creature_GetAITarget(CREATURE *const creature)
         }
         if (item->ai_bits == AI_MODIFY) {
             if (enemy_object_id != O_KEY_ITEM_4) {
-                for (int32_t i = 0; i < Item_GetTotalCount(); i++) {
+                for (int32_t i = 0; i < scan_count; i++) {
                     ITEM *const target = Item_Get(i);
 
                     if (target->object_id == O_KEY_ITEM_4
@@ -1927,7 +1964,7 @@ void Creature_GetAITarget(CREATURE *const creature)
                 }
             }
         } else if (enemy_object_id != O_SMALL_MEDIPACK_ITEM) {
-            for (int32_t i = 0; i < Item_GetTotalCount(); i++) {
+            for (int32_t i = 0; i < scan_count; i++) {
                 ITEM *const target = Item_Get(i);
                 if (target->object_id == O_SMALL_MEDIPACK_ITEM
                     && target->room_num != NO_ROOM && !target->ai_bits

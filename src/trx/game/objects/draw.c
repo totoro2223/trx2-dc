@@ -367,9 +367,9 @@ bool Object_DrawScaledItem(
         return false;
     }
 
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
-        Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
+        Interpolation_IsActive() && ratio > 0.0f && ratio < 1.0f;
     if (do_interp) {
         Matrix_ScaleXYZ((XYZ_32) {
             .x = LERP(prev_scale.x, scale.x, ratio),

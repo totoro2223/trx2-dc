@@ -67,6 +67,10 @@ extern int32_t g_DC_TestSave;
 // How many games have run since the console started.
 extern int32_t g_DC_Run;
 
+// Percent of the last second the SH-4 spent working, not waiting (sleeping or
+// for the PowerVR). Kept up to date by the frame stats.
+extern int32_t g_DC_CpuPercent;
+
 const DC_MODE_PARAMS *DC_Mode_Get(void);
 
 // Sets the options the mode picks (the frame rate, cel shading, relief, texture

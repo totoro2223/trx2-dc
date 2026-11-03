@@ -22,6 +22,14 @@
 #define M_LIVE_SLOTS 512
 #define M_LIVE_FRAMES 8
 
+// Printing to the serial port costs a lot on the console, so the trace keeps
+// its records but says nothing unless built with -DTRX_DC_ALLOC_TRACE_PRINT.
+#if defined(TRX_DC_ALLOC_TRACE_PRINT)
+    #define M_TRACE_PRINTF printf
+#else
+    #define M_TRACE_PRINTF(...) ((void)0)
+#endif
+
 void *__real_malloc(size_t size);
 void *__real_calloc(size_t count, size_t size);
 void *__real_realloc(void *ptr, size_t size);
@@ -61,16 +69,16 @@ static void M_Report(
     const void *const caller)
 {
     const struct mallinfo mem = mallinfo();
-    printf(
+    M_TRACE_PRINTF(
         "[alloc] %s %uK -> %p from %p (in use %uK) trace:", what,
         (unsigned)(size / 1024), result, caller,
         (unsigned)(mem.uordblks / 1024));
     uint32_t frames[10];
     const int count = M_Trace(frames, 10);
     for (int i = 0; i < count; i++) {
-        printf(" %08lx", (unsigned long)frames[i]);
+        M_TRACE_PRINTF(" %08lx", (unsigned long)frames[i]);
     }
-    printf("\n");
+    M_TRACE_PRINTF("\n");
 }
 
 static void M_Forget(void *const ptr)
@@ -115,18 +123,18 @@ void DC_AllocTrace_DumpLive(const char *const label)
             total += m_Live[i].size;
         }
     }
-    printf(
+    M_TRACE_PRINTF(
         "[live] %s: in use %uK, of which %uK in large blocks\n", label,
         (unsigned)(mem.uordblks / 1024), (unsigned)(total / 1024));
     for (int i = 0; i < M_LIVE_SLOTS; i++) {
         if (m_Live[i].ptr == nullptr) {
             continue;
         }
-        printf("[live] %uK trace:", (unsigned)(m_Live[i].size / 1024));
+        M_TRACE_PRINTF("[live] %uK trace:", (unsigned)(m_Live[i].size / 1024));
         for (int j = 0; j < M_LIVE_FRAMES && m_Live[i].frames[j] != 0; j++) {
-            printf(" %08lx", (unsigned long)m_Live[i].frames[j]);
+            M_TRACE_PRINTF(" %08lx", (unsigned long)m_Live[i].frames[j]);
         }
-        printf("\n");
+        M_TRACE_PRINTF("\n");
     }
 }
 
@@ -224,13 +232,13 @@ void DC_AllocTrace_DumpKept(const char *const label)
         }
         count++;
         bytes += kept->size;
-        printf("[kept] %p %u:", kept->ptr, (unsigned)kept->size);
+        M_TRACE_PRINTF("[kept] %p %u:", kept->ptr, (unsigned)kept->size);
         for (int j = 0; j < M_KEPT_FRAMES && kept->frames[j] != 0; j++) {
-            printf(" %08lx", (unsigned long)kept->frames[j]);
+            M_TRACE_PRINTF(" %08lx", (unsigned long)kept->frames[j]);
         }
-        printf("\n");
+        M_TRACE_PRINTF("\n");
     }
-    printf(
+    M_TRACE_PRINTF(
         "[kept] %s: %d blocks, %uK above %08lx (%d not followed)\n", label,
         count, (unsigned)(bytes / 1024), (unsigned long)m_KeptFrom,
         m_KeptLost);
@@ -507,7 +515,7 @@ static bool M_WalkHeap(
     if (print) {
         for (int b = 0; b < 64 && start + (uintptr_t)b * M_MAP_BUCKET < top;
              b++) {
-            printf(
+            M_TRACE_PRINTF(
                 "[heap] %08lx %3uK in %u\n",
                 (unsigned long)(start + (uintptr_t)b * M_MAP_BUCKET),
                 (unsigned)(used[b] / 1024), (unsigned)chunks[b]);
@@ -538,12 +546,12 @@ void DC_AllocTrace_DumpHeapMap(const char *const label)
             }
         }
         if (start == 0) {
-            printf("[heap] %s: could not walk the heap\n", label);
+            M_TRACE_PRINTF("[heap] %s: could not walk the heap\n", label);
             return;
         }
     } else if (!M_WalkHeap(start, top, false, &largest)) {
         const uint32_t *const words = (const uint32_t *)m_WalkBreak;
-        printf(
+        M_TRACE_PRINTF(
             "[heap] %s: the walk from %08lx breaks at %08lx (size %u): "
             "%08lx %08lx %08lx %08lx\n",
             label, (unsigned long)start, (unsigned long)m_WalkBreak,
@@ -552,7 +560,7 @@ void DC_AllocTrace_DumpHeapMap(const char *const label)
             (unsigned long)words[3]);
         return;
     }
-    printf(
+    M_TRACE_PRINTF(
         "[heap] %s: %08lx-%08lx, largest hole %uK\n", label,
         (unsigned long)start, (unsigned long)top, (unsigned)(largest / 1024));
     M_WalkHeap(start, top, true, &largest);

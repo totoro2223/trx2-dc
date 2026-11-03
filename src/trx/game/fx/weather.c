@@ -227,7 +227,7 @@ static void M_UpdateRain(void)
 static void M_DrawRain(void)
 {
     const XZ_32 wind = Sparks_GetSmokeWind();
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
 
@@ -376,7 +376,7 @@ static void M_DrawSnow(void)
     }
 
     const int32_t sprite_idx = obj->mesh_idx;
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
     for (int32_t i = 0; i < M_MAX_WEATHER; i++) {

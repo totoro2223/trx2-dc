@@ -74,6 +74,7 @@ int32_t g_DC_TestExit = 0;
 int32_t g_DC_TestComplete = 0;
 int32_t g_DC_TestSave = 0;
 int32_t g_DC_Run = 0;
+int32_t g_DC_CpuPercent = 0;
 
 const DC_MODE_PARAMS *DC_Mode_Get(void)
 {

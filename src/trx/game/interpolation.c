@@ -53,10 +53,10 @@
 
 static bool m_IsEnabled = true;
 static CAMERA_TYPE m_PrevCameraType = CAM_CHASE;
-static double m_Rate = 0.0;
-static double m_UIRate = 0.0;
-static double m_WorldRate = 0.0;
-static double m_CameraRate = 0.0;
+static TRX_REAL m_Rate = 0.0f;
+static TRX_REAL m_UIRate = 0.0f;
+static TRX_REAL m_WorldRate = 0.0f;
+static TRX_REAL m_CameraRate = 0.0f;
 
 static int32_t M_GetFPS(void)
 {
@@ -198,7 +198,7 @@ static void M_CommitCamera(void)
     COMMIT(&g_Camera, target.z);
 }
 
-static void M_InterpolateCamera(const double ratio)
+static void M_InterpolateCamera(const TRX_REAL ratio)
 {
     INTERPOLATE_F(&g_Camera, shift, ratio);
     INTERPOLATE_F(&g_Camera, pos.x, ratio);
@@ -227,7 +227,7 @@ static void M_RememberLara(LARA_INFO *const lara)
     REMEMBER(lara, head_rot.z);
 }
 
-static void M_InterpolateLara(const double ratio, LARA_INFO *const lara)
+static void M_InterpolateLara(const TRX_REAL ratio, LARA_INFO *const lara)
 {
     ASSERT(lara != nullptr);
     INTERPOLATE_ROT(&lara->left_arm, rot.x, ratio, DEG_45);
@@ -273,7 +273,7 @@ static void M_RememberBraidSegment(HAIR_SEGMENT *const segment)
 }
 
 static void M_InterpolateBraidSegment(
-    HAIR_SEGMENT *const segment, const double ratio, const XYZ_32 max_delta)
+    HAIR_SEGMENT *const segment, const TRX_REAL ratio, const XYZ_32 max_delta)
 {
     ASSERT(segment != nullptr);
     INTERPOLATE(segment, pos.x, ratio, max_delta.x);
@@ -313,7 +313,7 @@ static void M_CommitBraid(void)
     }
 }
 
-static void M_InterpolateBraid(const double ratio, ITEM *const lara_item)
+static void M_InterpolateBraid(const TRX_REAL ratio, ITEM *const lara_item)
 {
     ASSERT(lara_item != nullptr);
     const XYZ_32 max_delta = M_GetItemMaxDelta(lara_item);
@@ -336,7 +336,7 @@ static void M_CommitItem(ITEM *const item)
     COMMIT(item, rot.z);
 }
 
-static void M_InterpolateItem(ITEM *const item, const double ratio)
+static void M_InterpolateItem(ITEM *const item, const TRX_REAL ratio)
 {
     const XYZ_32 max_delta = M_GetItemMaxDelta(item);
     INTERPOLATE(item, floor, ratio, max_delta.y);
@@ -360,7 +360,7 @@ static void M_RememberItems(void)
     }
 }
 
-static void M_InterpolateItems(const double ratio)
+static void M_InterpolateItems(const TRX_REAL ratio)
 {
     const int16_t lara_vehicle_num = Lara_Vehicle_GetIndex();
     for (int32_t i = 0; i < Item_GetTotalCount(); i++) {
@@ -392,7 +392,7 @@ static void M_RememberEffect(EFFECT *const effect)
     effect->interp.is_new = false;
 }
 
-static void M_InterpolateEffect(const double ratio, EFFECT *const effect)
+static void M_InterpolateEffect(const TRX_REAL ratio, EFFECT *const effect)
 {
     ASSERT(effect != nullptr);
     if (effect->interp.is_new) {
@@ -424,7 +424,7 @@ static void M_RememberEffects(void)
     }
 }
 
-static void M_InterpolateEffects(const double ratio)
+static void M_InterpolateEffects(const TRX_REAL ratio)
 {
     int16_t effect_num = Effect_GetActiveNum();
     while (effect_num != NO_EFFECT) {
@@ -454,7 +454,7 @@ bool Interpolation_IsActive(void)
     return m_IsEnabled && M_GetFPS() == 60 && !Shell_IsExiting();
 }
 
-double Interpolation_GetWorldRate(void)
+TRX_REAL Interpolation_GetWorldRate(void)
 {
     // Photo mode steps the world itself and keeps its own rate, so the frozen
     // gameplay state must not force the rate back to 1.0.
@@ -465,7 +465,7 @@ double Interpolation_GetWorldRate(void)
     return m_WorldRate;
 }
 
-double Interpolation_GetCameraRate(void)
+TRX_REAL Interpolation_GetCameraRate(void)
 {
     if (!Interpolation_IsActive()) {
         return 1.0;
@@ -473,23 +473,23 @@ double Interpolation_GetCameraRate(void)
     return m_CameraRate;
 }
 
-double Interpolation_GetRate(void)
+TRX_REAL Interpolation_GetRate(void)
 {
     return m_Rate;
 }
 
-void Interpolation_SetRate(double rate)
+void Interpolation_SetRate(TRX_REAL rate)
 {
     m_Rate = rate;
     m_UIRate = rate;
 }
 
-double Interpolation_GetUIRate(void)
+TRX_REAL Interpolation_GetUIRate(void)
 {
     return m_UIRate;
 }
 
-void Interpolation_SetUIRate(const double rate)
+void Interpolation_SetUIRate(const TRX_REAL rate)
 {
     m_UIRate = rate;
 }

@@ -830,10 +830,12 @@ static void M_WriteTexels(
 // words), true if all came.
 static bool M_ReadLuaBlob(FILE *const fp, void *const dst, const size_t size)
 {
-    enum { M_CHUNK = 16384 };
-    uint16_t *const chunk = malloc(M_CHUNK);
+    // On the stack: a new screen mode can come while the heap is full, and a
+    // buffer from it would fail then, leaving the bytecode unread.
+    enum { M_CHUNK = 2048 };
+    uint16_t chunk[M_CHUNK / 2];
     size_t done = 0;
-    while (chunk != nullptr && done < size) {
+    while (done < size) {
         const size_t n = size - done < M_CHUNK ? size - done : M_CHUNK;
         if (fread(chunk, 1, n, fp) != n) {
             break;
@@ -841,7 +843,6 @@ static bool M_ReadLuaBlob(FILE *const fp, void *const dst, const size_t size)
         M_WriteTexels((uint16_t *)((uint8_t *)dst + done), chunk, n / 2);
         done += n;
     }
-    free(chunk);
     return done == size;
 }
 
@@ -860,17 +861,41 @@ static FILE *M_OpenLuaBlob(size_t *const size)
 }
 
 // After a new screen mode emptied video memory: the bytecode again, where it
-// was.
+// was. Read from the file DC_PVR_LuaBlob left open: a new screen mode can come
+// while the heap is full, when a file could not be opened any more.
+static FILE *m_LuaFile = nullptr;
+
 static void M_PlaceLuaBlob(void)
 {
-    size_t size;
-    FILE *const fp = M_OpenLuaBlob(&size);
-    void *const ptr = fp != nullptr ? pvr_mem_malloc(size) : nullptr;
-    if (ptr != m_LuaBlob.ptr || !M_ReadLuaBlob(fp, ptr, size)) {
-        LOG_ERROR("TRXLUA.BIN did not come back to video memory");
+    void *ptr =
+        m_LuaFile != nullptr ? pvr_mem_malloc(m_LuaBlob.size) : nullptr;
+    // A smaller screen leaves the texture memory starting lower, so the first
+    // block lands below where the bytecode was. A filler up to that address
+    // pushes it there, and goes once the bytecode is in. The allocator keeps
+    // a header of its own in front of a block, so the filler is shortened by
+    // however far the bytecode lands past its address, once.
+    if (ptr != nullptr && (uintptr_t)ptr < (uintptr_t)m_LuaBlob.ptr) {
+        size_t gap = (uintptr_t)m_LuaBlob.ptr - (uintptr_t)ptr;
+        pvr_mem_free(ptr);
+        for (int32_t tries = 0; tries < 2; tries++) {
+            void *const filler = pvr_mem_malloc(gap);
+            ptr = pvr_mem_malloc(m_LuaBlob.size);
+            if (filler != nullptr) {
+                pvr_mem_free(filler);
+            }
+            if (ptr == m_LuaBlob.ptr || (uintptr_t)ptr < (uintptr_t)m_LuaBlob.ptr
+                || (uintptr_t)ptr - (uintptr_t)m_LuaBlob.ptr >= gap) {
+                break;
+            }
+            gap -= (uintptr_t)ptr - (uintptr_t)m_LuaBlob.ptr;
+            pvr_mem_free(ptr);
+        }
     }
-    if (fp != nullptr) {
-        fclose(fp);
+    if (ptr != m_LuaBlob.ptr || fseek(m_LuaFile, 0, SEEK_SET) != 0
+        || !M_ReadLuaBlob(m_LuaFile, ptr, m_LuaBlob.size)) {
+        LOG_ERROR(
+            "TRXLUA.BIN did not come back to video memory: got %p, was %p",
+            ptr, (const void *)m_LuaBlob.ptr);
     }
 }
 
@@ -899,7 +924,11 @@ const uint8_t *DC_PVR_LuaBlob(void)
         m_LuaBlob.ptr = ptr;
         m_LuaBlob.size = size;
     }
-    fclose(fp);
+    if (m_LuaBlob.in_vram && m_LuaBlob.ptr != nullptr) {
+        m_LuaFile = fp;
+    } else {
+        fclose(fp);
+    }
     return m_LuaBlob.ptr;
 }
 

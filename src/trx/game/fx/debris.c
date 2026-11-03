@@ -405,7 +405,7 @@ static void M_DrawDebris(const M_DEBRIS *const debris, const double ratio)
 
 static void M_Draw(void)
 {
-    const double ratio = Interpolation_GetWorldRate();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
     for (int32_t i = 0; i < M_MAX_DEBRIS; i++) {
         const M_DEBRIS *const debris = &m_Priv.debris[i];
         if (debris->on) {

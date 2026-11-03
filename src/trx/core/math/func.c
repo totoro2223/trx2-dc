@@ -136,7 +136,7 @@ int16_t Math_DirectionToAngle(const DIRECTION dir)
     }
 }
 
-int32_t Math_AngleMean(int32_t angle1, int32_t angle2, double ratio)
+int32_t Math_AngleMean(int32_t angle1, int32_t angle2, TRX_REAL ratio)
 {
     int32_t diff = angle2 - angle1;
 
