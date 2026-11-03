@@ -8,6 +8,21 @@
 
 uint32_t Math_Sqrt(uint32_t n)
 {
+#if defined(__DREAMCAST__)
+    // fsqrt gives the root to ~24 bits; the integer fix-up makes it the exact
+    // floor the bit loop below returns.
+    uint32_t r = (uint32_t)sqrtf((float)n);
+    if (r > 65535) {
+        r = 65535;
+    }
+    while (r * r > n) {
+        r--;
+    }
+    while (r < 65535 && (r + 1) * (r + 1) <= n) {
+        r++;
+    }
+    return r;
+#else
     uint32_t result = 0;
     uint32_t base = 0x40000000;
     do {
@@ -27,10 +42,31 @@ uint32_t Math_Sqrt(uint32_t n)
     } while (base);
 
     return result;
+#endif
 }
 
 uint64_t Math_Sqrt64(uint64_t n)
 {
+#if defined(__DREAMCAST__)
+    // Estimate in floats, one Newton step on the exact 64-bit remainder, then
+    // an exact fix-up: the same floor as the bit loop, without 32 rounds.
+    if (n < (1ULL << 32)) {
+        return Math_Sqrt((uint32_t)n);
+    }
+    uint64_t r = (uint64_t)sqrtf((float)n);
+    const int64_t d = (int64_t)(n - r * r);
+    r = (uint64_t)((int64_t)r + (int64_t)((float)d / (2.0f * (float)r)));
+    if (r > 0xFFFFFFFFULL) {
+        r = 0xFFFFFFFFULL;
+    }
+    while (r * r > n) {
+        r--;
+    }
+    while (r < 0xFFFFFFFFULL && (r + 1) * (r + 1) <= n) {
+        r++;
+    }
+    return r;
+#else
     uint64_t result = 0;
     uint64_t bit = 1ULL << 62;
 
@@ -49,6 +85,7 @@ uint64_t Math_Sqrt64(uint64_t n)
     }
 
     return result;
+#endif
 }
 
 void Math_GetVectorAngles(

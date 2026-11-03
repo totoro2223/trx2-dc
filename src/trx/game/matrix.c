@@ -495,13 +495,8 @@ static void M_ScaleZ(MATRIX *const m, const int32_t angle)
     m->_22 = ((int64_t)m->_22 * angle) >> W2V_SHIFT;
 }
 
-static void M_RotX(MATRIX *const m, const int16_t angle)
+static void M_RotXSC(MATRIX *const m, const int32_t sx, const int32_t cx)
 {
-    if (angle == 0) {
-        return;
-    }
-    const int32_t sx = Math_Sin(angle);
-    const int32_t cx = Math_Cos(angle);
 
     int32_t r0, r1;
     r0 = m->_01 * cx + m->_02 * sx;
@@ -520,14 +515,15 @@ static void M_RotX(MATRIX *const m, const int16_t angle)
     m->_22 = r1 >> W2V_SHIFT;
 }
 
-static void M_RotY(MATRIX *const m, const int16_t angle)
+static void M_RotX(MATRIX *const m, const int16_t angle)
 {
-    if (angle == 0) {
-        return;
+    if (angle != 0) {
+        M_RotXSC(m, Math_Sin(angle), Math_Cos(angle));
     }
+}
 
-    const int32_t sy = Math_Sin(angle);
-    const int32_t cy = Math_Cos(angle);
+static void M_RotYSC(MATRIX *const m, const int32_t sy, const int32_t cy)
+{
 
     int32_t r0, r1;
     r0 = m->_00 * cy - m->_02 * sy;
@@ -546,14 +542,15 @@ static void M_RotY(MATRIX *const m, const int16_t angle)
     m->_22 = r1 >> W2V_SHIFT;
 }
 
-static void M_RotZ(MATRIX *const m, const int16_t angle)
+static void M_RotY(MATRIX *const m, const int16_t angle)
 {
-    if (angle == 0) {
-        return;
+    if (angle != 0) {
+        M_RotYSC(m, Math_Sin(angle), Math_Cos(angle));
     }
+}
 
-    const int32_t sz = Math_Sin(angle);
-    const int32_t cz = Math_Cos(angle);
+static void M_RotZSC(MATRIX *const m, const int32_t sz, const int32_t cz)
+{
 
     int32_t r0, r1;
     r0 = m->_00 * cz + m->_01 * sz;
@@ -572,6 +569,13 @@ static void M_RotZ(MATRIX *const m, const int16_t angle)
     m->_21 = r1 >> W2V_SHIFT;
 }
 
+static void M_RotZ(MATRIX *const m, const int16_t angle)
+{
+    if (angle != 0) {
+        M_RotZSC(m, Math_Sin(angle), Math_Cos(angle));
+    }
+}
+
 // Swaps a rotation for the one that undoes it. A rotation matrix's inverse is
 // its transpose, and these carry no scale.
 static void M_Transpose3x3(MATRIX *const m)
@@ -586,6 +590,34 @@ static void M_RotYXZ(MATRIX *const m, const XYZ_16 rotation)
     M_RotY(m, rotation.y);
     M_RotX(m, rotation.x);
     M_RotZ(m, rotation.z);
+}
+
+// Sine and cosine are looked up once for all the matrices a call turns (the
+// view and world stacks, and their interpolation twins).
+static void M_RotYXZ_N(
+    MATRIX *const *const ms, const int32_t n, const XYZ_16 rotation)
+{
+    if (rotation.y != 0) {
+        const int32_t s = Math_Sin(rotation.y);
+        const int32_t c = Math_Cos(rotation.y);
+        for (int32_t i = 0; i < n; i++) {
+            M_RotYSC(ms[i], s, c);
+        }
+    }
+    if (rotation.x != 0) {
+        const int32_t s = Math_Sin(rotation.x);
+        const int32_t c = Math_Cos(rotation.x);
+        for (int32_t i = 0; i < n; i++) {
+            M_RotXSC(ms[i], s, c);
+        }
+    }
+    if (rotation.z != 0) {
+        const int32_t s = Math_Sin(rotation.z);
+        const int32_t c = Math_Cos(rotation.z);
+        for (int32_t i = 0; i < n; i++) {
+            M_RotZSC(ms[i], s, c);
+        }
+    }
 }
 
 // Reads a rotation back out of a matrix in the Y, X, Z order M_RotYXZ puts it
@@ -848,26 +880,38 @@ void Matrix_ScaleZ(const int32_t scale)
 
 void Matrix_RotX(const int16_t angle)
 {
-    M_RotX(g_MatrixPtr, angle);
-    M_RotX(g_WMatrixPtr, angle);
+    if (angle != 0) {
+        const int32_t s = Math_Sin(angle);
+        const int32_t c = Math_Cos(angle);
+        M_RotXSC(g_MatrixPtr, s, c);
+        M_RotXSC(g_WMatrixPtr, s, c);
+    }
 }
 
 void Matrix_RotY(const int16_t angle)
 {
-    M_RotY(g_MatrixPtr, angle);
-    M_RotY(g_WMatrixPtr, angle);
+    if (angle != 0) {
+        const int32_t s = Math_Sin(angle);
+        const int32_t c = Math_Cos(angle);
+        M_RotYSC(g_MatrixPtr, s, c);
+        M_RotYSC(g_WMatrixPtr, s, c);
+    }
 }
 
 void Matrix_RotZ(const int16_t angle)
 {
-    M_RotZ(g_MatrixPtr, angle);
-    M_RotZ(g_WMatrixPtr, angle);
+    if (angle != 0) {
+        const int32_t s = Math_Sin(angle);
+        const int32_t c = Math_Cos(angle);
+        M_RotZSC(g_MatrixPtr, s, c);
+        M_RotZSC(g_WMatrixPtr, s, c);
+    }
 }
 
 void Matrix_Rot16(const XYZ_16 rotation)
 {
-    M_RotYXZ(g_MatrixPtr, rotation);
-    M_RotYXZ(g_WMatrixPtr, rotation);
+    MATRIX *const ms[] = { g_MatrixPtr, g_WMatrixPtr };
+    M_RotYXZ_N(ms, 2, rotation);
 }
 
 void Matrix_RotX_M(MATRIX *const m, const int16_t angle)
@@ -1040,42 +1084,54 @@ void Matrix_TranslateRel32_ID(const XYZ_32 offset_1, const XYZ_32 offset_2)
 
 void Matrix_RotY_I(const int16_t angle)
 {
-    M_RotY(g_MatrixPtr, angle);
-    M_RotY(g_WMatrixPtr, angle);
-    M_RotY(m_IMMatrixPtr, angle);
-    M_RotY(m_WIMMatrixPtr, angle);
+    if (angle != 0) {
+        const int32_t s = Math_Sin(angle);
+        const int32_t c = Math_Cos(angle);
+        M_RotYSC(g_MatrixPtr, s, c);
+        M_RotYSC(g_WMatrixPtr, s, c);
+        M_RotYSC(m_IMMatrixPtr, s, c);
+        M_RotYSC(m_WIMMatrixPtr, s, c);
+    }
 }
 
 void Matrix_RotX_I(const int16_t angle)
 {
-    M_RotX(g_MatrixPtr, angle);
-    M_RotX(g_WMatrixPtr, angle);
-    M_RotX(m_IMMatrixPtr, angle);
-    M_RotX(m_WIMMatrixPtr, angle);
+    if (angle != 0) {
+        const int32_t s = Math_Sin(angle);
+        const int32_t c = Math_Cos(angle);
+        M_RotXSC(g_MatrixPtr, s, c);
+        M_RotXSC(g_WMatrixPtr, s, c);
+        M_RotXSC(m_IMMatrixPtr, s, c);
+        M_RotXSC(m_WIMMatrixPtr, s, c);
+    }
 }
 
 void Matrix_RotZ_I(const int16_t angle)
 {
-    M_RotZ(g_MatrixPtr, angle);
-    M_RotZ(g_WMatrixPtr, angle);
-    M_RotZ(m_IMMatrixPtr, angle);
-    M_RotZ(m_WIMMatrixPtr, angle);
+    if (angle != 0) {
+        const int32_t s = Math_Sin(angle);
+        const int32_t c = Math_Cos(angle);
+        M_RotZSC(g_MatrixPtr, s, c);
+        M_RotZSC(g_WMatrixPtr, s, c);
+        M_RotZSC(m_IMMatrixPtr, s, c);
+        M_RotZSC(m_WIMMatrixPtr, s, c);
+    }
 }
 
 void Matrix_Rot16_I(const XYZ_16 rotation)
 {
-    M_RotYXZ(g_MatrixPtr, rotation);
-    M_RotYXZ(g_WMatrixPtr, rotation);
-    M_RotYXZ(m_IMMatrixPtr, rotation);
-    M_RotYXZ(m_WIMMatrixPtr, rotation);
+    MATRIX *const ms[] = {
+        g_MatrixPtr, g_WMatrixPtr, m_IMMatrixPtr, m_WIMMatrixPtr
+    };
+    M_RotYXZ_N(ms, 4, rotation);
 }
 
 void Matrix_Rot16_ID(const XYZ_16 rotation_1, const XYZ_16 rotation_2)
 {
-    M_RotYXZ(g_MatrixPtr, rotation_1);
-    M_RotYXZ(g_WMatrixPtr, rotation_1);
-    M_RotYXZ(m_IMMatrixPtr, rotation_2);
-    M_RotYXZ(m_WIMMatrixPtr, rotation_2);
+    MATRIX *const a[] = { g_MatrixPtr, g_WMatrixPtr };
+    MATRIX *const b[] = { m_IMMatrixPtr, m_WIMMatrixPtr };
+    M_RotYXZ_N(a, 2, rotation_1);
+    M_RotYXZ_N(b, 2, rotation_2);
 }
 
 void Matrix_LookAt(

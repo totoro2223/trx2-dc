@@ -106,6 +106,30 @@ Reparto de Londres (graphics, ms por frame): pass ~12,7 (estáticos y sprites
     editan); su primer bucle (`DC_Bump_HalfTexel`/`M_PageBlock`) sigue siendo
     por texel. Antes, comprobar en Flycast el relieve del disco (PROBADO, fila
     del 27/10/2026).
+14. **Matemática de enteros a FPU o ensamblador** (análisis 02/11/2026, sin
+    medir; Flycast no modela el coste, así que la ganancia solo se ve en
+    consola: ver la fila FALLIDO de `fsrra` en PROBADO). Por orden:
+    a. (HECHO 02/11, sin medir en consola) `Math_Sqrt`/`Math_Sqrt64` (`core/math/func.c`): raíz por bits (16 y 32
+       vueltas, la de 64 sobre enteros de 64 en 32 bits). Usada en
+       distancias, colisión, cámara, IA y vehículos. Pasar a `fsqrt`/`fsrra`.
+    b. (HECHO 02/11) `Math_Atan` (`core/math/trig.c`): `0x800 * y / x` es una división
+       entera por llamada y la SH-4 no la tiene. Recíproco en float o `div1`.
+    c. (HECHO en C: seno/coseno una vez; falta la rutina `.S` solo si el perfil lo pide) Pila de matrices (`game/matrix.c`): `M_RotX/Y/Z`, `M_TranslateRel`,
+       `Matrix_Mul3x3_M`, `Matrix_Push`. Cada operación se repite en 2
+       matrices (vista y mundo), 4 en las `_I`/`_ID`, y `Math_Sin/Cos` se
+       llaman en cada una. Una rutina `.S` con seno/coseno una vez y
+       `dmuls.l`/`mac.l` sobre todas. Parte se gana ya en C calculándolos una
+       vez. Lara hace 73 llamadas en `lara/draw.c`, 40 en `hair.c`.
+    d. `M_InterpolateFloat`: `sqrtf`, división, `acosf` y 3 `sinf` por
+       mezcla. `fsrra` para 1/raíz; `fsca` o mezcla lineal siempre. Enlaza con
+       la 12 (~0,16 ms).
+    e. `Math_Sin`: la rama `m_UseCoarseTable` y `Math_Cos` que la llama otra
+       vez; inline sin la rama en DC (es C).
+    f. `M_Turn`/`XYZ_32_Rotate*` (`core/math/geom.c`): solo si el perfil lo
+       señala (el pelo de Lara es el mayor usuario).
+    Cada una con la comprobación de 0 diferencias de las rutinas `.S`
+    anteriores. No pasar a ensamblador: relieve, `Sparks_Control`,
+    `Memory_Alloc`, Lua (PROBADO).
 
 ## D. Memoria
 

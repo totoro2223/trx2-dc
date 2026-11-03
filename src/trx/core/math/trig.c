@@ -511,7 +511,21 @@ int32_t Math_Atan(int32_t x, int32_t y)
         y = tmp;
     }
 
+#if defined(__DREAMCAST__)
+    // The integer division is a loop on the SH-4; fdiv plus an exact fix-up
+    // gives the same quotient.
+    const int32_t num = 0x800 * y;
+    int32_t q = (int32_t)((float)num / (float)x);
+    const int32_t rem = num - q * x;
+    if (rem < 0) {
+        q--;
+    } else if (rem >= x) {
+        q++;
+    }
+    int32_t result = m_AtanBaseTable[base] + m_AtanAngleTable[q];
+#else
     int32_t result = m_AtanBaseTable[base] + m_AtanAngleTable[0x800 * y / x];
+#endif
     if (result < 0) {
         result = -result;
     }
