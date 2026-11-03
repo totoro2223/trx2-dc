@@ -160,6 +160,69 @@ static const char *M_GetTransparencyCacheFilename(void)
     return String_FormatStatic("object_transparency_%s.cache.dat", level_key);
 }
 
+#if defined(__DREAMCAST__)
+// The disc has no directories and nothing writes the file cache, so every load
+// drew all the meshes again to find which textures are see-through. The answer
+// is kept in memory instead: a bit per object texture, per level, for as long
+// as the process runs (a repeated load of a level skips the redraw).
+    #define M_MEM_CACHE_ENTRIES 24
+    #define M_MEM_CACHE_BITS 2048
+
+static struct {
+    uint64_t checksum;
+    int32_t count;
+    uint8_t bits[M_MEM_CACHE_BITS / 8];
+} m_MemCache[M_MEM_CACHE_ENTRIES];
+static int32_t m_MemCacheNext = 0;
+
+static bool M_TryLoadTransparencyCache(void)
+{
+    const int32_t n = Output_GetObjectTextureCount();
+    const uint64_t checksum = M_ComputeTransparencyChecksum();
+    if (checksum == 0 || n <= 0 || n > M_MEM_CACHE_BITS) {
+        return false;
+    }
+    for (int32_t i = 0; i < M_MEM_CACHE_ENTRIES; i++) {
+        if (m_MemCache[i].checksum != checksum || m_MemCache[i].count != n) {
+            continue;
+        }
+        for (int32_t j = 0; j < n; j++) {
+            m_Priv.uvws.has_transparency_objects[j] =
+                (m_MemCache[i].bits[j >> 3] >> (j & 7)) & 1;
+        }
+        return true;
+    }
+    return false;
+}
+
+static void M_WriteTransparencyCache(void)
+{
+    const int32_t n = Output_GetObjectTextureCount();
+    const uint64_t checksum = M_ComputeTransparencyChecksum();
+    if (checksum == 0 || n <= 0 || n > M_MEM_CACHE_BITS) {
+        return;
+    }
+    int32_t slot = -1;
+    for (int32_t i = 0; i < M_MEM_CACHE_ENTRIES; i++) {
+        if (m_MemCache[i].checksum == checksum) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        slot = m_MemCacheNext;
+        m_MemCacheNext = (m_MemCacheNext + 1) % M_MEM_CACHE_ENTRIES;
+    }
+    memset(m_MemCache[slot].bits, 0, sizeof(m_MemCache[slot].bits));
+    for (int32_t j = 0; j < n; j++) {
+        if (m_Priv.uvws.has_transparency_objects[j]) {
+            m_MemCache[slot].bits[j >> 3] |= 1 << (j & 7);
+        }
+    }
+    m_MemCache[slot].count = n;
+    m_MemCache[slot].checksum = checksum;
+}
+#else
 static bool M_TryLoadTransparencyCache(void)
 {
     const int32_t texture_count = Output_GetObjectTextureCount();
@@ -212,6 +275,7 @@ static void M_WriteTransparencyCache(void)
         sizeof(bool) * (size_t)texture_count);
     File_Close(file);
 }
+#endif
 
 static float M_NormalizeObjectUV(const uint16_t uv)
 {

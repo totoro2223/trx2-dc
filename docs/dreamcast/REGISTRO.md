@@ -1235,3 +1235,5 @@ ni CDI ni Flycast.
 - 02/11/2026 análisis de lo que queda en C y podría ir a FPU/ensamblador (matemática de enteros, pila de matrices, mezcla de Lara): guardado como tarea 14 de TAREAS.md. Sin medir.
 
 - 02/11/2026 tarea 14 a, b y c (parte C): `Math_Sqrt`/`Math_Sqrt64` por `fsqrt` con corrección entera exacta; `Math_Atan` sin división entera (`fdiv` y corrección); `Matrix_Rot{X,Y,Z}`, `Matrix_Rot16`, `_I` e `_ID` buscan seno/coseno una vez y lo aplican a las 2 o 4 matrices. Resultados idénticos a los anteriores (prueba en PC). No se pasó a `.S` la pila de matrices: el coste estaba en las búsquedas de seno, no en los `mul.l`. Sin medir en consola.
+
+- 02/11/2026 B parcial (TAREAS 66): la caché de transparencia de objetos pasa a memoria en DC (el disco no tiene directorios y el fichero nunca se escribía). Solo ayuda a cargas repetidas; hornearla en `make_disc.sh` sigue pendiente. B completo (`.DCL`) no se empezó: sin `meson` en el PC no hay motor en host para volcar el estado cargado.

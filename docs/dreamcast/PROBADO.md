@@ -151,6 +151,7 @@ Por defecto, el modo Gráficos usa Soft (high).
 | Cuelgue al morir/reiniciar el nivel | Muy mejorado (8 cargas seguidas bien, builds 285–292). Falta confirmar el caso exacto de morir |
 | Experimental 60: franja negra arriba a 320×240 | Sin confirmar |
 | `Math_Sqrt`/`Math_Sqrt64` con `fsqrt` + ajuste entero, `Math_Atan` con `fdiv` + ajuste entero, y seno/coseno de la pila de matrices calculados una vez por llamada (`M_RotYXZ_N`, `Matrix_Rot*_I/_ID`) | SIN MEDIR | compila (build tras la 1068); 0 diferencias frente al bucle de bits y a la división entera en el PC (millones de casos + bordes); la ganancia solo se ve en consola real | 02/11/2026 |
+| Caché de transparencia de objetos en memoria (`textures.c`, 24 niveles × 256 B): una carga repetida del mismo nivel no vuelve a dibujar todas las mallas | SIN MEDIR | compila; la primera carga de cada nivel sigue igual; falta ver en el registro serie que la 2.ª carga salta `M_PrepareObjectTransparencyFlags` y su tiempo | 02/11/2026 |
 
 ## Cosas hechas que el usuario no ha visto en pantalla
 
