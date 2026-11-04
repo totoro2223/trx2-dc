@@ -34,6 +34,10 @@ extern int32_t g_DC_TestShadow;
 // A test disc that fixes the cel shading and the room cel shading (0 or 1;
 // -1 leaves them to the mode).
 extern int32_t g_DC_TestCel;
+// A test disc that fixes the frame rate (TRX_DC_FPS: 30 or 60).
+extern int32_t g_DC_TestFps;
+// A test disc that fixes the enemy simulation (TRX_DC_AI: 0 TRX, 1 original).
+extern int32_t g_DC_TestOriginalAI;
 extern int32_t g_DC_TestRoomCel;
 extern int32_t g_DC_TestBump;
 // A test disc with the object shadows on (make_disc.sh's TRX_DC_OBJECT_SHADOWS,

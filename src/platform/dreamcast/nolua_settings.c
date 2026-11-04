@@ -35,6 +35,8 @@ typedef enum {
     M_ROW_UI_FILTER,
     M_ROW_MEMORY_HUD,
     M_ROW_LOAD_CACHE,
+    M_ROW_ORIGINAL_AI,
+    M_ROW_LINEAR_POSE,
     M_ROW_NUMBER_OF,
 } M_ROW;
 
@@ -135,6 +137,11 @@ static const char *M_Name(const M_ROW row)
         return M_GS("settings/rendering.dc_memory_hud/title", "Memory use");
     case M_ROW_LOAD_CACHE:
         return M_GS("settings/rendering.dc_load_cache/title", "Load cache");
+    case M_ROW_ORIGINAL_AI:
+        return M_GS(
+            "settings/rendering.dc_original_ai/title", "Enemy AI (reload)");
+    case M_ROW_LINEAR_POSE:
+        return M_GS("settings/rendering.dc_linear_pose/title", "Pose blend");
     default:
         return M_GS("settings/rendering.ui_filter/title", "UI filter");
     }
@@ -169,6 +176,10 @@ static const char *M_Value(const M_ROW row)
         return M_OnOff(g_Config.rendering.dc_memory_hud);
     case M_ROW_LOAD_CACHE:
         return M_OnOff(g_Config.rendering.dc_load_cache);
+    case M_ROW_ORIGINAL_AI:
+        return g_Config.rendering.dc_original_ai ? "Original" : "TRX";
+    case M_ROW_LINEAR_POSE:
+        return g_Config.rendering.dc_linear_pose ? "Linear" : "Slerp";
     default:
         return M_FilterName(g_Config.rendering.ui_filter);
     }
@@ -242,6 +253,12 @@ static void M_Step(const M_ROW row, const int32_t rate)
         break;
     case M_ROW_LOAD_CACHE:
         CONFIG_TOGGLE(g_Config.rendering.dc_load_cache);
+        break;
+    case M_ROW_ORIGINAL_AI:
+        CONFIG_TOGGLE(g_Config.rendering.dc_original_ai);
+        break;
+    case M_ROW_LINEAR_POSE:
+        CONFIG_TOGGLE(g_Config.rendering.dc_linear_pose);
         break;
     default:
         CONFIG_CYCLE(

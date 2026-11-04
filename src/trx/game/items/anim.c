@@ -4,9 +4,12 @@
 #include <trx/core/math/geom.h>
 #include <trx/game/interpolation.h>
 #include <trx/game/items/actions.h>
+#include <trx/game/items/const.h>
+#include <trx/game/items/manager.h>
 #include <trx/game/lara.h>
 #include <trx/game/objects.h>
 #include <trx/game/objects/families.h>
+#include <trx/game/pathing/lot.h>
 #include <trx/game/rooms.h>
 #include <trx/game/sound.h>
 #include <trx/version.h>
@@ -140,7 +143,60 @@ ANIM_FRAME *Item_GetBestFrame(const ITEM *const item)
     return frames[(frac > rate / 2) ? 1 : 0];
 }
 
+static int32_t M_GetFrames(
+    const ITEM *item, ANIM_FRAME *frames[], int32_t *rate);
+
+#if defined(__DREAMCAST__)
+// Original simulation: the frames of an item are worked out once for a given
+// animation, frame, previous frame and blend position, not on every ask (a
+// creature is asked 3 to 6 times a tick, with an integer divide or so each).
+typedef struct {
+    uint32_t epoch;
+    const ANIM *anim;
+    int32_t frame_num;
+    int32_t prev_frame_num;
+    TRX_REAL alpha;
+    ANIM_FRAME *frames[2];
+    int32_t rate;
+    int32_t frac;
+} M_FRAMES_CACHE;
+static M_FRAMES_CACHE m_FramesCache[MAX_ITEMS];
+#endif
+
 int32_t Item_GetFrames(const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
+{
+#if defined(__DREAMCAST__)
+    if (LOT_IsOriginalSim()) {
+        const int16_t num = Item_GetIndex(item);
+        if (num >= 0 && num < MAX_ITEMS) {
+            M_FRAMES_CACHE *const c = &m_FramesCache[num];
+            const ANIM *const anim = Item_GetAnim(item);
+            const TRX_REAL alpha = Interpolation_GetWorldRate();
+            if (c->epoch != Item_GetCacheEpoch() || c->anim != anim
+                || c->frame_num != item->frame_num
+                || c->prev_frame_num != item->prev_frame_num
+                || c->alpha != alpha) {
+                c->frames[1] = nullptr;
+                c->rate = 0;
+                c->frac = M_GetFrames(item, c->frames, &c->rate);
+                c->epoch = Item_GetCacheEpoch();
+                c->anim = anim;
+                c->frame_num = item->frame_num;
+                c->prev_frame_num = item->prev_frame_num;
+                c->alpha = alpha;
+            }
+            frames[0] = c->frames[0];
+            frames[1] = c->frames[1];
+            *rate = c->rate;
+            return c->frac;
+        }
+    }
+#endif
+    return M_GetFrames(item, frames, rate);
+}
+
+static int32_t M_GetFrames(
+    const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
 {
     const ANIM *const anim = Item_GetAnim(item);
     if (anim->frame_ptr == nullptr) {

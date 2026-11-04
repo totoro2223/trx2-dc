@@ -7,6 +7,7 @@
 #include <trx/debug.h>
 #include <trx/game/const.h>
 #include <trx/game/game_buf.h>
+#include <trx/game/items/manager.h>
 #include <trx/game/level.h>
 #include <trx/game/objects/common.h>
 #include <trx/game/output.h>
@@ -500,6 +501,8 @@ void Room_FlipMap(const int32_t group)
         Output_DispatchRoomFlip(room);
     }
 
+    // The sets of items drawn from each room were swapped and copied above.
+    Item_InvalidateCaches();
     m_FlipGroupStatus[group] = !m_FlipGroupStatus[group];
     // What the world reads as "the flip is on" is the group that moved last,
     // which is how TR4 leaves it. Earlier games have the one group, so the two

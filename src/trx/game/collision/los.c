@@ -66,6 +66,10 @@ static XYZ_32 M_GetMidPos(const ITEM *const item)
 // Returns how far the line moves along one axis per sector along another.
 static int32_t M_GetSlope(const int32_t delta, const int32_t span)
 {
+    // Same result either way; the SH-4 has no 64-bit divide (a library call).
+    if (delta > -(1 << 20) && delta < (1 << 20)) {
+        return (delta * WALL_L) / span;
+    }
     return ((int64_t)delta * WALL_L) / span;
 }
 

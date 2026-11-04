@@ -130,6 +130,8 @@ X_CFG_BOOL(rendering.dc_room_cel,                        false)
 X_CFG_BOOL(rendering.dc_object_shadows,                  false)
 X_CFG_BOOL(rendering.dc_memory_hud,                      false)
 X_CFG_BOOL(rendering.dc_load_cache,                      true)
+X_CFG_BOOL(rendering.dc_original_ai,                     false)
+X_CFG_BOOL(rendering.dc_linear_pose,                     false)
 #endif
 X_CFG_BOOL(rendering.enable_palette_quantize,            false)
 X_CFG_BOOL(rendering.enable_ps1_blending,                false)

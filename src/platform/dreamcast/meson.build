@@ -14,6 +14,7 @@ dc_lib_dirs = [dc_deps_dir / 'lib', dc_kos_ports_dir / 'lib']
 dc_dependencies = [
   c_compiler.find_library('pcre2-8', dirs: dc_lib_dirs),
   c_compiler.find_library('z', dirs: dc_lib_dirs),
+  c_compiler.find_library('sh4zam', dirs: dc_lib_dirs),
   c_compiler.find_library('m', required: false),
 ]
 if get_option('dc_lua')
@@ -188,6 +189,13 @@ dc_mpeg_lib = static_library(
   override_options: ['c_std=gnu11', 'warning_level=0'],
   c_args: ['-w'],
 )
+# SH4ZAM's math, apart for the same reason: its headers are GNU C.
+dc_shz_lib = static_library(
+  'dc_shz',
+  'dc_shz.c',
+  override_options: ['c_std=gnu11', 'warning_level=0'],
+  c_args: ['-w'],
+)
 # Without Lua (dc_lua=false) the bridge in trx/game/lua is left out and
 # nolua.c answers the engine in its place.
 if get_option('dc_lua')
@@ -199,7 +207,7 @@ else
   dc_excluded_sources += ['trx/game/lua/']
 endif
 
-dc_link_whole = [dc_kos_overrides, dc_strict_lib, dc_mpeg_lib]
+dc_link_whole = [dc_kos_overrides, dc_strict_lib, dc_mpeg_lib, dc_shz_lib]
 
 # dc_main.c runs ahead of the engine's main.
 dc_link_args = ['-Wl,--wrap=main', '-Wl,--wrap=abort', '-Wl,--wrap=arch_panic', '-Wl,--wrap=arch_abort']

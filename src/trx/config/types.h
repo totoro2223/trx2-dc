@@ -309,6 +309,8 @@ typedef struct {
         bool dc_object_shadows;
         bool dc_memory_hud;
         bool dc_load_cache;
+        bool dc_original_ai;
+        bool dc_linear_pose;
         DC_FPS dc_fps;
         int32_t fps;
         bool enable_trapezoid_filter;

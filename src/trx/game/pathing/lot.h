@@ -10,6 +10,13 @@ void LOT_InitialiseLOT(LOT_INFO *LOT);
 bool LOT_EnableBaddieAI(int16_t item_num, bool always);
 void LOT_DisableBaddieAI(int16_t item_num);
 CREATURE *LOT_GetBaddieSlot(int32_t i);
+
+// Dreamcast: whether this level takes the original games' cuts
+// (rendering.dc_original_ai, read when the level loads): the linear pose
+// blend, one pose for far enemies, 128 visible rooms at most and the frames
+// of an item worked out once. The AI itself is TRX's, so that a demo ends
+// where it did.
+bool LOT_IsOriginalSim(void);
 void LOT_ClearLOT(LOT_INFO *LOT);
 
 // Drops the box every creature is heading for, so that each finds its way

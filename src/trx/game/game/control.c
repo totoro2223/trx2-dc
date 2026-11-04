@@ -1,5 +1,7 @@
 #include <trx/config.h>
+#include <trx/core/log.h>
 #include <trx/debug.h>
+#include <trx/game/game_flow/common.h>
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_strict.h>
 #endif
@@ -349,6 +351,25 @@ void Game_TickBeginFrame(void)
 
 void Game_TickWorld(void)
 {
+#if defined(__DREAMCAST__)
+    // TEMP: where Lara is through a demo, to compare two simulations.
+    {
+        static int32_t demo_tick = 0;
+        const GF_LEVEL *const level = GF_GetCurrentLevel();
+        if (level != nullptr && level->type == GFL_DEMO) {
+            if (demo_tick % 15 == 0) {
+                const ITEM *const lara = Lara_GetItem();
+                LOG_INFO(
+                    "[lpos] %d room %d pos %d %d %d hp %d", (int)demo_tick,
+                    (int)lara->room_num, (int)lara->pos.x, (int)lara->pos.y,
+                    (int)lara->pos.z, (int)lara->hit_points);
+            }
+            demo_tick++;
+        } else {
+            demo_tick = 0;
+        }
+    }
+#endif
     DC_PROBE(DC_PROBE_ITEMS, Item_Control());
     DC_PROBE(DC_PROBE_FX, Effect_Control(); Sparks_Control());
 }

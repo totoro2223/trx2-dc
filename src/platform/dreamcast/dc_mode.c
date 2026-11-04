@@ -6,6 +6,7 @@
 
 #include <trx/config.h>
 #include <trx/config/common.h>
+#include <trx/core/log.h>
 #include <trx/version.h>
 
 static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
@@ -59,6 +60,8 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
 int32_t g_DC_TestMode = -1;
 int32_t g_DC_TestShadow = -1;
 int32_t g_DC_TestCel = -1;
+int32_t g_DC_TestFps = -1;
+int32_t g_DC_TestOriginalAI = -1;
 int32_t g_DC_TestRoomCel = -1;
 int32_t g_DC_TestBump = -1;
 int32_t g_DC_TestObjectShadows = -1;
@@ -103,6 +106,16 @@ void DC_Mode_ApplyDefaults(void)
     CONFIG_SET(g_Config.visuals.shadow_type, shadow);
     if (g_DC_TestCel >= 0) {
         CONFIG_SET(g_Config.rendering.dc_cel_shading, (bool)(g_DC_TestCel != 0));
+    }
+    LOG_INFO("test hooks: fps %d, original AI %d", (int)g_DC_TestFps, (int)g_DC_TestOriginalAI);
+    if (g_DC_TestFps >= 0) {
+        CONFIG_SET(
+            g_Config.rendering.dc_fps,
+            g_DC_TestFps >= 60 ? DC_FPS_60 : DC_FPS_30);
+    }
+    if (g_DC_TestOriginalAI >= 0) {
+        CONFIG_SET(
+            g_Config.rendering.dc_original_ai, (bool)(g_DC_TestOriginalAI != 0));
     }
     if (g_DC_TestBump >= 0) {
         CONFIG_SET(g_Config.rendering.dc_bump_mapping, (bool)(g_DC_TestBump != 0));
