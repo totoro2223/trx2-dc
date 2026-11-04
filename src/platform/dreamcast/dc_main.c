@@ -133,6 +133,10 @@ void DC_Main_EndGame(const int result)
     thd_exit(nullptr);
 }
 
+// Set when the last run ended with the player leaving: the next starts at the
+// game's title.
+static bool m_ToTitle = false;
+
 // Runs the game of the disc's folder once, from the choice of level to the
 // engine's end. Returns what the engine returned.
 static int M_RunGame(int argc, char *argv[])
@@ -186,6 +190,8 @@ static int M_RunGame(int argc, char *argv[])
     // An expansion on the disc (make_disc.sh's TRX_DC_MOD): the engine runs
     // it by name, as --mod does.
     static char mod_id[32];
+    // Static for the arguments below, and not to remember the last game's.
+    mod_id[0] = 0;
     FILE *const mod_file = M_Open("MOD.TXT");
     if (mod_file != nullptr) {
         if (fscanf(mod_file, "%31s", mod_id) != 1) {
@@ -353,7 +359,9 @@ static int M_RunGame(int argc, char *argv[])
     }
     // Test discs name their level (make_disc.sh's fourth argument).
     int level = -1;
-    FILE *const start = M_Open("START.TXT");
+    // Only the disc's first start: a later one (the level list of this game,
+    // asked for from its menu) has a choice of its own.
+    FILE *const start = g_DC_Run <= 1 ? M_Open("START.TXT") : nullptr;
     if (start != nullptr) {
         if (fscanf(start, "%d", &level) != 1) {
             level = -1;
@@ -364,6 +372,9 @@ static int M_RunGame(int argc, char *argv[])
             DC_Watchdog_SetTestLoads(loads);
         }
         fclose(start);
+    } else if (m_ToTitle) {
+        // The player left a level: the game's own title, not the list.
+        m_ToTitle = false;
     } else if (g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0) {
         // The expansion's level that the list of the game before picked.
         const int picked = DC_Games_TakeStartLevel();
@@ -394,7 +405,11 @@ static int M_RunGame(int argc, char *argv[])
         argv = level_argv;
     } else if (engine != 2 || g_DC_Run > 1) {
         // The title of the game on the disc.
-        static char *title_argv[] = { "trx", "-e", engine_arg, nullptr };
+        // By name: with no level the engine would take the game it ran last
+        // (the expansion).
+        static char base_id[8];
+        snprintf(base_id, sizeof(base_id), "tr%d", engine);
+        static char *title_argv[] = { "trx", "--mod", base_id, nullptr };
         argc = 3;
         argv = title_argv;
     }
@@ -457,18 +472,18 @@ int __wrap_main(int argc, char *argv[])
         // in the same run of the console, with the last one's memory given
         // back.
         if (!DC_Games_ApplyPending()) {
+#if !defined(TRX_DC_START_LEVEL)
+            // The player left to the list of levels: it comes back in this run.
+            // arch_reboot() sent a DreamShell ISO back to DreamShell, so the
+            // old restart is gone. shortcut: memory is not reset between
+            // games, reboot again if long sessions run out of it.
+            if (result == 0) {
+                m_ToTitle = true;
+                continue;
+            }
+#endif
             break;
         }
     }
-#if !defined(TRX_DC_START_LEVEL)
-    if (result == 0) {
-        // The game ended (the player left to the list of levels): the console
-        // starts the disc over, so the list comes with all the memory clean.
-        printf("TRX: the game ended; starting the disc over\n");
-        fflush(stdout);
-        DC_Games_Remember();
-        arch_reboot();
-    }
-#endif
     return result;
 }

@@ -220,7 +220,13 @@ static void M_Draw(void)
         } else {
             c = particle->life;
         }
+#if defined(__DREAMCAST__)
+        // The PowerVR's additive blend leaves the desktop's faint specks
+        // nearly black.
+        c <<= 4;
+#else
         c <<= 2;
+#endif
         CLAMPG(c, 255);
 
         const RGBA_8888 color = { c, c, c, 255 };

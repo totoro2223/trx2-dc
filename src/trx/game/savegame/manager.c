@@ -508,9 +508,25 @@ bool SG_Manager_WriteSlot(const SAVEGAME_SLOT_REF slot)
     if (result) {
         M_FillSlot(slot, full_path);
 #if defined(__DREAMCAST__)
-        DC_VMU_StoreSave(full_path, savegame_info->level_title);
+        // A card that is there but could not be written to is a failed save
+        // (no card at all keeps the save on the RAM disk until power off).
+        if (!DC_VMU_StoreSave(full_path, savegame_info->level_title)
+            && DC_VMU_LastResult() == 2) {
+            result = false;
+        }
 #endif
     }
+#if defined(__DREAMCAST__)
+    if (!result && full_path != nullptr) {
+        // What a failed save left is not a save: the file is cut short or not
+        // on the card, and the slot must not list it.
+        FS_Delete(full_path);
+        M_ClearSlot(savegame_info);
+        if (!was_slot_empty) {
+            m_SavedGames--;
+        }
+    }
+#endif
 
     Memory_FreePointer(&file_name);
     Memory_FreePointer(&full_path);

@@ -218,7 +218,8 @@ RESULT Level_Initialise(
 
 #if defined(__DREAMCAST__)
     DC_LevelHeap_Leave();
-    {
+    // The load time is shown with the debug mode on.
+    if (g_Config.rendering.dc_memory_hud) {
         const uint32_t ms = SDL_GetTicks() - load_start;
         DC_Msg(
             "Load %u.%u s, cache %s", (unsigned)(ms / 1000),

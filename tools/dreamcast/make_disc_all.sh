@@ -5,7 +5,7 @@
 # and after (src/platform/dreamcast/dc_games.c), and the passport's New Game
 # page offers the expansion.
 #
-#   tools/dreamcast/make_disc_all.sh <build-dir> [output.cdi]
+#   tools/dreamcast/make_disc_all.sh <build-dir> [output.cdi|output.iso]
 #
 # TRX_DC_ALL_GAMES says which games the disc holds ("1 2 3" by default): a
 # disc of one game ("2") has no neighbours to go to, and keeps that game and its
@@ -43,7 +43,7 @@ for n in $GAMES; do
   case "$n" in
     1) MOD=tr1-ub; LEGAL="$LEGAL1"; EXTRA="$EXTRA1" ;;
     2) MOD=tr2-gm; LEGAL="$LEGAL2"; EXTRA="$EXTRA2" ;;
-    3) MOD=tr3-la; LEGAL="$LEGAL3"; EXTRA="" ;;
+    3) MOD=tr3-la; LEGAL="$LEGAL3"; EXTRA="$STEAM/TombRaider (III)/fmv" ;;
   esac
   echo "=== TR$n"
   TRX_DC_GAME="tr$n" TRX_DC_SOURCE=remastered TRX_DC_SUBDIR="g$n" \
@@ -90,8 +90,14 @@ fi
 
 echo "== image"
 bash "$(dirname "$0")/disc_sort.sh" "$STAGE" > "$TMP/sort.txt"
-mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
-  -sort "$TMP/sort.txt" -o "$TMP/TRX.iso" "$STAGE"
-cdi4dc "$TMP/TRX.iso" "$OUT" > /dev/null
+if [[ "$OUT" == *.iso ]]; then
+  # A plain ISO of one session for DreamShell's loader (SD card).
+  mkisofs -quiet -V TRX -G "$TMP/IP.BIN" -r -J -l \
+    -sort "$TMP/sort.txt" -o "$OUT" "$STAGE"
+else
+  mkisofs -quiet -C 0,11702 -V TRX -G "$TMP/IP.BIN" -r -J -l \
+    -sort "$TMP/sort.txt" -o "$TMP/TRX.iso" "$STAGE"
+  cdi4dc "$TMP/TRX.iso" "$OUT" > /dev/null
+fi
 rm -rf "$TMP"
 ls -la "$OUT"

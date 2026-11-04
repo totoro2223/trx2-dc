@@ -5,13 +5,16 @@
 
 #include "loading.h"
 
+#include <trx/config.h>
 #include "dc_games.h"
 #include "dc_strict.h"
 
+#include "render/loading_font.h"
 #include "render/pvr.h"
 #include "vmu.h"
 
 #include <trx/game/console/common.h>
+#include <trx/version.h>
 
 #include <arch/timer.h>
 #include <kos/thread.h>
@@ -81,7 +84,10 @@ static void M_Draw(const bool force)
     snprintf(
         line1, sizeof(line1), "LOADING  %ld%%   %s", (long)percent,
         M_GetVersion());
-    DC_PVR_DrawLoadingScreen(line1, m_Priv.name, percent);
+    // Only the bar, unless the debug mode is on.
+    DC_PVR_DrawLoadingScreen(
+        g_Config.rendering.dc_memory_hud ? line1 : "",
+        g_Config.rendering.dc_memory_hud ? m_Priv.name : "", percent);
     DC_VMU_ShowLoading(percent);
 }
 
@@ -106,6 +112,7 @@ void DC_Loading_Begin(const uint64_t total_bytes, const char *const picture)
     DC_Crumb(DC_CRUMB_LOADING, "loading");
     DC_Crumb_ShowPrevious();
     M_GetVersion();
+    DC_LoadingFont_Load(g_TRVersion);
     DC_PVR_SetPicture(picture);
     m_Priv = (typeof(m_Priv)) {
         .active = true,
@@ -157,10 +164,14 @@ void DC_Loading_End(void)
     strncpy(m_Priv.name, "", sizeof(m_Priv.name));
     char line1[96];
     snprintf(line1, sizeof(line1), "LOADING  100%%   %s", M_GetVersion());
-    DC_PVR_DrawLoadingScreen(line1, m_Priv.name, 100);
+    DC_PVR_DrawLoadingScreen(
+        g_Config.rendering.dc_memory_hud ? line1 : "",
+        g_Config.rendering.dc_memory_hud ? m_Priv.name : "", 100);
     // Its video memory goes back to the level (the title menu reads its
     // picture again).
     DC_PVR_SetPicture(nullptr);
+    // The level's font, for the next loads' text.
+    DC_LoadingFont_Capture(g_TRVersion);
     m_Priv.active = false;
     // The VMU goes back to its logo; the level's screens redraw themselves.
     DC_VMU_ShowLoading(-1);

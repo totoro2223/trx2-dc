@@ -8,6 +8,7 @@
 // with interrupts off, about a quarter of every frame in Flycast.
 
 #include "pvr.h"
+#include "loading_font.h"
 
 #include "bump_page.h"
 
@@ -642,9 +643,32 @@ void DC_PVR_DrawLoadingScreen(
     // At 320x240 the font is the BIOS's at half size (bfont_small.h), shown a
     // texel to a screen pixel: two lines of 12 rows, 16 apart, centred.
     const int32_t chars = (int32_t)MAX(strlen(line1), strlen(line2));
-    const int32_t low_width = MIN(chars * DC_BFONT_SMALL_WIDTH, M_LOADING_TEXT_WIDTH);
-    const int32_t low_height = 16 + DC_BFONT_SMALL_HEIGHT;
-    if (m_LowRes) {
+    int32_t low_width = MIN(chars * DC_BFONT_SMALL_WIDTH, M_LOADING_TEXT_WIDTH);
+    int32_t low_height = 16 + DC_BFONT_SMALL_HEIGHT;
+    // The game's own font, as it was seen in a level (loading_font.c): twice
+    // its size at 640x480, its own at 320x240, where a texel is a pixel.
+    const int32_t scale = DC_LoadingFont_Scale(
+        g_TRVersion, M_LOADING_TEXT_WIDTH, m_LowRes ? 1 : 2, line1, line2);
+    // The lines are 20 rows apart at 320x240, half the texture at 640x480.
+    uint16_t *const text2 = text
+        + M_LOADING_TEXT_WIDTH * (m_LowRes ? 20 : M_LOADING_TEXT_HEIGHT / 2);
+    const int32_t w1 = DC_LoadingFont_Draw(
+        g_TRVersion, text, M_LOADING_TEXT_WIDTH, M_LOADING_TEXT_WIDTH,
+        M_LOADING_TEXT_HEIGHT / 2, line1, scale);
+    const bool own_font = w1 >= 0;
+    int32_t own_width = w1;
+    if (own_font) {
+        own_width = MAX(
+            w1,
+            DC_LoadingFont_Draw(
+                g_TRVersion, text2, M_LOADING_TEXT_WIDTH,
+                M_LOADING_TEXT_WIDTH, M_LOADING_TEXT_HEIGHT / 2, line2, scale));
+        if (m_LowRes) {
+            low_width = MIN(own_width + 1, M_LOADING_TEXT_WIDTH);
+            low_height = 20 + 20;
+            DC_PVR_SetFilter(false);
+        }
+    } else if (m_LowRes) {
         DC_BFontSmall_DrawStr(
             text, M_LOADING_TEXT_WIDTH, 0xFFFF, 0x0000, true, line1);
         DC_BFontSmall_DrawStr(
@@ -662,6 +686,8 @@ void DC_PVR_DrawLoadingScreen(
     DC_PVR_SetBackgroundColor(0.0f, 0.0f, 0.0f);
     DC_PVR_BeginFrame();
     const bool picture = m_Picture != nullptr;
+    // Without words (the loading bar alone) there is no band behind them.
+    const bool has_text = line1[0] != '\0' || line2[0] != '\0';
     // The text's place in 640x480 coordinates (a pixel is two there at
     // 320x240).
     const float text_w = m_LowRes ? low_width * 2.0f : M_LOADING_TEXT_WIDTH;
@@ -693,7 +719,9 @@ void DC_PVR_DrawLoadingScreen(
             { .x = 0, .y = 472, .z = zs, .argb = shade },
             { .x = 640, .y = 472, .z = zs, .argb = shade },
         };
-        DC_PVR_Quad(&s[0], &s[1], &s[2], &s[3]);
+        if (has_text) {
+            DC_PVR_Quad(&s[0], &s[1], &s[2], &s[3]);
+        }
     }
     DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_LOADING_TEXT, false);
     const uint32_t white = 0xFFFFFFFF;
@@ -704,37 +732,68 @@ void DC_PVR_DrawLoadingScreen(
         { .x = x0 + text_w, .y = y0 + text_h, .z = z, .u = u1, .v = v1,
           .argb = white },
     };
-    DC_PVR_Quad(&t[0], &t[1], &t[2], &t[3]);
+    if (has_text) {
+        DC_PVR_Quad(&t[0], &t[1], &t[2], &t[3]);
+    }
 
-    // The bar: its track, and the part filled.
     if (percent < 0) {
         percent = 0;
     } else if (percent > 100) {
         percent = 100;
     }
+    // The bar, in the look of the running game: TR1's flat maroon in a dark
+    // frame; TR2's and TR3's PS1 bar, five bands shaded from purple to teal
+    // in a bevelled grey frame.
     const float bx0 = 120.0f;
     const float bx1 = 520.0f;
     const float by0 = y0 + text_h + 16.0f;
-    const float by1 = by0 + 12.0f;
+    const float by1 = by0 + 20.0f;
     const float fill = bx0 + (bx1 - bx0) * percent / 100.0f;
+    const float zf = DC_PVR_Depth2D(0.6f);
+    const float zb = DC_PVR_Depth2D(0.55f);
+    const bool ps1 = g_TRVersion != 1;
     DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_NO_TEXTURE, false);
-    const uint32_t track = 0xFF303030;
-    const uint32_t bar = 0xFFC8A040;
+    const uint32_t frame_tl = ps1 ? 0xFF508282 : 0xFF353535;
+    const uint32_t frame_tr = ps1 ? 0xFFA0A0A0 : 0xFF353535;
+    const uint32_t frame_bl = ps1 ? 0xFFA0A0A0 : 0xFF353535;
+    const uint32_t frame_br = ps1 ? 0xFF508282 : 0xFF353535;
+    const DC_PVR_VERTEX f[4] = {
+        { .x = bx0 - 3, .y = by0 - 3, .z = z, .argb = frame_tl },
+        { .x = bx1 + 3, .y = by0 - 3, .z = z, .argb = frame_tr },
+        { .x = bx0 - 3, .y = by1 + 3, .z = z, .argb = frame_bl },
+        { .x = bx1 + 3, .y = by1 + 3, .z = z, .argb = frame_br },
+    };
+    DC_PVR_Quad(&f[0], &f[1], &f[2], &f[3]);
+    const uint32_t track = 0xFF000000;
     const DC_PVR_VERTEX b0[4] = {
-        { .x = bx0, .y = by0, .z = z, .argb = track },
-        { .x = bx1, .y = by0, .z = z, .argb = track },
-        { .x = bx0, .y = by1, .z = z, .argb = track },
-        { .x = bx1, .y = by1, .z = z, .argb = track },
+        { .x = bx0, .y = by0, .z = zb, .argb = track },
+        { .x = bx1, .y = by0, .z = zb, .argb = track },
+        { .x = bx0, .y = by1, .z = zb, .argb = track },
+        { .x = bx1, .y = by1, .z = zb, .argb = track },
     };
     DC_PVR_Quad(&b0[0], &b0[1], &b0[2], &b0[3]);
-    const float zf = DC_PVR_Depth2D(0.6f);
-    const DC_PVR_VERTEX b1[4] = {
-        { .x = bx0, .y = by0, .z = zf, .argb = bar },
-        { .x = fill, .y = by0, .z = zf, .argb = bar },
-        { .x = bx0, .y = by1, .z = zf, .argb = bar },
-        { .x = fill, .y = by1, .z = zf, .argb = bar },
+    // Each band: its left colour at the bar's start, its right one at the
+    // fill's end (the PS1 ramps), or one colour all along (TR1).
+    static const uint32_t left[5] = {
+        0xFF300030, 0xFF600060, 0xFF7F007F, 0xFF500050, 0xFF200020
     };
-    DC_PVR_Quad(&b1[0], &b1[1], &b1[2], &b1[3]);
+    static const uint32_t right[5] = {
+        0xFF003030, 0xFF006060, 0xFF007F7F, 0xFF005050, 0xFF002020
+    };
+    const float band = (by1 - by0) / 5.0f;
+    for (int32_t i = 0; i < 5 && fill > bx0; i++) {
+        const uint32_t l = ps1 ? left[i] : 0xFF8C1010;
+        const uint32_t r = ps1 ? right[i] : 0xFF8C1010;
+        const float ya = by0 + band * i;
+        const float yb = ya + band;
+        const DC_PVR_VERTEX b1[4] = {
+            { .x = bx0, .y = ya, .z = zf, .argb = l },
+            { .x = fill, .y = ya, .z = zf, .argb = r },
+            { .x = bx0, .y = yb, .z = zf, .argb = l },
+            { .x = fill, .y = yb, .z = zf, .argb = r },
+        };
+        DC_PVR_Quad(&b1[0], &b1[1], &b1[2], &b1[3]);
+    }
     DC_PVR_EndFrame();
 }
 
@@ -936,8 +995,8 @@ void DC_PVR_SetPicture(const char *const name)
 {
     // The gameflow's "india.webp" (or a path ending so) is the disc's
     // "/cd/pix/india.565" (make_disc.sh).
-    static char loaded[64] = "";
     char path[96] = "";
+    static char loaded[sizeof(path)] = "";
     if (name != nullptr) {
         const char *base = strrchr(name, '/');
         base = base != nullptr ? base + 1 : name;
@@ -1739,6 +1798,20 @@ uint16_t DC_PVR_GetTexel(const int32_t page, const int32_t x, const int32_t y)
     }
     const int32_t t = M_Twiddle(x, y);
     return M_PageBlock(page, t >> 2)[t & 3];
+}
+
+uint16_t DC_PVR_GetTexel4444(const int32_t page, const int32_t x, const int32_t y)
+{
+    const uint16_t t = DC_PVR_GetTexel(page, x, y);
+    if (page < 0 || page >= m_Pages.count
+        || m_Pages.format[page] == TEXTURE_PAGE_ARGB4444) {
+        return t;
+    }
+    const uint16_t r = (t >> 10) & 0x1F;
+    const uint16_t g = (t >> 5) & 0x1F;
+    const uint16_t b = t & 0x1F;
+    return (t & 0x8000 ? 0xF000 : 0) | ((r >> 1) << 8) | ((g >> 1) << 4)
+        | (b >> 1);
 }
 
 // The page at half its size.

@@ -132,7 +132,7 @@ static const char *M_Name(const M_ROW row)
     case M_ROW_TEXTURE_FILTER:
         return M_GS("settings/rendering.texture_filter/title", "Texture filter");
     case M_ROW_MEMORY_HUD:
-        return M_GS("settings/rendering.dc_memory_hud/title", "Memory use");
+        return M_GS("settings/rendering.dc_memory_hud/title", "Debug mode");
     case M_ROW_LOAD_CACHE:
         return M_GS("settings/rendering.dc_load_cache/title", "Load cache");
     default:
@@ -185,6 +185,10 @@ static void M_Fill(void)
     m_Page.count = 0;
     for (int32_t i = 0; i < M_ROW_NUMBER_OF; i++) {
         if (i == M_ROW_RESTART && !M_CanRestart()) {
+            continue;
+        }
+        // The load cache is a debugging aid: listed with the debug mode on.
+        if (i == M_ROW_LOAD_CACHE && !g_Config.rendering.dc_memory_hud) {
             continue;
         }
         DC_REQ_ROW *const row = DC_Req_Add(&m_Page.req, M_Name((M_ROW)i));

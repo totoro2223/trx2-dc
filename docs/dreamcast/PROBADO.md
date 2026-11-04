@@ -109,6 +109,8 @@ Por defecto, el modo Gráficos usa Soft (high).
 | `-fshort-enums` | FALLIDO | la config escribe enums por `int32_t *` |
 | Cargas repetidas (8 seguidas) | OK | mayor hueco 5,2–6,5 MB (builds 285–292) |
 | Jungle hoy | OK | 11,1 MB usados, ~2 MB libres |
+| Arena de dibujo de la UI alineada a 8 (`Memory_ArenaAlloc`, `__DREAMCAST__`): la ruta de la imagen dejaba la orden de dibujo siguiente desalineada y el SH4 reiniciaba en el copyright y el menú del disco multijuego (`/cd/g1` suma 3 letras); Flycast no falla | OK | consola real, DC build 1201 (`al.iso`) |
+| Imágenes leídas desde `/cd/pix` en vez de `/cd/g1/pix`, bytecode Lua en RAM, sin test de profundidad, z = 0,1, sin modo fondo | FALLIDO | no eran la causa (bug de alineación de arriba), builds 1190–1199 |
 | Piscina de bloques pequeños del nivel en la cima de la región (`M_POOL_SIZE`, 256 K, bloques ≤ 256 B de la carga) | OK | TR3 Jungle → Temple: hueco mayor 3382–4618 K → 5860 K de 5951 K; TR1 partía 6,6 → 4,4 MB por el mapa de solapes de salas (build 319) |
 | Matrices del batcher (`M_GrowVertexBuffers`) en el montón, no en la región | OK | dos de 41 K a 4,6 MB partían el hueco de TR3; crecen en el pico de la carga (build 319) |
 | Bloques pequeños de la carga a la cabeza con los de larga vida (sin piscina) | FALLIDO | el superviviente queda 0,8–1,1 MB bajo la cima, debajo de los pequeños transitorios (build 316) |

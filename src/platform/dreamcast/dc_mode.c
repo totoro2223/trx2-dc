@@ -17,7 +17,6 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
         .self_shadow = true,
         .cel_shading = true,
         .bump_mapping = true,
-        .room_cel = true,
         .fps = DC_FPS_30,
         .low_res = false,
         .bilinear = true,

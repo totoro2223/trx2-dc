@@ -168,8 +168,13 @@ char *Memory_DupStr(const char *const string)
 }
 
 void *Memory_ArenaAlloc(
-    MEMORY_ARENA_ALLOCATOR *const allocator, const size_t size)
+    MEMORY_ARENA_ALLOCATOR *const allocator, size_t size)
 {
+#if defined(__DREAMCAST__)
+    // The SH4 faults on a misaligned word: a string's odd length would leave
+    // the next block (a draw op's pointer) misaligned.
+    size = Memory_Align(size);
+#endif
     // Ensure a default chunk size is set.
     if (allocator->default_chunk_size == 0) {
         allocator->default_chunk_size = 1024 * 4; // default to 4K

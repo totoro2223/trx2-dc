@@ -94,6 +94,8 @@ void DC_PVR_Shutdown(void);
 bool DC_PVR_ReserveTexturePages(int32_t count);
 void DC_PVR_StoreTexturePage(int32_t page, const uint16_t *texels, uint8_t format);
 uint16_t DC_PVR_GetTexel(int32_t page, int32_t x, int32_t y);
+// The same texel as ARGB4444, whatever the page's format.
+uint16_t DC_PVR_GetTexel4444(int32_t page, int32_t x, int32_t y);
 bool DC_PVR_HasTransparency(
     int32_t page, int32_t x0, int32_t y0, int32_t x1, int32_t y1);
 void DC_PVR_CommitTexturePages(void);

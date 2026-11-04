@@ -1,4 +1,5 @@
 #include "dc_games.h"
+#include "vmu.h"
 
 #include <trx/core/log.h>
 
@@ -35,6 +36,7 @@ static int m_Index = 0;
 static bool m_Expansion = false;
 static uint32_t m_Crashes = 0;
 static int m_StartLevel = -2;
+static bool m_SkipIntro = false;
 // The game chosen to run next, as the title or the level list asked for it:
 // the main loop (dc_main.c) starts it in place when this game ends.
 typedef struct {
@@ -183,6 +185,47 @@ bool DC_Games_ExpansionAvailable(void)
     return stat(path, &st) == 0;
 }
 
+static bool M_HasExpansion(const int id)
+{
+    const char *const mod = M_ExpansionOf(id);
+    if (mod[0] == '\0') {
+        return false;
+    }
+    char path[96];
+    snprintf(path, sizeof(path), "/cd/g%d/games/%s/levels", id, mod);
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+int DC_Games_StepExpansionId(const int delta)
+{
+    for (int i = m_Index + delta; i >= 0 && i < m_Count; i += delta) {
+        if (M_HasExpansion(m_Ids[i])) {
+            return m_Ids[i];
+        }
+    }
+    return 0;
+}
+
+bool DC_Games_ChooseExpansionStep(const int delta)
+{
+    const int id = DC_Games_StepExpansionId(delta < 0 ? -1 : 1);
+    if (id == 0) {
+        return false;
+    }
+    LOG_INFO("next boot: the expansion of TR%d", id);
+    m_Pending = (M_PENDING) { .game = id, .expansion = true, .level = -1 };
+    DC_VMU_ShowSwitching();
+    return true;
+}
+
+bool DC_Games_TakeSkipIntro(void)
+{
+    const bool skip = m_SkipIntro;
+    m_SkipIntro = false;
+    return skip;
+}
+
 int DC_Games_TakeStartLevel(void)
 {
     const int level = m_StartLevel;
@@ -202,6 +245,7 @@ bool DC_Games_Choose(const int delta, const bool title)
     LOG_INFO("next boot: TR%d", m_Ids[index]);
     // The level is stored plus 2, so the title (-1) is 1.
     m_Pending = (M_PENDING) { .game = m_Ids[index], .level = title ? -1 : -2 };
+    DC_VMU_ShowSwitching();
     return true;
 }
 
@@ -214,6 +258,35 @@ bool DC_Games_ChooseExpansion(const int level)
     m_Pending = (M_PENDING) {
         .game = DC_Games_CurrentId(), .expansion = true, .level = level
     };
+    DC_VMU_ShowSwitching();
+    return true;
+}
+
+bool DC_Games_ChooseLevelList(void)
+{
+    if (m_Count == 0) {
+        return false;
+    }
+    LOG_INFO("next boot: the list of levels of TR%d", DC_Games_CurrentId());
+    m_Pending = (M_PENDING) {
+        .game = DC_Games_CurrentId(), .expansion = m_Expansion, .level = -2
+    };
+    return true;
+}
+
+bool DC_Games_InExpansion(void)
+{
+    return m_Expansion;
+}
+
+bool DC_Games_ChooseOriginal(const int level)
+{
+    if (!m_Expansion) {
+        return false;
+    }
+    LOG_INFO("next boot: back to TR%d", DC_Games_CurrentId());
+    m_Pending = (M_PENDING) { .game = DC_Games_CurrentId(), .level = level };
+    DC_VMU_ShowSwitching();
     return true;
 }
 
@@ -236,6 +309,9 @@ bool DC_Games_ApplyPending(void)
     }
     m_Expansion = m_Pending.expansion;
     m_StartLevel = m_Pending.level;
+    // Only the expansions skip the intro and copyright: the games show their
+    // whole flow when the player moves to them.
+    m_SkipIntro = m_Pending.expansion && m_Pending.level == -1;
     m_Pending = (M_PENDING) {};
     snprintf(g_DC_Root, sizeof(g_DC_Root), "/cd/g%d", m_Ids[m_Index]);
     LOG_INFO(

@@ -1,7 +1,7 @@
 // Dreamcast platform layer: what the VMU's screen shows while a level plays.
 //
-// L + R + B steps through three screens: the logo (the default, nothing is
-// sent), the level's statistics and the secret finder. The finder points an
+// L + R + B steps through three screens: the logo (nothing is sent), the
+// level's statistics (the default) and the secret finder. The finder points an
 // arrow, from the middle of the screen, at the nearest secret not yet found,
 // relative to where the camera looks, and beeps slower or faster with the
 // distance. The screen and the buzzer only queue their command and return
@@ -62,7 +62,8 @@ typedef struct {
     int16_t secret_num;
 } M_SPOT;
 
-static M_MODE m_Mode = M_MODE_LOGO;
+// The level statistics are what the screen shows from the start.
+static M_MODE m_Mode = M_MODE_STATS;
 static int32_t m_Tick = 0;
 static int32_t m_Hold = 0;
 static int32_t m_NextBeep = 0;

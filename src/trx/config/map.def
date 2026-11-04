@@ -129,7 +129,7 @@ X_CFG_BOOL(rendering.dc_bump_mapping,                    true)
 X_CFG_BOOL(rendering.dc_room_cel,                        false)
 X_CFG_BOOL(rendering.dc_object_shadows,                  false)
 X_CFG_BOOL(rendering.dc_memory_hud,                      false)
-X_CFG_BOOL(rendering.dc_load_cache,                      true)
+X_CFG_BOOL(rendering.dc_load_cache,                      false)
 #endif
 X_CFG_BOOL(rendering.enable_palette_quantize,            false)
 X_CFG_BOOL(rendering.enable_ps1_blending,                false)
@@ -139,7 +139,7 @@ X_CFG_BOOL(rendering.enable_trapezoid_filter,            true)
 X_CFG_BOOL(rendering.enable_vsync,                       true)
 X_CFG_BOOL(rendering.enable_wireframe,                   false)
 #if defined(__DREAMCAST__)
-X_CFG_BOOL(ui.enable_fps_counter,                        true)
+X_CFG_BOOL(ui.enable_fps_counter,                        false)
 #else
 X_CFG_BOOL(ui.enable_fps_counter,                        false)
 #endif
@@ -205,7 +205,7 @@ X_CFG_ENUM(rendering.fmv_filter,                         TEXTURE_FILTER_BILINEAR
 X_CFG_ENUM(rendering.screenshot_format,                  SCREENSHOT_FORMAT_JPEG, SCREENSHOT_FORMAT)
 X_CFG_ENUM(rendering.sprite_lock_mode,                   BILLBOARD_LOCK_PERSPECTIVE, BILLBOARD_LOCK_MODE)
 #if defined(__DREAMCAST__)
-X_CFG_ENUM(rendering.dc_mode,                            DC_MODE_ORIGINAL, DC_MODE)
+X_CFG_ENUM(rendering.dc_mode,                            DC_MODE_GRAPHICS, DC_MODE)
 X_CFG_ENUM(rendering.dc_fps,                             DC_FPS_30, DC_FPS)
 // The PowerVR filters for free.
 X_CFG_ENUM(rendering.texture_filter,                     TEXTURE_FILTER_BILINEAR, TEXTURE_FILTER)

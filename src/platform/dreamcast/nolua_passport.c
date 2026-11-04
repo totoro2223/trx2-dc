@@ -704,12 +704,19 @@ static void M_SelectRecentSlot(DC_REQ *const req)
 
 static void M_ModeRows(DC_REQ *const req)
 {
-    DC_REQ_ROW *row = DC_Req_Add(
-        req, M_GS("general/passport/mode_new_game", "New Game"));
+    // The expansion says so in its rows.
+    const char *const tag = DC_Games_InExpansion() ? " (Expansion)" : "";
+    char text[48];
+    snprintf(
+        text, sizeof(text), "%s%s",
+        M_GS("general/passport/mode_new_game", "New Game"), tag);
+    DC_REQ_ROW *row = DC_Req_Add(req, text);
     row->a = M_CHOICE_NEW_GAME;
     if (M_GameModesAvailable()) {
-        row = DC_Req_Add(
-            req, M_GS("general/passport/mode_new_game_plus", "New Game+"));
+        snprintf(
+            text, sizeof(text), "%s%s",
+            M_GS("general/passport/mode_new_game_plus", "New Game+"), tag);
+        row = DC_Req_Add(req, text);
         row->a = M_CHOICE_NEW_GAME_PLUS;
     }
 }
@@ -718,7 +725,7 @@ static void M_NewGameRows(DC_REQ *const req)
 {
     M_ModeRows(req);
     // A Dreamcast disc with the expansion of this game.
-    if (DC_Games_ExpansionAvailable()) {
+    if (DC_Games_ExpansionAvailable() && !DC_Games_InExpansion()) {
         DC_REQ_ROW *const row = DC_Req_Add(
             req, M_GS("general/passport/dc_expansion", "Play Expansion"));
         row->a = M_CHOICE_DC_EXPANSION;
@@ -1015,10 +1022,12 @@ static void M_Choose(const M_LIST list, const DC_REQ_ROW *const row)
         M_Close(true);
     } else if (role == M_PAGE_NEW_GAME) {
         if (row->a == M_CHOICE_DC_EXPANSION) {
-            // Ends the game: the disc starts over in the expansion.
-            if (DC_Games_ChooseExpansion(-2)) {
-                GF_OverrideCommand(
-                    (GF_COMMAND) { .action = GF_EXIT_GAME }, true);
+            // Ends the game: the disc starts over at the expansion's main
+            // menu.
+            if (DC_Games_ChooseExpansion(-1)) {
+                // Waits for the passport to close, as a new game does.
+                M_Override((GF_COMMAND) { .action = GF_EXIT_GAME });
+                M_Close(true);
             }
             return;
         }

@@ -438,7 +438,7 @@ void DC_Trail(const char *const text)
     }
     const int step = m_Step;
     length += (size_t)snprintf(
-        trail + length, sizeof(trail) - length, "%u %s\n", (unsigned)M_Now(), text);
+        trail + length, sizeof(m_TrailText) - length, "%u %s\n", (unsigned)M_Now(), text);
     if (length >= sizeof(m_TrailText)) {
         length = sizeof(m_TrailText) - 1;
     }
@@ -517,7 +517,7 @@ void DC_Crumb_Exit(const int code)
     char report[M_REPORT_BYTES];
     size_t at = (size_t)snprintf(
         report, sizeof(report), "TRX ENDED, code %d, frame %u\n%.200s\n", code,
-        (unsigned)m_Frames, m_ErrorMessage != NULL ? m_ErrorMessage : "no error");
+        (unsigned)m_Frames, m_ErrorMessage != NULL ? m_ErrorMessage : "no error: ended early");
     const uint32_t count = m_Count;
     const uint32_t first = count > 8 ? count - 8 : 0;
     for (uint32_t i = first; i < count && at < sizeof(report); i++) {
@@ -527,7 +527,12 @@ void DC_Crumb_Exit(const int code)
             crumb->text, (unsigned)crumb->frame);
     }
     printf("[exit] %s", report);
-    if (code == 0 && m_ErrorMessage == NULL) {
+    // A clean end that comes before the game has run for a second after a load
+    // is not the player leaving: it is shown like an error, or the console
+    // would just start over with nothing on the screen.
+    const bool early = m_Stage == DC_CRUMB_LOADING || m_Stage == DC_CRUMB_LOADED
+        || m_Stage == DC_CRUMB_FIRST_FRAME || m_Stage == DC_CRUMB_ENGINE;
+    if (code == 0 && m_ErrorMessage == NULL && !early) {
         // A way out the player took: nothing for the next boot to report.
         ((volatile M_NOTE *)M_NOTE_ADDRESS)->magic = 0;
         return;

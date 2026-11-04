@@ -83,6 +83,7 @@ dc_sources = files(
   'loading.c',
   'posix_compat.c',
   'render/batcher.c',
+  'render/loading_font.c',
   'render/compositor.c',
   'render/debug_boxes.c',
   'render/emit_sh4.S',
@@ -191,7 +192,7 @@ dc_mpeg_lib = static_library(
 # Without Lua (dc_lua=false) the bridge in trx/game/lua is left out and
 # nolua.c answers the engine in its place.
 if get_option('dc_lua')
-  dc_sources += files('dc_lua_alloc.c')
+  dc_sources += files('dc_lua_alloc.c', 'dc_lua_stubs.c')
 else
   dc_sources += files('nolua.c', 'nolua_game.c', 'nolua_weapons.c',
     'nolua_levels.c', 'nolua_hud.c', 'nolua_ui.c', 'nolua_ring.c',
@@ -204,7 +205,7 @@ dc_link_whole = [dc_kos_overrides, dc_strict_lib, dc_mpeg_lib]
 # dc_main.c runs ahead of the engine's main.
 dc_link_args = ['-Wl,--wrap=main', '-Wl,--wrap=abort', '-Wl,--wrap=arch_panic', '-Wl,--wrap=arch_abort']
 
-if get_option('buildtype') != 'release'
+if get_option('buildtype') != 'release' or get_option('dc_strict')
   dc_sources += files('dc_alloc_trace.c')
   dc_link_args += [
     '-Wl,--wrap=malloc',

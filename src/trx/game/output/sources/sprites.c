@@ -859,15 +859,23 @@ void OutputSource_PolyFX_StageLineSegment(
     if (len < 0.00001f) {
         return;
     }
-    const float k = half_width / len;
+    // Half a screen pixel at least: a strip of a world unit is lost between
+    // the PowerVR's pixels (and its corners, cut to whole units, collapse).
+    const float dist = sqrtf(vx * vx + vy * vy + vz * vz);
+    const float half = MAX(half_width, dist / (float)REF_PERSP);
+    const float k = half / len;
     sx *= k;
     sy *= k;
     sz *= k;
     const XYZ_32 p[4] = {
-        { from.x - (int32_t)sx, from.y - (int32_t)sy, from.z - (int32_t)sz },
-        { from.x + (int32_t)sx, from.y + (int32_t)sy, from.z + (int32_t)sz },
-        { to.x + (int32_t)sx, to.y + (int32_t)sy, to.z + (int32_t)sz },
-        { to.x - (int32_t)sx, to.y - (int32_t)sy, to.z - (int32_t)sz },
+        { from.x - (int32_t)lrintf(sx), from.y - (int32_t)lrintf(sy),
+          from.z - (int32_t)lrintf(sz) },
+        { from.x + (int32_t)lrintf(sx), from.y + (int32_t)lrintf(sy),
+          from.z + (int32_t)lrintf(sz) },
+        { to.x + (int32_t)lrintf(sx), to.y + (int32_t)lrintf(sy),
+          to.z + (int32_t)lrintf(sz) },
+        { to.x - (int32_t)lrintf(sx), to.y - (int32_t)lrintf(sy),
+          to.z - (int32_t)lrintf(sz) },
     };
     const RGBA_8888 c[4] = { from_color, from_color, to_color, to_color };
     OutputSource_PolyFX_StageSpriteQuadWorldDepth(-1, p, c, 0.0f, draw_type);

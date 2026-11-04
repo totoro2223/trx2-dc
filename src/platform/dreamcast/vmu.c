@@ -11,8 +11,10 @@
 
 #include "vmu.h"
 #include "render/pvr.h"
+#include "dc_games.h"
 
 #include <trx/core/log.h>
+#include <trx/version.h>
 
 #include <dc/maple.h>
 #include <dc/maple/vmu.h>
@@ -136,6 +138,22 @@ static void M_FillIcon(vmu_pkg_t *const pkg, uint8_t *const icon)
 
 static void M_WaitIdle(maple_device_t *card);
 
+// What the screen says at the menus: a name for each game and expansion.
+static const char *M_LogoText(void)
+{
+    const bool exp = DC_Games_InExpansion();
+    switch (g_TRVersion) {
+    case 1:
+        return exp ? "UNFINISHED\nBUSINESS" : "TOMB\nRAIDER I";
+    case 2:
+        return exp ? "GOLDEN\nMASK" : "TOMB\nRAIDER II";
+    case 3:
+        return exp ? "LOST\nARTIFACT" : "TOMB\nRAIDER III";
+    default:
+        return "TOMB\nRAIDER";
+    }
+}
+
 void DC_VMU_DrawLogo(void)
 {
     // The last picture may still be on its way, and a screen that is busy
@@ -147,18 +165,17 @@ void DC_VMU_DrawLogo(void)
         }
         M_WaitIdle(dev);
     }
-    // The save icon's letters and frame, centred; '.' is a dark pixel.
-    char screen[VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT + 1];
-    const int left = (VMU_SCREEN_WIDTH - M_ICON_SIZE) / 2;
-    for (int y = 0; y < VMU_SCREEN_HEIGHT; y++) {
-        for (int x = 0; x < VMU_SCREEN_WIDTH; x++) {
-            const bool dark = x >= left && x < left + M_ICON_SIZE
-                && M_IconPixel(x - left, y) >= 2;
-            screen[y * VMU_SCREEN_WIDTH + x] = dark ? '.' : ' ';
+    // The game's name, in two or three lines.
+    vmufb_t fb;
+    vmufb_clear(&fb);
+    vmufb_print_string_into(&fb, nullptr, 1, 2, 46, 28, 2, M_LogoText());
+    for (int i = 0;; i++) {
+        maple_device_t *const dev = maple_enum_type(i, MAPLE_FUNC_LCD);
+        if (dev == nullptr) {
+            break;
         }
+        vmufb_present(&fb, dev);
     }
-    screen[VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT] = '\0';
-    vmu_set_icon(screen);
 }
 
 void DC_VMU_ShowStep(const int step)
@@ -186,6 +203,20 @@ void DC_VMU_ShowStep(const int step)
         }
     }
     vmu_set_icon(screen);
+}
+
+void DC_VMU_ShowSwitching(void)
+{
+    maple_device_t *const vmu = maple_enum_type(0, MAPLE_FUNC_LCD);
+    if (vmu == nullptr) {
+        return;
+    }
+    vmufb_t fb;
+    vmufb_clear(&fb);
+    vmufb_print_string_into(&fb, nullptr, 1, 8, 46, 24, 2, "SWITCHING\nGAMES");
+    M_WaitIdle(vmu);
+    vmufb_present(&fb, vmu);
+    DC_VMU_Hud_Hold();
 }
 
 void DC_VMU_ShowLoading(const int percent)
@@ -321,6 +352,22 @@ void DC_VMU_RestoreSaves(const char *const saves_dir)
 
 static bool M_Store(const char *path, const char *title, bool icon);
 
+// What the memory card's file manager calls the game's saves (16 characters).
+static const char *M_GameTitle(void)
+{
+    const bool exp = DC_Games_InExpansion();
+    switch (g_TRVersion) {
+    case 1:
+        return exp ? "TR1 UNFINISHED" : "TOMB RAIDER I";
+    case 2:
+        return exp ? "TR2 GOLDEN MASK" : "TOMB RAIDER II";
+    case 3:
+        return exp ? "TR3 LOST ARTEF." : "TOMB RAIDER III";
+    default:
+        return "TOMB RAIDER";
+    }
+}
+
 void DC_VMU_ShowSaving(void)
 {
     maple_device_t *const card = M_GetCard();
@@ -380,7 +427,7 @@ static bool M_Store(
     int file_size = 0;
     if (ok) {
         vmu_pkg_t pkg = {};
-        snprintf(pkg.desc_short, sizeof(pkg.desc_short), "TOMB RAIDER");
+        snprintf(pkg.desc_short, sizeof(pkg.desc_short), "%s", M_GameTitle());
         snprintf(
             pkg.desc_long, sizeof(pkg.desc_long), "%s",
             title != nullptr && title[0] != '\0' ? title : name);

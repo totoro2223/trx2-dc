@@ -289,6 +289,8 @@ if [ ! -f "$VQ" ] || [ ! -f "$BUMP" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
   "$VQ_TOOL" -b "$BUMP" "$VQ" "${VQ_INPUTS[@]}"
 fi
 cp "$VQ" "$STAGE/textures.vq"
+# The loading screen's font, made once by lfont.py from a log (see loading_font.c).
+[ -f "$BUILD_DIR/lfont-$GAME.bin" ] && cp "$BUILD_DIR/lfont-$GAME.bin" "$STAGE/lfont.bin"
 cp "$BUMP" "$STAGE/textures.bump"
 
 echo "== loading pictures"
@@ -365,11 +367,39 @@ if [ "$GAME" = tr1 ]; then
     [ -f "$out" ] && cp "$out" "$STAGE/pix/eidos.565"
   fi
 fi
+# An expansion's pictures: the remaster's own where it has them (UB_*, GM_LOAD,
+# LA_*), and the base game's title, copyright and credits where it has none.
+# "name:source" pairs, the source a picture of the disc or a remaster file.
+if [ -n "$MOD" ] && [ "$SOURCE" = remastered ]; then
+  case "$MOD" in
+    tr1-ub) MOD_PIX="ub_loading1:ub_egypt ub_loading2:ub_atlan title_ub:title credits_ub:credits_1" ;;
+    tr2-gm) MOD_PIX="gm_level1:gm_load gm_level2:gm_load gm_level3:gm_load gm_level4:gm_load gm_level5:gm_load title_eu_gm:title_eu legal_eu_gm:legal_eu credit00_gm:credit01 credit07_gm:credit07" ;;
+    tr3-la) MOD_PIX="chunnel:la_chunnel highland:la_highland slinc:la_slinc undersea:la_undersea willard:la_willard zoo:la_zoo theend_la:la_theend2 theend2_la:la_theend2 title_eu_la:title_eu legal_eu_la:legal_eu" ;;
+  esac
+  for pair in $MOD_PIX; do
+    [ -f "$STAGE/pix/${pair#*:}.565" ] && cp "$STAGE/pix/${pair#*:}.565" "$STAGE/pix/${pair%:*}.565"
+  done
+  # The expansion's own backdrop for its main menu and copyright: a picture
+  # of the project's extras folder ("file names...").
+  EXTRAS="$(cd "$(dirname "$0")/../../.." && pwd)/extras"
+  case "$MOD" in
+    tr1-ub) BG="$EXTRAS/3162175743_preview_F7PfWd5WEAA88Yi.png"; BG_NAMES="title_ub" ;;
+    tr2-gm) BG="$EXTRAS/../TRX/build/fondos-online/gm_loading_tombraider_com.jpg"; BG_NAMES="title_eu_gm legal_eu_gm" ;;
+    tr3-la) BG="$EXTRAS/800px-Lostartefact.jpg"; BG_NAMES="title_eu_la legal_eu_la" ;;
+  esac
+  # TRX_DC_NOBG=1 (a test) leaves the game's own pictures where these go.
+  if [ -n "$BG" ] && [ -f "$BG" ] && [ -z "${TRX_DC_NOBG:-}" ]; then
+    for n in $BG_NAMES; do
+      ffmpeg -hide_banner -loglevel error -y -i "$BG" -frames:v 1 -vf "scale=512:512:flags=lanczos" -f rawvideo -pix_fmt rgb565le "$STAGE/pix/$n.565"
+    done
+  fi
+fi
 # The gameflow names each level's picture as india.webp and keeps the name
 # only if such a file is installed: an empty one stands in for it.
 mkdir -p "$STAGE/games/$GAME/images"
 for f in "$STAGE"/pix/*.565; do
   [ -f "$f" ] && : > "$STAGE/games/$GAME/images/$(basename "$f" .565).webp"
+  [ -n "$MOD" ] && [ -f "$f" ] && mkdir -p "$STAGE/games/$MOD/images"     && : > "$STAGE/games/$MOD/images/$(basename "$f" .565).webp"
 done
 
 echo "== music"

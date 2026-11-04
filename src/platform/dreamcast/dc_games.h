@@ -39,10 +39,25 @@ bool DC_Games_ExpansionAvailable(void);
 bool DC_Games_Choose(int delta, bool title);
 // The expansion starts in a level (-1: its title) with no list in between.
 bool DC_Games_ChooseExpansion(int level);
+// Whether the running game is the expansion, and the way back to the game
+// itself (in the level, as ChooseExpansion).
+// The game before (-1) or after (+1) this one that has an expansion, or 0:
+// where Up and Down go from an expansion. They keep to the expansions.
+int DC_Games_StepExpansionId(int delta);
+bool DC_Games_ChooseExpansionStep(int delta);
+bool DC_Games_InExpansion(void);
+// The list of levels of the game (or expansion) running: the next boot opens
+// it. The caller ends the game.
+bool DC_Games_ChooseLevelList(void);
+bool DC_Games_ChooseOriginal(int level);
 
 // The level the last boot was told to start in (see ChooseExpansion), once;
 // -2 if it was told none.
 int DC_Games_TakeStartLevel(void);
+
+// Whether the game just switched to starts at its title without the intro
+// and copyright; true once.
+bool DC_Games_TakeSkipIntro(void);
 
 // The game that is running stays the choice across the reboot that follows
 // leaving it (the list of levels of the same game comes back).

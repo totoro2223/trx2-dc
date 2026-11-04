@@ -40,6 +40,9 @@ void DC_VMU_DeleteSave(const char *path);
 // sent. -1 forgets the last one, for the next load.
 void DC_VMU_ShowLoading(int percent);
 
+// "SWITCHING GAMES" on the card's screen, held for a moment.
+void DC_VMU_ShowSwitching(void);
+
 // The VMU's screen while a level plays (vmu_hud.c): call once per logic
 // frame. L + R + B goes from the logo to the level's statistics to the secret
 // finder (an arrow and beeps) and back.

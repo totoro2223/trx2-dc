@@ -5,8 +5,11 @@
 // draws its entries as models in a world of their own.
 #include "nolua.h"
 
+#include <arch/timer.h>
 #include <platform/dreamcast/dc_games.h>
 #include <platform/dreamcast/dc_mode.h>
+
+bool DC_Input_TakeEndLevelCombo(void);
 #include <trx/config.h>
 #include <trx/core/json/util/file.h>
 #include <trx/core/json/util/read_io.h>
@@ -876,7 +879,7 @@ static struct {
     int32_t hint_slot;
     int32_t count_slot;
     int32_t heading_slot;
-    int32_t dc_slots[2];
+    int32_t dc_slots[3];
 } m_Ring = { .screen = UI_TAKEOVER_NUMBER_OF };
 
 // The entry each ring rests on, kept from one opening to the next, and the
@@ -1636,6 +1639,30 @@ static void M_LeaveFor(const M_RING ring, const bool up)
     M_Start(M_LEAVING, up ? M_MOTION_LEAVE_UP : M_MOTION_LEAVE_DOWN);
 }
 
+// In the expansion, B held for this long on the title goes back to the game.
+// The next game is chosen (dc_games.c): the ring closes and the background
+// fades, as for a new game, and the game then ends.
+static void M_LeaveForGame(void)
+{
+    GF_OverrideCommand((GF_COMMAND) { .action = GF_EXIT_GAME }, false);
+    m_Ring.chosen = NO_OBJECT;
+    M_Sound(SFX_MENU_SPINOUT);
+    M_Close();
+}
+
+// The game that Up (-1) or Down (1) goes to from here: the expansions keep
+// to the expansions.
+static int M_Neighbour(const int delta)
+{
+    if (DC_Games_InExpansion()) {
+        return DC_Games_StepExpansionId(delta);
+    }
+    return delta < 0 ? DC_Games_PrevId() : DC_Games_NextId();
+}
+
+#define M_ORIGINAL_HOLD_MS 2000
+static uint64_t m_BackSince = 0;
+
 static void M_ControlOpen(void)
 {
     M_VIEW *const view = &m_Ring.view;
@@ -1670,23 +1697,54 @@ static void M_ControlOpen(void)
         return;
     }
 
+    if (m_Ring.mode == INV_TITLE_MODE && DC_Games_InExpansion()) {
+        // B held for a while goes back to the original game.
+        if (!g_Input.menu_back) {
+            m_BackSince = 0;
+        } else if (m_BackSince == 0) {
+            m_BackSince = timer_ms_gettime64();
+        } else if (
+            timer_ms_gettime64() - m_BackSince >= M_ORIGINAL_HOLD_MS
+            && DC_Games_ChooseOriginal(-1)) {
+            m_BackSince = 0;
+            M_LeaveForGame();
+            return;
+        }
+    }
+    if (m_Ring.mode == INV_TITLE_MODE && DC_Input_TakeEndLevelCombo()
+        && DC_Games_ChooseLevelList()) {
+        // L + R + X + Y: the list of levels of this game or expansion.
+        M_LeaveForGame();
+        return;
+    }
     if (m_Ring.mode == INV_TITLE_MODE) {
         // A Dreamcast disc of several games: Up goes to the game before this
         // one and Down to the one after.
+        const bool in_expansion = DC_Games_InExpansion();
         int32_t delta = 0;
-        if (g_InputDB.menu_up && DC_Games_PrevId() != 0) {
+        if (g_InputDB.menu_up && M_Neighbour(-1) != 0) {
             delta = -1;
-        } else if (g_InputDB.menu_down && DC_Games_NextId() != 0) {
+        } else if (g_InputDB.menu_down && M_Neighbour(1) != 0) {
             delta = 1;
         }
         // A test disc (SWITCH.TXT "100 <frame>") presses Down by itself.
         static int32_t test_frames = 0;
         if (g_DC_TestSwitchMode == 100 && ++test_frames == g_DC_TestSwitchFrame) {
             test_frames = 0;
-            delta = DC_Games_NextId() != 0 ? 1 : -1;
+            delta = M_Neighbour(1) != 0 ? 1 : -1;
         }
-        if (delta != 0 && DC_Games_Choose(delta, true)) {
-            GF_OverrideCommand((GF_COMMAND) { .action = GF_EXIT_GAME }, true);
+        // A test disc (SWITCH.TXT "101 <frame>") starts the expansion.
+        static int32_t expansion_frames = 0;
+        if (g_DC_TestSwitchMode == 101
+            && ++expansion_frames == g_DC_TestSwitchFrame
+            && DC_Games_ChooseExpansion(-1)) {
+            M_LeaveForGame();
+            return;
+        }
+        if (delta != 0
+            && (in_expansion ? DC_Games_ChooseExpansionStep(delta)
+                             : DC_Games_Choose(delta, true))) {
+            M_LeaveForGame();
         }
         return;
     }
@@ -2205,6 +2263,27 @@ static void M_Text(const char *const text, const float x, const float y)
     UI_Text_Draw(text, x, y, (UI_TEXT_SETTINGS) { .scale = 1.0f });
 }
 
+#define M_HOLD_BAR_GAP 2.0f
+#define M_HOLD_BAR_H 4.0f
+
+// The bar under the hint fills as B is held: a dark frame and a fill in the
+// game's gold, as the passport's hold button draws it.
+static void M_DrawHoldBar(const float x, const float y, const float w)
+{
+    const RGBA_8888 frame = { 0x06, 0x06, 0x06, 0xFF };
+    const RGBA_8888 fill = { 0xA1, 0x83, 0x3C, 0xFF };
+    float done = (float)(timer_ms_gettime64() - m_BackSince)
+        / (float)M_ORIGINAL_HOLD_MS;
+    done = done < 0.0f ? 0.0f : done > 1.0f ? 1.0f : done;
+    const int32_t x0 = (int32_t)floorf(UI_ScaleX(x) + 0.5f);
+    const int32_t x1 = (int32_t)floorf(UI_ScaleX(x + w) + 0.5f);
+    const int32_t y0 = (int32_t)floorf(UI_ScaleY(y) + 0.5f);
+    const int32_t y1 = (int32_t)floorf(UI_ScaleY(y + M_HOLD_BAR_H) + 0.5f);
+    UI_ScheduleDrawScreenFlatQuad(x0, y0, 0, x1 - x0, y1 - y0, frame);
+    UI_ScheduleDrawScreenFlatQuad(
+        x0 + 1, y0 + 1, 0, (int32_t)((x1 - x0 - 2) * done), y1 - y0 - 2, fill);
+}
+
 static bool M_HasDCHints(void)
 {
     return m_Ring.active && m_Ring.mode == INV_TITLE_MODE && !m_Ring.hidden
@@ -2213,12 +2292,24 @@ static bool M_HasDCHints(void)
 
 static void M_DCHintText(const int32_t i, char *const buf, const size_t size)
 {
-    const int32_t game = i == 0 ? DC_Games_PrevId() : DC_Games_NextId();
-    buf[0] = '\0';
+    if (i == 2) {
+        buf[0] = '\0';
+        if (DC_Games_InExpansion()) {
+            snprintf(
+                buf, size,
+                m_BackSince != 0 ? "Returning..."
+                                 : "Hold B: return to base");
+        }
+        return;
+    }
+    const int32_t game = M_Neighbour(i == 0 ? -1 : 1);
+    const char *const kind = DC_Games_InExpansion() ? " Expansion" : "";
+    buf[0] = 0;
     if (game != 0) {
         snprintf(
-            buf, size, i == 0 ? "Press Up to go to TR%d" : "Press Down to go to TR%d",
-            (int)game);
+            buf, size,
+            i == 0 ? "Press Up to go to TR%d%s" : "Press Down to go to TR%d%s",
+            (int)game, kind);
     }
 }
 
@@ -2233,6 +2324,7 @@ static bool M_OnReserve(
     m_Ring.heading_slot = -1;
     m_Ring.dc_slots[0] = -1;
     m_Ring.dc_slots[1] = -1;
+    m_Ring.dc_slots[2] = -1;
     if (!m_Ring.active) {
         return false;
     }
@@ -2263,14 +2355,16 @@ static bool M_OnReserve(
             UI_REGION_BOTTOM_CENTER, w, h + M_CAPTION_GAP * scale);
     }
     if (M_HasDCHints()) {
-        for (int32_t i = 0; i < 2; i++) {
+        for (int32_t i = 0; i < 3; i++) {
             char text[48];
             M_DCHintText(i, text, sizeof(text));
             if (text[0] != '\0') {
                 M_Measure(text, &w, &h);
                 m_Ring.dc_slots[i] = UI_Region_Reserve(
-                    i == 0 ? UI_REGION_TOP_RIGHT : UI_REGION_BOTTOM_RIGHT, w,
-                    h);
+                    i == 0       ? UI_REGION_TOP_RIGHT
+                        : i == 1 ? UI_REGION_BOTTOM_RIGHT
+                                 : UI_REGION_TOP_LEFT,
+                    w, i == 2 ? h + M_HOLD_BAR_GAP + M_HOLD_BAR_H : h);
             }
         }
     }
@@ -2305,11 +2399,14 @@ static bool M_OnPaint(
     if (UI_Region_GetSlotBox(m_Ring.count_slot, &x, &y, &w, &h)) {
         M_Text(m_Ring.count_text, x + M_COUNT_SHIFT * scale, y);
     }
-    for (int32_t i = 0; i < 2; i++) {
+    for (int32_t i = 0; i < 3; i++) {
         if (UI_Region_GetSlotBox(m_Ring.dc_slots[i], &x, &y, &w, &h)) {
             char text[48];
             M_DCHintText(i, text, sizeof(text));
             M_Text(text, x, y);
+            if (i == 2 && m_BackSince != 0) {
+                M_DrawHoldBar(x, y + h + M_HOLD_BAR_GAP, w);
+            }
         }
     }
     return false;

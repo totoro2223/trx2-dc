@@ -24,6 +24,7 @@
 
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_bench.h>
+    #include <platform/dreamcast/dc_games.h>
     #include <platform/dreamcast/dc_settings.h>
     #include <platform/dreamcast/vmu.h>
 #endif
@@ -227,6 +228,13 @@ RESULT GF_DoFrontendSequence(GF_COMMAND *const out_cmd)
             .param = g_DC_StartCutscene,
         };
         g_DC_StartCutscene = -1;
+        return OK;
+    }
+    // Coming from the other game of the disc (or its expansion): straight to
+    // the main menu, with no intro or copyright.
+    if (DC_Games_TakeSkipIntro()) {
+        m_LegalShown = true;
+        *out_cmd = (GF_COMMAND) { .action = GF_EXIT_TO_TITLE };
         return OK;
     }
 #endif
