@@ -146,6 +146,8 @@ static int M_RunGame(int argc, char *argv[])
     g_DC_TestMode = -1;
     g_DC_TestShadow = -1;
     g_DC_TestCel = -1;
+    g_DC_TestOriginalAI = -1;
+    g_DC_TestFps = -1;
     g_DC_TestRoomCel = -1;
     g_DC_TestBump = -1;
     g_DC_TestObjectShadows = -1;
@@ -258,6 +260,24 @@ static int M_RunGame(int argc, char *argv[])
             g_DC_TestBump = c;
         }
         fclose(cel);
+    }
+    // A test disc that fixes the frame rate (make_disc.sh's TRX_DC_FPS).
+    FILE *const fps = M_Open("FPS.TXT");
+    if (fps != nullptr) {
+        int n = -1;
+        if (fscanf(fps, "%d", &n) == 1) {
+            g_DC_TestFps = n;
+        }
+        fclose(fps);
+    }
+    // A test disc that fixes the enemy simulation (make_disc.sh's TRX_DC_AI).
+    FILE *const ai = M_Open("AI.TXT");
+    if (ai != nullptr) {
+        int on = -1;
+        if (fscanf(ai, "%d", &on) == 1) {
+            g_DC_TestOriginalAI = on;
+        }
+        fclose(ai);
     }
     // A test disc with the object shadows on (make_disc.sh's
     // TRX_DC_OBJECT_SHADOWS).

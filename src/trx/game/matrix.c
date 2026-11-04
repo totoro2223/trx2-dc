@@ -1,8 +1,10 @@
 #include <trx/game/matrix.h>
 
+#include <trx/config.h>
 #include <trx/core/math.h>
 #include <trx/core/utils.h>
 #include <trx/game/const.h>
+#include <trx/game/pathing/lot.h>
 
 #include <float.h>
 #include <math.h>
@@ -248,6 +250,8 @@ static void M_QuaternionSlerp(
 }
 
 #if defined(__DREAMCAST__)
+// SH4ZAM: sines and inverse roots on the SH-4's fsca and fsrra.
+    #include <platform/dreamcast/dc_shz.h>
 // The Dreamcast's FPU runs in single precision (-m4-single), so every double
 // above is worked out in software: one blend of two matrices took ~60 us, and
 // Lara alone blends two per mesh. The same steps in floats hold the 14-bit
@@ -271,7 +275,7 @@ static inline void M_QuatFNormalize(M_QUAT_F *const q)
 {
     const float n2 = q->x * q->x + q->y * q->y + q->z * q->z + q->w * q->w;
     if (n2 > 0.0f) {
-        const float inv = 1.0f / sqrtf(n2);
+        const float inv = DC_Shz_InvSqrt(n2);
         q->x *= inv;
         q->y *= inv;
         q->z *= inv;
@@ -397,10 +401,10 @@ static void M_QuatFSlerp(
     float scale0 = 1.0f - t;
     float scale1 = t;
     if (cosom < 0.999f) {
-        const float omega = acosf(cosom);
-        const float sinom = 1.0f / sinf(omega);
-        scale0 = sinf((1.0f - t) * omega) * sinom;
-        scale1 = sinf(t * omega) * sinom;
+        const float omega = DC_Shz_Acos(cosom);
+        const float sinom = 1.0f / DC_Shz_Sin(omega);
+        scale0 = DC_Shz_Sin((1.0f - t) * omega) * sinom;
+        scale1 = DC_Shz_Sin(t * omega) * sinom;
     }
     out->x = scale0 * a->x + scale1 * b.x;
     out->y = scale0 * a->y + scale1 * b.y;
@@ -471,6 +475,54 @@ static bool M_InterpolateFloat(
     result->_13 = pos[1];
     result->_23 = pos[2];
     return true;
+}
+
+// One entry of the blend the three original games use between two keyframes:
+// a + (b - a) * frac / rate, with the plain average (TR2 and TR3 shift by one
+// bit) when the keyframes lie two ticks apart. In 32 bits wherever the step
+// allows it: the SH-4's 64-bit division is a call into the library.
+static inline int64_t M_BlendLinear(
+    const int64_t a, const int64_t b, const int32_t frac, const int32_t rate)
+{
+    if (rate == 2 && frac == 1) {
+        return (a + b) >> 1;
+    }
+    const int64_t d = b - a;
+    if (frac < 32 && d > -(1 << 26) && d < (1 << 26)) {
+        return a + ((int32_t)d * frac) / rate;
+    }
+    return a + (d * frac) / rate;
+}
+
+// The original games' pose blend (rendering.dc_linear_pose): every entry of
+// the matrix goes the same fraction of the way from m1 to m2, with no
+// quaternions and no trigonometry. The result stops being a pure rotation by
+// a little between two keyframes far apart, as it did in the originals.
+static void M_InterpolateLinear(
+    const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
+{
+    const int32_t rate = m_IMRate;
+    if (rate <= 0) {
+        if (result != m1) {
+            *result = *m1;
+        }
+        return;
+    }
+    int32_t frac = m_IMFrac;
+    CLAMP(frac, 0, rate);
+
+    result->_00 = M_BlendLinear(m1->_00, m2->_00, frac, rate);
+    result->_01 = M_BlendLinear(m1->_01, m2->_01, frac, rate);
+    result->_02 = M_BlendLinear(m1->_02, m2->_02, frac, rate);
+    result->_03 = M_BlendLinear(m1->_03, m2->_03, frac, rate);
+    result->_10 = M_BlendLinear(m1->_10, m2->_10, frac, rate);
+    result->_11 = M_BlendLinear(m1->_11, m2->_11, frac, rate);
+    result->_12 = M_BlendLinear(m1->_12, m2->_12, frac, rate);
+    result->_13 = M_BlendLinear(m1->_13, m2->_13, frac, rate);
+    result->_20 = M_BlendLinear(m1->_20, m2->_20, frac, rate);
+    result->_21 = M_BlendLinear(m1->_21, m2->_21, frac, rate);
+    result->_22 = M_BlendLinear(m1->_22, m2->_22, frac, rate);
+    result->_23 = M_BlendLinear(m1->_23, m2->_23, frac, rate);
 }
 #endif
 
@@ -691,6 +743,11 @@ static void M_Interpolate(
     const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
 {
 #if defined(__DREAMCAST__)
+    // The original simulation also blends poses as the originals did.
+    if (g_Config.rendering.dc_linear_pose || LOT_IsOriginalSim()) {
+        M_InterpolateLinear(m1, m2, result);
+        return;
+    }
     if (M_InterpolateFloat(m1, m2, result)) {
         return;
     }

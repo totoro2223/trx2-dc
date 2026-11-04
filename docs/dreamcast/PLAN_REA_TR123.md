@@ -7,6 +7,11 @@ TAREAS.md como tarea normal; antes, mirar PROBADO.md.
 
 Abierto el 04/11/2026. Herramienta: el MCP `rea` (Ghidra 12.1.4 detrás).
 
+**HECHO el 04/11/2026**: resultados de los tres exe en
+[INFORME_REA_TR123.md](INFORME_REA_TR123.md). Las tareas de abajo se ejecutaron;
+lo que no se resolvió está en la tarea 80 de TAREAS.md y la aplicación al port
+en la 79. Este fichero queda como registro del método (cómo abrir cada exe).
+
 ## Cómo abrir cada exe
 
 - **TR1** (DOS/4GW, formato LE, que REA no admite):

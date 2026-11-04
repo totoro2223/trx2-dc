@@ -34,11 +34,13 @@ static char m_Refused[256] = "";
 // The options, as a line of numbers: the file format, the mode, the frame rate,
 // the cel shading switch, a 0 (where the adaptive switch was until format 4),
 // the fps counter, the two filters, the shadow type, the bump mapping and
-// room cel shading switches, the 3D pickups switch, and the enemy shadows one.
+// room cel shading switches, the 3D pickups switch, the enemy shadows one, the
+// memory readout, the load cache, the original enemy simulation one, and the
+// original (linear) pose blend one.
 static void M_Format(char *const out, const size_t size)
 {
     snprintf(
-        out, size, "8 %d %d %d 0 %d %d %d %d %d %d %d %d %d %d\n",
+        out, size, "10 %d %d %d 0 %d %d %d %d %d %d %d %d %d %d %d %d\n",
         (int)g_Config.rendering.dc_mode, (int)g_Config.rendering.dc_fps,
         (int)g_Config.rendering.dc_cel_shading,
         (int)g_Config.ui.enable_fps_counter,
@@ -49,7 +51,9 @@ static void M_Format(char *const out, const size_t size)
         (int)g_Config.visuals.enable_3d_pickups,
         (int)g_Config.rendering.dc_object_shadows,
         (int)g_Config.rendering.dc_memory_hud,
-        (int)g_Config.rendering.dc_load_cache);
+        (int)g_Config.rendering.dc_load_cache,
+        (int)g_Config.rendering.dc_original_ai,
+        (int)g_Config.rendering.dc_linear_pose);
 }
 
 void DC_Settings_Load(const char *const saves_dir)
@@ -68,11 +72,11 @@ void DC_Settings_Load(const char *const saves_dir)
         return;
     }
     int version = 0;
-    int v[14] = {};
+    int v[16] = {};
     const int read = fscanf(
-        fp, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &version, &v[0],
-        &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10],
-        &v[11], &v[12], &v[13]);
+        fp, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &version,
+        &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9],
+        &v[10], &v[11], &v[12], &v[13], &v[14], &v[15]);
     fclose(fp);
     // The first file format had no bump mapping switch, and the first two no
     // room cel shading one.
@@ -98,6 +102,14 @@ void DC_Settings_Load(const char *const saves_dir)
     if (version <= 7) {
         v[13] = 1;
     }
+    // Before format 9 there was only the TRX enemy simulation.
+    if (version <= 8) {
+        v[14] = 0;
+    }
+    // Before format 10 the poses were always blended through quaternions.
+    if (version <= 9) {
+        v[15] = 0;
+    }
     // Before format 4 the 60 fps and adaptive switches were two, and the
     // Original mode came in before Experimental 60's.
     if (version >= 1 && version <= 3) {
@@ -108,8 +120,8 @@ void DC_Settings_Load(const char *const saves_dir)
             v[0] = DC_MODE_EXPERIMENTAL_60;
         }
     }
-    if (version < 1 || version > 8
-        || read != (version >= 8 ? 15 : version >= 7 ? 14 : version >= 6 ? 13 : version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
+    if (version < 1 || version > 10
+        || read != (version >= 10 ? 17 : version >= 9 ? 16 : version >= 8 ? 15 : version >= 7 ? 14 : version >= 6 ? 13 : version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
         || v[0] < 0
         || v[0] >= DC_MODE_NUMBER_OF || v[1] < 0 || v[1] >= DC_FPS_NUMBER_OF
         || v[5] < 0 || v[5] >= TEXTURE_FILTER_NUMBER_OF || v[6] < 0
@@ -136,6 +148,17 @@ void DC_Settings_Load(const char *const saves_dir)
     CONFIG_SET(g_Config.rendering.dc_object_shadows, (bool)(v[11] != 0));
     CONFIG_SET(g_Config.rendering.dc_memory_hud, (bool)(v[12] != 0));
     CONFIG_SET(g_Config.rendering.dc_load_cache, (bool)(v[13] != 0));
+    CONFIG_SET(g_Config.rendering.dc_original_ai, (bool)(v[14] != 0));
+    CONFIG_SET(g_Config.rendering.dc_linear_pose, (bool)(v[15] != 0));
+    if (g_DC_TestOriginalAI >= 0) {
+        CONFIG_SET(
+            g_Config.rendering.dc_original_ai, (bool)(g_DC_TestOriginalAI != 0));
+    }
+    if (g_DC_TestFps >= 0) {
+        CONFIG_SET(
+            g_Config.rendering.dc_fps,
+            g_DC_TestFps >= 60 ? DC_FPS_60 : DC_FPS_30);
+    }
     M_Format(m_Stored, sizeof(m_Stored));
     LOG_INFO("render options loaded from the memory card");
 }
@@ -145,7 +168,7 @@ void DC_Settings_Save(void)
     // A test disc that forces the mode or the shadows is not the player
     // choosing: those would stay on the card.
     if (m_Path[0] == '\0' || g_DC_TestMode >= 0 || g_DC_TestShadow >= 0
-        || g_DC_TestCel >= 0 || g_DC_TestBump >= 0) {
+        || g_DC_TestCel >= 0 || g_DC_TestOriginalAI >= 0 || g_DC_TestFps >= 0 || g_DC_TestBump >= 0) {
         return;
     }
     char now[256];

@@ -145,6 +145,11 @@ void Item_SetFinished(ITEM *item, bool value);
 void Item_UpdateRoom(int16_t item_num, int16_t room_num);
 void Item_InitialiseDrawQueues(void);
 
+// The per-item caches (rooms an item is drawn from, frames of an animation) are
+// only good for one epoch; a level start or a room flip begins a new one.
+uint32_t Item_GetCacheEpoch(void);
+void Item_InvalidateCaches(void);
+
 int32_t Item_GlobalReplace(OBJECT_ID src_obj_id, OBJECT_ID dst_obj_id);
 
 // Set the name of the item, storing a copy of the provided string.

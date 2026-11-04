@@ -161,6 +161,16 @@ if [ -n "${TRX_DC_CEL:-}" ]; then
   echo "$TRX_DC_CEL" > "$STAGE/CEL.TXT"
   echo "cel shading $TRX_DC_CEL"
 fi
+if [ -n "${TRX_DC_FPS:-}" ]; then
+  # A test disc with the frame rate fixed: 30 or 60.
+  echo "$TRX_DC_FPS" > "$STAGE/FPS.TXT"
+  echo "frame rate $TRX_DC_FPS"
+fi
+if [ -n "${TRX_DC_AI:-}" ]; then
+  # A test disc with the enemy simulation fixed: 0 TRX, 1 original.
+  echo "$TRX_DC_AI" > "$STAGE/AI.TXT"
+  echo "enemy AI $TRX_DC_AI"
+fi
 if [ -n "${TRX_DC_MODE:-}" ]; then
   # A test disc that starts in that mode (graphics, performance, original or
   # experimental-60), whatever the settings say (dc_main.c, MODE.TXT).
@@ -183,7 +193,7 @@ fi
 # load prints ~50 KB, 4 s on the console, cable or not), so only a test disc
 # (any test hook, or TRX_DC_LOG=1) keeps it (dc_main.c, LOG.TXT).
 rm -f "$STAGE/LOG.TXT"
-for hook in DEMO BENCH SAVE EXIT COMPLETE GIVE FIRE START LEVELS SWITCH RESETOPT; do
+for hook in DEMO BENCH SAVE EXIT COMPLETE GIVE FIRE START LEVELS SWITCH RESETOPT AI FPS; do
   [ -f "$STAGE/$hook.TXT" ] && echo 1 > "$STAGE/LOG.TXT"
 done
 [ -n "${TRX_DC_LOG:-}" ] && echo 1 > "$STAGE/LOG.TXT"

@@ -1,5 +1,6 @@
 #include <trx/game/pathing/lot.h>
 
+#include <trx/config.h>
 #include <trx/core/utils.h>
 #include <trx/debug.h>
 #include <trx/game/camera.h>
@@ -10,6 +11,12 @@
 
 static int32_t m_SlotsUsed = 0;
 static CREATURE *m_BaddieSlots = nullptr;
+// How many of the LOT_SLOT_COUNT slots this level uses (the rest stay empty,
+// with no route nodes), and whether it runs the original enemy simulation.
+// Fixed when the level loads, so that a menu change cannot strand creatures
+// in slots that no longer exist.
+static int32_t m_SlotLimit = LOT_SLOT_COUNT;
+static bool m_OriginalSim = false;
 
 LOT_SETUP LOT_Setup(const LOT_SETUP_TYPE type)
 {
@@ -77,16 +84,35 @@ LOT_SETUP LOT_Setup(const LOT_SETUP_TYPE type)
     return (LOT_SETUP) {};
 }
 
+bool LOT_IsOriginalSim(void)
+{
+    return m_OriginalSim;
+}
+
 void LOT_InitialiseArray(void)
 {
+    m_SlotLimit = LOT_SLOT_COUNT;
+    m_OriginalSim = false;
+#if defined(__DREAMCAST__)
+    if (g_Config.rendering.dc_original_ai) {
+        // The simulation stays TRX's (32 slots, same AI); only the drawing
+        // and pose cuts of the originals follow.
+        m_OriginalSim = true;
+    }
+#endif
+
     m_BaddieSlots =
         GameBuf_Alloc(LOT_SLOT_COUNT * sizeof(CREATURE), GBUF_CREATURE_DATA);
 
     for (int32_t i = 0; i < LOT_SLOT_COUNT; i++) {
         CREATURE *const creature = &m_BaddieSlots[i];
         creature->item_num = NO_ITEM;
-        creature->lot.node =
-            GameBuf_Alloc(Box_GetCount() * sizeof(BOX_NODE), GBUF_CREATURE_LOT);
+        // The slots past the limit are never handed out, so they need no
+        // route nodes (8 bytes a box each).
+        creature->lot.node = i < m_SlotLimit ? GameBuf_Alloc(
+                                 Box_GetCount() * sizeof(BOX_NODE),
+                                 GBUF_CREATURE_LOT)
+                                             : nullptr;
     }
 
     m_SlotsUsed = 0;
@@ -116,8 +142,8 @@ bool LOT_EnableBaddieAI(const int16_t item_num, const bool always)
         return true;
     }
 
-    if (m_SlotsUsed < LOT_SLOT_COUNT) {
-        for (int32_t slot = 0; slot < LOT_SLOT_COUNT; slot++) {
+    if (m_SlotsUsed < m_SlotLimit) {
+        for (int32_t slot = 0; slot < m_SlotLimit; slot++) {
             if (m_BaddieSlots[slot].item_num == NO_ITEM) {
                 LOT_InitialiseSlot(item_num, slot);
                 return true;
@@ -136,7 +162,7 @@ bool LOT_EnableBaddieAI(const int16_t item_num, const bool always)
     }
 
     int32_t worst_slot = -1;
-    for (int32_t slot = 0; slot < LOT_SLOT_COUNT; slot++) {
+    for (int32_t slot = 0; slot < m_SlotLimit; slot++) {
         const ITEM *const item = Item_Get(m_BaddieSlots[slot].item_num);
         const int32_t dx = (item->pos.x - g_Camera.pos.pos.x) >> 8;
         const int32_t dy = (item->pos.y - g_Camera.pos.pos.y) >> 8;

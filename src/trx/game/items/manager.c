@@ -24,6 +24,10 @@
 #include <trx/game/sparks.h>
 #include <trx/version.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#endif
+
 #include <string.h>
 
 // The map lives as long as the level does, so nothing in it is freed.
@@ -91,12 +95,76 @@ static void M_SetCreator(const int16_t item_num, const int16_t creator_num)
 // bounds reach into, and which those were is not answerable from where the
 // item now stands, so each room is asked rather than worked out. Clearing a
 // room that never held the item costs one masked read.
+#if defined(__DREAMCAST__)
+// The rooms each item was last put in, so that taking it out visits those and
+// not every room of the level. Valid only for the epoch it was written in: a
+// flip or a level start (Item_InvalidateCaches) makes the room lists unknown,
+// and the next removal then asks every room, as before.
+    #define M_DRAW_ROOMS_MAX 8
+    #define M_DRAW_ROOMS_OVER 0xFF
+typedef struct {
+    uint32_t epoch;
+    uint8_t count;
+    int16_t rooms[M_DRAW_ROOMS_MAX];
+} M_DRAW_ROOMS;
+static M_DRAW_ROOMS m_DrawRooms[MAX_ITEMS];
+#endif
+static uint32_t m_CacheEpoch = 1;
+
+uint32_t Item_GetCacheEpoch(void)
+{
+    return m_CacheEpoch;
+}
+
+void Item_InvalidateCaches(void)
+{
+    m_CacheEpoch++;
+}
+
+static void M_NoteDrawn(const int16_t item_num, const int16_t room_num)
+{
+#if defined(__DREAMCAST__)
+    M_DRAW_ROOMS *const e = &m_DrawRooms[item_num];
+    if (e->epoch != m_CacheEpoch || e->count == M_DRAW_ROOMS_OVER) {
+        return;
+    }
+    for (int32_t i = 0; i < e->count; i++) {
+        if (e->rooms[i] == room_num) {
+            return;
+        }
+    }
+    if (e->count >= M_DRAW_ROOMS_MAX) {
+        e->count = M_DRAW_ROOMS_OVER;
+    } else {
+        e->rooms[e->count++] = room_num;
+    }
+#else
+    (void)item_num;
+    (void)room_num;
+#endif
+}
+
 static void M_RemoveFromDrawQueues(const int16_t item_num)
 {
+#if defined(__DREAMCAST__)
+    M_DRAW_ROOMS *const e = &m_DrawRooms[item_num];
+    if (e->epoch == m_CacheEpoch && e->count != M_DRAW_ROOMS_OVER) {
+        for (int32_t i = 0; i < e->count; i++) {
+            Room_RemoveDrawnItem(e->rooms[i], item_num);
+        }
+        e->count = 0;
+        return;
+    }
+#endif
     const int32_t room_count = Room_GetCount();
     for (int32_t i = 0; i < room_count; i++) {
         Room_RemoveDrawnItem((int16_t)i, item_num);
     }
+#if defined(__DREAMCAST__)
+    // Every room is clear now: the list starts afresh and is trusted.
+    e->epoch = m_CacheEpoch;
+    e->count = 0;
+#endif
 }
 
 // Draws the item from the room and from every neighbour its bounds reach a
@@ -106,6 +174,7 @@ static void M_AddToRoomAndNeighbours(
     const BOUNDS_32 *const bounds)
 {
     Room_AddDrawnItem(room_num, item_num);
+    M_NoteDrawn(item_num, room_num);
     const ROOM *const room = Room_Get(room_num);
     if (room == nullptr || room->portals == nullptr) {
         return;
@@ -114,6 +183,7 @@ static void M_AddToRoomAndNeighbours(
         const PORTAL *const portal = &room->portals->portal[i];
         if (Room_BoundsReachPortal(bounds, portal)) {
             Room_AddDrawnItem(portal->room_num, item_num);
+            M_NoteDrawn(item_num, portal->room_num);
         }
     }
 }
@@ -355,6 +425,7 @@ static bool M_IsFreeSlot(const int16_t item_num)
 
 void Item_InitialiseItems(const int32_t num_items)
 {
+    Item_InvalidateCaches();
     // From here until live play begins, the level's cast and any save overlaid
     // on it are wired up; keep their lifecycle events quiet (see
     // Game_IsSettingUpItems).
@@ -392,6 +463,7 @@ void Item_InitialiseItems(const int32_t num_items)
 
 void Item_Reset(void)
 {
+    Item_InvalidateCaches();
     for (int32_t i = 0; i < Item_GetTotalCount(); i++) {
         ObjectProperty_ResetItem(Item_Get(i));
     }
@@ -660,6 +732,7 @@ void Item_Initialise(const int16_t item_num)
 
     if (item->room_num != NO_ROOM) {
         Room_AddDrawnItem(item->room_num, item_num);
+        M_NoteDrawn(item_num, item->room_num);
     }
 
     // The gate keeps the level's starting cast quiet: only an item initialised
@@ -711,7 +784,17 @@ void Item_Control(void)
         const int16_t next = item->next_simulated;
         const OBJECT *obj = Object_Get(item->object_id);
         if (!item->is_destroyed && obj->control_func != nullptr) {
-            obj->control_func(item_num);
+#if defined(__DREAMCAST__)
+            if (obj->intelligent) {
+                DC_PROBE_START(probe_en);
+                obj->control_func(item_num);
+                DC_PROBE_STOP(DC_PROBE_N_CTRL, probe_en);
+                g_DC_ProbeUs[DC_PROBE_N_CTRLN]++; // TEMP
+            } else
+#endif
+            {
+                obj->control_func(item_num);
+            }
         }
         item_num = next;
     }
@@ -983,6 +1066,7 @@ void Item_UpdateRoom(const int16_t item_num, const int16_t room_num)
 
 void Item_InitialiseDrawQueues(void)
 {
+    Item_InvalidateCaches();
     for (int32_t i = 0; i < m_LevelItemCount; i++) {
         M_AddToDrawQueues(i, m_Items[i].room_num);
     }

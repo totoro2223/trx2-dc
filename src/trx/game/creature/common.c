@@ -1825,7 +1825,8 @@ void Creature_GetAITarget(CREATURE *const creature)
     // rather than walking every item of the level on each one.
     int32_t scan_count = Item_GetTotalCount();
 #if defined(__DREAMCAST__)
-    if (!M_InDemo() && enemy == lara_item && ((item->frame_num + Item_GetIndex(item)) & 15) != 0) {
+    if (!M_InDemo() && enemy == lara_item
+        && ((item->frame_num + Item_GetIndex(item)) & 15) != 0) {
         scan_count = 0;
     }
 #endif

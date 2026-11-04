@@ -13,6 +13,7 @@
 #include <trx/game/output.h>
 #include <trx/game/output/sources/shadows.h>
 #include <trx/game/output/vars.h>
+#include <trx/game/pathing/lot.h>
 #include <trx/version.h>
 
 // TEMP: see platform/dreamcast/dc_probe.h
@@ -148,22 +149,32 @@ static bool M_DrawInterpolatedObject(
     ASSERT(rate != 0);
     Matrix_Push();
 
-    ANIM_WALK walk;
-    Anim_Walk_Begin(
-        &walk,
-        &(ANIM_WALK_DESC) {
-            .obj = obj,
-            .pose = Anim_Pose_FromFrames(frame1, frame2, frac, rate),
-            .extra_rotations = extra_rotation,
-            .applies_base_rot = true,
-            .skips_frame_offset = skips_frame_offset,
-        });
 #if defined(__DREAMCAST__)
     // Far enemies, already lost in the fog, leave out their smallest meshes
     // (hands, feet): each one costs a staging, a transform and its polygons.
     const bool far_enemy = obj->intelligent
         && ((int32_t)g_MatrixPtr->_23 >> W2V_SHIFT) > M_FAR_ENEMY_DEPTH;
+    // Original simulation: a far enemy shows its nearest keyframe only, with
+    // no blend between two poses.
+    const int32_t pose_frac = (far_enemy && LOT_IsOriginalSim())
+        ? (frac > rate / 2 && frame2 != nullptr ? rate : 0)
+        : frac;
+    const ANIM_FRAME *const pose_a = (pose_frac == rate) ? frame2 : frame1;
+    const int32_t pose_f = (pose_frac == rate) ? 0 : pose_frac;
+#else
+    const ANIM_FRAME *const pose_a = frame1;
+    const int32_t pose_f = frac;
 #endif
+    ANIM_WALK walk;
+    Anim_Walk_Begin(
+        &walk,
+        &(ANIM_WALK_DESC) {
+            .obj = obj,
+            .pose = Anim_Pose_FromFrames(pose_a, frame2, pose_f, rate),
+            .extra_rotations = extra_rotation,
+            .applies_base_rot = true,
+            .skips_frame_offset = skips_frame_offset,
+        });
     while (Anim_Walk_Next(&walk)) {
         const int32_t mesh_idx = walk.joint;
 #if defined(__DREAMCAST__)

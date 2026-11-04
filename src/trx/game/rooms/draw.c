@@ -16,6 +16,7 @@
 #include <trx/game/output/bind.h>
 #include <trx/game/output/sources/rooms.h>
 #include <trx/game/output/water.h>
+#include <trx/game/pathing/lot.h>
 #include <trx/game/rooms.h>
 #include <trx/game/rope.h>
 #include <trx/game/sparks.h>
@@ -726,7 +727,17 @@ static void M_DrawRoomItem(const int16_t item_num, void *const ud)
     if (!hidden)
 #endif
     {
-        bind->drawn |= obj->draw_func(item);
+#if defined(__DREAMCAST__)
+        if (obj->intelligent) {
+            DC_PROBE_START(probe_en);
+            bind->drawn |= obj->draw_func(item);
+            DC_PROBE_STOP(DC_PROBE_N_DRAW, probe_en);
+            g_DC_ProbeUs[DC_PROBE_N_DRAWN]++; // TEMP
+        } else
+#endif
+        {
+            bind->drawn |= obj->draw_func(item);
+        }
     }
     if (is_fading) {
         Output_PopTintOverride();
@@ -921,6 +932,10 @@ void Room_DrawReset(void)
 void Room_MarkToBeDrawn(const int16_t room_num)
 {
     if (Vector_Contains(m_RoomsToDraw, &room_num)) {
+        return;
+    }
+    // The originals held 128 visible rooms at most (checked, not overrun).
+    if (LOT_IsOriginalSim() && m_RoomsToDraw->count >= 128) {
         return;
     }
     Vector_Add(m_RoomsToDraw, &room_num);

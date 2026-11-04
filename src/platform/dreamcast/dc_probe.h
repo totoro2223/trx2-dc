@@ -130,6 +130,10 @@ enum {
     DC_PROBE_O_TESTED, // objects (statics and items) tested by rays
     DC_PROBE_O_HIDDEN, // ... and left out
     DC_PROBE_O_US, // the rays' time
+    DC_PROBE_N_CTRL, // control routines of the creatures (time)
+    DC_PROBE_N_CTRLN, // ... and how many ran (count)
+    DC_PROBE_N_DRAW, // draw routines of the creatures (time)
+    DC_PROBE_N_DRAWN, // ... and how many were drawn (count)
     DC_PROBE_COUNT,
 };
 

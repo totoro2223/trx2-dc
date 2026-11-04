@@ -249,7 +249,7 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "plprep", "pvol", "ppsoft", "pdrawi", "ptransp", "pntransp", "udraw", "uops",
     "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
     "rall", "rplain", "rdyn", "rflick", "rvary", "rnw", "rfog", "rhit",
-    "ctest", "chide", "croom", "qtest", "qhide", "otest", "ohide", "otime",
+    "ctest", "chide", "croom", "qtest", "qhide", "otest", "ohide", "otime", "ectl", "ectln", "edraw", "edrawn",
 };
 
 static void M_StatsBeginScene(void)
