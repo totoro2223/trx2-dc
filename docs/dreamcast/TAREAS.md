@@ -27,6 +27,10 @@ suave de 128): plan V1–V3 en
 [PLAN_VRAM_LUA_MIPMAPS_SOMBRA.md](PLAN_VRAM_LUA_MIPMAPS_SOMBRA.md).
 V1 (Lua en VRAM) hecho y OK en Flycast. V3 (mapa de sombra a 128) revertido a 64: a 128 faltan caras de las salas (ver PROBADO). V2 (mipmaps) apagado por defecto: corrompe las páginas con texels transparentes en Flycast; `TRX_MIP=1` en `texvq` los activa para investigar. Borrar esta nota cuando se resuelvan.
 
+**REA TR1, TR2 y TR3** (04/11/2026: análisis de los exe originales con el
+MCP `rea`: memoria, huecos de IA, búsqueda de rutas, salas y portales; TR1
+hecho en parte): ver [PLAN_REA_TR123.md](PLAN_REA_TR123.md).
+
 Al terminar una tarea: anota la fila en PROBADO.md (OK o FALLIDO, con cifra y
 build), el detalle en REGISTRO.md, y **bórrala de aquí**. Retira las sondas
 `TEMP` (`dc_probe.h` y los `DC_PROBE(...)`) antes de dar un commit por bueno.
@@ -236,7 +240,7 @@ nivel, se resolvieron: T59 y T60 en PRUEBAS_PENDIENTES.md.)
 | 73 | **Mapa de sombra a 128** (+ caras que faltan en las salas de TR1): hipótesis sin comprobar, el render a 128 es 4× más lento y el PVR aún lo tiene en marcha cuando empieza la escena. | Probar 96 de lado o una espera extra (`pvr_wait_ready`) tras el mapa. |
 | 74 | **Mipmaps VQ**: corrompen en Flycast las páginas con texels transparentes (Lara, fuente, pasaporte), aun con el sesgo en 0,25. Los datos (TVQ2) decodifican bien. | Comparar con la disposición real del PVR/Flycast; probar una página con alpha sola. `TRX_MIP=1` activa la generación. |
 | 75 | **Plan de RAM pendiente** ([PLAN_REFACTOR_RAM.md](PLAN_REFACTOR_RAM.md), 02/11/2026): **probar** lo aplicado sin pruebas (A2, A3, C1/C2, D2 reducido, D7 parcial, C4; ver REGISTRO) y hacer lo que falta: **B** (niveles horneados `.DCL`), **D1** (una copia de cada sala), **D2 completo** (sectores decodificados al consultar), **D6** (un ejecutable por juego), **D7** (tabla de solo lectura para el hash del catálogo, tras el censo A5) y **C3** (arena de frame). | D1 exige antes precalcular lo que hoy lee `ROOM_MESH` en ejecución (sombras, rayos de visión, relieve, `mesh_builder`). C3 solo si P11 muestra crecimiento. |
-74. **Sombras de volumen que faltan en algunos suelos y paredes** (02/11/2026): el receptor se decide por instancia (`is_room` en `M_DrawInstance`, `batcher.c`) y el volumen llega a `M_SHADOW_LENGTH` (1024) bajo el casco; no reproducido. Pedir nivel y posici�n; sospechas: suelos m�s bajos que el largo del volumen, salas bajo el agua con Lara vadeando, caras fuera de `needs_room_lights`.
+74. **Sombras de volumen que faltan en algunos suelos y paredes** (02/11/2026): el receptor se decide por instancia (`is_room` en `M_DrawInstance`, `batcher.c`) y el volumen llega a `M_SHADOW_LENGTH` (1024) bajo el casco; no reproducido. Pedir nivel y posición; sospechas: suelos más bajos que el largo del volumen, salas bajo el agua con Lara vadeando, caras fuera de `needs_room_lights`.
 76. **Probar en consola real el disco de 3 juegos** (03/11/2026, DC build 1107 en CDI, 1101 en ISO DMA): cambio TR1→TR2→TR3 (arreglados el fundido retenido y el desborde de manejadores `nolua.c`, sin ver en pantalla), cuelgue al 100 % en los menús (no reproducido en Flycast; posible DMA), informe de cuelgue con fuente BIOS, fila "Memory use", orden de lectura del ISO (`disc_sort.sh`).
 77. **Medir "Load cache"** (Render, última fila): carga repetida del mismo nivel con On y Off (el mensaje "Load X.Y s" sale abajo a la izquierda). Solo cachea los archivos de inyección descomprimidos; guardar el resultado de `Inject_AllInjections` (~3,6 s) exige copiar el estado del nivel, no hecho.
 78. **Conectar más mensajes a `DC_Msg()`** (consola de mensajes, `nolua_hud.c`): hoy solo la carga; pedir cuáles.
