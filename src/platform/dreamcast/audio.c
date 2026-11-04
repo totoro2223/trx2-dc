@@ -1316,6 +1316,15 @@ RESULT Audio_Shutdown(void)
     }
     m_Ready = false;
     IGNORE(Audio_Sample_UnloadAll());
+    // The next game starts in this same run (dc_main.c): its Audio_Init takes
+    // the channels again, and with these kept only a few of 64 were left.
+    for (int32_t i = 0; i < AUDIO_MAX_ACTIVE_SAMPLES; i++) {
+        if (m_Channels[i] >= 0) {
+            snd_sfx_stop(m_Channels[i]);
+            snd_sfx_chn_free(m_Channels[i]);
+            m_Channels[i] = -1;
+        }
+    }
     mutex_lock(&m_StreamLock);
     for (int32_t i = 0; i < M_MAX_STREAMS; i++) {
         if (m_Streams[i].used) {
