@@ -716,6 +716,41 @@ void OutputSource_PolyFX_StageQuadExtDepth(
         sprite_idx, world_pos, color, z_depth_adjust, draw_type);
 }
 
+#if defined(__DREAMCAST__)
+// One quad of the sprite, added, at a world point: the PSX's particle
+// (TOMB3.EXE 0x73560) rather than two instances of a mesh and a matrix each.
+void OutputSource_PolyFX_StageParticle(
+    const int32_t sprite_idx, const XYZ_32 *const pos, const float half,
+    const RGBA_8888 color)
+{
+    M_PRIV *const p = &m_Priv;
+    if (sprite_idx < 0 || p->batcher == nullptr) {
+        return;
+    }
+    // The picture's corners, looked up once for a run of the same sprite.
+    static int32_t s_sprite = -1;
+    static DC_PARTICLE s_proto;
+    if (sprite_idx != s_sprite) {
+        for (int32_t k = 0; k < 4; k++) {
+            const OUTPUT_UVW uvw = Output_Textures_GetUVW(
+                Output_Textures_GetSpriteUVWIndex(sprite_idx, k));
+            s_proto.u[k] = uvw.u;
+            s_proto.v[k] = uvw.v;
+            s_proto.page = (int8_t)uvw.w;
+        }
+        s_sprite = sprite_idx;
+    }
+    DC_PARTICLE q = s_proto;
+    q.pos[0] = (float)pos->x;
+    q.pos[1] = (float)pos->y;
+    q.pos[2] = (float)pos->z;
+    q.half = half;
+    q.argb = 0xFF000000u | ((uint32_t)color.r << 16) | ((uint32_t)color.g << 8)
+        | color.b;
+    DC_MeshBatcher_StageParticle(p->batcher, &q);
+}
+#endif
+
 void OutputSource_PolyFX_StageQuadExt(
     const int32_t sprite_idx, const XYZ_32 world_pos[4],
     const float disp[4][2], const RGBA_8888 color[4], const uint16_t flags,

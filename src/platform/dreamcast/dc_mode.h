@@ -33,6 +33,11 @@ extern int32_t g_DC_TestMode;
 extern int32_t g_DC_TestShadow;
 // A test disc that fixes the cel shading and the room cel shading (0 or 1;
 // -1 leaves them to the mode).
+// A test disc that caps the snowflakes/raindrops (make_disc.sh TRX_DC_SNOW, -1: no cap).
+extern int32_t g_DC_TestSnow;
+// A test disc's fog start and end in blocks (make_disc.sh TRX_DC_FOG), -1: the fixed ones.
+extern int32_t g_DC_TestFogStart;
+extern int32_t g_DC_TestFogEnd;
 extern int32_t g_DC_TestCel;
 // A test disc that fixes the frame rate (TRX_DC_FPS: 30 or 60).
 extern int32_t g_DC_TestFps;

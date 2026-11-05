@@ -134,6 +134,22 @@ enum {
     DC_PROBE_N_CTRLN, // ... and how many ran (count)
     DC_PROBE_N_DRAW, // draw routines of the creatures (time)
     DC_PROBE_N_DRAWN, // ... and how many were drawn (count)
+    // Vertices of the own-light path in assembly and in C, and of the generic
+    // path by why: room lights, object light, coloured fog, reflections, other.
+    DC_PROBE_N_OWNFAST,
+    DC_PROBE_N_OWNSLOW,
+    DC_PROBE_N_GROOM,
+    DC_PROBE_N_GOBJ,
+    DC_PROBE_N_GFOG,
+    DC_PROBE_N_GENV,
+    DC_PROBE_N_GOTHER,
+    DC_PROBE_I_WALK, // M_DrawInterpolatedObject: the bones' matrices
+    DC_PROBE_I_MESH, // ... and Object_DrawMesh of each
+    DC_PROBE_E_CLIPC, // faces the assembly leaves out: all corners off one side
+    DC_PROBE_E_BACKC, // ... and turned away (counts)
+    DC_PROBE_D_PRE, // M_DrawInstance: from the start to the transform
+    DC_PROBE_D_POST, // ... after the transform to the faces (soft shadows)
+    DC_PROBE_D_TAIL, // ... after the faces: cel, bump, env
     DC_PROBE_COUNT,
 };
 

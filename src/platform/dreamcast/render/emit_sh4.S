@@ -34,6 +34,16 @@
 !   56 out 60 space 64 page_id 68 cull 72 sargb 76 cel_out | 80 used
 !   84 written 88 polys 92 cel_end | 96 cel_dark 100 sq_delta
 
+! Probe builds count the faces left out (g_DC_EmitCull[\idx]); r0, r1 are free.
+    .macro COUNT idx, pool
+#if defined(TRX_DC_PROBES)
+    mov.l   \pool,r0
+    mov.l   @(\idx*4,r0),r1
+    add     #1,r1
+    mov.l   r1,@(\idx*4,r0)
+#endif
+    .endm
+
     .text
     .align 2
     .global _dc_emit_run
@@ -45,8 +55,7 @@
     shll2   r0
     shll2   r0
     shll    r0
-    add     r8,r0
-    add     #12,r0
+    add     r8,r0                   ! r8 is on 12: the vertex's sx
     mov.l   r0,@(\slot,r15)
     .endm
 
@@ -74,15 +83,13 @@
     extu.w  r0,r1                   ! r1 = corner
     mov     r1,r0
     shll2   r0                      ! r0 = corner * 4
-    mov.w   @(r0,r9),r14
-    extu.w  r14,r14
+    mov.l   @(r0,r9),r4             ! u in the low half, v in the high one
+    extu.w  r4,r14
     lds     r14,fpul
     float   fpul,fr0
     fmul    fr14,fr0                ! u
-    add     #2,r0
-    mov.w   @(r0,r9),r14
-    extu.w  r14,r14
-    lds     r14,fpul
+    shlr16  r4
+    lds     r4,fpul
     float   fpul,fr1
     fmul    fr14,fr1                ! v
     ! the offset colour: the table's, or the fog's black where fogged
@@ -289,6 +296,7 @@ _dc_emit_run:
     mov.l   @r5+,r6
     mov.l   @r5+,r7
     mov.l   @r5+,r8
+    add     #12,r8                  ! the xverts, at their sx
     mov.l   @r5+,r9
     mov.l   @r5+,r10
     mov.l   @r5+,r13
@@ -315,56 +323,49 @@ _dc_emit_run:
     mov     #0,r1
     mov.l   r1,@(4,r15)
 
+    bra     loop                    ! the setup's end; the exits below are
+    nop                             ! short hops for the not-taken tests
+done_t:
+    bra     done
+    nop
+tri_t:
+    bra     tri
+    nop
 loop:
     mov     #3,r0
     cmp/ge  r0,r7                   ! three corners left?
-    bt      1f
-    bra     done
-    nop
-1:  mov.w   @r6,r0
+    bf      done_t
+    mov.w   @r6,r0
     extu.w  r0,r0
     mov.b   @(r0,r10),r1            ! the page of its first corner
     mov.l   @(12,r15),r5
     cmp/eq  r5,r1
-    bt      2f
-    bra     done                    ! the page changed
-    nop
-2:  mov     #6,r0
+    bf      done_t                  ! the page changed
+    mov     #6,r0
     cmp/ge  r0,r7
-    bt      2f
-    bra     tri                     ! under six corners: a triangle
-    nop
-2:  mov.w   @(6,r6),r0
+    bf      tri_t                   ! under six corners: a triangle
+    mov.w   @(6,r6),r0
     mov     r0,r1
     mov.w   @(4,r6),r0
     cmp/eq  r0,r1                   ! t[3] == t[2]
-    bt      2f
-    bra     tri
-    nop
-2:  mov.w   @(8,r6),r0
+    bf      tri_t
+    mov.w   @(8,r6),r0
     mov     r0,r1
     mov.w   @(2,r6),r0
     cmp/eq  r0,r1                   ! t[4] == t[1]
-    bt      2f
-    bra     tri
-    nop
-2:  mov.w   @(6,r6),r0
+    bf      tri_t
+    mov.w   @(6,r6),r0
     extu.w  r0,r0
     mov.b   @(r0,r10),r1
     mov.l   @(12,r15),r5
     cmp/eq  r5,r1                   ! the second half on the same page
-    bt      2f
-    bra     tri
-    nop
-2:
+    bf      tri_t
 ! ---- a quad: a, b, c, d = t0[0], t0[1], t0[2], t1[2]
     mov     #64,r0
     shll    r0                      ! 128 bytes
     cmp/ge  r0,r12
-    bt      3f
-    bra     done
-    nop
-3:  LOAD_CORNER 0, 16
+    bf      done_t
+    LOAD_CORNER 0, 16
     LOAD_CORNER 2, 20
     LOAD_CORNER 4, 24
     LOAD_CORNER 10, 28
@@ -374,15 +375,11 @@ loop:
     CLIP_CORNER 28, 0
     mov     r4,r0
     tst     #63,r0                  ! all past one side: out
-    bt      4f
-    bra     skip_quad
-    nop
-4:  mov     r14,r0
+    bf      cull_clip_q
+    mov     r14,r0
     tst     #2,r0                   ! one before the near plane: the C code
-    bt      5f
-    bra     done
-    nop
-5:  mov.l   @(8,r15),r1
+    bf      done_t
+    mov.l   @(8,r15),r1
     tst     r1,r1
     bt      emit_quad               ! no culling
     FRONT_FACING 16, 20, 24, r4     ! a, b, c
@@ -393,10 +390,15 @@ loop:
     nop
 6:  tst     r4,r4
     bf      emit_quad
+    COUNT   1, .Lcull_q
 skip_quad:
     add     #12,r6
     add     #-6,r7
     bra     loop
+    nop
+cull_clip_q:
+    COUNT   0, .Lcull_q
+    bra     skip_quad
     nop
 emit_quad:
     EMIT_VERTEX_BODY 0, 16, r2, 32
@@ -414,14 +416,18 @@ emit_quad:
     bra     loop
     nop
 
+    .align 2
+.Lcull_q:
+    .long   _g_DC_EmitCull
+done_t2:
+    bra     done
+    nop
 ! ---- a triangle
 tri:
     mov     #96,r0
     cmp/ge  r0,r12
-    bt      7f
-    bra     done
-    nop
-7:  LOAD_CORNER 0, 16
+    bf      done_t2
+    LOAD_CORNER 0, 16
     LOAD_CORNER 2, 20
     LOAD_CORNER 4, 24
     CLIP_CORNER 16, 1
@@ -429,24 +435,25 @@ tri:
     CLIP_CORNER 24, 0
     mov     r4,r0
     tst     #63,r0
-    bt      8f
-    bra     skip_tri
-    nop
-8:  mov     r14,r0
+    bf      cull_clip_t
+    mov     r14,r0
     tst     #2,r0
-    bt      9f
-    bra     done
-    nop
-9:  mov.l   @(8,r15),r1
+    bf      done_t2
+    mov.l   @(8,r15),r1
     tst     r1,r1
     bt      emit_tri
     FRONT_FACING 16, 20, 24, r4
     tst     r4,r4
     bf      emit_tri
+    COUNT   1, .Lcull_t
 skip_tri:
     add     #6,r6
     add     #-3,r7
     bra     loop
+    nop
+cull_clip_t:
+    COUNT   0, .Lcull_t
+    bra     skip_tri
     nop
 emit_tri:
     EMIT_VERTEX_BODY 0, 16, r2, 32
@@ -463,6 +470,9 @@ emit_tri:
     bra     loop
     nop
 
+    .align 2
+.Lcull_t:
+    .long   _g_DC_EmitCull
 done:
     mov.l   @(0,r15),r4
     mov.l   @(36,r4),r1             ! indices at the start

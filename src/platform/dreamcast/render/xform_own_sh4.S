@@ -234,6 +234,8 @@ kdone:
     fldi1   fr3
     ftrv    xmtrx,fv0
 
+    mov     #0,r0
+    movca.l r0,@r14                 ! the line is all written: no fetch of it
     mov     r14,r4
     add     #12,r4
     fmov.s  fr2,@-r4
@@ -246,6 +248,12 @@ kdone:
     fcmp/gt fr2,fr10                ! near z > z
     bf      place
     mov     #2,r5                   ! before the near plane
+    mov     r14,r4
+    add     #24,r4
+    mov     #0,r0
+    mov.l   r0,@-r4                 ! 1/z, sy, sx: nothing, but written
+    mov.l   r0,@-r4
+    mov.l   r0,@-r4
     bra     placed
     nop
     .align 2
@@ -374,7 +382,7 @@ shaded:
 clipped:
     mov     r14,r4
     add     #28,r4
-    mov.b   r5,@r4
+    mov.l   r5,@r4                  ! the clip, and the rest of its word
     mov.l   @(0,r15),r4
     mov     r4,r1
     add     #80,r1

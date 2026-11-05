@@ -63,3 +63,10 @@ void OutputSource_PolyFX_StageLineSegment(
     float half_width, DRAW_TYPE draw_type);
 
 void OutputSource_PolyFX_StageSpark(const SPARK *spark);
+
+#if defined(__DREAMCAST__)
+// A quad of the sprite at a world point, added; half is its half side in world
+// units at the camera's plane (the PSX's particle, TOMB3.EXE 0x73560).
+void OutputSource_PolyFX_StageParticle(
+    int32_t sprite_idx, const XYZ_32 *pos, float half, RGBA_8888 color);
+#endif

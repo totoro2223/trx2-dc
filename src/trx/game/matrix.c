@@ -428,7 +428,7 @@ static bool M_LerpTranslation(
 
 // M_Interpolate in floats. False, with nothing written, for a matrix it
 // cannot take.
-static bool M_InterpolateFloat(
+[[maybe_unused]] static bool M_InterpolateFloat(
     const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
 {
     float t = (m_IMRate != 0) ? (float)m_IMFrac / (float)m_IMRate : 0.0f;
@@ -708,11 +708,18 @@ static XYZ_16 M_ToRot16(const MATRIX *const m)
     };
 }
 
+// A rotation entry is at most 1 << W2V_SHIFT, so each product is one 32 x 32
+// -> 64 multiply (dmuls.l on the SH-4), not three 32-bit ones and their carries.
+#define M_MUL64(a_, b_) ((int64_t)(int32_t)(a_) * (int32_t)(b_))
+
 static void M_TranslateRel(MATRIX *const m, const XYZ_32 offset)
 {
-    m->_03 += offset.x * m->_00 + offset.y * m->_01 + offset.z * m->_02;
-    m->_13 += offset.x * m->_10 + offset.y * m->_11 + offset.z * m->_12;
-    m->_23 += offset.x * m->_20 + offset.y * m->_21 + offset.z * m->_22;
+    m->_03 += M_MUL64(offset.x, m->_00) + M_MUL64(offset.y, m->_01)
+        + M_MUL64(offset.z, m->_02);
+    m->_13 += M_MUL64(offset.x, m->_10) + M_MUL64(offset.y, m->_11)
+        + M_MUL64(offset.z, m->_12);
+    m->_23 += M_MUL64(offset.x, m->_20) + M_MUL64(offset.y, m->_21)
+        + M_MUL64(offset.z, m->_22);
 }
 
 static void M_TranslateSet(MATRIX *const m, const XYZ_32 pos)

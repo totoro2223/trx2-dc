@@ -63,6 +63,20 @@ const SCENE_SOURCE *MeshBatcher_AsSource(const struct MESH_BATCHER *batcher);
 void MeshBatcher_Stage(
     struct MESH_BATCHER *batcher, const MESH_INSTANCE *inst, SCENE_PASS pass);
 #if defined(__DREAMCAST__)
+// A particle as the PSX draws it (TOMB3.EXE 0x73560): one projection of its
+// centre and one quad, no mesh instance and no matrix. half is the world
+// size of the quad's half side at the camera's plane; the corners go round the
+// picture (top left, top right, bottom right, bottom left).
+typedef struct {
+    float pos[3];
+    float half;
+    uint32_t argb;
+    int32_t page;
+    float u[4];
+    float v[4];
+} DC_PARTICLE;
+void DC_MeshBatcher_StageParticle(
+    MESH_BATCHER *batcher, const DC_PARTICLE *particle);
 // Whether a wall of the room, with nothing you can see through on it, lies
 // between the eye and the point (both in the world).
 bool DC_MeshBatcher_RayBlocked(

@@ -17,7 +17,9 @@
 
 CLIP Output_CheckBoundsClip(const BOUNDS_16 *const bounds)
 {
-    if (g_MatrixPtr->_23 >= Output_GetFarZ()) {
+    const int32_t near_z = Output_GetNearZ();
+    const int32_t far_z = Output_GetFarZ();
+    if (g_MatrixPtr->_23 >= far_z) {
         return CLIP_NOT_VISIBLE;
     }
 
@@ -47,7 +49,7 @@ CLIP Output_CheckBoundsClip(const BOUNDS_16 *const bounds)
             g_MatrixPtr->_23);
         // clang-format on
 
-        if (zv <= Output_GetNearZ() || zv >= Output_GetFarZ()) {
+        if (zv <= near_z || zv >= far_z) {
             continue;
         }
 

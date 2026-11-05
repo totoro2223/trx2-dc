@@ -22,6 +22,10 @@
 
 #include <string.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_mode.h>
+#endif
+
 #define M_BASE_WEATHER 256
 #define M_BASE_WEATHER_ALIVE 16
 #if defined(__DREAMCAST__)
@@ -91,7 +95,13 @@ static void M_Ensure(const WEATHER_TYPE type)
 // severity lets the particles already falling finish their lives.
 static int32_t M_GetParticleCount(void)
 {
-    return (int32_t)(M_BASE_WEATHER * m_Severity);
+    int32_t count = (int32_t)(M_BASE_WEATHER * m_Severity);
+#if defined(__DREAMCAST__)
+    if (g_DC_TestSnow >= 0 && count > g_DC_TestSnow) {
+        count = g_DC_TestSnow;
+    }
+#endif
+    return count;
 }
 
 static int32_t M_GetSpawnCount(void)
@@ -379,6 +389,11 @@ static void M_DrawSnow(void)
     const TRX_REAL ratio = Interpolation_GetWorldRate();
     const bool do_interp =
         Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0;
+    // The same for every flake: once, not per flake.
+    const int64_t near_z = Output_GetNearZ();
+    const int64_t far_z = Output_GetFarZ();
+    const int32_t fog_start = Output_GetFogStart();
+    const int32_t fog_end = Output_GetFogEnd();
     for (int32_t i = 0; i < M_MAX_WEATHER; i++) {
         M_SNOWFLAKE *const snow = &m_Snowflakes[i];
         if (snow->pos.x == 0) {
@@ -393,8 +408,6 @@ static void M_DrawSnow(void)
               }
             : snow->pos;
         const int64_t zv = M_GetViewDepth(center);
-        const int64_t near_z = Output_GetNearZ();
-        const int64_t far_z = Output_GetFarZ();
         const int32_t vpos_z = (int32_t)(zv >> W2V_SHIFT);
 
         if (vpos_z < 128 && snow->life > 16) {
@@ -437,8 +450,6 @@ static void M_DrawSnow(void)
         CLAMPG(c, 255);
 
         {
-            const int32_t fog_start = Output_GetFogStart();
-            const int32_t fog_end = Output_GetFogEnd();
             float fade = 1.0f;
             if (fog_end > fog_start && vpos_z > fog_start) {
                 float t = (vpos_z - fog_start) / (float)(fog_end - fog_start);
@@ -449,6 +460,10 @@ static void M_DrawSnow(void)
         }
 
         const RGBA_8888 color = { c, c, c, 255 };
+#if defined(__DREAMCAST__)
+        OutputSource_PolyFX_StageParticle(sprite_idx, &center, s, color);
+        continue;
+#endif
         const RGBA_8888 colors[4] = { color, color, color, color };
 
         OutputSource_PolyFX_StageQuadExt(
