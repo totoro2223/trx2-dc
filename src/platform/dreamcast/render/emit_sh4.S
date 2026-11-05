@@ -55,8 +55,7 @@
     shll2   r0
     shll2   r0
     shll    r0
-    add     r8,r0
-    add     #12,r0
+    add     r8,r0                   ! r8 is on 12: the vertex's sx
     mov.l   r0,@(\slot,r15)
     .endm
 
@@ -84,15 +83,13 @@
     extu.w  r0,r1                   ! r1 = corner
     mov     r1,r0
     shll2   r0                      ! r0 = corner * 4
-    mov.w   @(r0,r9),r14
-    extu.w  r14,r14
+    mov.l   @(r0,r9),r4             ! u in the low half, v in the high one
+    extu.w  r4,r14
     lds     r14,fpul
     float   fpul,fr0
     fmul    fr14,fr0                ! u
-    add     #2,r0
-    mov.w   @(r0,r9),r14
-    extu.w  r14,r14
-    lds     r14,fpul
+    shlr16  r4
+    lds     r4,fpul
     float   fpul,fr1
     fmul    fr14,fr1                ! v
     ! the offset colour: the table's, or the fog's black where fogged
@@ -299,6 +296,7 @@ _dc_emit_run:
     mov.l   @r5+,r6
     mov.l   @r5+,r7
     mov.l   @r5+,r8
+    add     #12,r8                  ! the xverts, at their sx
     mov.l   @r5+,r9
     mov.l   @r5+,r10
     mov.l   @r5+,r13
