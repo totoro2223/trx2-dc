@@ -315,56 +315,49 @@ _dc_emit_run:
     mov     #0,r1
     mov.l   r1,@(4,r15)
 
+    bra     loop                    ! the setup's end; the exits below are
+    nop                             ! short hops for the not-taken tests
+done_t:
+    bra     done
+    nop
+tri_t:
+    bra     tri
+    nop
 loop:
     mov     #3,r0
     cmp/ge  r0,r7                   ! three corners left?
-    bt      1f
-    bra     done
-    nop
-1:  mov.w   @r6,r0
+    bf      done_t
+    mov.w   @r6,r0
     extu.w  r0,r0
     mov.b   @(r0,r10),r1            ! the page of its first corner
     mov.l   @(12,r15),r5
     cmp/eq  r5,r1
-    bt      2f
-    bra     done                    ! the page changed
-    nop
-2:  mov     #6,r0
+    bf      done_t                  ! the page changed
+    mov     #6,r0
     cmp/ge  r0,r7
-    bt      2f
-    bra     tri                     ! under six corners: a triangle
-    nop
-2:  mov.w   @(6,r6),r0
+    bf      tri_t                   ! under six corners: a triangle
+    mov.w   @(6,r6),r0
     mov     r0,r1
     mov.w   @(4,r6),r0
     cmp/eq  r0,r1                   ! t[3] == t[2]
-    bt      2f
-    bra     tri
-    nop
-2:  mov.w   @(8,r6),r0
+    bf      tri_t
+    mov.w   @(8,r6),r0
     mov     r0,r1
     mov.w   @(2,r6),r0
     cmp/eq  r0,r1                   ! t[4] == t[1]
-    bt      2f
-    bra     tri
-    nop
-2:  mov.w   @(6,r6),r0
+    bf      tri_t
+    mov.w   @(6,r6),r0
     extu.w  r0,r0
     mov.b   @(r0,r10),r1
     mov.l   @(12,r15),r5
     cmp/eq  r5,r1                   ! the second half on the same page
-    bt      2f
-    bra     tri
-    nop
-2:
+    bf      tri_t
 ! ---- a quad: a, b, c, d = t0[0], t0[1], t0[2], t1[2]
     mov     #64,r0
     shll    r0                      ! 128 bytes
     cmp/ge  r0,r12
-    bt      3f
-    bra     done
-    nop
-3:  LOAD_CORNER 0, 16
+    bf      done_t
+    LOAD_CORNER 0, 16
     LOAD_CORNER 2, 20
     LOAD_CORNER 4, 24
     LOAD_CORNER 10, 28
@@ -374,15 +367,11 @@ loop:
     CLIP_CORNER 28, 0
     mov     r4,r0
     tst     #63,r0                  ! all past one side: out
-    bt      4f
-    bra     skip_quad
-    nop
-4:  mov     r14,r0
+    bf      skip_quad
+    mov     r14,r0
     tst     #2,r0                   ! one before the near plane: the C code
-    bt      5f
-    bra     done
-    nop
-5:  mov.l   @(8,r15),r1
+    bf      done_t
+    mov.l   @(8,r15),r1
     tst     r1,r1
     bt      emit_quad               ! no culling
     FRONT_FACING 16, 20, 24, r4     ! a, b, c
@@ -414,14 +403,15 @@ emit_quad:
     bra     loop
     nop
 
+done_t2:
+    bra     done
+    nop
 ! ---- a triangle
 tri:
     mov     #96,r0
     cmp/ge  r0,r12
-    bt      7f
-    bra     done
-    nop
-7:  LOAD_CORNER 0, 16
+    bf      done_t2
+    LOAD_CORNER 0, 16
     LOAD_CORNER 2, 20
     LOAD_CORNER 4, 24
     CLIP_CORNER 16, 1
@@ -429,15 +419,11 @@ tri:
     CLIP_CORNER 24, 0
     mov     r4,r0
     tst     #63,r0
-    bt      8f
-    bra     skip_tri
-    nop
-8:  mov     r14,r0
+    bf      skip_tri
+    mov     r14,r0
     tst     #2,r0
-    bt      9f
-    bra     done
-    nop
-9:  mov.l   @(8,r15),r1
+    bf      done_t2
+    mov.l   @(8,r15),r1
     tst     r1,r1
     bt      emit_tri
     FRONT_FACING 16, 20, 24, r4

@@ -141,17 +141,20 @@ range_loop:
     mov.l   @r4+,r6                 ! how many
     mov.l   r4,@(4,r15)
     add     r7,r6                   ! the end
-
-vert_loop:
-    cmp/ge  r6,r7                   ! T = past the end
-    bf      1f
-    bra     range_loop
-    nop
-1:  mov     r7,r14
+    mov     r7,r14
     shll2   r14
     shll2   r14
     shll    r14
-    add     r8,r14                  ! its xvert
+    add     r8,r14                  ! its xvert: 32 on with each vertex
+    bra     vert_loop
+    nop
+range_t:
+    bra     range_loop
+    nop
+
+vert_loop:
+    cmp/ge  r6,r7                   ! T = past the end
+    bt      range_t
     mov     r7,r0
     shll    r0
     mov.w   @(r0,r10),r1
@@ -186,6 +189,7 @@ vert_loop:
     add     #1,r0
     mov.l   r0,@(12,r15)
     add     #1,r7
+    add     #32,r14
     bra     vert_loop
     nop
 
@@ -482,6 +486,7 @@ shaded:
     add     #4,r4
     mov.b   r5,@r4
     add     #1,r7
+    add     #32,r14
     bra     vert_loop
     nop
 ! The tinted colour, as M_Colour.
@@ -496,6 +501,7 @@ tinted:
     add     #4,r2
     mov.b   r5,@r2
     add     #1,r7
+    add     #32,r14
     bra     vert_loop
     nop
 

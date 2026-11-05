@@ -169,17 +169,16 @@ _dc_xform_object:
     fldi1   fr15
     add     #48,r13
     mov     #0,r7
+    mov     r8,r14                  ! its xvert: 32 on with each vertex
+    bra     obj_loop
+    nop
+fin_t:
+    bra     obj_finish
+    nop
 
 obj_loop:
     cmp/ge  r6,r7                   ! T = past the end
-    bf      1f
-    bra     obj_finish
-    nop
-1:  mov     r7,r14
-    shll2   r14
-    shll2   r14
-    shll    r14
-    add     r8,r14                  ! its xvert
+    bt      fin_t
     tst     r11,r11
     bt      untwinned
     mov     r7,r0
@@ -217,6 +216,7 @@ obj_loop:
     mov.l   r3,@(r0,r2)             ! its cel colour
 twinned:
     add     #1,r7
+    add     #32,r14
     bra     obj_loop
     nop
 
@@ -513,6 +513,7 @@ coloured:
     mov.l   r2,@(r0,r3)
 celled:
     add     #1,r7
+    add     #32,r14
     bra     obj_loop
     nop
 
