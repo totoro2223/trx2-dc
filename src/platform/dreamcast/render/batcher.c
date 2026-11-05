@@ -5920,6 +5920,7 @@ static void M_DrawInstance(
     MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
     const SCENE_PASS pass, const int16_t caster)
 {
+    DC_PROBE_START(probe_pre);
     M_BINDING *const bind = M_GetBinding(batcher, inst->mesh);
     if (bind == nullptr || bind->vertex_count == 0) {
         return;
@@ -5950,6 +5951,7 @@ static void M_DrawInstance(
         is_room && M_ShadowType() == SHADOW_TYPE_VOLUME);
     batcher->emitted = false;
     batcher->chunk_emit_us = 0;
+    DC_PROBE_STOP(DC_PROBE_D_PRE, probe_pre);
 #if defined(TRX_DC_WATCHDOG)
     const uint64_t xform_start = timer_us_gettime64();
     const bool transformed = M_TransformInstance(batcher, inst, bind);
@@ -5965,6 +5967,7 @@ static void M_DrawInstance(
         return;
     }
 #endif
+    DC_PROBE_START(probe_post);
     const bool is_caster = caster >= 0;
 #if defined(TRX_DC_WATCHDOG)
     m_ShadowReceivers += is_room && M_ShadowType() == SHADOW_TYPE_VOLUME;
@@ -5980,6 +5983,7 @@ static void M_DrawInstance(
 
     const OUTPUT_MESH *const mesh = inst->mesh;
     int32_t page = INT32_MIN;
+    DC_PROBE_STOP(DC_PROBE_D_POST, probe_post);
     if (blended) {
         M_EmitIndices(
             batcher, bind, Vector_GetData(mesh->blend_add_vertex_indices),
@@ -6011,6 +6015,7 @@ static void M_DrawInstance(
             &page);
     }
     DC_PROBE_STOP(DC_PROBE_EMIT, probe_emit);
+    DC_PROBE_START(probe_tail);
     batcher->cel_emit = false;
     if (batcher->cel_count > 0) {
         DC_PROBE(DC_PROBE_CEL, M_FlushCel(batcher));
@@ -6037,6 +6042,7 @@ static void M_DrawInstance(
     M_EmitIndices(
         batcher, bind, bind->transp, bind->transp_count, DC_BLEND_ALPHA, &page);
     DC_PROBE_STOP(DC_PROBE_P_TRANSP, probe_transp); // TEMP
+    DC_PROBE_STOP(DC_PROBE_D_TAIL, probe_tail);
 }
 
 static void M_PrepareFrame(void)

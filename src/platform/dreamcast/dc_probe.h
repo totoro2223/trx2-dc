@@ -141,6 +141,11 @@ enum {
     DC_PROBE_N_GOTHER,
     DC_PROBE_I_WALK, // M_DrawInterpolatedObject: the bones' matrices
     DC_PROBE_I_MESH, // ... and Object_DrawMesh of each
+    DC_PROBE_E_CLIPC, // faces the assembly leaves out: all corners off one side
+    DC_PROBE_E_BACKC, // ... and turned away (counts)
+    DC_PROBE_D_PRE, // M_DrawInstance: from the start to the transform
+    DC_PROBE_D_POST, // ... after the transform to the faces (soft shadows)
+    DC_PROBE_D_TAIL, // ... after the faces: cel, bump, env
     DC_PROBE_COUNT,
 };
 

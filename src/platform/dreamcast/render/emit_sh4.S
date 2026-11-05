@@ -34,6 +34,16 @@
 !   56 out 60 space 64 page_id 68 cull 72 sargb 76 cel_out | 80 used
 !   84 written 88 polys 92 cel_end | 96 cel_dark 100 sq_delta
 
+! Probe builds count the faces left out (g_DC_EmitCull[\idx]); r0, r1 are free.
+    .macro COUNT idx, pool
+#if defined(TRX_DC_PROBES)
+    mov.l   \pool,r0
+    mov.l   @(\idx*4,r0),r1
+    add     #1,r1
+    mov.l   r1,@(\idx*4,r0)
+#endif
+    .endm
+
     .text
     .align 2
     .global _dc_emit_run
@@ -367,7 +377,7 @@ loop:
     CLIP_CORNER 28, 0
     mov     r4,r0
     tst     #63,r0                  ! all past one side: out
-    bf      skip_quad
+    bf      cull_clip_q
     mov     r14,r0
     tst     #2,r0                   ! one before the near plane: the C code
     bf      done_t
@@ -382,10 +392,15 @@ loop:
     nop
 6:  tst     r4,r4
     bf      emit_quad
+    COUNT   1, .Lcull_q
 skip_quad:
     add     #12,r6
     add     #-6,r7
     bra     loop
+    nop
+cull_clip_q:
+    COUNT   0, .Lcull_q
+    bra     skip_quad
     nop
 emit_quad:
     EMIT_VERTEX_BODY 0, 16, r2, 32
@@ -403,6 +418,9 @@ emit_quad:
     bra     loop
     nop
 
+    .align 2
+.Lcull_q:
+    .long   _g_DC_EmitCull
 done_t2:
     bra     done
     nop
@@ -419,7 +437,7 @@ tri:
     CLIP_CORNER 24, 0
     mov     r4,r0
     tst     #63,r0
-    bf      skip_tri
+    bf      cull_clip_t
     mov     r14,r0
     tst     #2,r0
     bf      done_t2
@@ -429,10 +447,15 @@ tri:
     FRONT_FACING 16, 20, 24, r4
     tst     r4,r4
     bf      emit_tri
+    COUNT   1, .Lcull_t
 skip_tri:
     add     #6,r6
     add     #-3,r7
     bra     loop
+    nop
+cull_clip_t:
+    COUNT   0, .Lcull_t
+    bra     skip_tri
     nop
 emit_tri:
     EMIT_VERTEX_BODY 0, 16, r2, 32
@@ -449,6 +472,9 @@ emit_tri:
     bra     loop
     nop
 
+    .align 2
+.Lcull_t:
+    .long   _g_DC_EmitCull
 done:
     mov.l   @(0,r15),r4
     mov.l   @(36,r4),r1             ! indices at the start

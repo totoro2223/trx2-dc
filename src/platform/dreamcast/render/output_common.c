@@ -206,6 +206,8 @@ void Output_BeginScene(void)
 // TEMP: see dc_probe.h. Outside the watchdog: the batcher counts into it in
 // every build, release too.
 uint32_t g_DC_ProbeUs[DC_PROBE_COUNT] = {};
+// Counted by emit_sh4.S: faces left out by the clip bits, and by the facing.
+uint32_t g_DC_EmitCull[2] = {};
 uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
 uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};
 
@@ -250,7 +252,7 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
     "rall", "rplain", "rdyn", "rflick", "rvary", "rnw", "rfog", "rhit",
     "ctest", "chide", "croom", "qtest", "qhide", "otest", "ohide", "otime",
-    "ownf", "owns", "groom", "gobj", "gfogc", "genvc", "gother", "iwalk", "imesh",
+    "ownf", "owns", "groom", "gobj", "gfogc", "genvc", "gother", "iwalk", "imesh", "eclipc", "ebackc", "dpre", "dpost", "dtail",
 };
 
 static void M_StatsBeginScene(void)
@@ -604,6 +606,9 @@ static void M_StatsEndScene(void)
         }
     }
     // TEMP: see dc_probe.h
+    g_DC_ProbeUs[DC_PROBE_E_CLIPC] = g_DC_EmitCull[0];
+    g_DC_ProbeUs[DC_PROBE_E_BACKC] = g_DC_EmitCull[1];
+    g_DC_EmitCull[0] = g_DC_EmitCull[1] = 0;
     for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
         m_Stats.probe_sum[i] += g_DC_ProbeUs[i];
         if (g_DC_ProbeUs[i] > m_Stats.probe_max[i]) {
