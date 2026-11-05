@@ -2174,8 +2174,12 @@ static void M_XformObject(
         .white = white ? m_WhiteARGB : nullptr,
         .sargb = cel ? sargb : nullptr,
         .adder = adder,
-        .l = { dir ? l0 : 0.0f, dir ? l1 : 0.0f, dir ? l2 : 0.0f },
-        .cel_scale = cel_scale,
+        // The assembly takes the light divided by 65536 and the cel scale
+        // times it (exact), so it need not scale n.l.
+        .l = { dir ? l0 * (1.0f / 65536.0f) : 0.0f,
+               dir ? l1 * (1.0f / 65536.0f) : 0.0f,
+               dir ? l2 * (1.0f / 65536.0f) : 0.0f },
+        .cel_scale = cel_scale * 65536.0f,
         .dark = dark,
         .tint = { ta, tr, tg, tb },
         .il = tr3 ? il : nullptr,

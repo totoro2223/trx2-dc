@@ -175,6 +175,8 @@ vert_loop:
     add     r8,r3
     mov     r14,r4
     add     #32,r4
+    mov     #0,r0
+    movca.l r0,@r14
     fschg                           ! 64-bit moves: the xvert is 32 aligned
     fmov.d  @r3+,dr0
     fmov.d  @r3+,dr2
@@ -359,6 +361,8 @@ noflick:
     mov     r1,r3                   ! k = 512 - shade / 16
 kdone:
 
+    mov     #0,r0
+    movca.l r0,@r14                 ! the line is all written: no fetch of it
     mov     r14,r4
     add     #12,r4
     fmov.s  fr2,@-r4
@@ -371,6 +375,12 @@ kdone:
     fcmp/gt fr2,fr10                ! near z > z
     bf      place
     mov     #2,r5                   ! before the near plane
+    mov     r14,r4
+    add     #24,r4
+    mov     #0,r0
+    mov.l   r0,@-r4                 ! 1/z, sy, sx: nothing, but written
+    mov.l   r0,@-r4
+    mov.l   r0,@-r4
     bra     placed
     nop
 place:
@@ -484,7 +494,7 @@ shaded:
     add     #24,r4
     mov.l   r1,@r4
     add     #4,r4
-    mov.b   r5,@r4
+    mov.l   r5,@r4                  ! the clip, and the rest of its word
     add     #1,r7
     add     #32,r14
     bra     vert_loop
@@ -499,7 +509,7 @@ tinted:
     CHANNEL 0, 52, 2, 1
     CHANNEL 24, 48, 3, 0
     add     #4,r2
-    mov.b   r5,@r2
+    mov.l   r5,@r2
     add     #1,r7
     add     #32,r14
     bra     vert_loop

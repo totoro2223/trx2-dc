@@ -18,6 +18,8 @@
 !   fr15 1.0
 ! The frame on the stack: 0 the run, 4 n.l of the vertex.
 !
+! The light l0..l2 and cel_scale come from the caller divided / times 65536
+! (exact: a power of two), so n.l needs no scaling here.
 ! Struct layout, DC_XFORM_OBJECT (batcher.c):
 !    0 c  4 xverts  8 vertices  12 vref  16 twin  20 count  24 min_shade
 !   28 white  32 sargb (0: no cel)  36 adder  40 l0  44 l1  48 l2 (0 with no
@@ -194,6 +196,8 @@ obj_loop:
     add     r8,r3
     mov     r14,r4
     add     #32,r4
+    mov     #0,r0
+    movca.l r0,@r14
     fschg                           ! 64-bit moves: the xvert is 32 aligned
     fmov.d  @r3+,dr0
     fmov.d  @r3+,dr2
@@ -228,18 +232,15 @@ untwinned:
     shll    r0
     mov.w   @(r0,r10),r1
     extu.w  r1,r1                   ! the vertex it reads
-1:  mov     r1,r2
-    shll2   r2
+1:  mov     r1,r3
+    shll2   r3                      ! 4 per vertex
+    mov     r3,r2
     shll2   r2
     shll    r2                      ! 32 per vertex
-    mov     r1,r3
-    shll2   r3
     sub     r3,r2                   ! less 4: 28
     add     r9,r2                   ! the vertex
     mov.l   @(4,r2),r1
-    mov     r15,r3
-    add     #8,r3
-    mov.l   r1,@r3                  ! its colour, for a tinted instance
+    mov.l   r1,@(8,r15)             ! its colour, for a tinted instance
     mov.l   r2,@(12,r15)            ! the vertex, for TR3's normal
     mov     r2,r3
     add     #16,r3
@@ -260,18 +261,13 @@ untwinned:
     fmov.s  @r1+,fr1
     fmov.s  @r1+,fr2
     fldi0   fr3                     ! the light
-    fipr    fv0,fv4                 ! fr7 = n.l
-    mov     r15,r1
-    add     #4,r1
-    fmov.s  fr7,@r1                 ! kept for the cel colour
+    fipr    fv0,fv4                 ! fr7 = n.l / 65536: the light comes scaled
+    mov     #4,r0
+    fmov.s  fr7,@(r0,r15)           ! kept for the cel colour
     mov     r4,r1
     add     #36,r1
     fmov.s  @r1,fr4
-    mov.l   .Lone_65536a,r1
-    lds     r1,fpul
-    fsts    fpul,fr5
-    fmul    fr7,fr5
-    fadd    fr5,fr4                 ! adder + n.l / 65536
+    fadd    fr7,fr4                 ! adder + n.l / 65536
     ftrc    fr4,fpul
     sts     fpul,r3
     mov.l   .Lshade_maxa,r1
@@ -311,6 +307,8 @@ untwinned:
     fldi1   fr3
     ftrv    xmtrx,fv0
 
+    mov     #0,r0
+    movca.l r0,@r14                 ! the line is all written: no fetch of it
     mov     r14,r4
     add     #12,r4
     fmov.s  fr2,@-r4
@@ -323,6 +321,12 @@ untwinned:
     fcmp/gt fr2,fr10                ! near z > z
     bf      place
     mov     #2,r5                   ! before the near plane
+    mov     r14,r4
+    add     #24,r4
+    mov     #0,r0
+    mov.l   r0,@-r4                 ! 1/z, sy, sx: nothing, but written
+    mov.l   r0,@-r4
+    mov.l   r0,@-r4
     bra     placed
     nop
     .align 2
@@ -452,18 +456,17 @@ shaded:
 coloured:
     mov     r14,r4
     add     #28,r4
-    mov.b   r5,@r4
+    mov.l   r5,@r4                  ! the clip, and the rest of its word
     mov.l   @(0,r15),r4
     mov.l   @(32,r4),r3
     tst     r3,r3
     bt      celled                  ! no cel colour
-    mov     r15,r2
-    add     #4,r2
-    fmov.s  @r2,fr4                 ! n.l
+    mov     #4,r0
+    fmov.s  @(r0,r15),fr4           ! n.l / 65536
     mov.l   @(52,r4),r2
     lds     r2,fpul
     fsts    fpul,fr5
-    fmul    fr5,fr4                 ! n.l * cel_scale
+    fmul    fr5,fr4                 ! n.l * cel_scale (it comes x 65536)
     mov.l   .Lhalf,r2
     lds     r2,fpul
     fsts    fpul,fr6
