@@ -130,6 +130,17 @@ enum {
     DC_PROBE_O_TESTED, // objects (statics and items) tested by rays
     DC_PROBE_O_HIDDEN, // ... and left out
     DC_PROBE_O_US, // the rays' time
+    // Vertices of the own-light path in assembly and in C, and of the generic
+    // path by why: room lights, object light, coloured fog, reflections, other.
+    DC_PROBE_N_OWNFAST,
+    DC_PROBE_N_OWNSLOW,
+    DC_PROBE_N_GROOM,
+    DC_PROBE_N_GOBJ,
+    DC_PROBE_N_GFOG,
+    DC_PROBE_N_GENV,
+    DC_PROBE_N_GOTHER,
+    DC_PROBE_I_WALK, // M_DrawInterpolatedObject: the bones' matrices
+    DC_PROBE_I_MESH, // ... and Object_DrawMesh of each
     DC_PROBE_COUNT,
 };
 

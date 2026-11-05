@@ -172,7 +172,7 @@ static void *M_Profile(void *const param)
 // statistics (M_StatsEndScene) would otherwise hold the game up for a frame.
 // One writer and one reader, so the ring needs no lock; what does not fit
 // is dropped.
-#define M_LOG_BYTES 8192
+#define M_LOG_BYTES 32768
 static char m_Log[M_LOG_BYTES];
 static volatile uint32_t m_LogHead = 0;
 static volatile uint32_t m_LogTail = 0;

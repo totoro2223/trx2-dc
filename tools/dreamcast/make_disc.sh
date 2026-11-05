@@ -156,6 +156,17 @@ if [ -n "${TRX_DC_OBJECT_SHADOWS:-}" ]; then
   echo "$TRX_DC_OBJECT_SHADOWS" > "$STAGE/OBJSHADOW.TXT"
   echo "object shadows $TRX_DC_OBJECT_SHADOWS"
 fi
+if [ -n "${TRX_DC_FOG:-}" ]; then
+  # A test disc with its own fog start and end in blocks: "<start> <end>"
+  # (dc_main.c, FOG.TXT).
+  echo "$TRX_DC_FOG" > "$STAGE/FOG.TXT"
+  echo "fog $TRX_DC_FOG"
+fi
+if [ -n "${TRX_DC_SNOW:-}" ]; then
+  # A test disc that caps the weather particles (dc_main.c, SNOW.TXT).
+  echo "$TRX_DC_SNOW" > "$STAGE/SNOW.TXT"
+  echo "snow cap $TRX_DC_SNOW"
+fi
 if [ -n "${TRX_DC_CEL:-}" ]; then
   # A test disc with the cel shading and the room cel shading fixed: "<0|1> <0|1>".
   echo "$TRX_DC_CEL" > "$STAGE/CEL.TXT"
@@ -183,7 +194,7 @@ fi
 # load prints ~50 KB, 4 s on the console, cable or not), so only a test disc
 # (any test hook, or TRX_DC_LOG=1) keeps it (dc_main.c, LOG.TXT).
 rm -f "$STAGE/LOG.TXT"
-for hook in DEMO BENCH SAVE EXIT COMPLETE GIVE FIRE START LEVELS SWITCH RESETOPT; do
+for hook in DEMO BENCH SAVE EXIT COMPLETE GIVE FIRE START LEVELS SWITCH RESETOPT SNOW FOG; do
   [ -f "$STAGE/$hook.TXT" ] && echo 1 > "$STAGE/LOG.TXT"
 done
 [ -n "${TRX_DC_LOG:-}" ] && echo 1 > "$STAGE/LOG.TXT"

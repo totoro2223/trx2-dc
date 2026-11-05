@@ -250,6 +250,7 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
     "rall", "rplain", "rdyn", "rflick", "rvary", "rnw", "rfog", "rhit",
     "ctest", "chide", "croom", "qtest", "qhide", "otest", "ohide", "otime",
+    "ownf", "owns", "groom", "gobj", "gfogc", "genvc", "gother", "iwalk", "imesh",
 };
 
 static void M_StatsBeginScene(void)
@@ -644,7 +645,25 @@ static void M_StatsEndScene(void)
     // lines held the game up for a frame every window.
     DC_PROBE(
         DC_PROBE_LOG, DC_Watchdog_Print(line); DC_Watchdog_Print("\n");
-        DC_Watchdog_Print(probes); DC_Watchdog_Print("\n"));
+        // The serial line is cut at ~400 bytes: lines of up to 300.
+        for (const char *at = probes; *at != '\0';) {
+            const char *end = at;
+            const char *space = nullptr;
+            while (*end != '\0' && end - at < 300) {
+                space = *end == ' ' ? end : space;
+                end++;
+            }
+            if (*end != '\0' && space != nullptr) {
+                end = space;
+            }
+            char piece[320];
+            snprintf(piece, sizeof(piece), "[probe]%.*s\n", (int)(end - at), at);
+            DC_Watchdog_Print(piece);
+            at = *end == ' ' ? end + 1 : end;
+            if (at != probes && *at == '\0') {
+                break;
+            }
+        });
     memset(m_Stats.sum, 0, sizeof(m_Stats.sum));
     memset(m_Stats.max, 0, sizeof(m_Stats.max));
     memset(m_Stats.probe_sum, 0, sizeof(m_Stats.probe_sum));
@@ -731,15 +750,18 @@ void Output_ApplyLevelSettings(void)
 {
     Output_SetWaterColor(Level_GetWaterColor());
     Output_SetBackgroundColor(Level_GetBackgroundColor());
-    // Fixed on the Dreamcast, whatever the level and the player ask: black
-    // fog from 12 blocks, nothing drawn past 20. TR3's levels are bigger and
-    // fuller than the others' (Jungle's foliage fills the punch-through list,
-    // London's rooms the opaque one, and the memory for the lists is the least
-    // there), so it sees less: fog from 10, nothing past 18.
+    // Fixed on the Dreamcast, whatever the level and the player ask, and the
+    // original's: black fog from 12 blocks, nothing drawn past 20 (the PS1
+    // game's 0x3000 and 0x5000). Not to be shortened for speed.
     Output_SetFogColor((RGBA_8888) { .r = 0, .g = 0, .b = 0, .a = 255 });
-    const bool tr3 = g_TRVersion >= 3;
-    Output_SetFogStart((tr3 ? 10 : 12) * WALL_L);
-    Output_SetFogEnd((tr3 ? 18 : 20) * WALL_L);
+    int32_t fog_start = 12;
+    int32_t fog_end = 20;
+    if (g_DC_TestFogEnd > 0) {
+        fog_start = g_DC_TestFogStart;
+        fog_end = g_DC_TestFogEnd;
+    }
+    Output_SetFogStart(fog_start * WALL_L);
+    Output_SetFogEnd(fog_end * WALL_L);
 }
 
 void Output_DispatchLevelLoad(void)

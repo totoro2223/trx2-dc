@@ -424,7 +424,7 @@ static bool M_LerpTranslation(
 
 // M_Interpolate in floats. False, with nothing written, for a matrix it
 // cannot take.
-static bool M_InterpolateFloat(
+[[maybe_unused]] static bool M_InterpolateFloat(
     const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
 {
     float t = (m_IMRate != 0) ? (float)m_IMFrac / (float)m_IMRate : 0.0f;
@@ -656,11 +656,18 @@ static XYZ_16 M_ToRot16(const MATRIX *const m)
     };
 }
 
+// A rotation entry is at most 1 << W2V_SHIFT, so each product is one 32 x 32
+// -> 64 multiply (dmuls.l on the SH-4), not three 32-bit ones and their carries.
+#define M_MUL64(a_, b_) ((int64_t)(int32_t)(a_) * (int32_t)(b_))
+
 static void M_TranslateRel(MATRIX *const m, const XYZ_32 offset)
 {
-    m->_03 += offset.x * m->_00 + offset.y * m->_01 + offset.z * m->_02;
-    m->_13 += offset.x * m->_10 + offset.y * m->_11 + offset.z * m->_12;
-    m->_23 += offset.x * m->_20 + offset.y * m->_21 + offset.z * m->_22;
+    m->_03 += M_MUL64(offset.x, m->_00) + M_MUL64(offset.y, m->_01)
+        + M_MUL64(offset.z, m->_02);
+    m->_13 += M_MUL64(offset.x, m->_10) + M_MUL64(offset.y, m->_11)
+        + M_MUL64(offset.z, m->_12);
+    m->_23 += M_MUL64(offset.x, m->_20) + M_MUL64(offset.y, m->_21)
+        + M_MUL64(offset.z, m->_22);
 }
 
 static void M_TranslateSet(MATRIX *const m, const XYZ_32 pos)
@@ -691,7 +698,21 @@ static void M_Interpolate(
     const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
 {
 #if defined(__DREAMCAST__)
-    if (M_InterpolateFloat(m1, m2, result)) {
+    // As the PSX does (TOMBRAID.EXE 0x80013704): every entry blended in a
+    // straight line, frac / rate of the way, no quaternions.
+    {
+        const int32_t t = m_IMRate != 0
+            ? (int32_t)(((int64_t)m_IMFrac << 16) / m_IMRate)
+            : 0;
+        const int32_t k = t < 0 ? 0 : (t > 0x10000 ? 0x10000 : t);
+    // A rotation entry's step fits 32 bits (one multiply); a position's may not.
+    #define M_LERP_R(e_)         result->e_ = m1->e_             + (((int64_t)(int32_t)(m2->e_ - m1->e_) * k) >> 16)
+    #define M_LERP_P(e_)         result->e_ = m1->e_ + (((m2->e_ - m1->e_) * (int64_t)k) >> 16)
+        M_LERP_R(_00); M_LERP_R(_01); M_LERP_R(_02); M_LERP_P(_03);
+        M_LERP_R(_10); M_LERP_R(_11); M_LERP_R(_12); M_LERP_P(_13);
+        M_LERP_R(_20); M_LERP_R(_21); M_LERP_R(_22); M_LERP_P(_23);
+    #undef M_LERP_R
+    #undef M_LERP_P
         return;
     }
 #endif

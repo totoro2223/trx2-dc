@@ -129,6 +129,7 @@ void DC_LoadingFont_Capture(const int game)
         };
     }
     m_Have[game - 1] = font['A' - M_FIRST].texels != nullptr;
+#if defined(TRX_DC_LFONT_DUMP) // for lfont.py; ~13 s of serial at every load
     // For lfont.py (only a disc with a log shows it): a header, then a line
     // a row, for the log keeps no long lines.
     for (int32_t i = 0; i < M_COUNT; i++) {
@@ -142,6 +143,7 @@ void DC_LoadingFont_Capture(const int game)
             LOG_INFO("LFONTROW %d %d %s", game, i, row);
         }
     }
+#endif
 }
 
 static int32_t M_Advance(const M_GLYPH *const g)

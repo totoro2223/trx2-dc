@@ -21,6 +21,8 @@
     #include <platform/dreamcast/render/shadow.h>
 #else
     #define DC_PROBE(i, stmt) stmt
+    #define DC_PROBE_START(t) ((void)0)
+    #define DC_PROBE_STOP(i, t) ((void)0)
 #endif
 
 static BOUNDS_16 M_GetBoundingBox(
@@ -164,7 +166,13 @@ static bool M_DrawInterpolatedObject(
     const bool far_enemy = obj->intelligent
         && ((int32_t)g_MatrixPtr->_23 >> W2V_SHIFT) > M_FAR_ENEMY_DEPTH;
 #endif
-    while (Anim_Walk_Next(&walk)) {
+    for (;;) {
+        DC_PROBE_START(probe_walk);
+        const bool more = Anim_Walk_Next(&walk);
+        DC_PROBE_STOP(DC_PROBE_I_WALK, probe_walk);
+        if (!more) {
+            break;
+        }
         const int32_t mesh_idx = walk.joint;
 #if defined(__DREAMCAST__)
         if (far_enemy && mesh_swap == nullptr && mesh_idx != 0) {
@@ -176,12 +184,14 @@ static bool M_DrawInterpolatedObject(
             }
         }
 #endif
+        DC_PROBE_START(probe_mesh);
         if ((mesh_mask & (1u << mesh_idx)) != 0) {
             Object_DrawMesh(obj->mesh_idx + mesh_idx, clip, walk.interpolated);
         } else if (mesh_swap != nullptr) {
             Object_DrawMesh(
                 mesh_swap->mesh_idx + mesh_idx, clip, walk.interpolated);
         }
+        DC_PROBE_STOP(DC_PROBE_I_MESH, probe_mesh);
     }
     Anim_Walk_End(&walk);
 

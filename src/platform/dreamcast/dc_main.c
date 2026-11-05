@@ -146,6 +146,9 @@ static int M_RunGame(int argc, char *argv[])
     g_DC_TestMode = -1;
     g_DC_TestShadow = -1;
     g_DC_TestCel = -1;
+    g_DC_TestSnow = -1;
+    g_DC_TestFogStart = -1;
+    g_DC_TestFogEnd = -1;
     g_DC_TestRoomCel = -1;
     g_DC_TestBump = -1;
     g_DC_TestObjectShadows = -1;
@@ -258,6 +261,27 @@ static int M_RunGame(int argc, char *argv[])
             g_DC_TestBump = c;
         }
         fclose(cel);
+    }
+    // A test disc that caps the weather particles (make_disc.sh's
+    // TRX_DC_SNOW).
+    FILE *const snow = M_Open("SNOW.TXT");
+    if (snow != nullptr) {
+        int n = -1;
+        if (fscanf(snow, "%d", &n) == 1) {
+            g_DC_TestSnow = n;
+        }
+        fclose(snow);
+    }
+    // A test disc with its own fog distances (make_disc.sh's TRX_DC_FOG).
+    FILE *const fog = M_Open("FOG.TXT");
+    if (fog != nullptr) {
+        int a = -1;
+        int b = -1;
+        if (fscanf(fog, "%d %d", &a, &b) == 2) {
+            g_DC_TestFogStart = a;
+            g_DC_TestFogEnd = b;
+        }
+        fclose(fog);
     }
     // A test disc with the object shadows on (make_disc.sh's
     // TRX_DC_OBJECT_SHADOWS).

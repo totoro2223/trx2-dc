@@ -140,6 +140,11 @@ typedef struct M_BINDING {
     // vertices all agree is transformed without reading them.
     uint16_t flags_and;
     uint16_t flags_or;
+    // A room's corners whose flags are in special_mask, in order (M_XformRoom
+    // places the rest in assembly and these in C); built at the first use.
+    int32_t *special;
+    int32_t special_count;
+    uint16_t special_mask;
     // Every vertex white and opaque, as TR1 and TR2's rooms and most objects
     // are: its colour then comes from m_WhiteARGB.
     bool white;
@@ -1764,8 +1769,21 @@ typedef struct {
     uint32_t hits;
     uint32_t tint[4]; // a, r, g, b in 8.8
     uint32_t tr3_k; // TR3's factor in place of the shade; 0 for TR1/TR2
+    // TR3's water, as the PSX does it (TOMB3.EXE 0x884f8): per lane (16) and
+    // per effect (moves 1, glows 2, both 3; 0 adds nothing) what a vertex adds
+    // to its colour, in whole levels; nullptr when there is no water. And the
+    // room's place in the world, whole units.
+    const int32_t *water;
+    int32_t origin[3];
+    // A sprite's corner moves by its normal times this in eye space.
+    float bscale;
 } M_XROOM;
 _Static_assert(offsetof(M_XROOM, tr3_k) == 64, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, water) == 68, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, origin) == 72, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, bscale) == 84, "xform_sh4.S reads these");
+_Static_assert(offsetof(OUTPUT_MESH_VERTEX, flags) == 22, "xform_sh4.S reads these");
+_Static_assert(offsetof(OUTPUT_MESH_VERTEX, pos) == 8, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, white) == 40, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, hits) == 44, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, tint) == 48, "xform_sh4.S reads these");
@@ -1778,7 +1796,8 @@ extern void dc_xform_room(M_XROOM *run);
 static void M_XformRoom(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
-    M_XFORM *const c, const int32_t (*const vranges)[2], const int32_t nvr)
+    M_XFORM *const c, const int32_t (*const vranges)[2], const int32_t nvr,
+    const float scale)
 {
     const OUTPUT_MESH_VERTEX *const vertices =
         Vector_GetData(bind->mesh->vertices);
@@ -1793,7 +1812,10 @@ static void M_XformRoom(
     const bool fog_on = c->fog;
     // Most rooms' vertices all carry the same flags: then they are not read.
     const bool water = tr3 && lighting && il->water_scheme >= 0;
-    const bool vary = (bind->flags_or & (VERT_NO_FOG | VERT_NO_LIGHTING)) != 0
+    bool vary = (bind->flags_or
+                 & (VERT_NO_FOG | VERT_NO_LIGHTING | VERT_BILLBOARD
+                    | VERT_ABS_SPRITE))
+            != 0
         || (bind->flags_and & VERT_USE_DYNAMIC_LIGHT) == 0 || water;
     const uint32_t ta = M_TintK(inst->tint.a);
     const uint32_t tr = M_TintK(inst->tint.r);
@@ -1809,11 +1831,10 @@ static void M_XformRoom(
         batcher->face_light_count > 0 ? batcher->eargb : nullptr;
     // The whole mesh, or the chunks that show: each a run of vertices.
     const int32_t whole[1][2] = { { 0, bind->vertex_count } };
-    const int32_t(*const ranges)[2] = nvr < 0 ? whole : vranges;
-    const int32_t nranges = nvr < 0 ? 1 : nvr;
+    const int32_t(*ranges)[2] = nvr < 0 ? whole : vranges;
+    int32_t nranges = nvr < 0 ? 1 : nvr;
     // Shared vertices are lit once per instance, not once per corner.
-    const uint16_t *const vref =
-        bind->vertex_count <= 0xFFFF ? bind->vref : nullptr;
+    const uint16_t *vref = bind->vertex_count <= 0xFFFF ? bind->vref : nullptr;
     uint32_t *slot = nullptr;
     uint32_t gen = 0;
     if (vref != nullptr) {
@@ -1848,9 +1869,50 @@ static void M_XformRoom(
             total; // TEMP
         g_DC_ProbeUs[DC_PROBE_R_FOG] += fog_on ? total : 0; // TEMP
     }
-    const bool fast =
-        vref != nullptr && lighting && (tr3 ? !rgb_dyn : !dyn) && !vary
-        && !c->ortho && !il->caustics && !water;
+    // The water's values for this frame, by lane and effect, as M_WaterAdd
+    // finds them one vertex at a time; the assembly takes the lane from the
+    // vertex's place. Only for a room that is not turned (every room).
+    static int32_t m_WaterTab[16 * 4] = { INT32_MIN };
+    bool water_asm = false;
+    if (water && tr3 && !rgb_dyn && !white && !c->ortho) {
+        water_asm = w[0][0] == 1.0f && w[1][1] == 1.0f && w[2][2] == 1.0f
+            && w[0][1] == 0.0f && w[0][2] == 0.0f && w[1][0] == 0.0f
+            && w[1][2] == 0.0f && w[2][0] == 0.0f && w[2][1] == 0.0f
+            && w[0][3] == floorf(w[0][3]) && w[1][3] == floorf(w[1][3])
+            && w[2][3] == floorf(w[2][3]);
+    }
+    // M_XformRoom comes once a chunk: the table is made again only when the
+    // time or the scheme has changed.
+    static float s_tab_time = -1.0f;
+    static int32_t s_tab_scheme = -1;
+    if (water_asm
+        && (s_tab_time != il->water_time || s_tab_scheme != il->water_scheme
+            || m_WaterTab[0] == INT32_MIN)) {
+        s_tab_time = il->water_time;
+        s_tab_scheme = il->water_scheme;
+        for (int32_t lane = 0; lane < 16; lane++) {
+            float turns = il->water_time + m_WaterLane[il->water_scheme][lane];
+            turns -= floorf(turns);
+            const float sine = m_WaterSine[(int32_t)(turns * M_WATER_SINE)
+                                           & (M_WATER_SINE - 1)];
+            for (int32_t fx = 0; fx < 4; fx++) {
+                float add = 0.0f;
+                if ((fx & 1) != 0) {
+                    add += -sine * il->water_amp[0] * 0.5f;
+                }
+                if ((fx & 2) != 0) {
+                    add += sine * il->water_amp[1] * 8.0f
+                        + il->water_amp[2] * 8.0f;
+                }
+                m_WaterTab[lane * 4 + fx] = (int32_t)floorf(add);
+            }
+        }
+    }
+    // Per vertex the assembly also leaves the fog off one that has none or no
+    // light (TR3: its colour does not depend on those flags otherwise).
+    const bool fast = vref != nullptr && lighting
+        && (tr3 ? !rgb_dyn && (!water || water_asm) : !dyn)
+        && !c->ortho && !il->caustics;
     M_XROOM run = {
         .c = c,
         .xverts = xverts,
@@ -1865,6 +1927,11 @@ static void M_XformRoom(
         .white = white ? m_WhiteARGB : nullptr,
         .tint = { ta, tr, tg, tb },
         .tr3_k = tr3 ? tr3_k : 0,
+        .water = water_asm ? m_WaterTab : nullptr,
+        .origin = { water_asm ? (int32_t)w[0][3] : 0,
+                    water_asm ? (int32_t)w[1][3] : 0,
+                    water_asm ? (int32_t)w[2][3] : 0 },
+        .bscale = scale,
     };
 #if !defined(DC_EMIT_VERIFY)
     if (fast) {
@@ -1898,6 +1965,10 @@ static void M_XformRoom(
             float z = vertex->pos.z;
             float w1 = 1.0f;
             mat_trans_nodiv(x, y, z, w1);
+            if ((flags & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0) {
+                x += vertex->normal.x * scale;
+                y += vertex->normal.y * scale;
+            }
             M_XVERT *const out = &xverts[i];
             uint8_t clip = M_Place(out, x, y, z, c);
 
@@ -2272,20 +2343,23 @@ static const uint16_t (*M_OwnLight(
     const float ambient[3], const float dbl, const uint32_t tr,
     const uint32_t tg, const uint32_t tb))[4]
 {
-    static M_OWN_LIGHT m_Tables[4];
-    static int32_t m_Next = 0;
+    // 16 slots, each combination's own by its hash: the room's statics have
+    // many ambients, and four slots were rebuilt (768 clamps) every few calls.
+    static M_OWN_LIGHT m_Tables[16];
     uint32_t key[7];
     memcpy(key, ambient, 3 * sizeof(uint32_t));
     memcpy(&key[3], &dbl, sizeof(uint32_t));
     key[4] = tr;
     key[5] = tg;
     key[6] = tb;
-    for (int32_t i = 0; i < 4; i++) {
-        if (m_Tables[i].valid && memcmp(m_Tables[i].key, key, sizeof(key)) == 0) {
-            return m_Tables[i].factor;
-        }
+    uint32_t hash = 2166136261u;
+    for (int32_t i = 0; i < 7; i++) {
+        hash = (hash ^ key[i]) * 16777619u;
     }
-    M_OWN_LIGHT *const table = &m_Tables[m_Next++ & 3];
+    M_OWN_LIGHT *const table = &m_Tables[(hash >> 12) & 15];
+    if (table->valid && memcmp(table->key, key, sizeof(key)) == 0) {
+        return table->factor;
+    }
     memcpy(table->key, key, sizeof(key));
     table->valid = true;
     // The fog's share is 256 (none): kk is the curve's doubling alone.
@@ -2379,6 +2453,7 @@ static void M_XformOwn(
             ? M_OwnLight(il->tr3_ambient, il->tr3_double, tr, tg, tb)
             : nullptr,
     };
+    g_DC_ProbeUs[fast ? DC_PROBE_N_OWNFAST : DC_PROBE_N_OWNSLOW] += count; // TEMP
 #if !defined(DC_EMIT_VERIFY)
     if (fast) {
         dc_xform_own(&run);
@@ -3465,7 +3540,8 @@ static bool M_TransformInstance(
     int32_t transformed = bind->vertex_count;
     bool chunked = false;
     if (bind->needs_room_lights && !bind->needs_object_light
-        && !bind->needs_own_light && !bind->billboard && black_fog
+        && !bind->needs_own_light && black_fog
+        && !(bind->billboard && m_Frame.cel) // room cel would shade its sprites
         && !m_Frame.ortho && !batcher->env && !batcher->cel) {
         // Not on a room fading out: it keeps no shaded side (M_DrawInstance).
         batcher->cel = m_Frame.cel && m_Frame.room_cel && m_Frame.lighting
@@ -3492,7 +3568,8 @@ static bool M_TransformInstance(
                 DC_PROBE(
                     DC_PROBE_XT_ROOM,
                     M_XformRoom(
-                        batcher, bind, inst, &il, &c, &batcher->vranges[r], 1));
+                        batcher, bind, inst, &il, &c, &batcher->vranges[r], 1,
+                        scale));
                 if (batcher->cel_dark) {
                     M_RoomCel(
                         batcher, batcher->vranges[r][0],
@@ -3512,7 +3589,7 @@ static bool M_TransformInstance(
             DC_PROBE(
                 DC_PROBE_XT_ROOM,
                 M_XformRoom(
-                    batcher, bind, inst, &il, &c, batcher->vranges, nvr));
+                    batcher, bind, inst, &il, &c, batcher->vranges, nvr, scale));
             if (batcher->cel_dark) {
                 M_RoomCel(batcher, 0, bind->vertex_count);
             }
@@ -3538,6 +3615,12 @@ static bool M_TransformInstance(
             && !m_Frame.ortho && !batcher->env) {
             M_XformOwn(batcher, bind, inst, &il, &c, scale);
         } else {
+            g_DC_ProbeUs[bind->needs_room_lights ? DC_PROBE_N_GROOM
+                         : bind->needs_object_light ? DC_PROBE_N_GOBJ
+                         : !black_fog               ? DC_PROBE_N_GFOG
+                         : batcher->env             ? DC_PROBE_N_GENV
+                                                    : DC_PROBE_N_GOTHER] +=
+                bind->vertex_count; // TEMP
             M_XformGeneric(
                 batcher, bind, inst, &il, &c, mv, scale, cel_scale, black_fog);
         }
@@ -6020,9 +6103,14 @@ static void M_PrepareFrame(void)
     m_Frame.emit = 0; // M_EMIT_PLAIN
 }
 
+#define M_MAX_PARTICLES 768
+static DC_PARTICLE m_Particles[M_MAX_PARTICLES];
+static int32_t m_ParticleCount;
+
 static void M_RenderBegin(const SCENE_SOURCE *const source)
 {
     MESH_BATCHER *const batcher = source->priv;
+    m_ParticleCount = 0;
     for (int32_t pass = 0; pass < SCENE_PASS_COUNT; pass++) {
         Vector_Clear(batcher->staged[pass]);
         Vector_Clear(batcher->casters[pass]);
@@ -6089,6 +6177,81 @@ static void M_PrepareSoft(void)
     }
 }
 
+// Particles (snow, TOMB3.EXE 0x73560): staged as a point and a size, drawn as
+// one quad each after the added instances. The PSX keeps 192; the port's snow
+// asks for up to 512 at once.
+void DC_MeshBatcher_StageParticle(
+    MESH_BATCHER *const batcher, const DC_PARTICLE *const particle)
+{
+    (void)batcher;
+    if (m_ParticleCount < M_MAX_PARTICLES) {
+        m_Particles[m_ParticleCount++] = *particle;
+    }
+}
+
+// 0x73560: one projection of the centre, rejected before the near plane, size
+// = side * persp / z with a floor of two pixels, rejected when its rectangle
+// misses the screen, one primitive.
+static void M_DrawParticles(void)
+{
+    if (m_ParticleCount == 0 || m_Frame.ortho) {
+        return;
+    }
+    const float(*const v)[4] = m_Frame.view;
+    const float near_z = m_Frame.near_z;
+    const float lo_x = m_Frame.center_x - m_Frame.half_w;
+    const float hi_x = m_Frame.center_x + m_Frame.half_w;
+    const float lo_y = m_Frame.center_y - m_Frame.half_h;
+    const float hi_y = m_Frame.center_y + m_Frame.half_h;
+    const float sc = m_Frame.screen_scale;
+    int32_t page = INT32_MIN;
+    for (int32_t i = 0; i < m_ParticleCount; i++) {
+        const DC_PARTICLE *const q = &m_Particles[i];
+        const float *const p = q->pos;
+        const float z = v[0][2] * p[0] + v[1][2] * p[1] + v[2][2] * p[2]
+            + v[3][2];
+        if (z < near_z) {
+            continue;
+        }
+        const float inv_z = 1.0f / z;
+        const float x = v[0][0] * p[0] + v[1][0] * p[1] + v[2][0] * p[2]
+            + v[3][0];
+        const float y = v[0][1] * p[0] + v[1][1] * p[1] + v[2][1] * p[2]
+            + v[3][1];
+        const float sx = m_Frame.center_x + m_Frame.proj_x * x * inv_z;
+        const float sy = m_Frame.center_y + m_Frame.proj_y * y * inv_z;
+        const float hw = MAX(1.0f, fabsf(m_Frame.proj_x) * q->half * inv_z);
+        const float hh = MAX(1.0f, fabsf(m_Frame.proj_y) * q->half * inv_z);
+        if (sx + hw < lo_x || sx - hw > hi_x || sy + hh < lo_y
+            || sy - hh > hi_y) {
+            continue;
+        }
+        if (q->page != page) {
+            page = q->page;
+            DC_PVR_SetState(DC_BLEND_ADD, page, true);
+        }
+        const float depth = M_Depth(near_z * inv_z);
+        // Strip order: top left, bottom left, top right, bottom right.
+        static const int8_t k_corner[4] = { 0, 3, 1, 2 };
+        static const int8_t k_sx[4] = { -1, 1, 1, -1 };
+        static const int8_t k_sy[4] = { -1, -1, 1, 1 };
+        DC_PVR_VERTEX out[4];
+        for (int32_t k = 0; k < 4; k++) {
+            const int32_t c = k_corner[k];
+            out[k] = (DC_PVR_VERTEX) {
+                .x = (sx + k_sx[c] * hw) * sc,
+                .y = (sy + k_sy[c] * hh) * sc,
+                .z = depth,
+                .u = q->u[c],
+                .v = q->v[c],
+                .argb = q->argb,
+                .oargb = 0,
+            };
+        }
+        DC_PVR_Quad(&out[0], &out[1], &out[2], &out[3]);
+    }
+}
+
 static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass)
 {
     MESH_BATCHER *const batcher = source->priv;
@@ -6123,12 +6286,16 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
             M_DrawInstance(batcher, Vector_Get(staged, i), pass, casters[i]));
     }
     DC_PVR_SetShadowReceiver(false);
+    if (pass == SCENE_PASS_BLEND_ADD) {
+        M_DrawParticles();
+    }
 }
 
 static bool M_IsDirty(const SCENE_SOURCE *const source, const SCENE_PASS pass)
 {
     const MESH_BATCHER *const batcher = source->priv;
-    return batcher->staged[pass]->count > 0;
+    return batcher->staged[pass]->count > 0
+        || (pass == SCENE_PASS_BLEND_ADD && m_ParticleCount > 0);
 }
 
 // The animated textures moved on: the meshes that carry any look theirs up
@@ -6731,6 +6898,9 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
         M_PairQuads((OUTPUT_MESH_INDEX *)face->vertex_indices, face->vertex_count);
     }
     M_BINDING *const bind = Memory_Alloc(sizeof(M_BINDING));
+    bind->special = nullptr;
+    bind->special_count = 0;
+    bind->special_mask = 0;
     bind->mesh = mesh;
     bind->vertex_count = mesh->vertices->count;
     bind->uv = Memory_Alloc(sizeof(uint16_t) * 2 * (bind->vertex_count + 1));
@@ -6818,6 +6988,7 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     Memory_Free(bind->uv);
     Memory_Free(bind->page);
     Memory_Free(bind->vref);
+    Memory_Free(bind->special);
     Memory_Free(bind->uvw);
     Memory_Free(bind->twin);
     Memory_Free(bind->env);

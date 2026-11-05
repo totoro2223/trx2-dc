@@ -2,7 +2,7 @@
 !
 !   void dc_xform_room(DC_XFORM_ROOM *run);
 !
-! The plain case of M_XformRoom: a TR1/TR2 room lit by its own shade (and
+! The plain case of M_XformRoom (sprites and no-light vertices included): a TR1/TR2 room lit by its own shade (and
 ! its flicker), with no light passing, in front of a perspective projection;
 ! white (a table of colours by factor), or tinted/coloured (M_Colour). Per vertex of the ranges it does what the C loop does: the
 ! vertex a shared corner already placed is copied; the rest go through the
@@ -24,6 +24,13 @@
 !    0 c  4 xverts  8 vertices  12 vref  16 slot  20 gen  24 ranges
 !   28 nranges  32 min_shade  36 flicker  40 white (0: not) | 44 hits
 !   48 tint a  52 tint r  56 tint g  60 tint b (8.8)  64 tr3 k (0: not TR3)
+!   68 water table (0: none; 16 lanes x 4 effects, ints added to the colour's
+!   bytes)  72 74.. room origin x, y, z (ints)
+! Water, as the PSX does it (TOMB3.EXE 0x884f8): a vertex that moves or glows
+! (flags 0x400, 0x800) takes the lane ((x >> 6) + (y >> 6) + (z >> 7)) >> 2 & 15
+! of its place in the world, and that lane's value for its effects is added to
+! its red, green and blue. One that has no light (0x8) or no fog (0x8000) is
+! not fogged. Frame slot 36: the vertex's flags.
 !
 ! M_XFORM: 0 left 4 right 8 top 12 bottom 48 ortho 49 sides 50 near 51 fog
 !   52 proj_x 56 proj_y 60 near_z 64 fog_start 68 fog_start_sq 72 fog_scale
@@ -84,7 +91,7 @@ _dc_xform_room:
     fmov.s  fr9,@-r15
     fmov.s  fr10,@-r15
     fmov.s  fr11,@-r15
-    add     #-36,r15
+    add     #-40,r15
     mov.l   r4,@(0,r15)
     mov     r4,r1
     add     #64,r1
@@ -194,12 +201,83 @@ miss:
     shll2   r3
     sub     r3,r2                   ! less 4: 28
     add     r9,r2
+    mov.w   @(22,r2),r0             ! its flags
+    extu.w  r0,r0
+    mov.l   r0,@(36,r15)
     mov.l   @(24,r15),r1
     tst     r1,r1
-    bf      1f
+    bf      wdone
     mov.l   @(4,r2),r1              ! not white: its colour
     mov.l   r1,@(28,r15)
-1:  add     #8,r2
+    mov.l   @(0,r15),r4
+    add     #68,r4
+    mov.l   @r4,r4                  ! the water table
+    tst     r4,r4
+    bt      wdone
+    mov.l   @(36,r15),r0
+    tst     #8,r0
+    bf      wdone                   ! no light: no water
+    shlr8   r0
+    shlr2   r0
+    and     #3,r0                   ! moves 1, glows 2
+    tst     r0,r0
+    bt      wdone
+    mov     r0,r5
+    mov.l   @(0,r15),r4
+    add     #72,r4
+    mov.w   @(8,r2),r0              ! x
+    mov.l   @r4+,r3
+    add     r3,r0
+    mov     #-6,r1
+    shad    r1,r0
+    mov     r0,r3
+    mov.w   @(10,r2),r0             ! y
+    mov.l   @r4+,r1
+    add     r1,r0
+    mov     #-6,r1
+    shad    r1,r0
+    add     r0,r3
+    mov.w   @(12,r2),r0             ! z
+    mov.l   @r4+,r1
+    add     r1,r0
+    mov     #-7,r1
+    shad    r1,r0
+    add     r0,r3
+    mov     #-2,r1
+    shad    r1,r3
+    mov     #15,r0
+    and     r0,r3                   ! the lane
+    shll2   r3
+    add     r5,r3                   ! lane * 4 + effects
+    shll2   r3
+    mov.l   @(0,r15),r4
+    add     #68,r4
+    mov.l   @r4,r4
+    mov     r3,r0
+    mov.l   @(r0,r4),r4             ! what it adds
+    mov     r15,r1
+    add     #28,r1
+    mov     #3,r5
+wloop:
+    mov.b   @r1,r0
+    extu.b  r0,r0
+    add     r4,r0
+    cmp/pz  r0
+    bt      wlow
+    mov     #0,r0
+wlow:
+    mov     #-1,r3
+    extu.b  r3,r3
+    cmp/gt  r3,r0
+    bf      whigh
+    mov     r3,r0
+whigh:
+    mov.b   r0,@r1
+    add     #1,r1
+    dt      r5
+    bf      wloop
+wdone:
+    add     #8,r2
     mov.w   @r2+,r1
     lds     r1,fpul
     float   fpul,fr0
@@ -216,6 +294,25 @@ miss:
 #endif
     fldi1   fr3
     ftrv    xmtrx,fv0
+    ! A sprite's corner (flags 0x10, 0x20) moves by its normal times the scale
+    ! in eye space (the C loop's x += normal.x * scale). r2 is on the vertex + 14.
+    mov.l   @(36,r15),r0
+    tst     #0x30,r0
+    bt      nobill
+    mov.l   @(0,r15),r1
+    add     #84,r1
+    fmov.s  @r1,fr6                 ! the scale
+    mov.w   @(2,r2),r0              ! normal x
+    lds     r0,fpul
+    float   fpul,fr4
+    fmul    fr6,fr4
+    fadd    fr4,fr0
+    mov.w   @(4,r2),r0              ! normal y
+    lds     r0,fpul
+    float   fpul,fr4
+    fmul    fr6,fr4
+    fadd    fr4,fr1
+nobill:
     add     #10,r2
     mov.l   @(32,r15),r1
     tst     r1,r1
@@ -223,7 +320,17 @@ miss:
     mov     r1,r3                   ! TR3: the doubled curve, no shade
     bra     kdone
     nop
-1:  mov.w   @r2+,r3                 ! the shade
+1:  mov.l   @(36,r15),r0
+    tst     #8,r0                   ! VERT_NO_LIGHTING: no shade, k = 256
+    bt      nolit
+    mov     #1,r3
+    bra     kdone
+    shll8   r3
+nolit:
+    mov.w   @r2+,r3                 ! the shade
+    mov.l   @(36,r15),r0
+    tst     #0x80,r0                ! VERT_USE_DYNAMIC_LIGHT: the flicker
+    bt      noflick
     mov.b   @r2,r0
     and     #31,r0
     add     #-16,r0
@@ -231,6 +338,7 @@ miss:
     mul.l   r1,r0
     sts     macl,r1
     add     r1,r3                   ! plus the flicker
+noflick:
     mov.l   .Lshade_max,r1
     cmp/gt  r1,r3
     bf      1f
@@ -311,7 +419,14 @@ placed:
     bf      1f
     bra     shaded
     nop
-1:  fldi0   fr3
+1:  mov.l   @(36,r15),r0
+    mov.l   .Lnofog,r1
+    tst     r1,r0
+    bt      fogok
+    bra     shaded                  ! no fog or no light: not fogged
+    nop
+fogok:
+    fldi0   fr3
     fipr    fv0,fv0                 ! fr3 = x*x + y*y + z*z
     fcmp/gt fr12,fr3
     bt      fogging
@@ -391,7 +506,7 @@ finish:
     mov.l   @(0,r15),r4
     mov.l   @(12,r15),r1
     mov.l   r1,@(44,r4)
-    add     #36,r15
+    add     #40,r15
     fmov.s  @r15+,fr11
     fmov.s  @r15+,fr10
     fmov.s  @r15+,fr9
@@ -412,3 +527,5 @@ finish:
     .align 2
 .Lshade_max:
     .long   0x1FFF
+.Lnofog:
+    .long   0x8008
