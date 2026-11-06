@@ -16,6 +16,8 @@
 // lifetime.
 static VECTOR **m_Members = nullptr;
 static int32_t m_MemberCount = 0;
+// Counts the changes to the membership, for those who cache an answer.
+static int32_t m_Revision = 0;
 
 // Allocate entries through the specified object position so a newly minted
 // object can record its families.
@@ -92,6 +94,7 @@ static void M_Shutdown(void)
     }
     Memory_FreePointer(&m_Members);
     m_MemberCount = 0;
+    m_Revision++;
 }
 
 bool ObjectFamily_Has(const OBJECT_ID object_id, const OBJECT_FAMILY family)
@@ -116,6 +119,7 @@ void ObjectFamily_Add(const OBJECT_ID object_id, const OBJECT_FAMILY family)
         m_Members[object_id] = Vector_Create(sizeof(OBJECT_FAMILY));
     }
     Vector_Add(m_Members[object_id], &family);
+    m_Revision++;
 }
 
 OBJECT_ID ObjectFamily_GetMember(const OBJECT_FAMILY family, const int32_t idx)
@@ -151,7 +155,13 @@ void ObjectFamily_Remove(const OBJECT_ID object_id, const OBJECT_FAMILY family)
     if (object_id >= 0 && object_id < m_MemberCount
         && m_Members[object_id] != nullptr) {
         Vector_Remove(m_Members[object_id], &family);
+        m_Revision++;
     }
+}
+
+int32_t ObjectFamily_GetRevision(void)
+{
+    return m_Revision;
 }
 
 REGISTER_BASE_SUBSYSTEM(.load = M_Load, .shutdown = M_Shutdown)

@@ -63,6 +63,13 @@ extern int32_t g_DC_TestLevelLast;
 extern int32_t g_DC_TestLevelFrames;
 // A test disc fires the pistols' smoke every this many frames (0: never).
 extern int32_t g_DC_TestFire;
+// A test disc leaves the probe timers off the screen (they cost UI time).
+extern int32_t g_DC_TestNoHud;
+// A test disc shows the frame rate counter (TRX_DC_SHOWFPS).
+extern int32_t g_DC_TestShowFps;
+// A test disc where L cycles the on-screen readouts and R the graphic modes
+// (TRX_DC_DEBUGKEYS); the game demos always do.
+extern int32_t g_DC_TestDebugKeys;
 // A test disc hands Lara this weapon (a LARA_GUN_TYPE) a moment into the level.
 extern int32_t g_DC_TestGive;
 // A test disc leaves the game this many frames into the level (the console

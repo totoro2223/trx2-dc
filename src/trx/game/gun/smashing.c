@@ -1,5 +1,12 @@
 #include <trx/game/gun/smashing.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+#endif
+
 #include <trx/game/collision/los.h>
 #include <trx/game/gun/misc.h>
 #include <trx/game/objects/families.h>
@@ -59,7 +66,10 @@ PROJECTILE_HIT Gun_SmashItems(
     const bool is_heavy_missile =
         ObjectFamily_Has(missile_obj_id, OBJ_FAMILY_HEAVY_MISSILE);
     while (true) {
-        const int16_t item_num = LOS_CheckSmashable(start, target, out_hit_pos);
+        int16_t item_num;
+        DC_PROBE(
+            DC_PROBE_L_SMASH,
+            item_num = LOS_CheckSmashable(start, target, out_hit_pos));
         if (item_num == NO_ITEM || item_num == last_item_num) {
             break;
         }

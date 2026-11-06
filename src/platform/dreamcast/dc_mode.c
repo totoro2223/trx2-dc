@@ -74,6 +74,9 @@ int32_t g_DC_TestLevelStart = 0;
 int32_t g_DC_TestLevelLast = -1;
 int32_t g_DC_TestLevelFrames = 0;
 int32_t g_DC_TestFire = 0;
+int32_t g_DC_TestNoHud = 0;
+int32_t g_DC_TestShowFps = 0;
+int32_t g_DC_TestDebugKeys = 0;
 int32_t g_DC_TestGive = 0;
 int32_t g_DC_TestExit = 0;
 int32_t g_DC_TestComplete = 0;
@@ -108,6 +111,9 @@ void DC_Mode_ApplyDefaults(void)
     CONFIG_SET(g_Config.visuals.shadow_type, shadow);
     if (g_DC_TestCel >= 0) {
         CONFIG_SET(g_Config.rendering.dc_cel_shading, (bool)(g_DC_TestCel != 0));
+    }
+    if (g_DC_TestShowFps) {
+        CONFIG_SET(g_Config.ui.enable_fps_counter, true);
     }
     LOG_INFO("test hooks: fps %d, original AI %d", (int)g_DC_TestFps, (int)g_DC_TestOriginalAI);
     if (g_DC_TestFps >= 0) {

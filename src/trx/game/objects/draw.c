@@ -167,6 +167,12 @@ static bool M_DrawInterpolatedObject(
     const ANIM_FRAME *const pose_a = frame1;
     const int32_t pose_f = frac;
 #endif
+#if defined(__DREAMCAST__)
+    // The meshes below are drawn from the world stack alone (the batcher
+    // never reads the view one), so the walk leaves the view stack out.
+    const bool view_was_off = g_MatrixWorldOnly;
+    g_MatrixWorldOnly = true;
+#endif
     ANIM_WALK walk;
     Anim_Walk_Begin(
         &walk,
@@ -205,6 +211,9 @@ static bool M_DrawInterpolatedObject(
         DC_PROBE_STOP(DC_PROBE_I_MESH, probe_mesh);
     }
     Anim_Walk_End(&walk);
+#if defined(__DREAMCAST__)
+    g_MatrixWorldOnly = view_was_off;
+#endif
 
     Matrix_Pop();
     return true;

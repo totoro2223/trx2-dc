@@ -95,6 +95,10 @@ if [ -n "${TRX_DC_SAVE:-}" ]; then
   # The game is saved every that many frames, and loaded after every fifth.
   echo "$TRX_DC_SAVE" > "$STAGE/SAVE.TXT"
 fi
+if [ -n "${TRX_DC_TITLELIST:-}" ]; then
+  # Leaving a level goes back to the level list, not the game's title.
+  echo 1 > "$STAGE/TITLELIST.TXT"
+fi
 if [ -n "${TRX_DC_EXIT:-}" ]; then
   # The game is left that many frames into the level (a test of the exit).
   echo "$TRX_DC_EXIT" > "$STAGE/EXIT.TXT"
@@ -106,6 +110,15 @@ fi
 if [ -n "${TRX_DC_GIVE:-}" ]; then
   # Lara is handed that weapon (a LARA_GUN_TYPE) a moment into the level.
   echo "$TRX_DC_GIVE" > "$STAGE/GIVE.TXT"
+fi
+if [ -n "${TRX_DC_DEBUGKEYS:-}" ]; then
+  echo 1 > "$STAGE/DEBUGKEYS.TXT"
+fi
+if [ -n "${TRX_DC_SHOWFPS:-}" ]; then
+  echo 1 > "$STAGE/SHOWFPS.TXT"
+fi
+if [ -n "${TRX_DC_NOHUD:-}" ]; then
+  echo 1 > "$STAGE/NOHUD.TXT"
 fi
 if [ -n "${TRX_DC_FIRE:-}" ]; then
   # The pistols smoke every n frames (a test of the smoke's cost).

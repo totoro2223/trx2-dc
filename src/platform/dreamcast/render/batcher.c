@@ -1800,7 +1800,26 @@ typedef struct {
     // A sprite's corner moves by its normal times this in eye space.
     float bscale;
     const int32_t *caus; // the caustics (M_CausticTable); nullptr: none
+    // The dynamic lights lighting the room's vertices (M_DynamicLum and
+    // M_TR3DynamicRGB's): the instance's world matrix, the point lights of
+    // TR1/TR2 and the colour lights of TR3, with how many.
+    const float (*world)[4];
+    const M_POINT_LIGHT *lights;
+    int32_t num_lights;
+    const M_RGB_LIGHT *rgb;
+    int32_t num_rgb;
 } M_XROOM;
+_Static_assert(offsetof(M_XROOM, world) == 92, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, lights) == 96, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, num_lights) == 100, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, rgb) == 104, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_XROOM, num_rgb) == 108, "xform_sh4.S reads these");
+_Static_assert(sizeof(M_POINT_LIGHT) == 24, "xform_sh4.S reads these");
+_Static_assert(sizeof(M_RGB_LIGHT) == 32, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_POINT_LIGHT, radius_sq) == 12, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_RGB_LIGHT, radius) == 12, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_RGB_LIGHT, inv_radius) == 16, "xform_sh4.S reads these");
+_Static_assert(offsetof(M_RGB_LIGHT, color) == 20, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, caus) == 88, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, tr3_k) == 64, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, water) == 68, "xform_sh4.S reads these");
@@ -1898,7 +1917,7 @@ static void M_XformRoom(
     // vertex's place. Only for a room that is not turned (every room).
     static int32_t m_WaterTab[16 * 4] = { INT32_MIN };
     bool water_asm = false;
-    if (water && tr3 && !rgb_dyn && !white && !c->ortho) {
+    if (water && tr3 && !white && !c->ortho) {
         water_asm = w[0][0] == 1.0f && w[1][1] == 1.0f && w[2][2] == 1.0f
             && w[0][1] == 0.0f && w[0][2] == 0.0f && w[1][0] == 0.0f
             && w[1][2] == 0.0f && w[2][0] == 0.0f && w[2][1] == 0.0f
@@ -1934,9 +1953,12 @@ static void M_XformRoom(
     }
     // Per vertex the assembly also leaves the fog off one that has none or no
     // light (TR3: its colour does not depend on those flags otherwise).
+    // The dynamic lights (a flare, a torch, a gun's flash) are lit by the
+    // assembly too, but for the cel shading's face lights, which also want
+    // each vertex's colour without them (nodyn).
     const bool fast = vref != nullptr && lighting
-        && (tr3 ? !rgb_dyn && (!water || water_asm) : !dyn)
-        && !c->ortho;
+        && (tr3 ? (!water || water_asm) : true) && !c->ortho
+        && (nodyn == nullptr || !(tr3 ? rgb_dyn : dyn));
     M_XROOM run = {
         .c = c,
         .xverts = xverts,
@@ -1948,7 +1970,7 @@ static void M_XformRoom(
         .nranges = nranges,
         .min_shade = min_shade,
         .flicker = flicker,
-        .white = white ? m_WhiteARGB : nullptr,
+        .white = white && !rgb_dyn ? m_WhiteARGB : nullptr,
         .tint = { ta, tr, tg, tb },
         .tr3_k = tr3 ? tr3_k : 0,
         .water = water_asm ? m_WaterTab : nullptr,
@@ -1957,6 +1979,11 @@ static void M_XformRoom(
                     water_asm ? (int32_t)w[2][3] : 0 },
         .bscale = scale,
         .caus = M_CausticTable(il),
+        .world = il->world,
+        .lights = il->lights,
+        .num_lights = tr3 ? 0 : il->num_lights,
+        .rgb = il->rgb,
+        .num_rgb = tr3 && rgb_dyn ? il->num_rgb : 0,
     };
 #if !defined(DC_EMIT_VERIFY)
     if (fast) {
@@ -4283,9 +4310,17 @@ typedef struct {
     // The store queue address of out less out, with dc_sq_vertices (0: the
     // vertices go through the cache).
     int32_t sq_delta;
+    // The dynamic lights a room's cel shading looks every face against
+    // (M_FaceTurnedAway), in view space, 4 floats each (none: 0), and the
+    // vertex colours without them.
+    const float *face_lights;
+    int32_t face_light_count;
+    const uint32_t *eargb;
 } M_EMIT_RUN;
 _Static_assert(offsetof(M_EMIT_RUN, cel_dark) == 96, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, sq_delta) == 100, "emit_sh4.S layout");
+_Static_assert(offsetof(M_EMIT_RUN, face_lights) == 104, "emit_sh4.S layout");
+_Static_assert(offsetof(M_EMIT_RUN, eargb) == 112, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, indices) == 32, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, page_id) == 64, "emit_sh4.S layout");
 _Static_assert(offsetof(M_EMIT_RUN, sargb) == 72, "emit_sh4.S layout");
@@ -4417,6 +4452,9 @@ static int32_t M_EmitRunFast(
         .page_id = page,
         .cull = m_Frame.cull ? 1 : 0,
         .cel_dark = batcher->cel_dark ? 1 : 0,
+        .face_lights = &batcher->face_lights[0][0],
+        .face_light_count = batcher->face_light_count,
+        .eargb = batcher->eargb,
     };
     // Lara's cel shading keeps a copy of each lit face (M_KeepCel): room for
     // them all, and the run of her page they belong to, made first.
@@ -4514,10 +4552,9 @@ static void M_EmitIndices(
     const bool env = m_Frame.emit == M_EMIT_ENV;
     // The plain faces of a room or an object (not the reflections, the relief
     // or Lara's cel shading, nor a model on the canvas) go through assembly.
-    // Nor a room's faces that a dynamic light reaches with the cel shading:
-    // each is looked at for the way it turns (M_FaceTurnedAway).
-    const bool fast = !env && !m_Frame.ortho && m_Frame.emit == M_EMIT_PLAIN
-        && batcher->face_light_count == 0;
+    // (A room's faces that a dynamic light reaches with the cel shading are
+    // looked at for the way each turns, M_FaceTurnedAway, in the assembly too.)
+    const bool fast = !env && !m_Frame.ortho && m_Frame.emit == M_EMIT_PLAIN;
     int32_t i = 0;
     while (i + 2 < count) {
 #if defined(DC_EMIT_VERIFY)
@@ -6292,14 +6329,39 @@ void DC_MeshBatcher_StageParticle(
     }
 }
 
+DC_PARTICLE *DC_MeshBatcher_ParticleSlots(
+    MESH_BATCHER *const batcher, int32_t *const room)
+{
+    (void)batcher;
+    *room = M_MAX_PARTICLES - m_ParticleCount;
+    return &m_Particles[m_ParticleCount];
+}
+
+void DC_MeshBatcher_ParticlesAdded(
+    MESH_BATCHER *const batcher, const int32_t count, const int32_t blends[3])
+{
+    (void)batcher;
+    m_ParticleCount += count;
+    for (int32_t i = 0; i < 3; i++) {
+        m_ParticleBlendCount[i] += blends[i];
+    }
+}
+
+const DC_PARTICLE *DC_MeshBatcher_Particles(
+    MESH_BATCHER *const batcher, int32_t *const count)
+{
+    (void)batcher;
+    *count = m_ParticleCount;
+    return m_Particles;
+}
+
 // 0x73560: one projection of the centre, rejected before the near plane, size
 // = side * persp / z with a floor of two pixels, rejected when its rectangle
 // misses the screen, one primitive.
-static void M_DrawParticles(const int32_t blend)
+[[maybe_unused]] static void M_DrawParticlesC(
+    const int32_t blend, const int32_t first, const int32_t last,
+    int32_t *const page_io)
 {
-    if (m_ParticleBlendCount[blend] == 0 || m_Frame.ortho) {
-        return;
-    }
     static const DC_BLEND k_blend[3] = { DC_BLEND_ADD, DC_BLEND_ALPHA,
                                          DC_BLEND_SUB };
     const float(*const v)[4] = m_Frame.view;
@@ -6311,8 +6373,8 @@ static void M_DrawParticles(const int32_t blend)
     const float sc = m_Frame.screen_scale;
     const float px = fabsf(m_Frame.proj_x);
     const float py = fabsf(m_Frame.proj_y);
-    int32_t page = INT32_MIN;
-    for (int32_t i = 0; i < m_ParticleCount; i++) {
+    int32_t page = *page_io;
+    for (int32_t i = first; i < last; i++) {
         const DC_PARTICLE *const q = &m_Particles[i];
         if (q->blend != blend) {
             continue;
@@ -6365,6 +6427,7 @@ static void M_DrawParticles(const int32_t blend)
         }
         DC_PVR_Quad(&out[0], &out[1], &out[2], &out[3]);
     }
+    *page_io = page;
 }
 
 void DC_MeshBatcher_StageQuad(
@@ -6379,11 +6442,10 @@ void DC_MeshBatcher_StageQuad(
 
 // shortcut: a quad with a corner behind the near plane is dropped, not
 // clipped; upgrade if splashes under the camera blink out.
-static void M_DrawQuads(const int32_t blend)
+[[maybe_unused]] static void M_DrawQuadsC(
+    const int32_t blend, const int32_t first, const int32_t last,
+    int32_t *const page_io)
 {
-    if (m_QuadBlendCount[blend] == 0 || m_Frame.ortho) {
-        return;
-    }
     static const DC_BLEND k_blend[3] = { DC_BLEND_ADD, DC_BLEND_ALPHA,
                                          DC_BLEND_SUB };
     const float(*const v)[4] = m_Frame.view;
@@ -6393,8 +6455,8 @@ static void M_DrawQuads(const int32_t blend)
     const float lo_y = m_Frame.center_y - m_Frame.half_h;
     const float hi_y = m_Frame.center_y + m_Frame.half_h;
     const float sc = m_Frame.screen_scale;
-    int32_t page = INT32_MIN;
-    for (int32_t i = 0; i < m_QuadCount; i++) {
+    int32_t page = *page_io;
+    for (int32_t i = first; i < last; i++) {
         const DC_QUAD *const q = &m_Quads[i];
         if (q->blend != blend) {
             continue;
@@ -6447,6 +6509,22 @@ static void M_DrawQuads(const int32_t blend)
             DC_PVR_Quad(&c[0], &c[2], &c[1], &c[1]);
         }
     }
+    *page_io = page;
+}
+
+DC_STREAK *DC_MeshBatcher_StreakSlots(
+    MESH_BATCHER *const batcher, int32_t *const room)
+{
+    (void)batcher;
+    *room = M_MAX_STREAKS - m_StreakCount;
+    return &m_Streaks[m_StreakCount];
+}
+
+void DC_MeshBatcher_StreaksAdded(
+    MESH_BATCHER *const batcher, const int32_t count)
+{
+    (void)batcher;
+    m_StreakCount += count;
 }
 
 void DC_MeshBatcher_StageStreak(
@@ -6460,11 +6538,9 @@ void DC_MeshBatcher_StageStreak(
 
 // Each streak: both ends projected, a quad about a pixel and a half wide
 // across the line between them. An end before the near plane drops it.
-static void M_DrawStreaks(void)
+[[maybe_unused]] static void M_DrawStreaksC(
+    const int32_t first, const int32_t last)
 {
-    if (m_StreakCount == 0 || m_Frame.ortho) {
-        return;
-    }
     const float(*const v)[4] = m_Frame.view;
     const float near_z = m_Frame.near_z;
     const float lo_x = m_Frame.center_x - m_Frame.half_w;
@@ -6472,8 +6548,7 @@ static void M_DrawStreaks(void)
     const float lo_y = m_Frame.center_y - m_Frame.half_h;
     const float hi_y = m_Frame.center_y + m_Frame.half_h;
     const float sc = m_Frame.screen_scale;
-    DC_PVR_SetState(DC_BLEND_ADD, DC_PVR_NO_TEXTURE, false);
-    for (int32_t i = 0; i < m_StreakCount; i++) {
+    for (int32_t i = first; i < last; i++) {
         const DC_STREAK *const q = &m_Streaks[i];
         float sx[2];
         float sy[2];
@@ -6525,6 +6600,214 @@ static void M_DrawStreaks(void)
         };
         DC_PVR_Quad(&out[0], &out[1], &out[2], &out[3]);
     }
+}
+
+// What particles_sh4.S takes (see there): the staged items of one kind, and the
+// frame's numbers they are placed and written by.
+typedef struct {
+    const void *items;
+    int32_t count;
+    int32_t index; // in, out: the item to go on from
+    int32_t blend;
+    int32_t page; // the page the polygon state is set to
+    uint8_t *out;
+    int32_t space;
+    int32_t written; // out
+    int32_t polys; // out
+    int32_t stop_page; // out: the page of the item the run stopped at
+    int32_t stop; // out: 0 the end, 1 another page, 2 no room
+    int32_t pad;
+    float near_z;
+    float center_x;
+    float center_y;
+    float proj_x;
+    float proj_y;
+    float lo_x;
+    float hi_x;
+    float lo_y;
+    float hi_y;
+    float sc;
+    float depth_lo;
+    float depth_scale;
+} DC_PRUN;
+_Static_assert(offsetof(DC_PRUN, near_z) == 48, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PRUN, lo_x) == 68, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PRUN, sc) == 84, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PRUN, out) == 20, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PRUN, written) == 28, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PRUN, stop_page) == 36, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PRUN, stop) == 40, "particles_sh4.S reads these");
+_Static_assert(sizeof(DC_PARTICLE) == 72, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PARTICLE, blend) == 28, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PARTICLE, page) == 36, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_PARTICLE, u) == 40, "particles_sh4.S reads these");
+_Static_assert(sizeof(DC_QUAD) == 112, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_QUAD, page) == 96, "particles_sh4.S reads these");
+_Static_assert(offsetof(DC_QUAD, n) == 104, "particles_sh4.S reads these");
+_Static_assert(sizeof(DC_STREAK) == 32, "particles_sh4.S reads these");
+extern void dc_draw_particles(DC_PRUN *run);
+extern void dc_draw_quads(DC_PRUN *run);
+extern void dc_draw_streaks(DC_PRUN *run);
+
+typedef enum { M_PRUN_PARTICLES, M_PRUN_QUADS, M_PRUN_STREAKS } M_PRUN_KIND;
+
+#if defined(DC_EMIT_VERIFY)
+static uint32_t m_PVerifyN = 0;
+static uint32_t m_PVerifyBad = 0;
+
+// The polygons the assembly wrote (poly) against the C loop's, which went into
+// the list (list): the flags and colours alike, the floats to a thousandth.
+static void M_VerifyPolys(
+    const M_PRUN_KIND kind, const uint8_t *const poly, const uint8_t *const list,
+    const int32_t polys)
+{
+    for (int32_t i = 0; i < polys * 8 * 4; i++) {
+        const uint32_t *const a = (const uint32_t *)poly + i;
+        const uint32_t *const b = (const uint32_t *)list + i;
+        const int32_t field = i % 8;
+        bool ok;
+        if (field >= 1 && field <= 5) {
+            const float fa = *(const float *)a;
+            const float fb = *(const float *)b;
+            ok = fabsf(fa - fb) <= 0.002f * MAX(1.0f, fabsf(fb));
+        } else {
+            ok = *a == *b;
+        }
+        m_PVerifyN++;
+        if (!ok) {
+            m_PVerifyBad++;
+            if (m_PVerifyBad <= 12) {
+                LOG_WARNING(
+                    "[particle-verify] MISMATCH kind %d vertex %d field %d: "
+                    "asm %08x | C %08x",
+                    (int)kind, (int)(i / 8), (int)field, (unsigned)*a,
+                    (unsigned)*b);
+            }
+        }
+    }
+    if (m_PVerifyN >= 400000) {
+        LOG_WARNING(
+            "[particle-verify] %u words, %u bad", (unsigned)m_PVerifyN,
+            (unsigned)m_PVerifyBad);
+        m_PVerifyN = 0;
+    }
+}
+#endif
+
+// A kind of staged items drawn: the assembly writes the polygons of one
+// texture page at a time into the list, and the page's state is set between
+// (the C loops, kept as the reference, in the verify builds).
+static void M_DrawStaged(
+    const M_PRUN_KIND kind, const int32_t blend, const int32_t count)
+{
+    static const DC_BLEND k_blend[3] = { DC_BLEND_ADD, DC_BLEND_ALPHA,
+                                         DC_BLEND_SUB };
+    if (count == 0 || m_Frame.ortho) {
+        return;
+    }
+    const float lo_x = m_Frame.center_x - m_Frame.half_w;
+    const float hi_x = m_Frame.center_x + m_Frame.half_w;
+    const float lo_y = m_Frame.center_y - m_Frame.half_h;
+    const float hi_y = m_Frame.center_y + m_Frame.half_h;
+    mat_load(&m_Frame.view);
+    DC_PRUN run = {
+        .items = kind == M_PRUN_PARTICLES ? (const void *)m_Particles
+            : kind == M_PRUN_QUADS        ? (const void *)m_Quads
+                                          : (const void *)m_Streaks,
+        .count = kind == M_PRUN_PARTICLES ? m_ParticleCount
+            : kind == M_PRUN_QUADS        ? m_QuadCount
+                                          : m_StreakCount,
+        .index = 0,
+        .blend = blend,
+        .page = INT32_MIN,
+        .near_z = m_Frame.near_z,
+        .center_x = m_Frame.center_x,
+        .center_y = m_Frame.center_y,
+        .proj_x = m_Frame.proj_x,
+        .proj_y = m_Frame.proj_y,
+        .lo_x = lo_x,
+        .hi_x = hi_x,
+        .lo_y = lo_y,
+        .hi_y = hi_y,
+        .sc = m_Frame.screen_scale * DC_PVR_GetScreenScale(),
+        .depth_lo = m_Frame.depth.lo,
+        .depth_scale = m_Frame.depth.scale,
+    };
+    void (*const draw)(DC_PRUN *) = kind == M_PRUN_PARTICLES ? dc_draw_particles
+        : kind == M_PRUN_QUADS                              ? dc_draw_quads
+                                                            : dc_draw_streaks;
+    if (kind == M_PRUN_STREAKS) {
+        // Flat, added, one state for all of them.
+        DC_PVR_SetState(DC_BLEND_ADD, DC_PVR_NO_TEXTURE, false);
+        run.page = DC_PVR_NO_TEXTURE;
+    } else {
+        // The first drawable item says its page: a run with no room does that.
+        run.out = nullptr;
+        run.space = 0;
+        draw(&run);
+        if (run.stop != 1) {
+            return;
+        }
+        run.page = run.stop_page;
+        DC_PVR_SetState(k_blend[blend], run.page, run.page >= 0);
+    }
+    for (;;) {
+        size_t space;
+        bool header;
+        uint8_t *const at = DC_PVR_BeginRun(&space, &header);
+        if (at == nullptr) {
+            return;
+        }
+        const int32_t first = run.index;
+#if defined(DC_EMIT_VERIFY)
+        run.out = m_VerifyScratch;
+        run.space = (int32_t)MIN(space, sizeof(m_VerifyScratch));
+#else
+        run.out = at;
+        run.space = (int32_t)MIN(space, (size_t)INT32_MAX);
+#endif
+        draw(&run);
+#if defined(DC_EMIT_VERIFY)
+        // The C loop draws the same items into the list; the two are compared.
+        int32_t page = run.page;
+        if (kind == M_PRUN_PARTICLES) {
+            M_DrawParticlesC(blend, first, run.index, &page);
+        } else if (kind == M_PRUN_QUADS) {
+            M_DrawQuadsC(blend, first, run.index, &page);
+        } else {
+            M_DrawStreaksC(first, run.index);
+        }
+        M_VerifyPolys(kind, m_VerifyScratch, at, run.polys);
+#else
+        (void)first;
+        DC_PVR_EndRun((size_t)run.written, run.polys, header);
+#endif
+        if (run.stop == 1) {
+            run.page = run.stop_page;
+            DC_PVR_SetState(k_blend[blend], run.page, run.page >= 0);
+        } else if (run.stop != 2 || run.index >= run.count) {
+            return;
+        } else {
+#if !defined(DC_EMIT_VERIFY)
+            return; // the list is full
+#endif
+        }
+    }
+}
+
+static void M_DrawParticles(const int32_t blend)
+{
+    M_DrawStaged(M_PRUN_PARTICLES, blend, m_ParticleBlendCount[blend]);
+}
+
+static void M_DrawQuads(const int32_t blend)
+{
+    M_DrawStaged(M_PRUN_QUADS, blend, m_QuadBlendCount[blend]);
+}
+
+static void M_DrawStreaks(void)
+{
+    M_DrawStaged(M_PRUN_STREAKS, 0, m_StreakCount);
 }
 
 static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass)
@@ -7365,6 +7648,33 @@ void MeshBatcher_Stage(
     }
     Vector_Add(batcher->staged[pass], inst);
     Vector_Add(batcher->casters[pass], &caster_index);
+}
+
+MESH_INSTANCE *DC_MeshBatcher_BeginObject(MESH_BATCHER *const batcher)
+{
+    return Vector_Expand(batcher->staged[SCENE_PASS_OPAQUE], 1);
+}
+
+void DC_MeshBatcher_FinishObject(
+    MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst)
+{
+    // As MeshBatcher_Stage for the opaque pass, the instance already in place.
+    int16_t caster_index = m_StagingLara ? M_LARA_NOT_CASTER : -1;
+    if (m_Casting && m_CasterCount < M_MAX_CASTERS) {
+        const M_BINDING *const bind = M_GetBinding(batcher, inst->mesh);
+        if (bind != nullptr && bind->vertex_count > 0) {
+            M_CASTER *const caster = &m_Casters[m_CasterCount++];
+            caster->bind = bind;
+            memcpy(caster->bounds, bind->bounds, sizeof(caster->bounds));
+            M_WorldMatrix(&inst->wmatrix, caster->world);
+            caster->room = inst->room;
+            caster->group = m_CasterGroup;
+            caster->lara = m_StagingLara;
+            caster_index = (int16_t)(m_CasterCount - 1);
+        }
+    }
+    Vector_Add(batcher->casters[SCENE_PASS_OPAQUE], &caster_index);
+    MeshBatcher_Stage(batcher, inst, SCENE_PASS_BLEND_ADD);
 }
 
 void DC_Shadow_SetCasting(const bool casting)

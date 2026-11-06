@@ -108,6 +108,10 @@ static bool m_WaterPressed = false;
 // L + R + Up: the debug bounding boxes on and off.
 static bool m_BoxesHeld = false;
 static bool m_BoxesPressed = false;
+static bool m_DebugViewHeld = false;
+static bool m_DebugViewPressed = false;
+static bool m_DebugModeHeld = false;
+static bool m_DebugModePressed = false;
 
 static const char *const m_ButtonNames[SDL_CONTROLLER_BUTTON_MAX] = {
     [SDL_CONTROLLER_BUTTON_A] = "a",
@@ -329,6 +333,16 @@ static void M_PollController(void)
         m_WaterPressed = true;
     }
     m_WaterHeld = water_debug;
+    // L alone and R alone, once per press, for the demos (see
+    // DC_Input_TakeDebugView): a chord is not one of them.
+    if (l && !m_DebugViewHeld && !r) {
+        m_DebugViewPressed = true;
+    }
+    m_DebugViewHeld = l;
+    if (r && !m_DebugModeHeld && !l) {
+        m_DebugModePressed = true;
+    }
+    m_DebugModeHeld = r;
     const bool boxes = chord && (b & CONT_DPAD_UP);
     if (boxes && !m_BoxesHeld) {
         m_BoxesPressed = true;
@@ -410,6 +424,22 @@ bool DC_Input_TakePtVariant(void)
 {
     const bool pressed = m_PtPressed;
     m_PtPressed = false;
+    return pressed;
+}
+
+// Whether L (alone) was pressed since last asked: the demo cycles what the
+// screen shows. R (alone) cycles the graphic modes.
+bool DC_Input_TakeDebugView(void)
+{
+    const bool pressed = m_DebugViewPressed;
+    m_DebugViewPressed = false;
+    return pressed;
+}
+
+bool DC_Input_TakeDebugMode(void)
+{
+    const bool pressed = m_DebugModePressed;
+    m_DebugModePressed = false;
     return pressed;
 }
 

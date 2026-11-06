@@ -8,6 +8,7 @@
 #include <trx/game/rooms.h>
 
 #include <math.h>
+#include <string.h>
 
 #define M_CLIP_1 8
 #define M_CLIP_2 8
@@ -487,6 +488,32 @@ bool LOS_CheckItemIntersectSegment(
 // @param start  World-space ray origin
 // @param target World-space ray end
 // @return       First smashable item's index, or NO_ITEM if none hit
+// Whether an object is smashable or shattering: asked of every item at every
+// shot, so the answer is kept by object, until a family changes.
+static bool M_IsSmashable(const OBJECT_ID object_id)
+{
+    #define M_SMASH_CACHE_SIZE 1024
+    static uint8_t cache[M_SMASH_CACHE_SIZE]; // 0 not known, 1 no, 2 yes
+    static int32_t revision = -1;
+    const bool cached = object_id >= 0 && object_id < M_SMASH_CACHE_SIZE;
+    if (cached) {
+        if (revision != ObjectFamily_GetRevision()) {
+            memset(cache, 0, sizeof(cache));
+            revision = ObjectFamily_GetRevision();
+        }
+        if (cache[object_id] != 0) {
+            return cache[object_id] == 2;
+        }
+    }
+    const bool smashable = ObjectFamily_Has(object_id, OBJ_FAMILY_SMASHABLE)
+        || ObjectFamily_Has(object_id, OBJ_FAMILY_SHATTERABLE)
+        || ObjectFamily_Has(object_id, OBJ_FAMILY_HEAVY_SHATTERABLE);
+    if (cached) {
+        cache[object_id] = smashable ? 2 : 1;
+    }
+    return smashable;
+}
+
 int32_t LOS_CheckSmashable(
     const GAME_VECTOR start, const GAME_VECTOR target,
     XYZ_32 *const out_hit_pos)
@@ -499,10 +526,7 @@ int32_t LOS_CheckSmashable(
         if (item->is_finished) {
             continue;
         }
-        if (!ObjectFamily_Has(item->object_id, OBJ_FAMILY_SMASHABLE)
-            && !ObjectFamily_Has(item->object_id, OBJ_FAMILY_SHATTERABLE)
-            && !ObjectFamily_Has(
-                item->object_id, OBJ_FAMILY_HEAVY_SHATTERABLE)) {
+        if (!M_IsSmashable(item->object_id)) {
             continue;
         }
 

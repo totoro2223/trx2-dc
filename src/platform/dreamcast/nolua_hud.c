@@ -30,6 +30,8 @@
 #include <trx/game/ui/text.h>
 #include <trx/version.h>
 #include <platform/dreamcast/dc_probe.h>
+#include <platform/dreamcast/render/pvr.h>
+#include "vmu.h"
 
 #include <arch/arch.h>
 #include <stdarg.h>
@@ -410,7 +412,24 @@ static bool M_OnTick(
     // Also during the demos, which are not "playing" and may hide the UI.
     const GF_LEVEL *const cur_level = GF_GetCurrentLevel();
     const bool in_demo = cur_level != nullptr && cur_level->type == GFL_DEMO;
-    if ((playing || in_demo) && g_Config.rendering.dc_memory_hud) {
+    // The demo's keys (a game demo, or a disc made with TRX_DC_DEBUGKEYS): L
+    // cycles what the screen shows, R the graphic modes.
+    static int32_t m_View = 0; // 0 nothing, 1 fps, 2 info, 3 consumption
+    if (g_DC_TestDebugKeys || in_demo) {
+        if (DC_Input_TakeDebugView()) {
+            m_View = (m_View + 1) % 4;
+        }
+        if (DC_Input_TakeDebugMode()) {
+            static const char *const names[] = { "Graphics", "Performance",
+                                                 "Original",
+                                                 "Experimental 60" };
+            CONFIG_CYCLE(g_Config.rendering.dc_mode, 1, DC_MODE_NUMBER_OF);
+            DC_Mode_ApplyDefaults();
+            DC_Msg("MODE %s", names[g_Config.rendering.dc_mode]);
+        }
+    }
+    if ((playing || in_demo)
+        && (g_Config.rendering.dc_memory_hud || m_View == 3)) {
         static int32_t countdown = 0;
         static char text[3][24];
         if (countdown-- <= 0) {
@@ -449,7 +468,7 @@ static bool M_OnTick(
     // The position, animation, camera and invulnerability readouts are off
     // by default (debug.enable_debug_*) and are not drawn here; the frame
     // counter is on by default on the Dreamcast.
-    if (ui_enabled && g_Config.ui.enable_fps_counter) {
+    if ((ui_enabled && g_Config.ui.enable_fps_counter) || m_View == 1) {
         const int32_t fps = Output_GetMeasuredFPS();
         if (fps != m_FPS) {
             m_FPS = fps;
@@ -457,9 +476,36 @@ static bool M_OnTick(
         }
         M_Push(M_TOP_LEFT, -1, 0.0f, m_FPSText, 1.0f);
     }
+    if (m_View == 2) {
+        // The info box: the mode, the frame and what it holds.
+        extern uint32_t g_DC_BatcherFrameInstances;
+        extern uint32_t g_DC_BatcherFrameVertices;
+        static const char *const names[] = { "Graphics", "Performance",
+                                             "Original", "Experimental 60" };
+        static char info[4][40];
+        const int32_t fps = Output_GetMeasuredFPS();
+        snprintf(
+            info[0], sizeof(info[0]), "%s %d FPS",
+            names[g_Config.rendering.dc_mode], (int)fps);
+        snprintf(
+            info[1], sizeof(info[1]), "FRAME %d.%d MS",
+            (int)(fps > 0 ? 1000 / fps : 0),
+            (int)(fps > 0 ? (10000 / fps) % 10 : 0));
+        snprintf(
+            info[2], sizeof(info[2]), "POLY %d INST %u",
+            (int)DC_PVR_GetSubmittedCount(),
+            (unsigned)g_DC_BatcherFrameInstances);
+        snprintf(
+            info[3], sizeof(info[3]), "VERT %u ROOM %d",
+            (unsigned)g_DC_BatcherFrameVertices,
+            item != nullptr ? (int)item->room_num : -1);
+        for (int32_t i = 0; i < 4; i++) {
+            M_Push(M_TOP_LEFT, -1, 0.0f, info[i], 1.0f);
+        }
+    }
 #if defined(TRX_DC_PROBES)
     // The frame timers on screen, in the middle: the console has no serial.
-    if (playing) {
+    if ((playing && !g_DC_TestNoHud) || m_View == 2) {
         for (int32_t i = 0; i < DC_PROBE_SCREEN_LINES; i++) {
             if (g_DC_ProbeScreen[i][0] != ' ') {
                 M_Push(M_CENTER, -1, 0.0f, g_DC_ProbeScreen[i], 1.0f);

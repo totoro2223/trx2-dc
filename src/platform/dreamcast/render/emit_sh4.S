@@ -26,13 +26,17 @@
 ! The frame on the stack: 0 the run, 4 polygons made, 8 cull, 12 the page, 32 the
 ! cel colours, 36 the cel cursor, 40..52 the shaded colours of a face,
 ! 16..28 the four corners' xverts, advanced to their sx, 56 cel_dark, 60 the
-! store queue's distance from the list (0: the cache).
+! store queue's distance from the list (0: the cache), then past what a
+! 60-byte reach gives (through r0): 64 the face lights, 68 how many, 72 the
+! colours without them (eargb), 76 how far this face turns from them
+! (faceaway, 0 to 256). With face lights the faces go the *_l ways below.
 !
 ! Struct layout, DC_EMIT_RUN (batcher.c):
 !    0 centre_x 4 centre_y 8 screen_scale 12 near_z 16 depth_lo 20 depth_scale
 !   24 uv_scale 28 one 32 indices 36 count 40 xverts 44 uv 48 page 52 oargb
 !   56 out 60 space 64 page_id 68 cull 72 sargb 76 cel_out | 80 used
 !   84 written 88 polys 92 cel_end | 96 cel_dark 100 sq_delta
+!  104 face_lights 108 face_light_count 112 eargb
 
 ! Probe builds count the faces left out (g_DC_EmitCull[\idx]); r0, r1 are free.
     .macro COUNT idx, pool
@@ -59,6 +63,28 @@
     mov.l   r0,@(\slot,r15)
     .endm
 
+! LOAD_CORNER and CLIP_CORNER in one: the xvert is still in r0, so the clip
+! byte is read from it with no trip back through the slot.
+    .macro LOAD_CLIP off, slot, first
+    mov.w   @(\off,r6),r0
+    extu.w  r0,r0
+    shll2   r0
+    shll2   r0
+    shll    r0
+    add     r8,r0
+    mov.l   r0,@(\slot,r15)
+    mov     r0,r5
+    mov     #16,r0
+    mov.b   @(r0,r5),r1
+    .if \first
+    mov     r1,r4
+    mov     r1,r14
+    .else
+    and     r1,r4
+    or      r1,r14
+    .endif
+    .endm
+
 ! Folds the clip of the corner in slot \slot (at sx + 16) into r4 (and) and
 ! r14 (or); \first starts them.
     .macro CLIP_CORNER slot, first
@@ -78,7 +104,7 @@
 ! with the flag register \flag; r11 first moves by \adv (32 for the first of
 ! a face, 64 after, since the stores run backwards from its end) and ends on
 ! the vertex's start.
-    .macro EMIT_VERTEX_BODY off, slot, flag, adv
+    .macro EMIT_VERTEX_BODY off, slot, flag, adv, lit=0
     mov.w   @(\off,r6),r0
     extu.w  r0,r1                   ! r1 = corner
     mov     r1,r0
@@ -113,6 +139,22 @@
     fmov.s  @r5+,fr3                ! sy
     fmov.s  @r5+,fr4                ! 1/z
     mov.l   @r5,r1                  ! the colour
+    .if \lit
+    ! a face turned from the lights: its colour towards the one without them
+    mov     #76,r0
+    mov.l   @(r0,r15),r5
+    tst     r5,r5
+    bt      4f
+    mov     #72,r0
+    mov.l   @(r0,r15),r4
+    mov.w   @(\off,r6),r0
+    extu.w  r0,r0
+    shll2   r0
+    mov.l   @(r0,r4),r4
+    bsr     lerp_argb
+    nop
+4:
+    .endif
     fmov    fr8,fr5
     fadd    fr2,fr5
     fmul    fr10,fr5                ! x = (centre_x + sx) * scale
@@ -202,10 +244,19 @@
 ! them), for the corners at \o0.. in the indices: kept where the lit side of
 ! the face reaches half the alpha, as M_KeepCel does after M_EmitFront; with
 ! cel_dark (a room's), not where all its corners do (M_CelKeeps).
-    .macro CEL_FACE n, o0, o1, o2, o3
+    .macro CEL_FACE n, o0, o1, o2, o3, lit=0
     mov.l   @(36,r15),r5
     tst     r5,r5
     bt      9f
+    .if \lit
+    mov     #76,r0
+    mov.l   @(r0,r15),r5
+    tst     r5,r5
+    bt      7f
+    bra     9f
+    nop
+7:
+    .endif
     mov.l   @(32,r15),r14
     mov     #0,r4
     mov.w   @(\o0,r6),r0
@@ -267,6 +318,7 @@
     .endm
 
 _dc_emit_run:
+    sts.l   pr,@-r15
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -282,7 +334,7 @@ _dc_emit_run:
     fmov.s  fr9,@-r15
     fmov.s  fr10,@-r15
     fmov.s  fr11,@-r15
-    add     #-64,r15
+    add     #-80,r15
     mov.l   r4,@(0,r15)
     mov     r4,r5
     fmov.s  @r5+,fr8
@@ -314,6 +366,18 @@ _dc_emit_run:
     mov.l   r1,@(56,r15)
     mov.l   @(20,r5),r1             ! sq_delta, at 100
     mov.l   r1,@(60,r15)
+    mov.l   @(24,r5),r1             ! the face lights, at 104
+    mov     #64,r0
+    mov.l   r1,@(r0,r15)
+    mov.l   @(28,r5),r1             ! how many
+    mov     #68,r0
+    mov.l   r1,@(r0,r15)
+    mov.l   @(32,r5),r1             ! eargb
+    mov     #72,r0
+    mov.l   r1,@(r0,r15)
+    mov     #0,r1
+    mov     #76,r0
+    mov.l   r1,@(r0,r15)
     mov     #-32,r2
     shll16  r2
     shll8   r2                      ! 0xE0000000
@@ -365,14 +429,10 @@ loop:
     shll    r0                      ! 128 bytes
     cmp/ge  r0,r12
     bf      done_t
-    LOAD_CORNER 0, 16
-    LOAD_CORNER 2, 20
-    LOAD_CORNER 4, 24
-    LOAD_CORNER 10, 28
-    CLIP_CORNER 16, 1
-    CLIP_CORNER 20, 0
-    CLIP_CORNER 24, 0
-    CLIP_CORNER 28, 0
+    LOAD_CLIP 0, 16, 1
+    LOAD_CLIP 2, 20, 0
+    LOAD_CLIP 4, 24, 0
+    LOAD_CLIP 10, 28, 0
     mov     r4,r0
     tst     #63,r0                  ! all past one side: out
     bf      cull_clip_q
@@ -401,12 +461,20 @@ cull_clip_q:
     bra     skip_quad
     nop
 emit_quad:
+    mov     #68,r0
+    mov.l   @(r0,r15),r1
+    tst     r1,r1
+    bt      1f
+    bra     emit_quad_l
+    nop
+1:
     EMIT_VERTEX_BODY 0, 16, r2, 32
     EMIT_VERTEX_BODY 2, 20, r2, 64
     EMIT_VERTEX_BODY 4, 24, r2, 64
     EMIT_VERTEX_BODY 10, 28, r3, 64
     add     #32,r11
     CEL_FACE 4, 0, 2, 4, 10
+quad_tail:
     add     #-128,r12
     mov.l   @(4,r15),r1
     add     #1,r1
@@ -427,12 +495,9 @@ tri:
     mov     #96,r0
     cmp/ge  r0,r12
     bf      done_t2
-    LOAD_CORNER 0, 16
-    LOAD_CORNER 2, 20
-    LOAD_CORNER 4, 24
-    CLIP_CORNER 16, 1
-    CLIP_CORNER 20, 0
-    CLIP_CORNER 24, 0
+    LOAD_CLIP 0, 16, 1
+    LOAD_CLIP 2, 20, 0
+    LOAD_CLIP 4, 24, 0
     mov     r4,r0
     tst     #63,r0
     bf      cull_clip_t
@@ -456,11 +521,19 @@ cull_clip_t:
     bra     skip_tri
     nop
 emit_tri:
+    mov     #68,r0
+    mov.l   @(r0,r15),r1
+    tst     r1,r1
+    bt      1f
+    bra     emit_tri_l
+    nop
+1:
     EMIT_VERTEX_BODY 0, 16, r2, 32
     EMIT_VERTEX_BODY 2, 20, r2, 64
     EMIT_VERTEX_BODY 4, 24, r3, 64
     add     #32,r11
     CEL_FACE 3, 0, 2, 4, 4
+tri_tail:
     add     #-96,r12
     mov.l   @(4,r15),r1
     add     #1,r1
@@ -486,7 +559,7 @@ done:
     mov.l   r11,@(4,r4)
     mov.l   r0,@(8,r4)
     mov.l   r5,@(12,r4)
-    add     #64,r15
+    add     #80,r15
     fmov.s  @r15+,fr11
     fmov.s  @r15+,fr10
     fmov.s  @r15+,fr9
@@ -501,5 +574,311 @@ done:
     mov.l   @r15+,r11
     mov.l   @r15+,r10
     mov.l   @r15+,r9
-    rts
     mov.l   @r15+,r8
+    rts
+    lds.l   @r15+,pr
+
+! ---- the faces with face lights (a room's cel shading, M_FaceTurnedAway)
+emit_quad_l:
+    bsr     faceaway
+    nop
+    mov     r0,r1
+    mov     #76,r0
+    mov.l   r1,@(r0,r15)
+    EMIT_VERTEX_BODY 0, 16, r2, 32, 1
+    EMIT_VERTEX_BODY 2, 20, r2, 64, 1
+    EMIT_VERTEX_BODY 4, 24, r2, 64, 1
+    EMIT_VERTEX_BODY 10, 28, r3, 64, 1
+    add     #32,r11
+    CEL_FACE 4, 0, 2, 4, 10, 1
+    bra     quad_tail
+    nop
+emit_tri_l:
+    bsr     faceaway
+    nop
+    mov     r0,r1
+    mov     #76,r0
+    mov.l   r1,@(r0,r15)
+    EMIT_VERTEX_BODY 0, 16, r2, 32, 1
+    EMIT_VERTEX_BODY 2, 20, r2, 64, 1
+    EMIT_VERTEX_BODY 4, 24, r3, 64, 1
+    add     #32,r11
+    CEL_FACE 3, 0, 2, 4, 4, 1
+    bra     tri_tail
+    nop
+
+! r1 (a colour) towards r4 by the face's away (slot 76 of the caller's frame,
+! 0 to 256), a channel at a time as M_LerpARGB: a + (((b - a) * t + 128) >> 8).
+! The result is in r1; r0, r4, r5 are lost, r2, r3, r14 kept.
+    .macro LERP_CHANNEL shift
+    mov     r1,r2
+    mov     r4,r3
+    .if \shift >= 16
+    shlr16  r2
+    shlr16  r3
+    .endif
+    .if (\shift & 8)
+    shlr8   r2
+    shlr8   r3
+    .endif
+    extu.b  r2,r2                   ! a
+    extu.b  r3,r3                   ! b
+    sub     r2,r3
+    muls.w  r5,r3                   ! (b - a) * t
+    sts     macl,r3
+    add     #127,r3
+    add     #1,r3                   ! + 128
+    mov     #-8,r0
+    shad    r0,r3                   ! >> 8, arithmetic
+    add     r2,r3
+    .if \shift >= 16
+    shll16  r3
+    .endif
+    .if (\shift & 8)
+    shll8   r3
+    .endif
+    or      r3,r14
+    .endm
+
+lerp_argb:
+    mov.l   r2,@-r15
+    mov.l   r3,@-r15
+    mov.l   r14,@-r15
+    mov     #88,r0                  ! slot 76, and the three pushed
+    mov.l   @(r0,r15),r5
+    mov     #0,r14
+    LERP_CHANNEL 0
+    LERP_CHANNEL 8
+    LERP_CHANNEL 16
+    LERP_CHANNEL 24
+    mov     r14,r1
+    mov.l   @r15+,r14
+    mov.l   @r15+,r3
+    rts
+    mov.l   @r15+,r2
+
+! The squared distance of the light (fr8..fr10) from the vertex at \base (its
+! x, y, z) into \into; fr11, fr7 and r0 are lost.
+    .macro DIST_SQ base, into
+    fmov.s  @\base,fr7
+    fmov    fr8,\into
+    fsub    fr7,\into
+    fmul    \into,\into
+    mov     #4,r0
+    fmov.s  @(r0,\base),fr7
+    fmov    fr9,fr11
+    fsub    fr7,fr11
+    fmul    fr11,fr11
+    fadd    fr11,\into
+    mov     #8,r0
+    fmov.s  @(r0,\base),fr7
+    fmov    fr10,fr11
+    fsub    fr7,fr11
+    fmul    fr11,fr11
+    fadd    fr11,\into
+    .endm
+
+! How far the face in slots 16, 20, 24 of the caller's frame turns from the
+! face lights, 0 to 256, in r0: M_FaceTurnedAway. All but r2, r3 are free.
+faceaway:
+    mov.l   @(16,r15),r4            ! a, at its sx
+    mov.l   @(20,r15),r5            ! b
+    mov.l   @(24,r15),r14           ! c
+    add     #-12,r4                 ! at their x
+    add     #-12,r5
+    add     #-12,r14
+    mov     r4,r1
+    fmov.s  fr8,@-r15
+    fmov.s  fr9,@-r15
+    fmov.s  fr10,@-r15
+    fmov.s  fr11,@-r15
+    fmov.s  fr12,@-r15
+    fmov.s  fr13,@-r15
+    fmov.s  fr14,@-r15
+    fmov.s  fr15,@-r15
+    add     #-16,r15                ! 0 away, 4 1/|n|, 8 the distance squared
+    fmov.s  @r1+,fr0                ! a
+    fmov.s  @r1+,fr1
+    fmov.s  @r1,fr2
+    mov     r5,r1
+    fmov.s  @r1+,fr3
+    fmov.s  @r1+,fr4
+    fmov.s  @r1,fr5
+    fsub    fr0,fr3                 ! e1 = b - a
+    fsub    fr1,fr4
+    fsub    fr2,fr5
+    mov     r14,r1
+    fmov.s  @r1+,fr6
+    fmov.s  @r1+,fr7
+    fmov.s  @r1,fr8
+    fsub    fr0,fr6                 ! e2 = c - a
+    fsub    fr1,fr7
+    fsub    fr2,fr8
+    fmov    fr4,fr9                 ! n0 = e1y * e2z - e1z * e2y
+    fmul    fr8,fr9
+    fmov    fr5,fr10
+    fmul    fr7,fr10
+    fsub    fr10,fr9
+    fmov    fr5,fr10                ! n1 = e1z * e2x - e1x * e2z
+    fmul    fr6,fr10
+    fmov    fr3,fr11
+    fmul    fr8,fr11
+    fsub    fr11,fr10
+    fmov    fr3,fr11                ! n2 = e1x * e2y - e1y * e2x
+    fmul    fr7,fr11
+    fmov    fr4,fr12
+    fmul    fr6,fr12
+    fsub    fr12,fr11
+    fmov    fr9,fr3                 ! n
+    fmov    fr10,fr4
+    fmov    fr11,fr5
+    fmov    fr3,fr6                 ! n . a (eye is its minus)
+    fmul    fr0,fr6
+    fmov    fr4,fr7
+    fmul    fr1,fr7
+    fadd    fr7,fr6
+    fmov    fr5,fr7
+    fmul    fr2,fr7
+    fadd    fr7,fr6
+    fmov    fr3,fr7                 ! |n|^2
+    fmul    fr3,fr7
+    fmov    fr4,fr8
+    fmul    fr4,fr8
+    fadd    fr8,fr7
+    fmov    fr5,fr8
+    fmul    fr5,fr8
+    fadd    fr8,fr7
+    fldi0   fr8
+    fcmp/gt fr8,fr7
+    bt      1f
+    bra     fa_none
+    nop
+1:  fsrra   fr7                     ! 1 / |n|
+    fcmp/gt fr8,fr6                 ! eye < 0: the other way round
+    bf      2f
+    fneg    fr7
+2:  mov     #4,r0
+    fmov.s  fr7,@(r0,r15)
+    fldi1   fr6
+    fadd    fr6,fr6                 ! away = 2: no light yet
+    mov     #0,r0
+    fmov.s  fr6,@(r0,r15)
+    mov     #112,r0                 ! the caller's slot 64, under 48 more
+    mov.l   @(r0,r15),r4            ! the lights
+    mov     #116,r0
+    mov.l   @(r0,r15),r1            ! how many
+fa_loop:
+    fmov.s  @r4+,fr8                ! the light, in view space
+    fmov.s  @r4+,fr9
+    fmov.s  @r4+,fr10
+    fmov    fr8,fr12                ! d = l - a
+    fsub    fr0,fr12
+    fmov    fr9,fr13
+    fsub    fr1,fr13
+    fmov    fr10,fr14
+    fsub    fr2,fr14
+    fmov    fr12,fr15               ! d . d
+    fmul    fr12,fr15
+    fmov    fr13,fr11
+    fmul    fr13,fr11
+    fadd    fr11,fr15
+    fmov    fr14,fr11
+    fmul    fr14,fr11
+    fadd    fr11,fr15
+    mov     #8,r0
+    fmov.s  fr15,@(r0,r15)          ! kept for the cosine
+    DIST_SQ r5, fr6
+    fcmp/gt fr6,fr15
+    bf      3f
+    fmov    fr6,fr15
+3:  DIST_SQ r14, fr6
+    fcmp/gt fr6,fr15
+    bf      3f
+    fmov    fr6,fr15
+3:  fmov.s  @r4,fr7                 ! the radius squared
+    fcmp/gt fr7,fr15
+    bf      4f
+    bra     fa_next
+    nop
+4:  mov     #8,r0
+    fmov.s  @(r0,r15),fr15
+    fldi0   fr7
+    fcmp/gt fr7,fr15
+    bt      5f
+    fldi1   fr6                     ! on the face: it faces the light
+    bra     fa_cos
+    nop
+5:  fmov    fr3,fr6                 ! n . d
+    fmul    fr12,fr6
+    fmov    fr4,fr7
+    fmul    fr13,fr7
+    fadd    fr7,fr6
+    fmov    fr5,fr7
+    fmul    fr14,fr7
+    fadd    fr7,fr6
+    mov     #4,r0
+    fmov.s  @(r0,r15),fr7
+    fmul    fr7,fr6                 ! * 1/|n|
+    fmov    fr15,fr7
+    fsrra   fr7
+    fmul    fr7,fr6                 ! * 1/|d|: the cosine
+fa_cos:
+    mov     #63,r0                  ! 0.5 - the cosine, held to 0..1
+    shll16  r0
+    shll8   r0
+    lds     r0,fpul
+    fsts    fpul,fr7
+    fsub    fr6,fr7
+    fldi0   fr6
+    fcmp/gt fr7,fr6
+    bf      6f
+    fmov    fr6,fr7
+    bra     7f
+    nop
+6:  fldi1   fr6
+    fcmp/gt fr6,fr7
+    bf      7f
+    fmov    fr6,fr7
+7:  mov     #0,r0
+    fmov.s  @(r0,r15),fr6
+    fcmp/gt fr7,fr6                 ! away = min(away, it)
+    bf      fa_next
+    fmov.s  fr7,@(r0,r15)
+fa_next:
+    add     #4,r4
+    dt      r1
+    bt      8f
+    bra     fa_loop
+    nop
+8:  mov     #0,r0
+    fmov.s  @(r0,r15),fr6
+    fldi1   fr7
+    fcmp/gt fr7,fr6                 ! still 2: no light reaches the face
+    bf      9f
+fa_none:
+    mov     #0,r0
+    bra     fa_out
+    nop
+9:  fadd    fr7,fr7                 ! 256
+    fadd    fr7,fr7
+    fadd    fr7,fr7
+    fadd    fr7,fr7
+    fadd    fr7,fr7
+    fadd    fr7,fr7
+    fadd    fr7,fr7
+    fadd    fr7,fr7
+    fmul    fr7,fr6
+    ftrc    fr6,fpul
+    sts     fpul,r0
+fa_out:
+    add     #16,r15
+    fmov.s  @r15+,fr15
+    fmov.s  @r15+,fr14
+    fmov.s  @r15+,fr13
+    fmov.s  @r15+,fr12
+    fmov.s  @r15+,fr11
+    fmov.s  @r15+,fr10
+    fmov.s  @r15+,fr9
+    fmov.s  @r15+,fr8
+    rts
+    nop

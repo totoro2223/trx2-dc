@@ -67,7 +67,7 @@ void Effect_InitialiseArray(void)
     m_Effects[MAX_EFFECTS - 1].next_free = NO_EFFECT;
 }
 
-void Effect_Control(void)
+[[maybe_unused]] static void M_ControlC(void)
 {
     int16_t effect_num = m_NextEffectActive;
     while (effect_num != NO_EFFECT) {
@@ -80,6 +80,48 @@ void Effect_Control(void)
         effect_num = next;
     }
 }
+
+#if defined(__DREAMCAST__)
+// The walk over the active effects is in assembly (weather_sh4.S); the lookup
+// of an object's control function stays a call into C (the objects are a
+// catalogue).
+extern void dc_effect_control(void *ctl);
+
+typedef struct {
+    EFFECT *effects;
+    int32_t first;
+    void *(*find)(OBJECT_ID);
+    int32_t size;
+    int32_t next_off;
+    int32_t id_off;
+} M_EFFCTL;
+
+_Static_assert(sizeof(OBJECT_ID) == 4, "weather_sh4.S: object_id is a word");
+_Static_assert(NO_EFFECT == -1, "weather_sh4.S: no effect is -1");
+
+static void *M_FindControl(const OBJECT_ID object_id)
+{
+    return (void *)Object_Get(object_id)->effect_control_func;
+}
+
+void Effect_Control(void)
+{
+    M_EFFCTL ctl = {
+        .effects = m_Effects,
+        .first = m_NextEffectActive,
+        .find = M_FindControl,
+        .size = sizeof(EFFECT),
+        .next_off = offsetof(EFFECT, next_active),
+        .id_off = offsetof(EFFECT, object_id),
+    };
+    dc_effect_control(&ctl);
+}
+#else
+void Effect_Control(void)
+{
+    M_ControlC();
+}
+#endif
 
 EFFECT *Effect_Get(const int16_t effect_num)
 {

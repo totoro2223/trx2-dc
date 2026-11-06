@@ -1497,7 +1497,7 @@ static const int32_t m_BinWords[3] = { 32, 16, 32 };
 #define M_AUDIT_FAR 4096.0f
 #define M_AUDIT_TILES_X 20
 #define M_AUDIT_TILES_Y 15
-static void M_AuditBins(void)
+[[maybe_unused]] static void M_AuditBins(void)
 {
     static int32_t frame = 0;
     if (++frame % M_AUDIT_EVERY != 0) {
@@ -1617,7 +1617,10 @@ void DC_PVR_EndFrame(void)
         const float kept = m_Lists[i].peak * M_PEAK_DECAY;
         m_Lists[i].peak = demand > kept ? demand : kept;
     }
-#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
+#if defined(TRX_DC_AUDIT)
+    // Off unless asked for (-DTRX_DC_AUDIT): it walks every vertex of the
+    // frame and writes two log lines, a stall of tens of ms on a frame in the
+    // watchdog and probe builds, which the benchmarks showed as spikes.
     M_AuditBins();
 #endif
     // Each list once, as the tile accelerator wants; KOS sends a blank one

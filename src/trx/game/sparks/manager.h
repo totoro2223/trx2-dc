@@ -16,6 +16,9 @@ void Sparks_ResetWind(void);
 void Sparks_UpdateWind(void);
 void Sparks_Control(void);
 void Sparks_Draw(void);
+// On while the sparks are staged for drawing: the joints they hang from are
+// worked out once each (the items do not move meanwhile).
+void Sparks_JointCache(bool on);
 
 // Writes and reads one spark. A sprite spark stores its object and sprite
 // offset. The owning pool stores the on flag and attachment.

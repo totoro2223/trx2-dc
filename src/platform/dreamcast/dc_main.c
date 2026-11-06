@@ -48,6 +48,16 @@ static FILE *M_Open(const char *const name)
     return fopen(path, "r");
 }
 
+static bool M_Flag(const char *const name)
+{
+    FILE *const file = M_Open(name);
+    if (file == nullptr) {
+        return false;
+    }
+    fclose(file);
+    return true;
+}
+
 // A crash (a failed assertion, a bad address, an out of memory) would stop the
 // console with the screen as it was; the disc starts over instead, at the list
 // of levels of the same game, which is all the flow a game that cannot go on
@@ -339,6 +349,21 @@ static int M_RunGame(int argc, char *argv[])
         }
         fclose(fire);
     }
+    FILE *const debugkeys = M_Open("DEBUGKEYS.TXT");
+    if (debugkeys != nullptr) {
+        g_DC_TestDebugKeys = 1;
+        fclose(debugkeys);
+    }
+    FILE *const showfps = M_Open("SHOWFPS.TXT");
+    if (showfps != nullptr) {
+        g_DC_TestShowFps = 1;
+        fclose(showfps);
+    }
+    FILE *const nohud = M_Open("NOHUD.TXT");
+    if (nohud != nullptr) {
+        g_DC_TestNoHud = 1;
+        fclose(nohud);
+    }
     // A test disc that leaves the game after n frames (make_disc.sh's
     // TRX_DC_EXIT).
     FILE *const leave = M_Open("EXIT.TXT");
@@ -416,8 +441,9 @@ static int M_RunGame(int argc, char *argv[])
             DC_Watchdog_SetTestLoads(loads);
         }
         fclose(start);
-    } else if (m_ToTitle) {
-        // The player left a level: the game's own title, not the list.
+    } else if (m_ToTitle && !M_Flag("TITLELIST.TXT")) {
+        // The player left a level: the game's own title, not the list (a disc
+        // made with make_disc.sh's TRX_DC_TITLELIST goes back to the list).
         m_ToTitle = false;
     } else if (g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0) {
         // The expansion's level that the list of the game before picked.

@@ -325,14 +325,16 @@ GF_COMMAND Game_Control(const bool demo_mode)
         }
     }
 
-    Game_TickBeginFrame();
-    Sound_ResetAmbient();
+    DC_PROBE(DC_PROBE_M_BEGIN, Game_TickBeginFrame(); Sound_ResetAmbient());
     Game_TickWorld();
 
     // A cutscene poses her and steps her hair itself, so neither runs here
     // while one plays.
     if (!CutSeq_IsPlaying()) {
-        DC_PROBE(DC_PROBE_LARA, Lara_Control(); Lara_Hair_Control(false));
+        DC_PROBE(
+            DC_PROBE_LARA,
+            Lara_Control();
+            DC_PROBE(DC_PROBE_L_HAIRC, Lara_Hair_Control(false)));
         if (g_TRVersion == 3) {
             Sparks_UpdateWind();
         }
@@ -351,18 +353,23 @@ void Game_TickBeginFrame(void)
 
 void Game_TickWorld(void)
 {
-#if defined(__DREAMCAST__)
-    // TEMP: where Lara is through a demo, to compare two simulations.
+#if defined(__DREAMCAST__) && defined(TRX_DC_LPOS)
+    // Off unless asked for (-DTRX_DC_LPOS): where Lara is through a demo, to
+    // compare two simulations. A line out of the serial port took up to 100 ms
+    // of a frame, the biggest spikes the TR3 benchmark showed.
     {
         static int32_t demo_tick = 0;
         const GF_LEVEL *const level = GF_GetCurrentLevel();
         if (level != nullptr && level->type == GFL_DEMO) {
             if (demo_tick % 15 == 0) {
                 const ITEM *const lara = Lara_GetItem();
-                LOG_INFO(
-                    "[lpos] %d room %d pos %d %d %d hp %d", (int)demo_tick,
-                    (int)lara->room_num, (int)lara->pos.x, (int)lara->pos.y,
-                    (int)lara->pos.z, (int)lara->hit_points);
+                DC_PROBE(
+                    DC_PROBE_LOG,
+                    LOG_INFO(
+                        "[lpos] %d room %d pos %d %d %d hp %d",
+                        (int)demo_tick, (int)lara->room_num,
+                        (int)lara->pos.x, (int)lara->pos.y, (int)lara->pos.z,
+                        (int)lara->hit_points));
             }
             demo_tick++;
         } else {

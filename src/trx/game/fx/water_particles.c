@@ -7,6 +7,7 @@
 #include <trx/game/fx/common.h>
 #include <trx/game/game_flow/common.h>
 #include <trx/game/interpolation.h>
+#include <trx/game/matrix.h>
 #include <trx/game/objects.h>
 #include <trx/game/output/const.h>
 #include <trx/game/output/sources/poly_fx.h>
@@ -32,7 +33,7 @@ typedef struct {
     XYZ_32 pos;
     XYZ_32 prev_pos;
     uint8_t life;
-    XYZ_32 vel;
+    XYZ_32 vel __attribute__((aligned(4)));
 } M_WATER_PARTICLE;
 
 static M_WATER_PARTICLE m_WaterParticles[M_MAX_WATER_PARTICLES];
@@ -101,7 +102,7 @@ static void M_Reset(void)
     M_Clear();
 }
 
-static void M_Control(void)
+static void M_ControlC(void)
 {
     if (!M_IsEnabled()) {
         M_Clear();
@@ -138,7 +139,7 @@ static void M_Control(void)
     }
 }
 
-static void M_Draw(void)
+static void M_DrawC(void)
 {
     if (!M_IsEnabled()) {
         return;
@@ -250,6 +251,179 @@ static void M_Draw(void)
             DRAW_BLEND_ADD);
     }
 }
+
+#if defined(__DREAMCAST__)
+// The assembly (weather_sh4.S) does the update and the staging, as it does the
+// weather's; the C above is its reference (DC_EMIT_VERIFY runs both and
+// compares) and the other platforms' code.
+extern void dc_water_update(void *ctl);
+extern void dc_water_draw(void *ctl);
+
+typedef struct {
+    void *particles;
+    int32_t slots;
+    int32_t unused;
+    int32_t spawn_max;
+    int32_t pad[4];
+    uint32_t *rng;
+    const bool *frozen;
+    uint32_t mul;
+    uint32_t add;
+    void (*spawn)(void *);
+} M_WATER_CTL;
+
+typedef struct {
+    void *particles;
+    int32_t slots;
+    void *out;
+    int32_t room;
+    int32_t written;
+    int32_t interp;
+    float ratio;
+    int32_t near_z;
+    int32_t far_z;
+    int32_t pad[2];
+    const float *picture;
+    const void *matrix;
+    float k52;
+} M_WATER_DRAW;
+
+_Static_assert(sizeof(M_WATER_PARTICLE) == 40, "weather_sh4.S layout");
+_Static_assert(offsetof(M_WATER_PARTICLE, life) == 24, "weather_sh4.S layout");
+_Static_assert(offsetof(M_WATER_PARTICLE, vel) == 28, "weather_sh4.S layout");
+_Static_assert(offsetof(M_WATER_CTL, rng) == 32, "weather_sh4.S layout");
+_Static_assert(offsetof(M_WATER_CTL, spawn) == 48, "weather_sh4.S layout");
+_Static_assert(offsetof(M_WATER_DRAW, picture) == 44, "weather_sh4.S layout");
+_Static_assert(offsetof(M_WATER_DRAW, k52) == 52, "weather_sh4.S layout");
+_Static_assert(offsetof(MATRIX, _20) == 64, "weather_sh4.S layout");
+_Static_assert(REF_PERSP == 381, "weather_sh4.S: 381");
+
+static void M_SpawnV(void *const particle)
+{
+    M_Spawn(particle);
+}
+
+static void M_Control(void)
+{
+    if (!M_IsEnabled()) {
+        M_Clear();
+        return;
+    }
+    M_WATER_CTL ctl = {
+        .particles = m_WaterParticles,
+        .slots = M_MAX_WATER_PARTICLES,
+        .spawn_max = M_MAX_WATER_PARTICLES_ALIVE,
+        .rng = Random_GetDrawState(),
+        .frozen = Random_GetDrawFrozen(),
+        .mul = 0x41C64E6DU,
+        .add = 0x3039U,
+        .spawn = M_SpawnV,
+    };
+    #if defined(DC_EMIT_VERIFY)
+    static M_WATER_PARTICLE before[M_MAX_WATER_PARTICLES];
+    static M_WATER_PARTICLE after_asm[M_MAX_WATER_PARTICLES];
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    memcpy(before, m_WaterParticles, sizeof(before));
+    const uint32_t seed0 = *Random_GetDrawState();
+    dc_water_update(&ctl);
+    memcpy(after_asm, m_WaterParticles, sizeof(after_asm));
+    const uint32_t seed_asm = *Random_GetDrawState();
+    memcpy(m_WaterParticles, before, sizeof(before));
+    *Random_GetDrawState() = seed0;
+    M_ControlC();
+    m_Runs++;
+    if (seed_asm != *Random_GetDrawState()
+        || memcmp(after_asm, m_WaterParticles, sizeof(after_asm)) != 0) {
+        if (++m_Bad <= 6) {
+            LOG_WARNING("[weather-verify] water-update MISMATCH");
+        }
+    }
+    if (m_Runs % 300 == 0) {
+        LOG_WARNING(
+            "[weather-verify] water-update %u runs, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+    #else
+    dc_water_update(&ctl);
+    #endif
+}
+
+static void M_Draw(void)
+{
+    if (!M_IsEnabled()) {
+        return;
+    }
+    const int32_t sprite_idx = Sparks_GetSpriteIndex(SPARK_TYPE_PARTICLE);
+    if (sprite_idx == NO_ITEM) {
+        return;
+    }
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
+    int32_t room = 0;
+    void *const slots = OutputSource_PolyFX_ParticleSlots(&room);
+    if (slots == nullptr) {
+        return;
+    }
+    float picture[9];
+    OutputSource_PolyFX_GetPicture(sprite_idx, picture);
+    #if defined(DC_EMIT_VERIFY)
+    static uint8_t scratch[M_MAX_WATER_PARTICLES * 72];
+    const int32_t room_real = room;
+    room = MIN(room, M_MAX_WATER_PARTICLES);
+    #endif
+    M_WATER_DRAW ctl = {
+        .particles = m_WaterParticles,
+        .slots = M_MAX_WATER_PARTICLES,
+    #if defined(DC_EMIT_VERIFY)
+        .out = scratch,
+    #else
+        .out = slots,
+    #endif
+        .room = room,
+        .interp = Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0,
+        .ratio = (float)ratio,
+        .near_z = Output_GetNearZ(),
+        .far_z = Output_GetFarZ(),
+        .picture = picture,
+        .matrix = &g_ViewMatrix,
+        .k52 = (float)REF_PERSP * M_SIZE_DIV,
+    };
+    dc_water_draw(&ctl);
+    #if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    int32_t room_after = 0;
+    M_DrawC();
+    OutputSource_PolyFX_ParticleSlots(&room_after);
+    m_Runs++;
+    if (ctl.written != room_real - room_after
+        || memcmp(scratch, slots, 72 * (size_t)ctl.written) != 0) {
+        if (++m_Bad <= 6) {
+            LOG_WARNING(
+                "[weather-verify] water-draw MISMATCH asm %d C %d",
+                (int)ctl.written, (int)(room_real - room_after));
+        }
+    }
+    if (m_Runs % 300 == 0) {
+        LOG_WARNING(
+            "[weather-verify] water-draw %u runs, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+    #else
+    OutputSource_PolyFX_ParticlesAdded(ctl.written);
+    #endif
+}
+#else
+static void M_Control(void)
+{
+    M_ControlC();
+}
+
+static void M_Draw(void)
+{
+    M_DrawC();
+}
+#endif
 
 static void M_Save(JSON_WRITE_IO *const io)
 {

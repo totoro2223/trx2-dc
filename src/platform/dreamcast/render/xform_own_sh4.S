@@ -44,9 +44,7 @@
     shlr8   r0
     .endif
     extu.b  r0,r0
-    mov.l   @(0,r15),r1
-    add     #\off,r1
-    mov.l   @r1,r1
+    mov.l   @(\off,r15),r1
     .if \scale
     mul.l   r3,r1
     sts     macl,r1
@@ -127,8 +125,30 @@ _dc_xform_own:
     fmov.s  fr9,@-r15
     fmov.s  fr10,@-r15
     fmov.s  fr11,@-r15
-    add     #-24,r15
+    add     #-64,r15
     mov.l   r4,@(0,r15)
+    ! what the loop asks of the run for every vertex, once: the frame's 24 mode,
+    ! 28 k0, 32 coloured, 36 fog, 40 cel colours, 48 tint a, 52 r, 56 g, 60 b
+    mov.l   @(36,r4),r1
+    mov.l   r1,@(24,r15)
+    mov.l   @(32,r4),r1
+    mov.l   r1,@(28,r15)
+    mov.l   @(44,r4),r1
+    mov.l   r1,@(32,r15)
+    mov.l   @(40,r4),r1
+    mov.l   r1,@(36,r15)
+    mov     r4,r5
+    add     #64,r5                  ! @(disp,r4) reaches only 60
+    mov.l   @r5+,r1                 ! 64 tint a
+    mov.l   r1,@(48,r15)
+    mov.l   @r5+,r1                 ! 68 r
+    mov.l   r1,@(52,r15)
+    mov.l   @r5+,r1                 ! 72 g
+    mov.l   r1,@(56,r15)
+    mov.l   @r5+,r1                 ! 76 b
+    mov.l   r1,@(60,r15)
+    mov.l   @r5,r1                  ! 80 the cel colours
+    mov.l   r1,@(40,r15)
     mov.l   @(0,r4),r13
     mov.l   @(4,r4),r8
     mov.l   @(8,r4),r9
@@ -177,10 +197,10 @@ own_loop:
     mov.l   @(4,r2),r1
     mov.l   r1,@(4,r15)             ! its colour
     mov.l   @(0,r15),r4
-    mov.l   @(36,r4),r1
+    mov.l   @(24,r15),r1
     tst     r1,r1
     bf      1f
-    mov.l   @(32,r4),r3             ! mode 0: k is the same for all
+    mov.l   @(28,r15),r3            ! mode 0: k is the same for all
     bra     kdone
     nop
 1:  mov     r1,r0
@@ -244,7 +264,7 @@ own_loop:
     sub     r3,r1
     mov     r1,r3                   ! k = 512 - shade / 16
 kdone:
-    mov.l   @(44,r4),r1
+    mov.l   @(32,r15),r1
     tst     r1,r1
     bt      1f
     mov     #1,r3
@@ -343,8 +363,7 @@ place:
     or      r1,r5
 1:
 placed:
-    mov.l   @(0,r15),r1
-    mov.l   @(40,r1),r1             ! whether the fog applies
+    mov.l   @(36,r15),r1            ! whether the fog applies
     tst     r1,r1
     bf      1f
     bra     shaded
@@ -394,7 +413,7 @@ keep:
 
 shaded:
     mov.l   @(0,r15),r4
-    mov.l   @(44,r4),r1
+    mov.l   @(32,r15),r1
     tst     r1,r1
     bt      1f
     bra     own_coloured
@@ -406,10 +425,10 @@ shaded:
     mov.l   @r4,r4                  ! its colour
     mov     r14,r2
     add     #24,r2
-    CHANNEL 16, 76, 0, 1
-    CHANNEL 8, 72, 1, 1
-    CHANNEL 0, 68, 2, 1
-    CHANNEL 24, 64, 3, 0
+    CHANNEL 16, 60, 0, 1
+    CHANNEL 8, 56, 1, 1
+    CHANNEL 0, 52, 2, 1
+    CHANNEL 24, 48, 3, 0
     bra     clipped
     nop
 1:  mov     r3,r0
@@ -423,9 +442,7 @@ clipped:
     add     #28,r4
     mov.l   r5,@r4                  ! the clip, and the rest of its word
     mov.l   @(0,r15),r4
-    mov     r4,r1
-    add     #80,r1
-    mov.l   @r1,r2                  ! the cel colours (0: none)
+    mov.l   @(40,r15),r2            ! the cel colours (0: none)
     tst     r2,r2
     bf      1f
     bra     own_next
@@ -506,7 +523,7 @@ own_coloured:
     CHANF   16, 0
     CHANF   8, 1
     CHANF   0, 2
-    CHANNEL 24, 64, 3, 0
+    CHANNEL 24, 48, 3, 0
     bra     clipped
     nop
 
@@ -551,12 +568,12 @@ own_coloured_slow:
     mov     r14,r2
     add     #24,r2
     OWNK    60
-    CHANNEL 16, 76, 0, 1
+    CHANNEL 16, 60, 0, 1
     OWNK    56
-    CHANNEL 8, 72, 1, 1
+    CHANNEL 8, 56, 1, 1
     OWNK    52
-    CHANNEL 0, 68, 2, 1
-    CHANNEL 24, 64, 3, 0
+    CHANNEL 0, 52, 2, 1
+    CHANNEL 24, 48, 3, 0
     bra     clipped
     nop
 
@@ -564,7 +581,7 @@ own_finish:
     mov     r13,r5
     add     #28,r5
     fmov.s  fr11,@r5                ! the nearest 1/z
-    add     #24,r15
+    add     #64,r15
     fmov.s  @r15+,fr11
     fmov.s  @r15+,fr10
     fmov.s  @r15+,fr9

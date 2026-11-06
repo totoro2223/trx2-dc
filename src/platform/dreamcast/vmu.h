@@ -54,6 +54,11 @@ void DC_VMU_Hud_Hold(void);
 // Whether L + R + B was pressed since last asked (sdl_compat.c).
 bool DC_Input_TakeVMUMode(void);
 
+// Whether L alone (the demo's view) or R alone (its graphic mode) was pressed
+// since last asked (sdl_compat.c).
+bool DC_Input_TakeDebugView(void);
+bool DC_Input_TakeDebugMode(void);
+
 // TEMP: lights `step` blocks on the VMU's screen (dc_strict.c's trail).
 void DC_VMU_ShowStep(int step);
 

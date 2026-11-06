@@ -35,6 +35,9 @@ typedef struct {
 
 extern MATRIX *g_MatrixPtr;
 extern MATRIX *g_WMatrixPtr;
+// While set, the operations leave the view stack (and its blend twin) alone:
+// for a walk whose meshes are drawn from the world stack only.
+extern bool g_MatrixWorldOnly;
 extern XYZ_32 g_ViewPos;
 extern MATRIX g_ViewMatrix;
 extern MATRIX g_IDMatrix;

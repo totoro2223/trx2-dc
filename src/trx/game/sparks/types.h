@@ -16,10 +16,12 @@ typedef struct SPARK {
 
     // NOTE: `pos` is either absolute world position, or a relative offset when
     // attached to an FX/ITEM and not using `SPARK_F_ATTACHED_POS`.
-    XYZ_32 pos;
-    XYZ_32 prev_pos;
-    XYZ_32 prev_world_pos;
-    XYZ_32 vel;
+    // XYZ_32 is packed (the level files hold it so), which would put these
+    // off the word boundary: the SH-4 reads and writes them a byte at a time.
+    XYZ_32 pos __attribute__((aligned(4)));
+    XYZ_32 prev_pos __attribute__((aligned(4)));
+    XYZ_32 prev_world_pos __attribute__((aligned(4)));
+    XYZ_32 vel __attribute__((aligned(4)));
     struct {
         uint8_t width;
         uint8_t height;

@@ -63,6 +63,12 @@ const SCENE_SOURCE *MeshBatcher_AsSource(const struct MESH_BATCHER *batcher);
 void MeshBatcher_Stage(
     struct MESH_BATCHER *batcher, const MESH_INSTANCE *inst, SCENE_PASS pass);
 #if defined(__DREAMCAST__)
+// An object's mesh staged in place: Begin hands out the slot the instance
+// lives in (the caller sets every field), Finish seats it (shadow caster, and
+// the added faces' pass).
+MESH_INSTANCE *DC_MeshBatcher_BeginObject(MESH_BATCHER *batcher);
+void DC_MeshBatcher_FinishObject(
+    MESH_BATCHER *batcher, const MESH_INSTANCE *inst);
 // A particle as the PSX draws it (TOMB3.EXE 0x73560): one projection of its
 // centre and one quad, no mesh instance and no matrix. half is the world
 // size of the quad's half side at the camera's plane; the corners go round the
@@ -81,6 +87,15 @@ typedef struct {
 } DC_PARTICLE;
 void DC_MeshBatcher_StageParticle(
     MESH_BATCHER *batcher, const DC_PARTICLE *particle);
+// Particles made in bulk (the sparks' assembly): the free slots of the list,
+// how many there are, and then how many were written, with how many of each
+// blend among them.
+DC_PARTICLE *DC_MeshBatcher_ParticleSlots(
+    MESH_BATCHER *batcher, int32_t *room);
+void DC_MeshBatcher_ParticlesAdded(
+    MESH_BATCHER *batcher, int32_t count, const int32_t blends[3]);
+const DC_PARTICLE *DC_MeshBatcher_Particles(
+    MESH_BATCHER *batcher, int32_t *count);
 // A streak (a raindrop, the PSX's line): two world points and a colour at
 // each, drawn added as one thin untextured quad, no mesh instance.
 typedef struct {
@@ -90,6 +105,10 @@ typedef struct {
     uint32_t argb_b;
 } DC_STREAK;
 void DC_MeshBatcher_StageStreak(MESH_BATCHER *batcher, const DC_STREAK *streak);
+// Streaks made in bulk (the weather's assembly): the free slots and how many,
+// then how many were written.
+DC_STREAK *DC_MeshBatcher_StreakSlots(MESH_BATCHER *batcher, int32_t *room);
+void DC_MeshBatcher_StreaksAdded(MESH_BATCHER *batcher, int32_t count);
 // A triangle (n 3) or quad (n 4) of the world, one picture and a colour per
 // corner, no mesh instance. pull moves its depth towards the eye by that
 // fraction (a footprint kept off the floor).

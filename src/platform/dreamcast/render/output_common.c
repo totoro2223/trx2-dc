@@ -254,7 +254,7 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
     "rall", "rplain", "rdyn", "rflick", "rvary", "rnw", "rfog", "rhit",
     "ctest", "chide", "croom", "qtest", "qhide", "otest", "ohide", "otime", "ectl", "ectln", "edraw", "edrawn",
-    "ownf", "owns", "groom", "gobj", "gfogc", "genvc", "gother", "iwalk", "imesh", "eclipc", "ebackc", "dpre", "dpost", "dtail", "sefr", "sfxm", "sspk", "srope", "sflare",
+    "ownf", "owns", "groom", "gobj", "gfogc", "genvc", "gother", "iwalk", "imesh", "eclipc", "ebackc", "dpre", "dpost", "dtail", "sefr", "sfxm", "sspk", "srope", "sflare", "mphase", "mlua", "mbegin", "mevict", "ltarget", "lsmash", "lhairc",
 };
 
 static void M_StatsBeginScene(void)
@@ -290,7 +290,8 @@ static struct {
         int32_t frame;
         uint32_t dt;
         uint32_t stat[M_STAT_COUNT];
-    } slow_frames[32];
+        uint32_t probes[DC_PROBE_COUNT];
+    } slow_frames[16]; // the 16 worst frames of 60 ms or more
 } *m_Bench = nullptr; // malloc'd by DC_Bench_Begin
 
 static void M_BenchFrame(const uint64_t now, const uint32_t value[])
@@ -323,13 +324,33 @@ static void M_BenchFrame(const uint64_t now, const uint32_t value[])
                 m_Bench->parts[p][m_Bench->frames - 1] = q < 255 ? q : 255;
             }
         }
-        if (dt >= 60000 && m_Bench->slow_count < 32) {
-            m_Bench->slow_frames[m_Bench->slow_count].frame = m_Bench->frames;
-            m_Bench->slow_frames[m_Bench->slow_count].dt = dt;
-            memcpy(
-                m_Bench->slow_frames[m_Bench->slow_count].stat, value,
-                sizeof(uint32_t) * M_STAT_COUNT);
-            m_Bench->slow_count++;
+        if (dt >= 60000) {
+            int32_t slot = m_Bench->slow_count;
+            if (slot < 16) {
+                m_Bench->slow_count++;
+            } else {
+                // Full: the shortest of them makes way for a longer one.
+                slot = 0;
+                for (int32_t i = 1; i < 16; i++) {
+                    if (m_Bench->slow_frames[i].dt
+                        < m_Bench->slow_frames[slot].dt) {
+                        slot = i;
+                    }
+                }
+                if (m_Bench->slow_frames[slot].dt >= dt) {
+                    slot = -1;
+                }
+            }
+            if (slot >= 0) {
+                m_Bench->slow_frames[slot].frame = m_Bench->frames;
+                m_Bench->slow_frames[slot].dt = dt;
+                memcpy(
+                    m_Bench->slow_frames[slot].stat, value,
+                    sizeof(uint32_t) * M_STAT_COUNT);
+                memcpy(
+                    m_Bench->slow_frames[slot].probes, g_DC_ProbeUs,
+                    sizeof(uint32_t) * DC_PROBE_COUNT);
+            }
         }
         for (int32_t i = 0; i < M_STAT_COUNT; i++) {
             m_Bench->sum[i] += value[i];
@@ -523,20 +544,50 @@ void DC_Bench_End(void)
         }
         M_BenchPrint(" frame (ms) from frame %d:%s", (int)from, text);
     }
-    M_BenchPrint("slow frames (60 ms or more), times in tenths of ms:");
-    for (int32_t i = 0; i < m_Bench->slow_count; i++) {
-        const uint32_t *const s = m_Bench->slow_frames[i].stat;
+    M_BenchPrint(
+        "worst frames (60 ms or more), worst first, times in tenths of ms; "
+        "under each, the probes over 1 ms:");
+    for (int32_t k = 0; k < m_Bench->slow_count; k++) {
+        int32_t i = k;
+        for (int32_t j = k + 1; j < m_Bench->slow_count; j++) {
+            if (m_Bench->slow_frames[j].dt > m_Bench->slow_frames[i].dt) {
+                i = j;
+            }
+        }
+        if (i != k) {
+            const __typeof__(m_Bench->slow_frames[0]) t =
+                m_Bench->slow_frames[k];
+            m_Bench->slow_frames[k] = m_Bench->slow_frames[i];
+            m_Bench->slow_frames[i] = t;
+        }
+        const uint32_t *const s = m_Bench->slow_frames[k].stat;
         M_BenchPrint(
             " #%d %ums logic %u stage %u pass %u submit %u map %u mwait %u "
             "wait %u pvr %u polys %u inst %u verts %u",
-            (int)m_Bench->slow_frames[i].frame,
-            (unsigned)(m_Bench->slow_frames[i].dt / 1000),
+            (int)m_Bench->slow_frames[k].frame,
+            (unsigned)(m_Bench->slow_frames[k].dt / 1000),
             (unsigned)(s[M_LOGIC] / 100), (unsigned)(s[M_DRAW] / 100),
             (unsigned)(s[M_PASS] / 100), (unsigned)(s[M_SUBMIT] / 100),
             (unsigned)(s[M_MAP] / 100), (unsigned)(s[M_MAP_WAIT] / 100),
             (unsigned)(s[M_WAIT] / 100), (unsigned)(s[M_RENDER] / 100),
             (unsigned)s[M_POLYS], (unsigned)s[M_INSTANCES],
             (unsigned)s[M_VERTICES]);
+        char prow[100] = "   ";
+        for (int32_t q = 0; q < DC_PROBE_COUNT; q++) {
+            if (m_Bench->slow_frames[k].probes[q] < 1000) {
+                continue;
+            }
+            char item[24];
+            snprintf(
+                item, sizeof(item), " %s=%u", m_ProbeNames[q],
+                (unsigned)m_Bench->slow_frames[k].probes[q]);
+            if (strlen(prow) + strlen(item) > 95) {
+                M_BenchPrint("%s", prow);
+                strcpy(prow, "   ");
+            }
+            strcat(prow, item);
+        }
+        M_BenchPrint("%s", prow);
     }
     M_BenchPrint("summary: %s | %s", line1, line2);
     M_BenchPrint("=== end");
@@ -740,9 +791,11 @@ void Output_EndScene(void)
     g_DC_FrameCount++;
     OutputSource_Objects_PrepareCreatures();
     if (g_DC_FrameCount % M_MESH_EVICT_INTERVAL == 0) {
+        DC_PROBE_START(probe_evict);
         OutputSource_Objects_EvictUnused(M_MESH_MAX_AGE);
         OutputSource_Objects_EvictToBudget(
             g_TRVersion >= 3 ? M_MESH_MAX_VERTICES_TR3 : M_MESH_MAX_VERTICES);
+        DC_PROBE_STOP(DC_PROBE_M_EVICT, probe_evict);
     }
     if (ClockTimer_CheckElapsedAndTake(&m_FPSTimer, 1.0)) {
         m_FPS = m_DrawnFrames;

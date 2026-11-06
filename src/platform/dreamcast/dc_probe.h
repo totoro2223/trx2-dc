@@ -155,6 +155,13 @@ enum {
     DC_PROBE_S_SPK, // Sparks_Draw
     DC_PROBE_S_ROPE, // Rope_DrawAll
     DC_PROBE_S_FLARE, // Output_LensFlares_Draw
+    DC_PROBE_M_PHASE, // executor M_Control: phase->control
+    DC_PROBE_M_LUATICK, // executor M_Control: LUA_Tick
+    DC_PROBE_M_BEGIN, // Game_TickBeginFrame + Sound_ResetAmbient
+    DC_PROBE_M_EVICT, // mesh eviction after a frame
+    DC_PROBE_L_TARGET, // Gun_GetNewTarget
+    DC_PROBE_L_SMASH, // LOS_CheckSmashable (Gun_SmashItems)
+    DC_PROBE_L_HAIRC, // Lara_Hair_Control
     DC_PROBE_COUNT,
 };
 

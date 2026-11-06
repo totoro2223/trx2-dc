@@ -643,7 +643,16 @@ static void M_Stage(const OBJECT_MESH *const mesh)
         return;
     }
 
+#if defined(__DREAMCAST__)
+    // The instance is some 400 bytes: built where the batcher keeps it, not
+    // on the stack and copied in.
+    MESH_INSTANCE *const out = DC_MeshBatcher_BeginObject(p->batcher);
+    out->light_info = Output_GetLightInfo();
+    OUTPUT_LIGHT_INFO *const light_info_p = &out->light_info;
+#else
     OUTPUT_LIGHT_INFO light_info = Output_GetLightInfo();
+    OUTPUT_LIGHT_INFO *const light_info_p = &light_info;
+#endif
     // One pass over the registrations, in order, instead of a rescan of all of
     // them for each one found.
     if (m_MeshPolicies != nullptr) {
@@ -651,11 +660,11 @@ static void M_Stage(const OBJECT_MESH *const mesh)
             const M_POLICY_ENTRY *const entry = Vector_Get(m_MeshPolicies, i);
             if (entry->mesh_idx == mesh_idx
                 && entry->policy->adjust_light_info != nullptr) {
-                entry->policy->adjust_light_info(&light_info);
+                entry->policy->adjust_light_info(light_info_p);
             }
         }
     }
-    Output_Lights_FillInstanceLight(&light_info, g_WMatrixPtr);
+    Output_Lights_FillInstanceLight(light_info_p, g_WMatrixPtr);
 
     const VIEWPORT_RECT *const scissor = Output_GetObjectScissor();
     OUTPUT_WATER_LINE water_line = {};
@@ -670,6 +679,28 @@ static void M_Stage(const OBJECT_MESH *const mesh)
             span_from.b / 255.0f,
         };
     }
+#if defined(__DREAMCAST__)
+    out->mesh = batch->mesh_batch;
+    out->cwmatrix = *g_MatrixPtr;
+    out->wmatrix = *g_WMatrixPtr;
+    out->room = Output_GetCurrentRoom();
+    out->tint = Output_GetTint();
+    out->has_water_line = has_water_line;
+    out->water_line = water_line.world_y;
+    out->has_submerged_ambient = water_line.has_submerged_ambient;
+    out->submerged_ambient_delta = water_line.submerged_ambient_delta;
+    out->has_ambient_span = has_ambient_span;
+    out->ambient_span_from = ambient_span_from;
+    out->wibble = Output_Water_IsObjectWibbleEnabled();
+    out->wibble_fill = false;
+    out->water_effect =
+        (mesh->enable_caustics && Output_Water_IsSubmerged()) ? 1 : 0;
+    out->sort_layer = 0;
+    out->enable_scissor = scissor != nullptr;
+    out->depth_adjust = 0.0f;
+    out->scissor = scissor != nullptr ? *scissor : (VIEWPORT_RECT) {};
+    DC_MeshBatcher_FinishObject(p->batcher, out);
+#else
     const MESH_INSTANCE inst = {
         .mesh = batch->mesh_batch,
         .cwmatrix = *g_MatrixPtr,
@@ -692,6 +723,7 @@ static void M_Stage(const OBJECT_MESH *const mesh)
     MeshBatcher_Stage(p->batcher, &inst, SCENE_PASS_OPAQUE);
     MeshBatcher_Stage(p->batcher, &inst, SCENE_PASS_TRANSPARENT);
     MeshBatcher_Stage(p->batcher, &inst, SCENE_PASS_BLEND_ADD);
+#endif
 }
 
 void OutputSource_Objects_Init(MESH_BATCHER *const batcher)

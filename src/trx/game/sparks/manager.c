@@ -287,6 +287,24 @@ RESULT Sparks_LoadSpark(JSON_READ_IO *const io, SPARK *const spark)
     return OK;
 }
 
+// While the sparks are staged for drawing the items stand still: a joint (an
+// item's node) is worked out once for all the sparks that hang from it, not
+// once each (a torch's flame is a score of them).
+static struct {
+    bool on;
+    struct {
+        bool valid;
+        int16_t item;
+        XYZ_32 pos;
+    } joint[16];
+} m_JointCache;
+
+void Sparks_JointCache(const bool on)
+{
+    memset(&m_JointCache, 0, sizeof(m_JointCache));
+    m_JointCache.on = on;
+}
+
 XYZ_32 Sparks_GetWorldPos(const SPARK *const spark)
 {
     if (spark == nullptr) {
@@ -312,10 +330,21 @@ XYZ_32 Sparks_GetWorldPos(const SPARK *const spark)
         }
 
         if ((spark->flags & SPARK_F_ATTACHED_NODE) != 0U) {
-            XYZ_32 joint_pos = m_NodeOffsets[spark->node_num & 0xF].pos;
-            Collide_GetJointAbsPosition(
-                item, &joint_pos,
-                m_NodeOffsets[spark->node_num & 0xF].mesh_num);
+            XYZ_32 joint_pos;
+            const int32_t node = spark->node_num & 0xF;
+            if (m_JointCache.on && m_JointCache.joint[node].valid
+                && m_JointCache.joint[node].item == spark->item_num) {
+                joint_pos = m_JointCache.joint[node].pos;
+            } else {
+                joint_pos = m_NodeOffsets[node].pos;
+                Collide_GetJointAbsPosition(
+                    item, &joint_pos, m_NodeOffsets[node].mesh_num);
+                if (m_JointCache.on) {
+                    m_JointCache.joint[node].valid = true;
+                    m_JointCache.joint[node].item = spark->item_num;
+                    m_JointCache.joint[node].pos = joint_pos;
+                }
+            }
             return (XYZ_32) {
                 .x = joint_pos.x + spark->pos.x,
                 .y = joint_pos.y + spark->pos.y,
@@ -542,14 +571,51 @@ void Sparks_UpdateWind(void)
     M_UpdateWind();
 }
 
-void Sparks_Control(void)
+// The rare paths of a spark's tick, which the assembly (sparks_ctl_sh4.S)
+// calls back into: the explosion a spark sets off at its time, and the
+// detaching of a spark hanging from a node.
+void dc_spark_extras(SPARK *const spark)
 {
-    if (g_TRVersion != 3) {
-        M_UpdateWind();
+    int32_t uw = 0;
+    if ((spark->flags & SPARK_F_UNDERWATER) != 0U) {
+        uw = 1;
+    } else if ((spark->flags & SPARK_F_GREEN) != 0U) {
+        uw = 2;
     }
 
+    const XYZ_32 spark_pos = Sparks_GetWorldPos(spark);
+
+    for (int32_t j = 0; j < (int32_t)(spark->extras & 7U); j++) {
+        Sparks_TriggerExplosionSparks(
+            spark_pos, (int32_t)(spark->extras & 7U) - 1,
+            spark->dynamic, uw, spark->room_num);
+        spark->dynamic = -1;
+    }
+
+    if ((spark->flags & SPARK_F_UNDERWATER) != 0U) {
+        Sparks_TriggerExplosionBubble(spark_pos, spark->room_num);
+    }
+
+    spark->extras = 0;
+}
+
+void dc_spark_detach(SPARK *const spark, const int32_t lived)
+{
+    const int32_t b = spark->node_num == 3 ? (Random_GetDraw() & 3) + 12
+                                           : (Random_GetDraw() & 3) + 8;
+    if (lived > b) {
+        spark->pos = Sparks_GetWorldPos(spark);
+        spark->flags &= ~(SPARK_F_ATTACHED_NODE | SPARK_F_ITEM);
+        Sparks_Sync(spark);
+    }
+}
+
+// The spark loop of a tick, in C: the reference of the assembly (a build
+// with DC_EMIT_VERIFY compares them) and the other platforms' code.
+[[maybe_unused]] static void M_ControlC(SPARK *const sparks)
+{
     for (int32_t i = 0; i < M_MAX_SPARKS; i++) {
-        SPARK *const spark = &m_Sparks[i];
+        SPARK *const spark = &sparks[i];
         if (!spark->on) {
             continue;
         }
@@ -631,27 +697,7 @@ void Sparks_Control(void)
 
         if (lived == (int32_t)(spark->extras >> 3)
             && (spark->extras & 7U) != 0U) {
-            int32_t uw = 0;
-            if ((spark->flags & SPARK_F_UNDERWATER) != 0U) {
-                uw = 1;
-            } else if ((spark->flags & SPARK_F_GREEN) != 0U) {
-                uw = 2;
-            }
-
-            const XYZ_32 spark_pos = Sparks_GetWorldPos(spark);
-
-            for (int32_t j = 0; j < (int32_t)(spark->extras & 7U); j++) {
-                Sparks_TriggerExplosionSparks(
-                    spark_pos, (int32_t)(spark->extras & 7U) - 1,
-                    spark->dynamic, uw, spark->room_num);
-                spark->dynamic = -1;
-            }
-
-            if ((spark->flags & SPARK_F_UNDERWATER) != 0U) {
-                Sparks_TriggerExplosionBubble(spark_pos, spark->room_num);
-            }
-
-            spark->extras = 0;
+            dc_spark_extras(spark);
         }
 
         // Physics
@@ -700,19 +746,181 @@ void Sparks_Control(void)
         if ((spark->flags & (SPARK_F_ITEM | SPARK_F_ATTACHED_NODE))
                 == (SPARK_F_ITEM | SPARK_F_ATTACHED_NODE)
             && (spark->node_num == 2 || spark->node_num == 3)) {
-            const int32_t b = spark->node_num == 3 ? (Random_GetDraw() & 3) + 12
-                                                   : (Random_GetDraw() & 3) + 8;
-            if (lived > b) {
-                spark->pos = Sparks_GetWorldPos(spark);
-                spark->flags &= ~(SPARK_F_ATTACHED_NODE | SPARK_F_ITEM);
-                Sparks_Sync(spark);
-            }
+            dc_spark_detach(spark, lived);
         }
     }
+}
 
-    // Dynamic light pass.
+#if defined(__DREAMCAST__)
+// What sparks_ctl_sh4.S takes (the layout is its own: see the header of that
+// file).
+typedef struct {
+    SPARK *sparks;
+    int32_t count;
+    M_SPARK_DYNAMIC *dyn;
+    int32_t base;
+    int32_t wind_x;
+    int32_t wind_z;
+    void (*world)(const SPARK *, int32_t *);
+    void (*extras)(SPARK *);
+    void (*detach)(SPARK *, int32_t);
+    int32_t gfx;
+    uint32_t *rand;
+    void (*light)(const int32_t *);
+} M_SPARKCTL;
+_Static_assert(sizeof(M_SPARK_DYNAMIC) == 6, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(M_SPARK_DYNAMIC, on) == 0, "sparks_ctl_sh4.S layout");
+_Static_assert(sizeof(SPARK) == 112, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, s_life) == 1, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, life) == 2, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, pos) == 4, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, prev_pos) == 16, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, prev_world_pos) == 28, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, vel) == 40, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, src_size) == 52, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, dst_size) == 54, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, size) == 56, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, prev_size) == 58, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, src_color) == 60, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, dst_color) == 63, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, color) == 66, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, prev_color) == 69, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, scalar) == 72, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, col_fade_speed) == 73, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, fade_to_black) == 74, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, gravity) == 76, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, max_y_vel) == 78, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, friction) == 79, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, flags) == 80, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, node_num) == 85, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, extras) == 86, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, dynamic) == 87, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, rot_angle) == 88, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, prev_rot_angle) == 90, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, rot_add) == 92, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, sprite_idx) == 96, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(SPARK, sprite_obj_id) == 100, "sparks_ctl_sh4.S layout");
+_Static_assert(NO_ITEM == -1, "sparks_ctl_sh4.S: no sprites is -1");
+_Static_assert(offsetof(M_SPARKCTL, gfx) == 36, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(M_SPARKCTL, rand) == 40, "sparks_ctl_sh4.S layout");
+_Static_assert(offsetof(M_SPARKCTL, light) == 44, "sparks_ctl_sh4.S layout");
+_Static_assert(
+    SPARK_F_ATTACHED_POS == 0x400 && SPARK_F_UNDERWATER == 0x800
+        && SPARK_F_ALT_SPRITE == 0x200 && SPARK_F_OUTSIDE == 0x100,
+    "sparks_ctl_sh4.S flags");
+
+extern void dc_spark_control(M_SPARKCTL *ctl);
+extern void dc_spark_world(const SPARK *spark, int32_t *out);
+
+static void M_Control(SPARK *const sparks)
+{
+    M_SPARKCTL ctl = {
+        .sparks = sparks,
+        .count = M_MAX_SPARKS,
+        .dyn = m_Dynamics,
+        .base = Sparks_GetSpriteIndex(SPARK_TYPE_EXPLOSION),
+        .wind_x = m_SmokeWind.x,
+        .wind_z = m_SmokeWind.z,
+        .world = dc_spark_world,
+        .extras = dc_spark_extras,
+        .detach = dc_spark_detach,
+        .gfx = O_SPARKS_GFX,
+    };
+    #if defined(DC_EMIT_VERIFY)
+    // A tick that sets off an explosion or detaches a spark takes its own
+    // paths through the engine: only the others are compared with the C code.
+    static SPARK scratch[M_MAX_SPARKS];
+    M_SPARK_DYNAMIC dyn0[M_MAX_SPARK_DYNAMICS];
+    M_SPARK_DYNAMIC dyn_asm[M_MAX_SPARK_DYNAMICS];
+    bool rare = false;
+    for (int32_t i = 0; i < M_MAX_SPARKS && !rare; i++) {
+        const SPARK *const sp = &sparks[i];
+        rare = sp->on
+            && ((sp->extras & 7U) != 0U
+                || ((sp->flags & (SPARK_F_ITEM | SPARK_F_ATTACHED_NODE))
+                        == (SPARK_F_ITEM | SPARK_F_ATTACHED_NODE)
+                    && (sp->node_num == 2 || sp->node_num == 3)));
+    }
+    if (!rare) {
+        memcpy(scratch, sparks, sizeof(scratch));
+        memcpy(dyn0, m_Dynamics, sizeof(dyn0));
+    }
+    dc_spark_control(&ctl);
+    if (!rare) {
+        memcpy(dyn_asm, m_Dynamics, sizeof(dyn_asm));
+        memcpy(m_Dynamics, dyn0, sizeof(dyn0));
+        M_ControlC(scratch);
+        static uint32_t m_Ticks;
+        static uint32_t m_Bad;
+        m_Ticks++;
+        int32_t bad_spark = -1;
+        for (int32_t i = 0; i < M_MAX_SPARKS; i++) {
+            if (memcmp(&sparks[i], &scratch[i], sizeof(SPARK)) != 0) {
+                bad_spark = i;
+                break;
+            }
+        }
+        const bool dyn_bad = memcmp(dyn_asm, m_Dynamics, sizeof(dyn_asm)) != 0;
+        if (bad_spark >= 0 || dyn_bad) {
+            m_Bad++;
+            if (m_Bad <= 8) {
+                const uint8_t *const a = (const uint8_t *)&sparks[MAX(bad_spark, 0)];
+                const uint8_t *const b = (const uint8_t *)&scratch[MAX(bad_spark, 0)];
+                char diff[200] = "";
+                int32_t len = 0;
+                for (size_t k = 0; k < sizeof(SPARK) && len < 170; k++) {
+                    if (a[k] != b[k]) {
+                        len += snprintf(
+                            diff + len, sizeof(diff) - len, " +%u:%02x/%02x",
+                            (unsigned)k, a[k], b[k]);
+                    }
+                }
+                LOG_WARNING(
+                    "[spark-ctl-verify] MISMATCH spark %d dyn %d, asm/C:%s",
+                    (int)bad_spark, (int)dyn_bad, diff);
+            }
+        }
+        if (m_Ticks % 300 == 0) {
+            LOG_WARNING(
+                "[spark-ctl-verify] %u ticks, %u bad", (unsigned)m_Ticks,
+                (unsigned)m_Bad);
+        }
+    }
+    #else
+    dc_spark_control(&ctl);
+    #endif
+}
+#else
+static void M_Control(SPARK *const sparks)
+{
+    M_ControlC(sparks);
+}
+#endif
+
+// A light the dynamic pass adds: x, y, z, falloff, r, g, b.
+static void M_AddLight(const int32_t *const a)
+{
+    Output_AddDynamicLightRGB(
+        (XYZ_32) { a[0], a[1], a[2] }, a[3],
+        (RGB_888) { (uint8_t)a[4], (uint8_t)a[5], (uint8_t)a[6] });
+}
+
+#if defined(__DREAMCAST__)
+void dc_spark_light(const int32_t *const a)
+{
+    M_AddLight(a);
+}
+#endif
+
+// The dynamic light pass of a tick, in C: every spark with a light that is on
+// lights its place, the light fading as the spark does. The reference of the
+// assembly (a build with DC_EMIT_VERIFY compares them) and the other
+// platforms' code.
+[[maybe_unused]] static void M_LightsC(
+    SPARK *const sparks, void (*const emit)(const int32_t *))
+{
     for (int32_t i = 0; i < M_MAX_SPARKS; i++) {
-        const SPARK *const spark = &m_Sparks[i];
+        const SPARK *const spark = &sparks[i];
         if (!spark->on || spark->dynamic == -1) {
             continue;
         }
@@ -768,16 +976,128 @@ void Sparks_Control(void)
             falloff = 31;
         }
 
-        if ((spark->flags & SPARK_F_GREEN) != 0U) {
-            Output_AddDynamicLightRGB(pos, falloff, (RGB_888) { b, r, g });
-        } else {
-            Output_AddDynamicLightRGB(pos, falloff, (RGB_888) { r, g, b });
+        const int32_t light[7] = {
+            pos.x, pos.y, pos.z, falloff,
+            (spark->flags & SPARK_F_GREEN) != 0U ? b : r,
+            (spark->flags & SPARK_F_GREEN) != 0U ? r : g,
+            (spark->flags & SPARK_F_GREEN) != 0U ? g : b,
+        };
+        emit(light);
+    }
+}
+
+#if defined(__DREAMCAST__) && defined(DC_EMIT_VERIFY)
+static int32_t asm_lights[M_MAX_SPARKS][7];
+static int32_t c_lights[M_MAX_SPARKS][7];
+static int32_t asm_n;
+static int32_t c_n;
+
+static void M_RecordAsm(const int32_t *const a)
+{
+    if (asm_n < M_MAX_SPARKS) {
+        memcpy(asm_lights[asm_n++], a, sizeof(int32_t) * 7);
+    }
+}
+
+static void M_RecordC(const int32_t *const a)
+{
+    if (c_n < M_MAX_SPARKS) {
+        memcpy(c_lights[c_n++], a, sizeof(int32_t) * 7);
+    }
+}
+#endif
+
+#if defined(__DREAMCAST__)
+extern void dc_spark_lights(M_SPARKCTL *ctl);
+
+static void M_Lights(SPARK *const sparks)
+{
+    M_SPARKCTL ctl = {
+        .sparks = sparks,
+        .count = M_MAX_SPARKS,
+        .dyn = m_Dynamics,
+        .world = dc_spark_world,
+        .rand = Random_GetControlState(),
+        .light = dc_spark_light,
+    };
+    #if defined(DC_EMIT_VERIFY)
+    // Both passes record the lights they would add instead of adding them; the
+    // two lists, the random state and the dynamic lights must come out alike.
+    M_SPARK_DYNAMIC dyn0[M_MAX_SPARK_DYNAMICS];
+    M_SPARK_DYNAMIC dyn_asm[M_MAX_SPARK_DYNAMICS];
+    memcpy(dyn0, m_Dynamics, sizeof(dyn0));
+    const uint32_t seed0 = *Random_GetControlState();
+    asm_n = 0;
+    ctl.light = M_RecordAsm;
+    dc_spark_lights(&ctl);
+    const uint32_t seed_asm = *Random_GetControlState();
+    memcpy(dyn_asm, m_Dynamics, sizeof(dyn_asm));
+    memcpy(m_Dynamics, dyn0, sizeof(dyn0));
+    *Random_GetControlState() = seed0;
+    c_n = 0;
+    M_LightsC(sparks, M_RecordC);
+    static uint32_t m_Ticks;
+    static uint32_t m_Bad;
+    m_Ticks++;
+    const bool bad = asm_n != c_n || seed_asm != *Random_GetControlState()
+        || memcmp(dyn_asm, m_Dynamics, sizeof(dyn_asm)) != 0
+        || memcmp(asm_lights, c_lights, sizeof(int32_t) * 7 * c_n) != 0;
+    if (bad) {
+        m_Bad++;
+        if (m_Bad <= 8) {
+            LOG_WARNING(
+                "[spark-light-verify] MISMATCH asm %d lights, C %d, seed "
+                "%08x/%08x, first light asm %d %d %d %d %d %d %d | C %d %d %d "
+                "%d %d %d %d",
+                (int)asm_n, (int)c_n, (unsigned)seed_asm,
+                (unsigned)*Random_GetControlState(), (int)asm_lights[0][0],
+                (int)asm_lights[0][1], (int)asm_lights[0][2],
+                (int)asm_lights[0][3], (int)asm_lights[0][4],
+                (int)asm_lights[0][5], (int)asm_lights[0][6],
+                (int)c_lights[0][0], (int)c_lights[0][1], (int)c_lights[0][2],
+                (int)c_lights[0][3], (int)c_lights[0][4], (int)c_lights[0][5],
+                (int)c_lights[0][6]);
         }
     }
+    if (m_Ticks % 300 == 0) {
+        LOG_WARNING(
+            "[spark-light-verify] %u ticks, %u bad", (unsigned)m_Ticks,
+            (unsigned)m_Bad);
+    }
+    for (int32_t i = 0; i < c_n; i++) {
+        M_AddLight(c_lights[i]);
+    }
+    #else
+    dc_spark_lights(&ctl);
+    #endif
+}
+#else
+static void M_Lights(SPARK *const sparks)
+{
+    M_LightsC(sparks, M_AddLight);
+}
+#endif
+
+void Sparks_Control(void)
+{
+    if (g_TRVersion != 3) {
+        M_UpdateWind();
+    }
+
+    // The items are done moving for the tick: the joints the sparks hang from
+    // are worked out once each, not once a spark and pass.
+    Sparks_JointCache(true);
+    M_Control(m_Sparks);
+
+    M_Lights(m_Sparks);
+    Sparks_JointCache(false);
 }
 
 void Sparks_Draw(void)
 {
+#if defined(__DREAMCAST__)
+    OutputSource_PolyFX_StageSparks(m_Sparks, M_MAX_SPARKS);
+#else
     for (int32_t i = 0; i < M_MAX_SPARKS; i++) {
         SPARK *const spark = &m_Sparks[i];
         if (!spark->on) {
@@ -786,6 +1106,7 @@ void Sparks_Draw(void)
 
         OutputSource_PolyFX_StageSpark(spark);
     }
+#endif
 }
 
 void Sparks_DetachEffect(const int16_t effect_num)

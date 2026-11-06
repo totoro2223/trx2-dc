@@ -1,5 +1,12 @@
 #include <trx/game/gun/rifle.h>
 
+// TEMP: see platform/dreamcast/dc_probe.h
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_probe.h>
+#else
+    #define DC_PROBE(i, stmt) stmt
+#endif
+
 #include <trx/config.h>
 #include <trx/core/math.h>
 #include <trx/game/camera.h>
@@ -665,7 +672,7 @@ void Gun_Rifle_Control(const LARA_GUN_TYPE weapon_type)
     const WEAPON_INFO *const weapon = Gun_Registry_Get(weapon_type);
     LARA_INFO *const lara = Lara_GetLaraInfo();
 
-    Gun_GetNewTarget(weapon);
+    DC_PROBE(DC_PROBE_L_TARGET, Gun_GetNewTarget(weapon));
     if (g_InputDB.change_target
         && g_Config.gameplay.target_change_mode != TARGET_CHANGE_MODE_OFF) {
         Gun_ChangeTarget(weapon);

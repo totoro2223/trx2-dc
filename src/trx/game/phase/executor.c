@@ -475,9 +475,10 @@ static PHASE_CONTROL M_Control(PHASE *const phase)
     if (phase != nullptr && phase->control != nullptr) {
         Output_DropPendingFog();
         const bool was_closed = UI_Takeover_IsAnyClosed();
-        const PHASE_CONTROL control = phase->control(phase);
+        PHASE_CONTROL control;
+        DC_PROBE(DC_PROBE_M_PHASE, control = phase->control(phase));
         DC_TRACE("exec: phase control done");
-        LUA_Tick();
+        DC_PROBE(DC_PROBE_M_LUATICK, LUA_Tick());
         DC_TRACE("exec: lua ticked");
         // Runs the phase again before the next draw when a script closes a
         // screen during the tick. Otherwise one frame shows the screen

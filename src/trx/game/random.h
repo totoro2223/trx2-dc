@@ -5,6 +5,13 @@
 // How wide one draw is: a draw returns 0 to RANDOM_SPAN - 1.
 #define RANDOM_SPAN 0x8000
 
+// The control generator's state, for the sparks' assembly, which draws from
+// it as Random_GetControl does.
+uint32_t *Random_GetControlState(void);
+// The draw generator's state and its frozen flag, for the weather's assembly.
+uint32_t *Random_GetDrawState(void);
+const bool *Random_GetDrawFrozen(void);
+
 void Random_SeedControl(int32_t seed);
 void Random_SeedDraw(int32_t seed);
 

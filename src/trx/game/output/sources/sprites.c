@@ -196,14 +196,43 @@ void OutputSource_Sprites_Shutdown(void)
     M_FreeMeshes(&m_Priv);
 }
 
+#if defined(__DREAMCAST__)
+// The picture corners of the sprite last drawn as a spark or a particle, so a
+// run of the same sprite looks them up once. A new level has other pictures
+// under the same index: both are dropped with it.
+static int32_t m_SparkUvSprite = -1;
+static struct {
+    float u[4];
+    float v[4];
+    int8_t page;
+} m_SparkUv;
+// The corners of every sprite a spark has used, looked up once: a flame is a
+// score of sparks each on a sprite of its own, and the cache of the last one
+// alone missed each time.
+#define M_SPARK_UV_SPRITES 512
+static struct {
+    bool valid;
+    int8_t page;
+    float u[4];
+    float v[4];
+} m_SparkUvTable[M_SPARK_UV_SPRITES];
+static int32_t m_ParticleSprite = -1;
+static DC_PARTICLE m_ParticleProto;
+    #define M_DROP_UV_CACHES()                                                         (m_SparkUvSprite = -1, m_ParticleSprite = -1, memset(m_SparkUvTable, 0, sizeof(m_SparkUvTable)))
+#else
+    #define M_DROP_UV_CACHES() ((void)0)
+#endif
+
 void OutputSource_Sprites_ObserveLevelLoad(void)
 {
+    M_DROP_UV_CACHES();
     M_FreeMeshes(&m_Priv);
     M_PrepareMeshes(&m_Priv);
 }
 
 void OutputSource_Sprites_ObserveLevelUnload(void)
 {
+    M_DROP_UV_CACHES();
     M_FreeMeshes(&m_Priv);
 }
 
@@ -343,6 +372,59 @@ static void M_ExpandBillboard(
     }
 }
 
+// What sparks_sh4.S calls back into: the picture corners of a sprite (kept for
+// the next one of the same), an attached spark's world position and a turning
+// one's sin and cos.
+void dc_spark_uv(const int32_t sprite_idx)
+{
+    static const int8_t k_swap[4] = { 0, 3, 2, 1 };
+    if (sprite_idx >= 0 && sprite_idx < M_SPARK_UV_SPRITES
+        && m_SparkUvTable[sprite_idx].valid) {
+        const typeof(m_SparkUvTable[0]) *const t = &m_SparkUvTable[sprite_idx];
+        memcpy(m_SparkUv.u, t->u, sizeof(t->u));
+        memcpy(m_SparkUv.v, t->v, sizeof(t->v));
+        m_SparkUv.page = t->page;
+        m_SparkUvSprite = sprite_idx;
+        return;
+    }
+    for (int32_t k = 0; k < 4; k++) {
+        const OUTPUT_UVW uvw = Output_Textures_GetUVW(
+            Output_Textures_GetSpriteUVWIndex(sprite_idx, k_swap[k]));
+        m_SparkUv.u[k] = uvw.u;
+        m_SparkUv.v[k] = uvw.v;
+        m_SparkUv.page = (int8_t)uvw.w;
+    }
+    m_SparkUvSprite = sprite_idx;
+    if (sprite_idx >= 0 && sprite_idx < M_SPARK_UV_SPRITES) {
+        typeof(m_SparkUvTable[0]) *const t = &m_SparkUvTable[sprite_idx];
+        memcpy(t->u, m_SparkUv.u, sizeof(t->u));
+        memcpy(t->v, m_SparkUv.v, sizeof(t->v));
+        t->page = m_SparkUv.page;
+        t->valid = true;
+    }
+}
+
+void dc_spark_world(const SPARK *const spark, int32_t *const out)
+{
+    const XYZ_32 pos = Sparks_GetWorldPos(spark);
+    out[0] = pos.x;
+    out[1] = pos.y;
+    out[2] = pos.z;
+}
+
+void dc_spark_rot(const SPARK *const spark, float *const out)
+{
+    const bool current = (int32_t)spark->s_life - (int32_t)spark->life <= 1;
+    const int32_t rot_angle = current
+        ? (int32_t)spark->rot_angle
+        : Math_AngleMean(
+              (int32_t)spark->prev_rot_angle, (int32_t)spark->rot_angle,
+              Interpolation_GetWorldRate());
+    const int32_t angle = rot_angle * DEG_360 / 0xFFF;
+    out[0] = Math_Sin(angle) / (float)(1 << W2V_SHIFT);
+    out[1] = Math_Cos(angle) / (float)(1 << W2V_SHIFT);
+}
+
 // The desktop's PolyFX renderer is not built on the Dreamcast: a spark (TR3's
 // blood, fire, smoke, splashes) is drawn as a sprite is, a quad facing the
 // camera, its colour the instance's tint.
@@ -477,16 +559,192 @@ static void M_StageSpark(const SPARK *const spark)
     if (sprite_idx < 0) {
         q.page = (-1) /* DC_PVR_NO_TEXTURE */;
     } else {
-        static const int8_t k_swap[4] = { 0, 3, 2, 1 };
-        for (int32_t k = 0; k < 4; k++) {
-            const OUTPUT_UVW uvw = Output_Textures_GetUVW(
-                Output_Textures_GetSpriteUVWIndex(sprite_idx, k_swap[k]));
-            q.u[k] = uvw.u;
-            q.v[k] = uvw.v;
-            q.page = (int8_t)uvw.w;
+        if (sprite_idx != m_SparkUvSprite) {
+            dc_spark_uv(sprite_idx);
         }
+        for (int32_t k = 0; k < 4; k++) {
+            q.u[k] = m_SparkUv.u[k];
+            q.v[k] = m_SparkUv.v[k];
+        }
+        q.page = m_SparkUv.page;
     }
     DC_MeshBatcher_StageParticle(p->batcher, &q);
+}
+
+// What sparks_sh4.S takes (the layout is its own: see the header of that file).
+typedef struct {
+    const SPARK *sparks;
+    int32_t count;
+    DC_PARTICLE *out;
+    int32_t room;
+    int32_t written;
+    int32_t blend[3];
+    float depth[4];
+    float near_z;
+    float far_z;
+    float rate;
+    int32_t mesh_count;
+    int32_t ps1;
+    const void *uv;
+    const int32_t *uv_sprite;
+    void (*world)(const SPARK *, int32_t *);
+    void (*rot)(const SPARK *, float *);
+    void (*uv_fn)(int32_t);
+    float gain;
+    float k255;
+    float k381;
+    float k4;
+    float k2;
+    float kinv;
+    float khalf;
+} M_SPARKRUN;
+_Static_assert(sizeof(SPARK) == 112, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, pos) == 4, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, prev_pos) == 16, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, size) == 56, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, color) == 66, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, scalar) == 72, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, flags) == 80, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, sprite_idx) == 96, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, draw_type) == 104, "sparks_sh4.S layout");
+_Static_assert(offsetof(SPARK, context) == 108, "sparks_sh4.S layout");
+_Static_assert(offsetof(M_SPARKRUN, depth) == 32, "sparks_sh4.S layout");
+_Static_assert(offsetof(M_SPARKRUN, mesh_count) == 60, "sparks_sh4.S layout");
+_Static_assert(offsetof(M_SPARKRUN, uv) == 68, "sparks_sh4.S layout");
+_Static_assert(offsetof(M_SPARKRUN, world) == 76, "sparks_sh4.S layout");
+_Static_assert(offsetof(M_SPARKRUN, gain) == 88, "sparks_sh4.S layout");
+_Static_assert(offsetof(M_SPARKRUN, khalf) == 112, "sparks_sh4.S layout");
+_Static_assert(sizeof(DC_PARTICLE) == 72, "sparks_sh4.S layout");
+_Static_assert(DRAW_BLEND_ADD == 2 && DRAW_BLEND_SUB == 3, "sparks_sh4.S");
+_Static_assert(DRAW_REFLECTIVE_BLEND_ADD == 9 && DRAW_BLEND == 1, "sparks_sh4.S");
+_Static_assert(SPARK_CONTEXT_BLOOD == 1, "sparks_sh4.S");
+_Static_assert(SPARK_F_SCALE == 2 && SPARK_F_SPRITE == 8, "sparks_sh4.S");
+_Static_assert(SPARK_F_ROTATE == 0x10 && SPARK_F_FX == 0x40, "sparks_sh4.S");
+_Static_assert(SPARK_F_ITEM == 0x80 && SPARK_F_ATTACHED_NODE == 0x1000, "sparks_sh4.S");
+
+extern void dc_stage_sparks(M_SPARKRUN *run);
+
+#if defined(DC_EMIT_VERIFY)
+// -Ddc_emit_verify=true: the C code stages the sparks into the list as ever and
+// the particles the assembly made, into a scratch list, are compared with them.
+static bool M_SameF(const float a, const float b, const float tol)
+{
+    return fabsf(a - b) <= tol * (1.0f + fabsf(a));
+}
+
+static bool M_SameParticle(const DC_PARTICLE *a, const DC_PARTICLE *b)
+{
+    for (int32_t i = 0; i < 3; i++) {
+        if (a->pos[i] != b->pos[i]) {
+            return false;
+        }
+    }
+    for (int32_t i = 0; i < 4; i++) {
+        if (a->u[i] != b->u[i] || a->v[i] != b->v[i]) {
+            return false;
+        }
+    }
+    return M_SameF(a->half, b->half, 1.0e-4f)
+        && M_SameF(a->half_h, b->half_h, 1.0e-4f)
+        && M_SameF(a->sn, b->sn, 1.0e-6f) && M_SameF(a->cs, b->cs, 1.0e-6f)
+        && a->blend == b->blend && a->argb == b->argb && a->page == b->page;
+}
+#endif
+
+void OutputSource_PolyFX_StageSparks(
+    const SPARK *const sparks, const int32_t count)
+{
+    M_PRIV *const p = &m_Priv;
+    if (p->batcher == nullptr) {
+        return;
+    }
+    M_RefreshView();
+    int32_t room = 0;
+    DC_PARTICLE *const slots = DC_MeshBatcher_ParticleSlots(p->batcher, &room);
+#if defined(DC_EMIT_VERIFY)
+    static DC_PARTICLE scratch[256];
+    room = MIN(room, (int32_t)(sizeof(scratch) / sizeof(scratch[0])));
+#endif
+    M_SPARKRUN run = {
+        .sparks = sparks,
+        .count = count,
+#if defined(DC_EMIT_VERIFY)
+        .out = scratch,
+#else
+        .out = slots,
+#endif
+        .room = room,
+        .depth = { m_View.depth[0], m_View.depth[1], m_View.depth[2],
+                   m_View.depth[3] },
+        .near_z = m_View.near_z,
+        .far_z = m_View.far_z,
+        .rate = (float)Interpolation_GetWorldRate(),
+        .mesh_count = (int32_t)p->mesh_count,
+        .ps1 = g_Config.rendering.enable_ps1_blending ? 1 : 0,
+        .uv = &m_SparkUv,
+        .uv_sprite = &m_SparkUvSprite,
+        .world = dc_spark_world,
+        .rot = dc_spark_rot,
+        .uv_fn = dc_spark_uv,
+        .gain = g_TRVersion == 3 ? 2.0f : 1.0f,
+        .k255 = 255.0f,
+        .k381 = (float)REF_PERSP,
+        .k4 = 4.0f,
+        .k2 = 2.0f,
+        .kinv = 1.0f / (float)(1 << W2V_SHIFT),
+        .khalf = 0.5f,
+    };
+    Sparks_JointCache(true);
+    dc_stage_sparks(&run);
+    Sparks_JointCache(false);
+#if defined(DC_EMIT_VERIFY)
+    int32_t before = 0;
+    DC_MeshBatcher_Particles(p->batcher, &before);
+    for (int32_t i = 0; i < count; i++) {
+        M_StageSpark(&sparks[i]);
+    }
+    int32_t after = 0;
+    const DC_PARTICLE *const list = DC_MeshBatcher_Particles(p->batcher, &after);
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    static uint32_t m_Made;
+    m_Runs++;
+    m_Made += (uint32_t)run.written;
+    bool ok = after - before == run.written;
+    int32_t bad_at = -1;
+    for (int32_t i = 0; ok && i < run.written; i++) {
+        if (!M_SameParticle(&scratch[i], &list[before + i])) {
+            ok = false;
+            bad_at = i;
+        }
+    }
+    if (!ok) {
+        m_Bad++;
+        if (m_Bad <= 10) {
+            const DC_PARTICLE *const a = &scratch[MAX(bad_at, 0)];
+            const DC_PARTICLE *const b = &list[before + MAX(bad_at, 0)];
+            LOG_WARNING(
+                "[spark-verify] MISMATCH asm %d particles, C %d, at %d: asm "
+                "pos %g %g %g half %g %g sn %g cs %g blend %d argb %08x page "
+                "%d | C pos %g %g %g half %g %g sn %g cs %g blend %d argb %08x "
+                "page %d",
+                (int)run.written, (int)(after - before), (int)bad_at,
+                (double)a->pos[0], (double)a->pos[1], (double)a->pos[2],
+                (double)a->half, (double)a->half_h, (double)a->sn,
+                (double)a->cs, (int)a->blend, (unsigned)a->argb, (int)a->page,
+                (double)b->pos[0], (double)b->pos[1], (double)b->pos[2],
+                (double)b->half, (double)b->half_h, (double)b->sn,
+                (double)b->cs, (int)b->blend, (unsigned)b->argb, (int)b->page);
+        }
+    }
+    if (m_Runs % 300 == 0) {
+        LOG_WARNING(
+            "[spark-verify] %u runs, %u particles, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Made, (unsigned)m_Bad);
+    }
+#else
+    DC_MeshBatcher_ParticlesAdded(p->batcher, run.written, run.blend);
+#endif
 }
 
 // How far a quad is pulled towards the eye, as a fraction of its depth: the
@@ -660,19 +918,17 @@ void OutputSource_PolyFX_StageParticle(
         return;
     }
     // The picture's corners, looked up once for a run of the same sprite.
-    static int32_t s_sprite = -1;
-    static DC_PARTICLE s_proto;
-    if (sprite_idx != s_sprite) {
+    if (sprite_idx != m_ParticleSprite) {
         for (int32_t k = 0; k < 4; k++) {
             const OUTPUT_UVW uvw = Output_Textures_GetUVW(
                 Output_Textures_GetSpriteUVWIndex(sprite_idx, k));
-            s_proto.u[k] = uvw.u;
-            s_proto.v[k] = uvw.v;
-            s_proto.page = (int8_t)uvw.w;
+            m_ParticleProto.u[k] = uvw.u;
+            m_ParticleProto.v[k] = uvw.v;
+            m_ParticleProto.page = (int8_t)uvw.w;
         }
-        s_sprite = sprite_idx;
+        m_ParticleSprite = sprite_idx;
     }
-    DC_PARTICLE q = s_proto;
+    DC_PARTICLE q = m_ParticleProto;
     q.pos[0] = (float)pos->x;
     q.pos[1] = (float)pos->y;
     q.pos[2] = (float)pos->z;
@@ -684,6 +940,47 @@ void OutputSource_PolyFX_StageParticle(
     q.argb = 0xFF000000u | ((uint32_t)color.r << 16) | ((uint32_t)color.g << 8)
         | color.b;
     DC_MeshBatcher_StageParticle(p->batcher, &q);
+}
+
+// What the weather's assembly (weather_sh4.S) takes and gives back: a sprite's
+// four corners (u 0..3, v 0..3, then the page as a word), and the lists' free
+// slots with the count written.
+void OutputSource_PolyFX_GetPicture(const int32_t sprite_idx, float *const out)
+{
+    for (int32_t k = 0; k < 4; k++) {
+        const OUTPUT_UVW uvw = Output_Textures_GetUVW(
+            Output_Textures_GetSpriteUVWIndex(sprite_idx, k));
+        out[k] = uvw.u;
+        out[4 + k] = uvw.v;
+        ((int32_t *)out)[8] = (int32_t)(int8_t)uvw.w;
+    }
+}
+
+void *OutputSource_PolyFX_ParticleSlots(int32_t *const room)
+{
+    *room = 0;
+    return m_Priv.batcher == nullptr
+        ? nullptr
+        : DC_MeshBatcher_ParticleSlots(m_Priv.batcher, room);
+}
+
+void OutputSource_PolyFX_ParticlesAdded(const int32_t count)
+{
+    const int32_t blends[3] = { count, 0, 0 };
+    DC_MeshBatcher_ParticlesAdded(m_Priv.batcher, count, blends);
+}
+
+void *OutputSource_PolyFX_StreakSlots(int32_t *const room)
+{
+    *room = 0;
+    return m_Priv.batcher == nullptr
+        ? nullptr
+        : DC_MeshBatcher_StreakSlots(m_Priv.batcher, room);
+}
+
+void OutputSource_PolyFX_StreaksAdded(const int32_t count)
+{
+    DC_MeshBatcher_StreaksAdded(m_Priv.batcher, count);
 }
 
 void OutputSource_PolyFX_StageStreak(

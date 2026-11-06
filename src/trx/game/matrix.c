@@ -9,6 +9,10 @@
 #include <float.h>
 #include <math.h>
 
+#if defined(__DREAMCAST__)
+    #include <dc/matrix.h>
+#endif
+
 #define MAX_MATRICES 40
 #define MAX_NESTED_MATRICES 32
 // How small cos(X) may be before Y and Z are read as one turn. Above the
@@ -26,6 +30,7 @@ static MATRIX m_WIMMatrixStack[MAX_NESTED_MATRICES] = {};
 
 MATRIX *g_MatrixPtr = &m_MatrixStack[0];
 MATRIX *g_WMatrixPtr = &m_WMatrixStack[0];
+bool g_MatrixWorldOnly = false;
 
 XYZ_32 g_ViewPos = {};
 MATRIX g_ViewMatrix = {};
@@ -482,14 +487,26 @@ static bool M_LerpTranslation(
 // bit) when the keyframes lie two ticks apart. In 32 bits wherever the step
 // allows it: the SH-4's 64-bit division is a call into the library.
 static inline int64_t M_BlendLinear(
-    const int64_t a, const int64_t b, const int32_t frac, const int32_t rate)
+    const int64_t a, const int64_t b, const int32_t frac, const int32_t rate,
+    const uint32_t inv_rate)
 {
     if (rate == 2 && frac == 1) {
         return (a + b) >> 1;
     }
     const int64_t d = b - a;
     if (frac < 32 && d > -(1 << 26) && d < (1 << 26)) {
-        return a + ((int32_t)d * frac) / rate;
+        // n / rate truncated toward zero, by the reciprocal (inv_rate is
+        // 2^32 / rate rounded down, so the estimate falls short by at most
+        // two) and not by the library's 32-bit division.
+        const int32_t n = (int32_t)d * frac;
+        const uint32_t u = n < 0 ? 0u - (uint32_t)n : (uint32_t)n;
+        uint32_t q = (uint32_t)(((uint64_t)u * inv_rate) >> 32);
+        uint32_t r = u - q * (uint32_t)rate;
+        while (r >= (uint32_t)rate) {
+            q++;
+            r -= (uint32_t)rate;
+        }
+        return a + (n < 0 ? -(int64_t)q : (int64_t)q);
     }
     return a + (d * frac) / rate;
 }
@@ -510,19 +527,20 @@ static void M_InterpolateLinear(
     }
     int32_t frac = m_IMFrac;
     CLAMP(frac, 0, rate);
+    const uint32_t inv_rate = 0xFFFFFFFFu / (uint32_t)rate;
 
-    result->_00 = M_BlendLinear(m1->_00, m2->_00, frac, rate);
-    result->_01 = M_BlendLinear(m1->_01, m2->_01, frac, rate);
-    result->_02 = M_BlendLinear(m1->_02, m2->_02, frac, rate);
-    result->_03 = M_BlendLinear(m1->_03, m2->_03, frac, rate);
-    result->_10 = M_BlendLinear(m1->_10, m2->_10, frac, rate);
-    result->_11 = M_BlendLinear(m1->_11, m2->_11, frac, rate);
-    result->_12 = M_BlendLinear(m1->_12, m2->_12, frac, rate);
-    result->_13 = M_BlendLinear(m1->_13, m2->_13, frac, rate);
-    result->_20 = M_BlendLinear(m1->_20, m2->_20, frac, rate);
-    result->_21 = M_BlendLinear(m1->_21, m2->_21, frac, rate);
-    result->_22 = M_BlendLinear(m1->_22, m2->_22, frac, rate);
-    result->_23 = M_BlendLinear(m1->_23, m2->_23, frac, rate);
+    result->_00 = M_BlendLinear(m1->_00, m2->_00, frac, rate, inv_rate);
+    result->_01 = M_BlendLinear(m1->_01, m2->_01, frac, rate, inv_rate);
+    result->_02 = M_BlendLinear(m1->_02, m2->_02, frac, rate, inv_rate);
+    result->_03 = M_BlendLinear(m1->_03, m2->_03, frac, rate, inv_rate);
+    result->_10 = M_BlendLinear(m1->_10, m2->_10, frac, rate, inv_rate);
+    result->_11 = M_BlendLinear(m1->_11, m2->_11, frac, rate, inv_rate);
+    result->_12 = M_BlendLinear(m1->_12, m2->_12, frac, rate, inv_rate);
+    result->_13 = M_BlendLinear(m1->_13, m2->_13, frac, rate, inv_rate);
+    result->_20 = M_BlendLinear(m1->_20, m2->_20, frac, rate, inv_rate);
+    result->_21 = M_BlendLinear(m1->_21, m2->_21, frac, rate, inv_rate);
+    result->_22 = M_BlendLinear(m1->_22, m2->_22, frac, rate, inv_rate);
+    result->_23 = M_BlendLinear(m1->_23, m2->_23, frac, rate, inv_rate);
 }
 #endif
 
@@ -547,22 +565,26 @@ static void M_ScaleZ(MATRIX *const m, const int32_t angle)
     m->_22 = ((int64_t)m->_22 * angle) >> W2V_SHIFT;
 }
 
+// The low 32 bits of a product, as the rotations keep no more: 32-bit
+// multiplies (mul.l) in place of the 64-bit ones the int64 entries invite.
+#define M_MUL32(a_, b_) ((uint32_t)(int32_t)(a_) * (uint32_t)(int32_t)(b_))
+
 static void M_RotXSC(MATRIX *const m, const int32_t sx, const int32_t cx)
 {
 
     int32_t r0, r1;
-    r0 = m->_01 * cx + m->_02 * sx;
-    r1 = m->_02 * cx - m->_01 * sx;
+    r0 = (int32_t)(M_MUL32(m->_01, cx) + M_MUL32(m->_02, sx));
+    r1 = (int32_t)(M_MUL32(m->_02, cx) - M_MUL32(m->_01, sx));
     m->_01 = r0 >> W2V_SHIFT;
     m->_02 = r1 >> W2V_SHIFT;
 
-    r0 = m->_11 * cx + m->_12 * sx;
-    r1 = m->_12 * cx - m->_11 * sx;
+    r0 = (int32_t)(M_MUL32(m->_11, cx) + M_MUL32(m->_12, sx));
+    r1 = (int32_t)(M_MUL32(m->_12, cx) - M_MUL32(m->_11, sx));
     m->_11 = r0 >> W2V_SHIFT;
     m->_12 = r1 >> W2V_SHIFT;
 
-    r0 = m->_21 * cx + m->_22 * sx;
-    r1 = m->_22 * cx - m->_21 * sx;
+    r0 = (int32_t)(M_MUL32(m->_21, cx) + M_MUL32(m->_22, sx));
+    r1 = (int32_t)(M_MUL32(m->_22, cx) - M_MUL32(m->_21, sx));
     m->_21 = r0 >> W2V_SHIFT;
     m->_22 = r1 >> W2V_SHIFT;
 }
@@ -578,18 +600,18 @@ static void M_RotYSC(MATRIX *const m, const int32_t sy, const int32_t cy)
 {
 
     int32_t r0, r1;
-    r0 = m->_00 * cy - m->_02 * sy;
-    r1 = m->_02 * cy + m->_00 * sy;
+    r0 = (int32_t)(M_MUL32(m->_00, cy) - M_MUL32(m->_02, sy));
+    r1 = (int32_t)(M_MUL32(m->_02, cy) + M_MUL32(m->_00, sy));
     m->_00 = r0 >> W2V_SHIFT;
     m->_02 = r1 >> W2V_SHIFT;
 
-    r0 = m->_10 * cy - m->_12 * sy;
-    r1 = m->_12 * cy + m->_10 * sy;
+    r0 = (int32_t)(M_MUL32(m->_10, cy) - M_MUL32(m->_12, sy));
+    r1 = (int32_t)(M_MUL32(m->_12, cy) + M_MUL32(m->_10, sy));
     m->_10 = r0 >> W2V_SHIFT;
     m->_12 = r1 >> W2V_SHIFT;
 
-    r0 = m->_20 * cy - m->_22 * sy;
-    r1 = m->_22 * cy + m->_20 * sy;
+    r0 = (int32_t)(M_MUL32(m->_20, cy) - M_MUL32(m->_22, sy));
+    r1 = (int32_t)(M_MUL32(m->_22, cy) + M_MUL32(m->_20, sy));
     m->_20 = r0 >> W2V_SHIFT;
     m->_22 = r1 >> W2V_SHIFT;
 }
@@ -605,18 +627,18 @@ static void M_RotZSC(MATRIX *const m, const int32_t sz, const int32_t cz)
 {
 
     int32_t r0, r1;
-    r0 = m->_00 * cz + m->_01 * sz;
-    r1 = m->_01 * cz - m->_00 * sz;
+    r0 = (int32_t)(M_MUL32(m->_00, cz) + M_MUL32(m->_01, sz));
+    r1 = (int32_t)(M_MUL32(m->_01, cz) - M_MUL32(m->_00, sz));
     m->_00 = r0 >> W2V_SHIFT;
     m->_01 = r1 >> W2V_SHIFT;
 
-    r0 = m->_10 * cz + m->_11 * sz;
-    r1 = m->_11 * cz - m->_10 * sz;
+    r0 = (int32_t)(M_MUL32(m->_10, cz) + M_MUL32(m->_11, sz));
+    r1 = (int32_t)(M_MUL32(m->_11, cz) - M_MUL32(m->_10, sz));
     m->_10 = r0 >> W2V_SHIFT;
     m->_11 = r1 >> W2V_SHIFT;
 
-    r0 = m->_20 * cz + m->_21 * sz;
-    r1 = m->_21 * cz - m->_20 * sz;
+    r0 = (int32_t)(M_MUL32(m->_20, cz) + M_MUL32(m->_21, sz));
+    r1 = (int32_t)(M_MUL32(m->_21, cz) - M_MUL32(m->_20, sz));
     m->_20 = r0 >> W2V_SHIFT;
     m->_21 = r1 >> W2V_SHIFT;
 }
@@ -646,9 +668,93 @@ static void M_RotYXZ(MATRIX *const m, const XYZ_16 rotation)
 
 // Sine and cosine are looked up once for all the matrices a call turns (the
 // view and world stacks, and their interpolation twins).
+#if defined(__DREAMCAST__)
+// DOUBTFUL CHANGE (see PROBADO.md): the Y, X and Z turns of a rotation worked
+// out as one float matrix and applied to each row of the matrix with ftrv,
+// instead of three fixed point turns that each round down. Entries can differ
+// by 1 in the last bit from M_RotYSC and the others; a bone is only ever
+// turned this way while g_MatrixWorldOnly (the enemies' walk) is set.
+static void M_RotYXZ_Float(
+    MATRIX *const *const ms, const int32_t n, const XYZ_16 rotation)
+{
+    const float k = 1.0f / (float)(1 << W2V_SHIFT);
+    // r[j][i]: the row vector v turned is sum_j v[j] * r[j][i].
+    float r[4][4] = {
+        { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 }
+    };
+    // Each turn is folded in by the columns it changes, in the order Y, X, Z.
+    if (rotation.y != 0) {
+        const float s = (float)Math_Sin(rotation.y) * k;
+        const float c = (float)Math_Cos(rotation.y) * k;
+        for (int32_t j = 0; j < 3; j++) {
+            const float a = r[j][0];
+            const float b = r[j][2];
+            r[j][0] = a * c - b * s;
+            r[j][2] = b * c + a * s;
+        }
+    }
+    if (rotation.x != 0) {
+        const float s = (float)Math_Sin(rotation.x) * k;
+        const float c = (float)Math_Cos(rotation.x) * k;
+        for (int32_t j = 0; j < 3; j++) {
+            const float a = r[j][1];
+            const float b = r[j][2];
+            r[j][1] = a * c + b * s;
+            r[j][2] = b * c - a * s;
+        }
+    }
+    if (rotation.z != 0) {
+        const float s = (float)Math_Sin(rotation.z) * k;
+        const float c = (float)Math_Cos(rotation.z) * k;
+        for (int32_t j = 0; j < 3; j++) {
+            const float a = r[j][0];
+            const float b = r[j][1];
+            r[j][0] = a * c + b * s;
+            r[j][1] = b * c - a * s;
+        }
+    }
+    mat_load(&r);
+    for (int32_t i = 0; i < n; i++) {
+        MATRIX *const m = ms[i];
+        // Rows of the rotation part; ftrc truncates, so the bias makes it the
+        // floor the shifts of the fixed point turns were.
+        float x = (float)(int32_t)m->_00;
+        float y = (float)(int32_t)m->_01;
+        float z = (float)(int32_t)m->_02;
+        float w = 0.0f;
+        mat_trans_nodiv(x, y, z, w);
+        m->_00 = (int32_t)(x + 32768.0f) - 32768;
+        m->_01 = (int32_t)(y + 32768.0f) - 32768;
+        m->_02 = (int32_t)(z + 32768.0f) - 32768;
+        x = (float)(int32_t)m->_10;
+        y = (float)(int32_t)m->_11;
+        z = (float)(int32_t)m->_12;
+        w = 0.0f;
+        mat_trans_nodiv(x, y, z, w);
+        m->_10 = (int32_t)(x + 32768.0f) - 32768;
+        m->_11 = (int32_t)(y + 32768.0f) - 32768;
+        m->_12 = (int32_t)(z + 32768.0f) - 32768;
+        x = (float)(int32_t)m->_20;
+        y = (float)(int32_t)m->_21;
+        z = (float)(int32_t)m->_22;
+        w = 0.0f;
+        mat_trans_nodiv(x, y, z, w);
+        m->_20 = (int32_t)(x + 32768.0f) - 32768;
+        m->_21 = (int32_t)(y + 32768.0f) - 32768;
+        m->_22 = (int32_t)(z + 32768.0f) - 32768;
+    }
+}
+#endif
+
 static void M_RotYXZ_N(
     MATRIX *const *const ms, const int32_t n, const XYZ_16 rotation)
 {
+#if defined(__DREAMCAST__)
+    if (g_MatrixWorldOnly) {
+        M_RotYXZ_Float(ms, n, rotation);
+        return;
+    }
+#endif
     if (rotation.y != 0) {
         const int32_t s = Math_Sin(rotation.y);
         const int32_t c = Math_Cos(rotation.y);
@@ -872,7 +978,9 @@ bool Matrix_Push(void)
         return false;
     }
     g_MatrixPtr++;
-    g_MatrixPtr[0] = g_MatrixPtr[-1];
+    if (!g_MatrixWorldOnly) {
+        g_MatrixPtr[0] = g_MatrixPtr[-1];
+    }
     g_WMatrixPtr++;
     g_WMatrixPtr[0] = g_WMatrixPtr[-1];
     return true;
@@ -947,7 +1055,9 @@ void Matrix_RotX(const int16_t angle)
     if (angle != 0) {
         const int32_t s = Math_Sin(angle);
         const int32_t c = Math_Cos(angle);
-        M_RotXSC(g_MatrixPtr, s, c);
+        if (!g_MatrixWorldOnly) {
+            M_RotXSC(g_MatrixPtr, s, c);
+        }
         M_RotXSC(g_WMatrixPtr, s, c);
     }
 }
@@ -957,7 +1067,9 @@ void Matrix_RotY(const int16_t angle)
     if (angle != 0) {
         const int32_t s = Math_Sin(angle);
         const int32_t c = Math_Cos(angle);
-        M_RotYSC(g_MatrixPtr, s, c);
+        if (!g_MatrixWorldOnly) {
+            M_RotYSC(g_MatrixPtr, s, c);
+        }
         M_RotYSC(g_WMatrixPtr, s, c);
     }
 }
@@ -967,15 +1079,17 @@ void Matrix_RotZ(const int16_t angle)
     if (angle != 0) {
         const int32_t s = Math_Sin(angle);
         const int32_t c = Math_Cos(angle);
-        M_RotZSC(g_MatrixPtr, s, c);
+        if (!g_MatrixWorldOnly) {
+            M_RotZSC(g_MatrixPtr, s, c);
+        }
         M_RotZSC(g_WMatrixPtr, s, c);
     }
 }
 
 void Matrix_Rot16(const XYZ_16 rotation)
 {
-    MATRIX *const ms[] = { g_MatrixPtr, g_WMatrixPtr };
-    M_RotYXZ_N(ms, 2, rotation);
+    MATRIX *const ms[] = { g_WMatrixPtr, g_MatrixPtr };
+    M_RotYXZ_N(ms, g_MatrixWorldOnly ? 1 : 2, rotation);
 }
 
 void Matrix_RotX_M(MATRIX *const m, const int16_t angle)
@@ -1035,7 +1149,9 @@ void Matrix_TranslateRel16(const XYZ_16 offset)
 
 void Matrix_TranslateRel32(const XYZ_32 offset)
 {
-    M_TranslateRel(g_MatrixPtr, offset);
+    if (!g_MatrixWorldOnly) {
+        M_TranslateRel(g_MatrixPtr, offset);
+    }
     M_TranslateRel(g_WMatrixPtr, offset);
 }
 
@@ -1075,14 +1191,18 @@ void Matrix_InitInterpolate(const int32_t frac, const int32_t rate)
     m_IMFrac = frac;
     m_IMRate = rate;
     m_IMMatrixPtr = &m_IMMatrixStack[0];
-    *m_IMMatrixPtr = *g_MatrixPtr;
+    if (!g_MatrixWorldOnly) {
+        *m_IMMatrixPtr = *g_MatrixPtr;
+    }
     m_WIMMatrixPtr = &m_WIMMatrixStack[0];
     *m_WIMMatrixPtr = *g_WMatrixPtr;
 }
 
 void Matrix_Interpolate(void)
 {
-    M_Interpolate(g_MatrixPtr, m_IMMatrixPtr, g_MatrixPtr);
+    if (!g_MatrixWorldOnly) {
+        M_Interpolate(g_MatrixPtr, m_IMMatrixPtr, g_MatrixPtr);
+    }
     M_Interpolate(g_WMatrixPtr, m_WIMMatrixPtr, g_WMatrixPtr);
 }
 
@@ -1095,7 +1215,9 @@ void Matrix_InterpolateArm(void)
 void Matrix_Push_I(void)
 {
     Matrix_Push();
-    m_IMMatrixPtr[1] = m_IMMatrixPtr[0];
+    if (!g_MatrixWorldOnly) {
+        m_IMMatrixPtr[1] = m_IMMatrixPtr[0];
+    }
     m_IMMatrixPtr++;
     m_WIMMatrixPtr[1] = m_WIMMatrixPtr[0];
     m_WIMMatrixPtr++;
@@ -1120,9 +1242,11 @@ void Matrix_TranslateRel16_I(const XYZ_16 offset)
 
 void Matrix_TranslateRel32_I(const XYZ_32 offset)
 {
-    M_TranslateRel(g_MatrixPtr, offset);
+    if (!g_MatrixWorldOnly) {
+        M_TranslateRel(g_MatrixPtr, offset);
+        M_TranslateRel(m_IMMatrixPtr, offset);
+    }
     M_TranslateRel(g_WMatrixPtr, offset);
-    M_TranslateRel(m_IMMatrixPtr, offset);
     M_TranslateRel(m_WIMMatrixPtr, offset);
 }
 
@@ -1140,9 +1264,11 @@ void Matrix_TranslateRel16_ID(const XYZ_16 offset_1, const XYZ_16 offset_2)
 
 void Matrix_TranslateRel32_ID(const XYZ_32 offset_1, const XYZ_32 offset_2)
 {
-    M_TranslateRel(g_MatrixPtr, offset_1);
+    if (!g_MatrixWorldOnly) {
+        M_TranslateRel(g_MatrixPtr, offset_1);
+        M_TranslateRel(m_IMMatrixPtr, offset_2);
+    }
     M_TranslateRel(g_WMatrixPtr, offset_1);
-    M_TranslateRel(m_IMMatrixPtr, offset_2);
     M_TranslateRel(m_WIMMatrixPtr, offset_2);
 }
 
@@ -1151,9 +1277,11 @@ void Matrix_RotY_I(const int16_t angle)
     if (angle != 0) {
         const int32_t s = Math_Sin(angle);
         const int32_t c = Math_Cos(angle);
-        M_RotYSC(g_MatrixPtr, s, c);
+        if (!g_MatrixWorldOnly) {
+            M_RotYSC(g_MatrixPtr, s, c);
+            M_RotYSC(m_IMMatrixPtr, s, c);
+        }
         M_RotYSC(g_WMatrixPtr, s, c);
-        M_RotYSC(m_IMMatrixPtr, s, c);
         M_RotYSC(m_WIMMatrixPtr, s, c);
     }
 }
@@ -1163,9 +1291,11 @@ void Matrix_RotX_I(const int16_t angle)
     if (angle != 0) {
         const int32_t s = Math_Sin(angle);
         const int32_t c = Math_Cos(angle);
-        M_RotXSC(g_MatrixPtr, s, c);
+        if (!g_MatrixWorldOnly) {
+            M_RotXSC(g_MatrixPtr, s, c);
+            M_RotXSC(m_IMMatrixPtr, s, c);
+        }
         M_RotXSC(g_WMatrixPtr, s, c);
-        M_RotXSC(m_IMMatrixPtr, s, c);
         M_RotXSC(m_WIMMatrixPtr, s, c);
     }
 }
@@ -1175,9 +1305,11 @@ void Matrix_RotZ_I(const int16_t angle)
     if (angle != 0) {
         const int32_t s = Math_Sin(angle);
         const int32_t c = Math_Cos(angle);
-        M_RotZSC(g_MatrixPtr, s, c);
+        if (!g_MatrixWorldOnly) {
+            M_RotZSC(g_MatrixPtr, s, c);
+            M_RotZSC(m_IMMatrixPtr, s, c);
+        }
         M_RotZSC(g_WMatrixPtr, s, c);
-        M_RotZSC(m_IMMatrixPtr, s, c);
         M_RotZSC(m_WIMMatrixPtr, s, c);
     }
 }
@@ -1185,17 +1317,18 @@ void Matrix_RotZ_I(const int16_t angle)
 void Matrix_Rot16_I(const XYZ_16 rotation)
 {
     MATRIX *const ms[] = {
-        g_MatrixPtr, g_WMatrixPtr, m_IMMatrixPtr, m_WIMMatrixPtr
+        g_WMatrixPtr, m_WIMMatrixPtr, g_MatrixPtr, m_IMMatrixPtr
     };
-    M_RotYXZ_N(ms, 4, rotation);
+    M_RotYXZ_N(ms, g_MatrixWorldOnly ? 2 : 4, rotation);
 }
 
 void Matrix_Rot16_ID(const XYZ_16 rotation_1, const XYZ_16 rotation_2)
 {
-    MATRIX *const a[] = { g_MatrixPtr, g_WMatrixPtr };
-    MATRIX *const b[] = { m_IMMatrixPtr, m_WIMMatrixPtr };
-    M_RotYXZ_N(a, 2, rotation_1);
-    M_RotYXZ_N(b, 2, rotation_2);
+    MATRIX *const a[] = { g_WMatrixPtr, g_MatrixPtr };
+    MATRIX *const b[] = { m_WIMMatrixPtr, m_IMMatrixPtr };
+    const int32_t n = g_MatrixWorldOnly ? 1 : 2;
+    M_RotYXZ_N(a, n, rotation_1);
+    M_RotYXZ_N(b, n, rotation_2);
 }
 
 void Matrix_LookAt(

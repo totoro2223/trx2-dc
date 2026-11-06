@@ -46,6 +46,21 @@ int32_t Random_GetDraw(void)
     return (int32_t)((m_RandDraw >> 10) & (RANDOM_SPAN - 1));
 }
 
+uint32_t *Random_GetDrawState(void)
+{
+    return &m_RandDraw;
+}
+
+const bool *Random_GetDrawFrozen(void)
+{
+    return &m_IsDrawFrozen;
+}
+
+uint32_t *Random_GetControlState(void)
+{
+    return &m_RandControl;
+}
+
 int32_t Random_GetControlSeed(void)
 {
     return (int32_t)m_RandControl;

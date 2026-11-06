@@ -63,6 +63,10 @@ void OutputSource_PolyFX_StageLineSegment(
     float half_width, DRAW_TYPE draw_type);
 
 void OutputSource_PolyFX_StageSpark(const SPARK *spark);
+#if defined(__DREAMCAST__)
+// All the sparks of the array at once, in assembly (sparks_sh4.S).
+void OutputSource_PolyFX_StageSparks(const SPARK *sparks, int32_t count);
+#endif
 
 #if defined(__DREAMCAST__)
 // A quad of the sprite at a world point, added; half is its half side in world
@@ -72,4 +76,11 @@ void OutputSource_PolyFX_StageParticle(
 // A raindrop's streak between two world points, added: no mesh, one quad.
 void OutputSource_PolyFX_StageStreak(
     XYZ_32 from, RGBA_8888 from_color, XYZ_32 to, RGBA_8888 to_color);
+// For weather_sh4.S: a sprite's corners (u 0..3, v 0..3, page: nine words), and
+// the free slots of the particle and streak lists with the count written.
+void OutputSource_PolyFX_GetPicture(int32_t sprite_idx, float *out);
+void *OutputSource_PolyFX_ParticleSlots(int32_t *room);
+void OutputSource_PolyFX_ParticlesAdded(int32_t count);
+void *OutputSource_PolyFX_StreakSlots(int32_t *room);
+void OutputSource_PolyFX_StreaksAdded(int32_t count);
 #endif

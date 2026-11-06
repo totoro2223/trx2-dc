@@ -32,6 +32,16 @@
 ! its red, green and blue. One that has no light (0x8) or no fog (0x8000) is
 ! not fogged. Frame slot 36: the vertex's flags.
 !
+! Dynamic lights (a flare, a torch, a gun's flash; the C loop's M_DynamicLum and
+! M_TR3DynamicRGB), at run + 92 the instance's world matrix (3 rows of 4
+! floats), 96 the point lights (24 bytes: x y z radius^2 max_shade inv_div) and
+! 100 how many (TR1, TR2), 104 the colour lights (32 bytes: x y z radius
+! 1/radius r g b) and 108 how many (TR3). A vertex that takes the dynamic light
+! (flag 0x80, and a light: not 0x8) is placed in the world; its shade (TR1,
+! TR2) is dimmed by the lights that reach it, into frame slot 40, and TR3's
+! colour bytes take what they add. Frame slots 44-52 the world position, then
+! (the world kept in fr0-fr2) what the colour lights add.
+!
 ! M_XFORM: 0 left 4 right 8 top 12 bottom 48 ortho 49 sides 50 near 51 fog
 !   52 proj_x 56 proj_y 60 near_z 64 fog_start 68 fog_start_sq 72 fog_scale
 !   76 max_inv_z
@@ -71,6 +81,52 @@
     mov.b   r0,@(\dst,r2)
     .endm
 
+! The world position of the vertex at r2 (its int16 place at 8, 10, 12) by the
+! instance's matrix at run + 92 (r4 is the run): into fr0, fr1, fr2. Uses fr3
+! to fr7, r0, r1, r3 and frame slots 44 to 52.
+    .macro WORLDPOS
+    mov.w   @(8,r2),r0
+    lds     r0,fpul
+    float   fpul,fr4
+    mov.w   @(10,r2),r0
+    lds     r0,fpul
+    float   fpul,fr5
+    mov.w   @(12,r2),r0
+    lds     r0,fpul
+    float   fpul,fr6
+    fldi1   fr7
+    mov     r4,r1
+    add     #92,r1
+    mov.l   @r1,r3
+    fmov.s  @r3+,fr0
+    fmov.s  @r3+,fr1
+    fmov.s  @r3+,fr2
+    fmov.s  @r3+,fr3
+    fipr    fv4,fv0                 ! fr3 = world x
+    mov     #44,r0
+    fmov.s  fr3,@(r0,r15)
+    fmov.s  @r3+,fr0
+    fmov.s  @r3+,fr1
+    fmov.s  @r3+,fr2
+    fmov.s  @r3+,fr3
+    fipr    fv4,fv0                 ! fr3 = world y
+    mov     #48,r0
+    fmov.s  fr3,@(r0,r15)
+    fmov.s  @r3+,fr0
+    fmov.s  @r3+,fr1
+    fmov.s  @r3+,fr2
+    fmov.s  @r3+,fr3
+    fipr    fv4,fv0                 ! fr3 = world z
+    mov     #52,r0
+    fmov.s  fr3,@(r0,r15)
+    mov     #44,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #48,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #52,r0
+    fmov.s  @(r0,r15),fr2
+    .endm
+
     .text
     .align 2
     .global _dc_xform_room
@@ -91,7 +147,7 @@ _dc_xform_room:
     fmov.s  fr9,@-r15
     fmov.s  fr10,@-r15
     fmov.s  fr11,@-r15
-    add     #-40,r15
+    add     #-72,r15
     mov.l   r4,@(0,r15)
     mov     r4,r1
     add     #64,r1
@@ -210,11 +266,169 @@ miss:
     mov.w   @(22,r2),r0             ! its flags
     extu.w  r0,r0
     mov.l   r0,@(36,r15)
+    ! TR1/TR2: the dynamic lights that reach it dim its shade (M_DynamicLum).
+    mov.l   @(0,r15),r4
+    mov     r4,r1
+    add     #100,r1
+    mov.l   @r1,r1                  ! point lights
+    tst     r1,r1
+    bt      nodynshade
+    mov.l   @(36,r15),r0
+    tst     #0x8,r0
+    bf      nodynshade              ! no light
+    tst     #0x80,r0
+    bt      nodynshade              ! does not take the dynamic light
+    WORLDPOS
+    mov.w   @(24,r2),r0
+    lds     r0,fpul
+    float   fpul,fr3                ! the shade
+    mov.l   @(0,r15),r4
+    mov     r4,r1
+    add     #96,r1
+    mov.l   @r1,r5                  ! the lights
+    mov     r4,r1
+    add     #100,r1
+    mov.l   @r1,r1                  ! how many
+lloop:
+    fmov.s  @r5+,fr4
+    fmov.s  @r5+,fr5
+    fmov.s  @r5+,fr6
+    fsub    fr0,fr4
+    fsub    fr1,fr5
+    fsub    fr2,fr6
+    fldi0   fr7
+    fipr    fv4,fv4                 ! fr7 = distance squared
+    fmov.s  @r5+,fr4                ! radius squared
+    fcmp/gt fr4,fr7                 ! out of reach
+    bt      lskip
+    fmov.s  @r5+,fr5                ! max shade
+    fmov.s  @r5+,fr6                ! 1 / div
+    fmul    fr6,fr7
+    fsub    fr7,fr5
+    fsub    fr5,fr3                 ! shade -= max - dist^2 / div
+    bra     lnext
+    nop
+lskip:
+    add     #8,r5
+lnext:
+    dt      r1
+    bf      lloop
+    fldi0   fr4
+    fcmp/gt fr3,fr4                 ! below 0: 0
+    bf      1f
+    fmov    fr4,fr3
+1:  ftrc    fr3,fpul
+    sts     fpul,r0
+    mov.l   r0,@(40,r15)
+nodynshade:
     mov.l   @(24,r15),r1
     tst     r1,r1
     bf      wdone
     mov.l   @(4,r2),r1              ! not white: its colour
     mov.l   r1,@(28,r15)
+    ! TR3: the colour of the dynamic lights that reach it is added to its bytes
+    ! (M_TR3DynamicRGB).
+    mov.l   @(0,r15),r4
+    mov     r4,r1
+    add     #108,r1
+    mov.l   @r1,r1                  ! colour lights
+    tst     r1,r1
+    bt      norgb
+    mov.l   @(36,r15),r0
+    tst     #0x8,r0
+    bf      norgb                   ! no light
+    tst     #0x80,r0
+    bt      norgb                   ! does not take the dynamic light
+    WORLDPOS
+    mov     #0,r0
+    mov.l   r0,@(44,r15)
+    mov.l   r0,@(48,r15)
+    mov.l   r0,@(52,r15)
+    mov.l   @(0,r15),r4
+    mov     r4,r1
+    add     #104,r1
+    mov.l   @r1,r5                  ! the lights
+    mov     r4,r1
+    add     #108,r1
+    mov.l   @r1,r1                  ! how many
+rloop:
+    fmov.s  @r5+,fr4
+    fmov.s  @r5+,fr5
+    fmov.s  @r5+,fr6
+    fsub    fr0,fr4
+    fsub    fr1,fr5
+    fsub    fr2,fr6
+    fldi0   fr7
+    fipr    fv4,fv4                 ! fr7 = distance squared
+    fmov.s  @r5+,fr3                ! radius
+    fmov    fr3,fr4
+    fmul    fr4,fr4                 ! radius squared
+    fcmp/gt fr7,fr4                 ! it reaches
+    bt      rreach
+    add     #16,r5
+    bra     rnext
+    nop
+rreach:
+    fldi0   fr4                     ! the distance: 0 at the light
+    fldi0   fr5
+    fcmp/gt fr5,fr7
+    bf      rdist0
+    fmov    fr7,fr4
+    fsrra   fr4
+    fmul    fr7,fr4
+rdist0:
+    fsub    fr4,fr3                 ! radius - distance
+    fmov.s  @r5+,fr6                ! 1 / radius
+    fmul    fr6,fr3                 ! how much of the light
+    mov     #44,r0
+    fmov.s  @r5+,fr4
+    fmul    fr3,fr4
+    fmov.s  @(r0,r15),fr5
+    fadd    fr4,fr5
+    fmov.s  fr5,@(r0,r15)
+    mov     #48,r0
+    fmov.s  @r5+,fr4
+    fmul    fr3,fr4
+    fmov.s  @(r0,r15),fr5
+    fadd    fr4,fr5
+    fmov.s  fr5,@(r0,r15)
+    mov     #52,r0
+    fmov.s  @r5+,fr4
+    fmul    fr3,fr4
+    fmov.s  @(r0,r15),fr5
+    fadd    fr4,fr5
+    fmov.s  fr5,@(r0,r15)
+rnext:
+    dt      r1
+    bf      rloop
+    mov     #-1,r3
+    extu.b  r3,r3
+    lds     r3,fpul
+    float   fpul,fr6                ! 255
+    mov     r15,r1
+    add     #28,r1                  ! the colour's bytes: r, g, b
+    mov     #44,r4
+    mov     #3,r5
+cloop:
+    mov     r4,r0
+    fmov.s  @(r0,r15),fr4
+    fmul    fr6,fr4                 ! the light's add * 255
+    mov.b   @r1,r0
+    extu.b  r0,r0
+    lds     r0,fpul
+    float   fpul,fr5
+    fadd    fr5,fr4                 ! colour + add * 255
+    fcmp/gt fr6,fr4
+    bf      1f
+    fmov    fr6,fr4                 ! at most 255
+1:  ftrc    fr4,fpul
+    sts     fpul,r0
+    mov.b   r0,@r1
+    add     #1,r1
+    add     #4,r4
+    dt      r5
+    bf      cloop
+norgb:
     mov.l   @(0,r15),r4
     add     #68,r4
     mov.l   @r4,r4                  ! the water table
@@ -335,8 +549,15 @@ nobill:
 nolit:
     mov.w   @r2+,r3                 ! the shade
     mov.l   @(36,r15),r0
-    tst     #0x80,r0                ! VERT_USE_DYNAMIC_LIGHT: the flicker
+    tst     #0x80,r0                ! VERT_USE_DYNAMIC_LIGHT: the lights, the flicker
     bt      noflick
+    mov.l   @(0,r15),r1
+    add     #100,r1
+    mov.l   @r1,r1                  ! point lights
+    tst     r1,r1
+    bt      1f
+    mov.l   @(40,r15),r3            ! the shade they leave
+1:
     mov.b   @r2,r0
     and     #31,r0
     add     #-16,r0
@@ -557,7 +778,7 @@ finish:
     mov.l   @(0,r15),r4
     mov.l   @(12,r15),r1
     mov.l   r1,@(44,r4)
-    add     #40,r15
+    add     #72,r15
     fmov.s  @r15+,fr11
     fmov.s  @r15+,fr10
     fmov.s  @r15+,fr9

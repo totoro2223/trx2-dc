@@ -11,6 +11,7 @@
 #include <trx/game/game/state.h>
 #include <trx/game/interpolation.h>
 #include <trx/game/lara.h>
+#include <trx/game/matrix.h>
 #include <trx/game/objects.h>
 #include <trx/game/output/shaders/mesh.h>
 #include <trx/game/output/sources/poly_fx.h>
@@ -27,6 +28,7 @@
 #endif
 
 #define M_BASE_WEATHER 256
+#define M_PARTICLE_BYTES 72
 #define M_BASE_WEATHER_ALIVE 16
 #if defined(__DREAMCAST__)
     // Twice the base at most: 1024 drops and 1024 flakes took 98K of RAM
@@ -173,7 +175,7 @@ static void M_SpawnRainDrop(M_RAINDROP *const drop)
     drop->prev_yv = drop->vel.y;
 }
 
-static void M_UpdateRain(void)
+[[maybe_unused]] static void M_UpdateRainC(void)
 {
     const XZ_32 wind = Sparks_GetSmokeWind();
     const int32_t count = M_GetParticleCount();
@@ -238,7 +240,7 @@ static void M_UpdateRain(void)
     }
 }
 
-static void M_DrawRain(void)
+[[maybe_unused]] static void M_DrawRainC(void)
 {
     const XZ_32 wind = Sparks_GetSmokeWind();
     const TRX_REAL ratio = Interpolation_GetWorldRate();
@@ -305,7 +307,7 @@ static void M_SpawnSnowflake(M_SNOWFLAKE *const snow)
     snow->prev_life = snow->life;
 }
 
-static void M_UpdateSnow(void)
+[[maybe_unused]] static void M_UpdateSnowC(void)
 {
     const int32_t count = M_GetParticleCount();
     const int32_t spawn_count = M_GetSpawnCount();
@@ -389,7 +391,7 @@ static void M_UpdateSnow(void)
     }
 }
 
-static void M_DrawSnow(void)
+[[maybe_unused]] static void M_DrawSnowC(void)
 {
     const OBJECT *const obj = Object_Get(O_SNOWFLAKE);
     if (!obj->loaded) {
@@ -484,6 +486,318 @@ static void M_DrawSnow(void)
             DRAW_BLEND_ADD);
     }
 }
+
+#if defined(__DREAMCAST__)
+// The assembly (weather_sh4.S) does the update and the staging; what follows
+// is the control block it takes and the two C functions it calls back (a spawn
+// and the room lookup). In a build with DC_EMIT_VERIFY the C functions above
+// run too, and the assembly's result is compared with theirs.
+extern void dc_rain_update(void *ctl);
+extern void dc_snow_update(void *ctl);
+extern void dc_rain_draw(void *ctl);
+extern void dc_snow_draw(void *ctl);
+
+typedef struct {
+    void *particles;
+    int32_t slots;
+    int32_t spawn_below;
+    int32_t spawn_max;
+    int32_t wind_x;
+    int32_t wind_z;
+    int32_t cam_x;
+    int32_t cam_z;
+    uint32_t *rng;
+    const bool *frozen;
+    uint32_t mul;
+    uint32_t add;
+    void (*spawn)(void *);
+    int32_t (*outside)(const XYZ_32 *);
+    int32_t reach;
+} M_WEATHER_CTL;
+
+typedef struct {
+    void *particles;
+    int32_t slots;
+    void *out;
+    int32_t room;
+    int32_t written;
+    int32_t interp;
+    float ratio;
+    int32_t near_z;
+    int32_t far_z;
+    int32_t k36;
+    int32_t k40;
+    const float *picture;
+    const void *matrix;
+    int32_t k52;
+    int32_t k56;
+    int32_t persp;
+    float fog_range;
+} M_WEATHER_DRAW;
+
+_Static_assert(sizeof(M_RAINDROP) == 44, "weather_sh4.S layout");
+_Static_assert(offsetof(M_RAINDROP, prev_yv) == 24, "weather_sh4.S layout");
+_Static_assert(offsetof(M_RAINDROP, vel) == 28, "weather_sh4.S layout");
+_Static_assert(offsetof(M_RAINDROP, life) == 40, "weather_sh4.S layout");
+_Static_assert(sizeof(M_SNOWFLAKE) == 52, "weather_sh4.S layout");
+_Static_assert(offsetof(M_SNOWFLAKE, stopped) == 24, "weather_sh4.S layout");
+_Static_assert(offsetof(M_SNOWFLAKE, prev_yv) == 28, "weather_sh4.S layout");
+_Static_assert(offsetof(M_SNOWFLAKE, prev_life) == 32, "weather_sh4.S layout");
+_Static_assert(offsetof(M_SNOWFLAKE, vel) == 36, "weather_sh4.S layout");
+_Static_assert(offsetof(M_SNOWFLAKE, life) == 48, "weather_sh4.S layout");
+_Static_assert(sizeof(M_WEATHER_CTL) == 60, "weather_sh4.S layout");
+_Static_assert(offsetof(M_WEATHER_DRAW, picture) == 44, "weather_sh4.S layout");
+_Static_assert(offsetof(M_WEATHER_DRAW, persp) == 60, "weather_sh4.S layout");
+_Static_assert(sizeof(MATRIX) == 96, "weather_sh4.S layout");
+_Static_assert(offsetof(MATRIX, _20) == 64, "weather_sh4.S layout");
+_Static_assert(M_PARTICLE_BYTES == 72, "weather_sh4.S layout");
+
+// Whether a point stops or kills a particle (bit 0: out of reach of the
+// outside, or under water) and whether it is past the edge (bit 1).
+static int32_t M_Outside(const XYZ_32 *const pos)
+{
+    int16_t room_num = NO_ROOM;
+    const int32_t outside = Room_GetOutsideStatus(*pos, &room_num, nullptr);
+    int32_t r = outside == -3 ? 2 : 0;
+    if (outside == -2
+        || (room_num != NO_ROOM && Room_Get(room_num)->flags.underwater)) {
+        r |= 1;
+    }
+    return r;
+}
+
+static void M_SpawnRainDropV(void *const drop)
+{
+    M_SpawnRainDrop(drop);
+}
+
+static void M_SpawnSnowflakeV(void *const snow)
+{
+    M_SpawnSnowflake(snow);
+}
+
+static M_WEATHER_CTL M_MakeCtl(
+    void *const particles, const int32_t wind_x, const int32_t wind_z,
+    void (*const spawn)(void *))
+{
+    return (M_WEATHER_CTL) {
+        .particles = particles,
+        .slots = M_MAX_WEATHER,
+        .spawn_below = M_GetParticleCount(),
+        .spawn_max = M_GetSpawnCount(),
+        .wind_x = wind_x,
+        .wind_z = wind_z,
+        .cam_x = g_Camera.pos.x,
+        .cam_z = g_Camera.pos.z,
+        .rng = Random_GetDrawState(),
+        .frozen = Random_GetDrawFrozen(),
+        .mul = 0x41C64E6DU,
+        .add = 0x3039U,
+        .spawn = spawn,
+        .outside = M_Outside,
+        .reach = M_RAIN_MAX_DISTANCE,
+    };
+}
+
+    #if defined(DC_EMIT_VERIFY)
+static void M_Report(
+    const char *const tag, const bool ok, const char *const what)
+{
+    static uint32_t m_Runs[4];
+    static uint32_t m_Bad[4];
+    const int32_t k = tag[0] == 'r' ? 0 : tag[0] == 's' ? 1 : 2;
+    m_Runs[k]++;
+    if (!ok) {
+        m_Bad[k]++;
+        if (m_Bad[k] <= 6) {
+            LOG_WARNING("[weather-verify] %s MISMATCH: %s", tag, what);
+        }
+    }
+    if (m_Runs[k] % 300 == 0) {
+        LOG_WARNING(
+            "[weather-verify] %s %u runs, %u bad", tag, (unsigned)m_Runs[k],
+            (unsigned)m_Bad[k]);
+    }
+}
+
+static void M_VerifyUpdate(
+    const char *const tag, void *const particles, const size_t size,
+    void (*const asm_fn)(void *), M_WEATHER_CTL *const ctl,
+    void (*const c_fn)(void))
+{
+    static uint8_t before[M_BASE_WEATHER * 2 * 52];
+    static uint8_t after_asm[M_BASE_WEATHER * 2 * 52];
+    const size_t bytes = size * M_MAX_WEATHER;
+    memcpy(before, particles, bytes);
+    const uint32_t seed0 = *Random_GetDrawState();
+    asm_fn(ctl);
+    memcpy(after_asm, particles, bytes);
+    const uint32_t seed_asm = *Random_GetDrawState();
+    memcpy(particles, before, bytes);
+    *Random_GetDrawState() = seed0;
+    c_fn();
+    M_Report(
+        tag,
+        seed_asm == *Random_GetDrawState()
+            && memcmp(after_asm, particles, bytes) == 0,
+        "state or particles differ");
+}
+
+static void M_VerifyList(
+    const char *const tag, const void *const asm_list, const int32_t asm_n,
+    const void *const c_list, const int32_t c_n, const size_t size)
+{
+    M_Report(
+        tag,
+        asm_n == c_n && memcmp(asm_list, c_list, size * (size_t)c_n) == 0,
+        "lists differ");
+}
+    #endif
+
+static void M_UpdateRain(void)
+{
+    const XZ_32 wind = Sparks_GetSmokeWind();
+    M_WEATHER_CTL ctl =
+        M_MakeCtl(m_Raindrops, 4 * wind.x, 4 * wind.z, M_SpawnRainDropV);
+    #if defined(DC_EMIT_VERIFY)
+    M_VerifyUpdate(
+        "rain-update", m_Raindrops, sizeof(M_RAINDROP), dc_rain_update, &ctl,
+        M_UpdateRainC);
+    #else
+    dc_rain_update(&ctl);
+    #endif
+}
+
+static void M_UpdateSnow(void)
+{
+    const XZ_32 wind = Sparks_GetSmokeWind();
+    M_WEATHER_CTL ctl =
+        M_MakeCtl(m_Snowflakes, 2 * wind.x, 2 * wind.z, M_SpawnSnowflakeV);
+    #if defined(DC_EMIT_VERIFY)
+    M_VerifyUpdate(
+        "snow-update", m_Snowflakes, sizeof(M_SNOWFLAKE), dc_snow_update, &ctl,
+        M_UpdateSnowC);
+    #else
+    dc_snow_update(&ctl);
+    #endif
+}
+
+static void M_DrawRain(void)
+{
+    const XZ_32 wind = Sparks_GetSmokeWind();
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
+    int32_t room = 0;
+    void *const slots = OutputSource_PolyFX_StreakSlots(&room);
+    if (slots == nullptr) {
+        return;
+    }
+    #if defined(DC_EMIT_VERIFY)
+    static uint8_t scratch[768 * 32];
+    const int32_t room_real = room;
+    room = MIN(room, 768);
+    #endif
+    M_WEATHER_DRAW ctl = {
+        .particles = m_Raindrops,
+        .slots = M_MAX_WEATHER,
+    #if defined(DC_EMIT_VERIFY)
+        .out = scratch,
+    #else
+        .out = slots,
+    #endif
+        .room = room,
+        .interp = Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0,
+        .ratio = (float)ratio,
+        .k36 = (int32_t)0xFF000000u,
+        .k40 = (int32_t)0xFF304040u,
+        .k52 = wind.x * 4,
+        .k56 = wind.z * 4,
+    };
+    dc_rain_draw(&ctl);
+    #if defined(DC_EMIT_VERIFY)
+    int32_t room_after = 0;
+    M_DrawRainC();
+    OutputSource_PolyFX_StreakSlots(&room_after);
+    M_VerifyList(
+        "rain-draw", scratch, ctl.written, slots, room_real - room_after,
+        32);
+    #else
+    OutputSource_PolyFX_StreaksAdded(ctl.written);
+    #endif
+}
+
+static void M_DrawSnow(void)
+{
+    const OBJECT *const obj = Object_Get(O_SNOWFLAKE);
+    if (!obj->loaded) {
+        return;
+    }
+    const TRX_REAL ratio = Interpolation_GetWorldRate();
+    int32_t room = 0;
+    void *const slots = OutputSource_PolyFX_ParticleSlots(&room);
+    if (slots == nullptr) {
+        return;
+    }
+    float picture[9];
+    OutputSource_PolyFX_GetPicture(obj->mesh_idx, picture);
+    #if defined(DC_EMIT_VERIFY)
+    static uint8_t scratch[512 * M_PARTICLE_BYTES];
+    const int32_t room_real = room;
+    room = MIN(room, 512);
+    #endif
+    const int32_t fog_start = Output_GetFogStart();
+    const int32_t fog_end = Output_GetFogEnd();
+    M_WEATHER_DRAW ctl = {
+        .particles = m_Snowflakes,
+        .slots = M_MAX_WEATHER,
+    #if defined(DC_EMIT_VERIFY)
+        .out = scratch,
+    #else
+        .out = slots,
+    #endif
+        .room = room,
+        .interp = Interpolation_IsActive() && ratio > 0.0 && ratio < 1.0,
+        .ratio = (float)ratio,
+        .near_z = Output_GetNearZ(),
+        .far_z = Output_GetFarZ(),
+        .k36 = fog_start,
+        .k40 = fog_end,
+        .picture = picture,
+        .matrix = &g_ViewMatrix,
+        .persp = g_PhdPersp > 0,
+    };
+    dc_snow_draw(&ctl);
+    #if defined(DC_EMIT_VERIFY)
+    int32_t room_after = 0;
+    M_DrawSnowC();
+    OutputSource_PolyFX_ParticleSlots(&room_after);
+    M_VerifyList(
+        "snow-draw", scratch, ctl.written, slots, room_real - room_after,
+        M_PARTICLE_BYTES);
+    #else
+    OutputSource_PolyFX_ParticlesAdded(ctl.written);
+    #endif
+}
+#else
+static void M_UpdateRain(void)
+{
+    M_UpdateRainC();
+}
+
+static void M_DrawRain(void)
+{
+    M_DrawRainC();
+}
+
+static void M_UpdateSnow(void)
+{
+    M_UpdateSnowC();
+}
+
+static void M_DrawSnow(void)
+{
+    M_DrawSnowC();
+}
+#endif
 
 static void M_SaveRain(JSON_WRITE_IO *const io)
 {
