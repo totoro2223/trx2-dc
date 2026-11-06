@@ -150,10 +150,19 @@ enum {
     DC_PROBE_D_PRE, // M_DrawInstance: from the start to the transform
     DC_PROBE_D_POST, // ... after the transform to the faces (soft shadows)
     DC_PROBE_D_TAIL, // ... after the faces: cel, bump, env
+    DC_PROBE_S_EFR, // per-room effects (Effect_Draw)
+    DC_PROBE_S_FXM, // FX_Draw: weather, water particles, droplets...
+    DC_PROBE_S_SPK, // Sparks_Draw
+    DC_PROBE_S_ROPE, // Rope_DrawAll
+    DC_PROBE_S_FLARE, // Output_LensFlares_Draw
     DC_PROBE_COUNT,
 };
 
 extern uint32_t g_DC_ProbeUs[DC_PROBE_COUNT];
+// The window's figures as text, for the HUD (TRX_DC_PROBES): tenths of ms.
+#define DC_PROBE_SCREEN_LINES 17
+#define DC_PROBE_SCREEN_WIDTH 28
+extern char g_DC_ProbeScreen[DC_PROBE_SCREEN_LINES][DC_PROBE_SCREEN_WIDTH];
 
 // Per Lua event type: time and number of fires (index = LUA_EVENT_TYPE).
 #define DC_PROBE_LUA_EVENTS 96

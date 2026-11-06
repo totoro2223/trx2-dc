@@ -270,6 +270,41 @@ untwinned:
     fadd    fr7,fr4                 ! adder + n.l / 65536
     ftrc    fr4,fpul
     sts     fpul,r3
+    ! TR1/TR2 under water: the caustics (M_Caustic) as an int by the hash of
+    ! the vertex's place; run + 80 is the 32 values, turned to the time.
+    mov     r4,r1
+    add     #80,r1
+    mov.l   @r1,r1
+    tst     r1,r1
+    bt      9f
+    mov.l   r5,@-r15
+    mov.l   r1,@-r15
+    mov.w   @(8,r2),r0
+    mov.l   .Lhash_x,r1
+    mul.l   r1,r0
+    sts     macl,r5
+    mov.w   @(10,r2),r0
+    mov.l   .Lhash_y,r1
+    mul.l   r1,r0
+    sts     macl,r0
+    xor     r0,r5
+    mov.w   @(12,r2),r0
+    mov.l   .Lhash_z,r1
+    mul.l   r1,r0
+    sts     macl,r0
+    xor     r0,r5
+    shlr8   r5
+    shlr2   r5
+    shlr    r5
+    mov     #31,r0
+    and     r0,r5
+    shll2   r5
+    mov.l   @r15+,r1
+    add     r1,r5
+    mov.l   @r5,r0
+    add     r0,r3
+    mov.l   @r15+,r5
+9:
     mov.l   .Lshade_maxa,r1
     cmp/gt  r1,r3
     bf      1f
@@ -332,6 +367,12 @@ untwinned:
     .align 2
 .Lshade_maxa:
     .long   0x1FFF
+.Lhash_x:
+    .long   73856093
+.Lhash_y:
+    .long   19349663
+.Lhash_z:
+    .long   83492791
 .Lone_65536a:
     .long   0x37800000
 place:

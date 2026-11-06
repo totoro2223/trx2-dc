@@ -735,7 +735,7 @@ static SHADOW_TYPE M_ShadowType(void)
 }
 // Faces drawn with a soft shadow, for the debug console.
 static int32_t m_SoftFaces = 0;
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
 static int32_t m_ShadowReceivers = 0;
 static int32_t m_ShadowRooms = 0;
 #endif
@@ -1363,6 +1363,28 @@ M_HOT float M_Caustic(const OUTPUT_MESH_VERTEX *const vertex)
     return m_CausticSine[at];
 }
 
+// The caustics' 32 values turned to the frame's time, as ints (the shade is
+// found in integers): the assemblies index it with the hash's own five bits.
+// nullptr when the instance has no caustics or the lighting is off.
+static const int32_t *M_CausticTable(const M_INSTANCE_LIGHT *const il)
+{
+    static int32_t tab[M_CAUSTIC_SIZE];
+    static int32_t at = INT32_MIN;
+    if (!il->caustics || !m_Frame.lighting) {
+        return nullptr;
+    }
+    const int32_t t = (int32_t)m_Frame.time_in_game;
+    if (t != at) {
+        const OUTPUT_MESH_VERTEX zero = {};
+        (void)M_Caustic(&zero); // makes the sines
+        for (int32_t j = 0; j < M_CAUSTIC_SIZE; j++) {
+            tab[j] = (int32_t)m_CausticSine[(t + j) & (M_CAUSTIC_SIZE - 1)];
+        }
+        at = t;
+    }
+    return tab;
+}
+
 M_HOT void M_LightVertex(
     const OUTPUT_MESH_VERTEX *const vertex, const M_INSTANCE_LIGHT *const il,
     const MATRIX *const wmatrix, const RGBA_F tint, float out_rgba[4],
@@ -1777,7 +1799,9 @@ typedef struct {
     int32_t origin[3];
     // A sprite's corner moves by its normal times this in eye space.
     float bscale;
+    const int32_t *caus; // the caustics (M_CausticTable); nullptr: none
 } M_XROOM;
+_Static_assert(offsetof(M_XROOM, caus) == 88, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, tr3_k) == 64, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, water) == 68, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XROOM, origin) == 72, "xform_sh4.S reads these");
@@ -1912,7 +1936,7 @@ static void M_XformRoom(
     // light (TR3: its colour does not depend on those flags otherwise).
     const bool fast = vref != nullptr && lighting
         && (tr3 ? !rgb_dyn && (!water || water_asm) : !dyn)
-        && !c->ortho && !il->caustics;
+        && !c->ortho;
     M_XROOM run = {
         .c = c,
         .xverts = xverts,
@@ -1932,6 +1956,7 @@ static void M_XformRoom(
                     water_asm ? (int32_t)w[1][3] : 0,
                     water_asm ? (int32_t)w[2][3] : 0 },
         .bscale = scale,
+        .caus = M_CausticTable(il),
     };
 #if !defined(DC_EMIT_VERIFY)
     if (fast) {
@@ -2117,8 +2142,10 @@ typedef struct {
     uint32_t dark;
     uint32_t tint[4]; // a, r, g, b in 8.8
     const M_INSTANCE_LIGHT *il; // TR3's object light; nullptr for TR1/TR2
+    const int32_t *caus; // the caustics (M_CausticTable); nullptr: none
 } M_XOBJ;
 _Static_assert(offsetof(M_XOBJ, il) == 76, "xform_obj_sh4.S reads these");
+_Static_assert(offsetof(M_XOBJ, caus) == 80, "xform_obj_sh4.S reads these");
 _Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_double) == 20, "xform_obj_sh4.S");
 _Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_ambient) == 24, "xform_obj_sh4.S");
 _Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_count) == 36, "xform_obj_sh4.S");
@@ -2183,6 +2210,7 @@ static void M_XformObject(
         .dark = dark,
         .tint = { ta, tr, tg, tb },
         .il = tr3 ? il : nullptr,
+        .caus = M_CausticTable(il),
     };
 #if !defined(DC_EMIT_VERIFY)
     if (fast) {
@@ -2220,6 +2248,9 @@ static void M_XformObject(
                 l0, l1, l2, 0.0f, vertex->normal.x, vertex->normal.y,
                 vertex->normal.z, 0.0f);
             shade += n_dot_l * (1.0f / (float)(1 << 16));
+        }
+        if (run.caus != nullptr) {
+            shade += M_Caustic(vertex);
         }
         uint32_t fk = 256;
         uint32_t k = tr3 ? 256 : M_ShadeK((int32_t)shade, min_shade);
@@ -2329,7 +2360,9 @@ typedef struct {
     // TR3's own light with no fog: each channel's whole factor (blue, green,
     // red, 0) by the shade's step.
     const uint16_t (*light)[4];
+    const int32_t *caus; // the caustics (M_CausticTable); nullptr: none
 } M_XOWN;
+_Static_assert(offsetof(M_XOWN, caus) == 92, "xform_own_sh4.S reads these");
 _Static_assert(offsetof(M_XOWN, sargb) == 80, "xform_own_sh4.S reads these");
 _Static_assert(offsetof(M_XOWN, light) == 88, "xform_own_sh4.S reads these");
 
@@ -2421,7 +2454,7 @@ static void M_XformOwn(
         | VERT_USE_OWN_LIGHT | VERT_BILLBOARD | VERT_ABS_SPRITE;
     const uint16_t shared = bind->flags_or;
     const bool fast = ((bind->flags_or ^ bind->flags_and) & decisive) == 0
-        && !c->ortho && !il->caustics
+        && !c->ortho
         && (shared & (VERT_BILLBOARD | VERT_ABS_SPRITE)) == 0
         && (bind->vref == nullptr || count <= 0xFFFF);
     const bool own_coloured = tr3 && lighting
@@ -2456,6 +2489,7 @@ static void M_XformOwn(
         .light = fast && own_coloured
             ? M_OwnLight(il->tr3_ambient, il->tr3_double, tr, tg, tb)
             : nullptr,
+        .caus = M_CausticTable(il),
     };
     g_DC_ProbeUs[fast ? DC_PROBE_N_OWNFAST : DC_PROBE_N_OWNSLOW] += count; // TEMP
 #if !defined(DC_EMIT_VERIFY)
@@ -2563,6 +2597,35 @@ static void M_XformOwn(
         }
     }
 #endif
+}
+
+// A coloured fog's share (oargb) for the vertices of the ranges, found from
+// the eye position the fast transforms leave in the vertices: only those they
+// marked fogged cost anything, so the lit part keeps its assembly.
+static void M_FogColours(
+    MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
+    const M_XFORM *const c, const int32_t (*const ranges)[2], const int32_t n)
+{
+    batcher->oargb_used = c->fog;
+    if (!c->fog) {
+        return;
+    }
+    const float fr = m_Frame.fog_color[0] * inst->tint.r;
+    const float fg = m_Frame.fog_color[1] * inst->tint.g;
+    const float fb = m_Frame.fog_color[2] * inst->tint.b;
+    for (int32_t r = 0; r < n; r++) {
+        for (int32_t i = ranges[r][0]; i < ranges[r][0] + ranges[r][1]; i++) {
+            const M_XVERT *const xv = &batcher->xverts[i];
+            uint32_t out = 0;
+            if ((xv->clip & M_CLIP_FOGGED) != 0) {
+                const float fog = M_Fog(xv->x, xv->y, xv->z, c);
+                if (fog > 0.0f) {
+                    out = M_PackARGB(1.0f, fr * fog, fg * fog, fb * fog);
+                }
+            }
+            batcher->oargb[i] = out;
+        }
+    }
 }
 
 // Everything else: sprites, meshes lit by their own light or not at all,
@@ -3544,7 +3607,7 @@ static bool M_TransformInstance(
     int32_t transformed = bind->vertex_count;
     bool chunked = false;
     if (bind->needs_room_lights && !bind->needs_object_light
-        && !bind->needs_own_light && black_fog
+        && !bind->needs_own_light
         && !(bind->billboard && m_Frame.cel) // room cel would shade its sprites
         && !m_Frame.ortho && !batcher->env && !batcher->cel) {
         // Not on a room fading out: it keeps no shaded side (M_DrawInstance).
@@ -3574,6 +3637,9 @@ static bool M_TransformInstance(
                     M_XformRoom(
                         batcher, bind, inst, &il, &c, &batcher->vranges[r], 1,
                         scale));
+                if (!black_fog) {
+                    M_FogColours(batcher, inst, &c, &batcher->vranges[r], 1);
+                }
                 if (batcher->cel_dark) {
                     M_RoomCel(
                         batcher, batcher->vranges[r][0],
@@ -3594,18 +3660,27 @@ static bool M_TransformInstance(
                 DC_PROBE_XT_ROOM,
                 M_XformRoom(
                     batcher, bind, inst, &il, &c, batcher->vranges, nvr, scale));
+            if (!black_fog) {
+                const int32_t whole[1][2] = { { 0, bind->vertex_count } };
+                M_FogColours(
+                    batcher, inst, &c, nvr < 0 ? whole : batcher->vranges,
+                    nvr < 0 ? 1 : nvr);
+            }
             if (batcher->cel_dark) {
                 M_RoomCel(batcher, 0, bind->vertex_count);
             }
         }
         g_DC_ProbeUs[DC_PROBE_XF_LIT] += transformed; // TEMP
     } else if (
-        bind->plain_object && m_Frame.lighting && black_fog && !m_Frame.ortho
-        && !il.caustics) {
+        bind->plain_object && m_Frame.lighting && !m_Frame.ortho) {
         g_DC_ProbeUs[DC_PROBE_XF_PLAIN] += bind->vertex_count; // TEMP
         DC_PROBE(
             DC_PROBE_XT_PLAIN,
             M_XformObject(batcher, bind, inst, &il, &c, mv, cel_scale));
+        if (!black_fog) {
+            const int32_t whole[1][2] = { { 0, bind->vertex_count } };
+            M_FogColours(batcher, inst, &c, whole, 1);
+        }
     } else {
         g_DC_ProbeUs[DC_PROBE_XF_GENERIC] += bind->vertex_count; // TEMP
         g_DC_ProbeUs[bind->needs_own_light ? DC_PROBE_XG_OWN
@@ -3615,9 +3690,13 @@ static bool M_TransformInstance(
                                            : DC_PROBE_XG_OTHER] +=
             bind->vertex_count; // TEMP
         DC_PROBE_START(probe_gen);
-        if (!bind->needs_room_lights && !bind->needs_object_light && black_fog
+        if (!bind->needs_room_lights && !bind->needs_object_light
             && !m_Frame.ortho && !batcher->env) {
             M_XformOwn(batcher, bind, inst, &il, &c, scale);
+            if (!black_fog) {
+                const int32_t whole[1][2] = { { 0, bind->vertex_count } };
+                M_FogColours(batcher, inst, &c, whole, 1);
+            }
         } else {
             g_DC_ProbeUs[bind->needs_room_lights ? DC_PROBE_N_GROOM
                          : bind->needs_object_light ? DC_PROBE_N_GOBJ
@@ -5952,7 +6031,7 @@ static void M_DrawInstance(
     batcher->emitted = false;
     batcher->chunk_emit_us = 0;
     DC_PROBE_STOP(DC_PROBE_D_PRE, probe_pre);
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     const uint64_t xform_start = timer_us_gettime64();
     const bool transformed = M_TransformInstance(batcher, inst, bind);
     // The chunks drawn on the way count as emission, not transformation.
@@ -5969,7 +6048,7 @@ static void M_DrawInstance(
 #endif
     DC_PROBE_START(probe_post);
     const bool is_caster = caster >= 0;
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     m_ShadowReceivers += is_room && M_ShadowType() == SHADOW_TYPE_VOLUME;
     m_ShadowRooms += bind->needs_room_lights;
 #endif
@@ -6116,11 +6195,24 @@ static void M_PrepareFrame(void)
 #define M_MAX_PARTICLES 768
 static DC_PARTICLE m_Particles[M_MAX_PARTICLES];
 static int32_t m_ParticleCount;
+static int32_t m_ParticleBlendCount[3];
+#define M_MAX_QUADS 512
+static DC_QUAD m_Quads[M_MAX_QUADS];
+static int32_t m_QuadCount;
+static int32_t m_QuadBlendCount[3];
+#define M_MAX_STREAKS 768
+static DC_STREAK m_Streaks[M_MAX_STREAKS];
+static int32_t m_StreakCount;
 
 static void M_RenderBegin(const SCENE_SOURCE *const source)
 {
     MESH_BATCHER *const batcher = source->priv;
     m_ParticleCount = 0;
+    m_ParticleBlendCount[0] = m_ParticleBlendCount[1] =
+        m_ParticleBlendCount[2] = 0;
+    m_StreakCount = 0;
+    m_QuadCount = 0;
+    m_QuadBlendCount[0] = m_QuadBlendCount[1] = m_QuadBlendCount[2] = 0;
     for (int32_t pass = 0; pass < SCENE_PASS_COUNT; pass++) {
         Vector_Clear(batcher->staged[pass]);
         Vector_Clear(batcher->casters[pass]);
@@ -6196,17 +6288,20 @@ void DC_MeshBatcher_StageParticle(
     (void)batcher;
     if (m_ParticleCount < M_MAX_PARTICLES) {
         m_Particles[m_ParticleCount++] = *particle;
+        m_ParticleBlendCount[particle->blend]++;
     }
 }
 
 // 0x73560: one projection of the centre, rejected before the near plane, size
 // = side * persp / z with a floor of two pixels, rejected when its rectangle
 // misses the screen, one primitive.
-static void M_DrawParticles(void)
+static void M_DrawParticles(const int32_t blend)
 {
-    if (m_ParticleCount == 0 || m_Frame.ortho) {
+    if (m_ParticleBlendCount[blend] == 0 || m_Frame.ortho) {
         return;
     }
+    static const DC_BLEND k_blend[3] = { DC_BLEND_ADD, DC_BLEND_ALPHA,
+                                         DC_BLEND_SUB };
     const float(*const v)[4] = m_Frame.view;
     const float near_z = m_Frame.near_z;
     const float lo_x = m_Frame.center_x - m_Frame.half_w;
@@ -6214,9 +6309,14 @@ static void M_DrawParticles(void)
     const float lo_y = m_Frame.center_y - m_Frame.half_h;
     const float hi_y = m_Frame.center_y + m_Frame.half_h;
     const float sc = m_Frame.screen_scale;
+    const float px = fabsf(m_Frame.proj_x);
+    const float py = fabsf(m_Frame.proj_y);
     int32_t page = INT32_MIN;
     for (int32_t i = 0; i < m_ParticleCount; i++) {
         const DC_PARTICLE *const q = &m_Particles[i];
+        if (q->blend != blend) {
+            continue;
+        }
         const float *const p = q->pos;
         const float z = v[0][2] * p[0] + v[1][2] * p[1] + v[2][2] * p[2]
             + v[3][2];
@@ -6230,15 +6330,18 @@ static void M_DrawParticles(void)
             + v[3][1];
         const float sx = m_Frame.center_x + m_Frame.proj_x * x * inv_z;
         const float sy = m_Frame.center_y + m_Frame.proj_y * y * inv_z;
-        const float hw = MAX(1.0f, fabsf(m_Frame.proj_x) * q->half * inv_z);
-        const float hh = MAX(1.0f, fabsf(m_Frame.proj_y) * q->half * inv_z);
-        if (sx + hw < lo_x || sx - hw > hi_x || sy + hh < lo_y
-            || sy - hh > hi_y) {
+        // Half sides in pixels, two pixels across at least; turned about the
+        // centre as the particle asks.
+        const float hw = MAX(1.0f, px * q->half * inv_z);
+        const float hh = MAX(1.0f, py * q->half_h * inv_z);
+        const float reach = MAX(hw, hh) * (q->sn == 0.0f ? 1.0f : 1.4143f);
+        if (sx + reach < lo_x || sx - reach > hi_x || sy + reach < lo_y
+            || sy - reach > hi_y) {
             continue;
         }
         if (q->page != page) {
             page = q->page;
-            DC_PVR_SetState(DC_BLEND_ADD, page, true);
+            DC_PVR_SetState(k_blend[blend], page, page != DC_PVR_NO_TEXTURE);
         }
         const float depth = M_Depth(near_z * inv_z);
         // Strip order: top left, bottom left, top right, bottom right.
@@ -6248,9 +6351,11 @@ static void M_DrawParticles(void)
         DC_PVR_VERTEX out[4];
         for (int32_t k = 0; k < 4; k++) {
             const int32_t c = k_corner[k];
+            const float ox = k_sx[c] * hw;
+            const float oy = k_sy[c] * hh;
             out[k] = (DC_PVR_VERTEX) {
-                .x = (sx + k_sx[c] * hw) * sc,
-                .y = (sy + k_sy[c] * hh) * sc,
+                .x = (sx + ox * q->cs - oy * q->sn) * sc,
+                .y = (sy + ox * q->sn + oy * q->cs) * sc,
                 .z = depth,
                 .u = q->u[c],
                 .v = q->v[c],
@@ -6258,6 +6363,166 @@ static void M_DrawParticles(void)
                 .oargb = 0,
             };
         }
+        DC_PVR_Quad(&out[0], &out[1], &out[2], &out[3]);
+    }
+}
+
+void DC_MeshBatcher_StageQuad(
+    MESH_BATCHER *const batcher, const DC_QUAD *const quad)
+{
+    (void)batcher;
+    if (m_QuadCount < M_MAX_QUADS) {
+        m_Quads[m_QuadCount++] = *quad;
+        m_QuadBlendCount[quad->blend]++;
+    }
+}
+
+// shortcut: a quad with a corner behind the near plane is dropped, not
+// clipped; upgrade if splashes under the camera blink out.
+static void M_DrawQuads(const int32_t blend)
+{
+    if (m_QuadBlendCount[blend] == 0 || m_Frame.ortho) {
+        return;
+    }
+    static const DC_BLEND k_blend[3] = { DC_BLEND_ADD, DC_BLEND_ALPHA,
+                                         DC_BLEND_SUB };
+    const float(*const v)[4] = m_Frame.view;
+    const float near_z = m_Frame.near_z;
+    const float lo_x = m_Frame.center_x - m_Frame.half_w;
+    const float hi_x = m_Frame.center_x + m_Frame.half_w;
+    const float lo_y = m_Frame.center_y - m_Frame.half_h;
+    const float hi_y = m_Frame.center_y + m_Frame.half_h;
+    const float sc = m_Frame.screen_scale;
+    int32_t page = INT32_MIN;
+    for (int32_t i = 0; i < m_QuadCount; i++) {
+        const DC_QUAD *const q = &m_Quads[i];
+        if (q->blend != blend) {
+            continue;
+        }
+        DC_PVR_VERTEX c[4];
+        float min_x = 1e30f;
+        float max_x = -1e30f;
+        float min_y = 1e30f;
+        float max_y = -1e30f;
+        bool ok = true;
+        for (int32_t k = 0; k < q->n; k++) {
+            const float *const p = q->p[k];
+            const float z = v[0][2] * p[0] + v[1][2] * p[1] + v[2][2] * p[2]
+                + v[3][2];
+            if (z < near_z) {
+                ok = false;
+                break;
+            }
+            const float inv_z = 1.0f / z;
+            const float x = v[0][0] * p[0] + v[1][0] * p[1] + v[2][0] * p[2]
+                + v[3][0];
+            const float y = v[0][1] * p[0] + v[1][1] * p[1] + v[2][1] * p[2]
+                + v[3][1];
+            const float sx = m_Frame.center_x + m_Frame.proj_x * x * inv_z;
+            const float sy = m_Frame.center_y + m_Frame.proj_y * y * inv_z;
+            min_x = MIN(min_x, sx);
+            max_x = MAX(max_x, sx);
+            min_y = MIN(min_y, sy);
+            max_y = MAX(max_y, sy);
+            c[k] = (DC_PVR_VERTEX) {
+                .x = sx * sc,
+                .y = sy * sc,
+                .z = M_Depth(near_z * inv_z / (1.0f - q->pull)),
+                .u = q->u[k],
+                .v = q->v[k],
+                .argb = q->argb[k],
+            };
+        }
+        if (!ok || max_x < lo_x || min_x > hi_x || max_y < lo_y
+            || min_y > hi_y) {
+            continue;
+        }
+        if (q->page != page) {
+            page = q->page;
+            DC_PVR_SetState(k_blend[blend], page, page >= 0);
+        }
+        if (q->n == 4) {
+            DC_PVR_Quad(&c[0], &c[3], &c[1], &c[2]);
+        } else {
+            DC_PVR_Quad(&c[0], &c[2], &c[1], &c[1]);
+        }
+    }
+}
+
+void DC_MeshBatcher_StageStreak(
+    MESH_BATCHER *const batcher, const DC_STREAK *const streak)
+{
+    (void)batcher;
+    if (m_StreakCount < M_MAX_STREAKS) {
+        m_Streaks[m_StreakCount++] = *streak;
+    }
+}
+
+// Each streak: both ends projected, a quad about a pixel and a half wide
+// across the line between them. An end before the near plane drops it.
+static void M_DrawStreaks(void)
+{
+    if (m_StreakCount == 0 || m_Frame.ortho) {
+        return;
+    }
+    const float(*const v)[4] = m_Frame.view;
+    const float near_z = m_Frame.near_z;
+    const float lo_x = m_Frame.center_x - m_Frame.half_w;
+    const float hi_x = m_Frame.center_x + m_Frame.half_w;
+    const float lo_y = m_Frame.center_y - m_Frame.half_h;
+    const float hi_y = m_Frame.center_y + m_Frame.half_h;
+    const float sc = m_Frame.screen_scale;
+    DC_PVR_SetState(DC_BLEND_ADD, DC_PVR_NO_TEXTURE, false);
+    for (int32_t i = 0; i < m_StreakCount; i++) {
+        const DC_STREAK *const q = &m_Streaks[i];
+        float sx[2];
+        float sy[2];
+        float depth[2];
+        bool ok = true;
+        for (int32_t e = 0; e < 2; e++) {
+            const float *const p = e == 0 ? q->a : q->b;
+            const float z = v[0][2] * p[0] + v[1][2] * p[1] + v[2][2] * p[2]
+                + v[3][2];
+            if (z < near_z) {
+                ok = false;
+                break;
+            }
+            const float inv_z = 1.0f / z;
+            const float x = v[0][0] * p[0] + v[1][0] * p[1] + v[2][0] * p[2]
+                + v[3][0];
+            const float y = v[0][1] * p[0] + v[1][1] * p[1] + v[2][1] * p[2]
+                + v[3][1];
+            sx[e] = m_Frame.center_x + m_Frame.proj_x * x * inv_z;
+            sy[e] = m_Frame.center_y + m_Frame.proj_y * y * inv_z;
+            depth[e] = M_Depth(near_z * inv_z);
+        }
+        if (!ok) {
+            continue;
+        }
+        if ((sx[0] < lo_x && sx[1] < lo_x) || (sx[0] > hi_x && sx[1] > hi_x)
+            || (sy[0] < lo_y && sy[1] < lo_y)
+            || (sy[0] > hi_y && sy[1] > hi_y)) {
+            continue;
+        }
+        const float dx = sx[1] - sx[0];
+        const float dy = sy[1] - sy[0];
+        const float len_sq = dx * dx + dy * dy;
+        if (len_sq < 0.0001f) {
+            continue;
+        }
+        const float k = 0.75f / sqrtf(len_sq);
+        const float nx = -dy * k;
+        const float ny = dx * k;
+        DC_PVR_VERTEX out[4] = {
+            { .x = (sx[0] + nx) * sc, .y = (sy[0] + ny) * sc, .z = depth[0],
+              .argb = q->argb_a },
+            { .x = (sx[0] - nx) * sc, .y = (sy[0] - ny) * sc, .z = depth[0],
+              .argb = q->argb_a },
+            { .x = (sx[1] + nx) * sc, .y = (sy[1] + ny) * sc, .z = depth[1],
+              .argb = q->argb_b },
+            { .x = (sx[1] - nx) * sc, .y = (sy[1] - ny) * sc, .z = depth[1],
+              .argb = q->argb_b },
+        };
         DC_PVR_Quad(&out[0], &out[1], &out[2], &out[3]);
     }
 }
@@ -6297,7 +6562,15 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     }
     DC_PVR_SetShadowReceiver(false);
     if (pass == SCENE_PASS_BLEND_ADD) {
-        M_DrawParticles();
+        M_DrawParticles(0);
+        M_DrawQuads(0);
+        M_DrawStreaks();
+    } else if (pass == SCENE_PASS_BLEND_SUB) {
+        M_DrawParticles(2);
+        M_DrawQuads(2);
+    } else {
+        M_DrawParticles(1);
+        M_DrawQuads(1);
     }
 }
 
@@ -6305,7 +6578,13 @@ static bool M_IsDirty(const SCENE_SOURCE *const source, const SCENE_PASS pass)
 {
     const MESH_BATCHER *const batcher = source->priv;
     return batcher->staged[pass]->count > 0
-        || (pass == SCENE_PASS_BLEND_ADD && m_ParticleCount > 0);
+        || (pass == SCENE_PASS_BLEND_ADD
+            && (m_ParticleBlendCount[0] > 0 || m_QuadBlendCount[0] > 0
+                || m_StreakCount > 0))
+        || (pass == SCENE_PASS_BLEND_SUB
+            && (m_ParticleBlendCount[2] > 0 || m_QuadBlendCount[2] > 0))
+        || (pass == SCENE_PASS_OPAQUE
+            && (m_ParticleBlendCount[1] > 0 || m_QuadBlendCount[1] > 0));
 }
 
 // The animated textures moved on: the meshes that carry any look theirs up
@@ -6753,6 +7032,13 @@ static bool M_IsReflective(
 // halves of a quad stay paired.
 static void M_FindReflections(M_BINDING *const bind)
 {
+    // The reflections (Lara's pistols) are off: they cost a second pass and
+    // sent those meshes through the slow generic transform, for a look nobody
+    // saw. With env_count 0 no instance reflects.
+    static const bool k_reflections = false;
+    if (!k_reflections) {
+        return;
+    }
     const OUTPUT_MESH *const mesh = bind->mesh;
     const OUTPUT_MESH_VERTEX *const vertices = Vector_GetData(mesh->vertices);
     const OUTPUT_MESH_INDEX *const indices = Vector_GetData(mesh->opaque_vertex_indices);
@@ -7652,7 +7938,7 @@ static void M_KeepSoftCasters(const float center[3])
         }
         m_Soft.slice[i] = rank == 0 ? 0 : rank * 5 < 2 * m_CasterCount ? 1 : 2;
     }
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     static int32_t frame = 0;
     if (++frame % 120 == 0) {
         m_BumpFaces = 0;

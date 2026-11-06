@@ -173,7 +173,7 @@ OUTPUT_UI_SHADER *Output_GetUIShader(void)
     return nullptr;
 }
 
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
 static void M_StatsBeginScene(void);
 static uint32_t g_DC_ShadowMapUs = 0;
 static uint32_t g_DC_SubmitUs = 0;
@@ -185,13 +185,13 @@ extern uint32_t g_DC_BatcherXformUs;
 
 void Output_BeginScene(void)
 {
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     M_StatsBeginScene();
 #endif
     Output_ApplyFOV();
     const RGBA_F background = Output_GetBackgroundColor();
     DC_PVR_SetBackgroundColor(background.r, background.g, background.b);
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     const uint64_t map_start = timer_us_gettime64();
     DC_Shadow_RenderMaps();
     g_DC_ShadowMapUs = (uint32_t)(timer_us_gettime64() - map_start);
@@ -208,10 +208,12 @@ void Output_BeginScene(void)
 uint32_t g_DC_ProbeUs[DC_PROBE_COUNT] = {};
 // Counted by emit_sh4.S: faces left out by the clip bits, and by the facing.
 uint32_t g_DC_EmitCull[2] = {};
+// The probes' window as text for the HUD's middle (nolua_hud.c), TRX_DC_PROBES.
+char g_DC_ProbeScreen[DC_PROBE_SCREEN_LINES][DC_PROBE_SCREEN_WIDTH] = {};
 uint32_t g_DC_LuaEvUs[DC_PROBE_LUA_EVENTS] = {};
 uint32_t g_DC_LuaEvN[DC_PROBE_LUA_EVENTS] = {};
 
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
 
 extern _Thread_local uint64_t g_DC_SleepUs;
 
@@ -252,7 +254,7 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "ilight", "lweld", "aruns", "afaces", "acfaces", "aempty",
     "rall", "rplain", "rdyn", "rflick", "rvary", "rnw", "rfog", "rhit",
     "ctest", "chide", "croom", "qtest", "qhide", "otest", "ohide", "otime", "ectl", "ectln", "edraw", "edrawn",
-    "ownf", "owns", "groom", "gobj", "gfogc", "genvc", "gother", "iwalk", "imesh", "eclipc", "ebackc", "dpre", "dpost", "dtail",
+    "ownf", "owns", "groom", "gobj", "gfogc", "genvc", "gother", "iwalk", "imesh", "eclipc", "ebackc", "dpre", "dpost", "dtail", "sefr", "sfxm", "sspk", "srope", "sflare",
 };
 
 static void M_StatsBeginScene(void)
@@ -631,6 +633,33 @@ static void M_StatsEndScene(void)
             (unsigned long)(m_Stats.sum[i] / m_Stats.frames / div),
             (unsigned long)(m_Stats.max[i] / div));
     }
+#if defined(TRX_DC_PROBES)
+    {
+        // Tenths of a millisecond, as the [frame] line; the probes in us.
+        const uint32_t f = m_Stats.frames;
+#define S(i) ((unsigned)(m_Stats.sum[i] / f / 100))
+#define P(i) ((unsigned)(m_Stats.probe_sum[i] / f / 100))
+        snprintf(g_DC_ProbeScreen[0], DC_PROBE_SCREEN_WIDTH, "FPS %d  ROOMS %u", (int)m_FPS, (unsigned)(m_Stats.probe_sum[DC_PROBE_S_ROOMS] / f));
+        snprintf(g_DC_ProbeScreen[1], DC_PROBE_SCREEN_WIDTH, "LOGIC %u STAGE %u", S(M_LOGIC), S(M_DRAW));
+        snprintf(g_DC_ProbeScreen[2], DC_PROBE_SCREEN_WIDTH, "PASS %u SUBMIT %u", S(M_PASS), S(M_SUBMIT));
+        snprintf(g_DC_ProbeScreen[3], DC_PROBE_SCREEN_WIDTH, "XFORM %u PVR %u", S(M_XFORM), S(M_RENDER));
+        snprintf(g_DC_ProbeScreen[4], DC_PROBE_SCREEN_WIDTH, "EMIT %u BUMP %u", P(DC_PROBE_EMIT), P(DC_PROBE_BUMP));
+        snprintf(g_DC_ProbeScreen[5], DC_PROBE_SCREEN_WIDTH, "ROOM %u STAT %u", P(DC_PROBE_S_ROOMGEO), P(DC_PROBE_S_STATICS));
+        snprintf(g_DC_ProbeScreen[6], DC_PROBE_SCREEN_WIDTH, "ITEM %u BNDS %u", P(DC_PROBE_S_ITEMS), P(DC_PROBE_S_BOUNDS));
+        snprintf(g_DC_ProbeScreen[7], DC_PROBE_SCREEN_WIDTH, "POLY %u VERT %u", S(M_POLYS) * 100, S(M_VERTICES) * 100);
+        snprintf(g_DC_ProbeScreen[8], DC_PROBE_SCREEN_WIDTH, "SCEN %u PRE %u SKY %u", P(DC_PROBE_S_SCENE), P(DC_PROBE_S_PRE), P(DC_PROBE_S_SKY));
+        snprintf(g_DC_ProbeScreen[9], DC_PROBE_SCREEN_WIDTH, "LARA %u FX %u PNT %u", P(DC_PROBE_S_LARA), P(DC_PROBE_S_FX), P(DC_PROBE_S_PAINT));
+        snprintf(g_DC_ProbeScreen[10], DC_PROBE_SCREEN_WIDTH, "GFL %u UI %u OFL %u", P(DC_PROBE_S_GFLUSH), P(DC_PROBE_S_UI), P(DC_PROBE_S_OFLUSH));
+        snprintf(g_DC_ProbeScreen[11], DC_PROBE_SCREEN_WIDTH, "EFR %u FXM %u SPK %u", P(DC_PROBE_S_EFR), P(DC_PROBE_S_FXM), P(DC_PROBE_S_SPK));
+        snprintf(g_DC_ProbeScreen[12], DC_PROBE_SCREEN_WIDTH, "ROPE %u FLARE %u", P(DC_PROBE_S_ROPE), P(DC_PROBE_S_FLARE));
+        snprintf(g_DC_ProbeScreen[13], DC_PROBE_SCREEN_WIDTH, "L: EV %u INP %u ITM %u", P(DC_PROBE_EVENTS), P(DC_PROBE_INPUT), P(DC_PROBE_ITEMS));
+        snprintf(g_DC_ProbeScreen[14], DC_PROBE_SCREEN_WIDTH, "L: FX %u LAR %u PST %u", P(DC_PROBE_FX), P(DC_PROBE_LARA), P(DC_PROBE_POST));
+        snprintf(g_DC_ProbeScreen[15], DC_PROBE_SCREEN_WIDTH, "NME C %u/%u D %u/%u", P(DC_PROBE_N_CTRL), (unsigned)(m_Stats.probe_sum[DC_PROBE_N_CTRLN] / f), P(DC_PROBE_N_DRAW), (unsigned)(m_Stats.probe_sum[DC_PROBE_N_DRAWN] / f));
+        snprintf(g_DC_ProbeScreen[16], DC_PROBE_SCREEN_WIDTH, "XT RM %u PL %u GN %u", P(DC_PROBE_XT_ROOM), P(DC_PROBE_XT_PLAIN), P(DC_PROBE_XT_GENERIC));
+#undef S
+#undef P
+    }
+#endif
     // TEMP: see dc_probe.h. Its own line, in microseconds, timed itself.
     char probes[2048];
     len = snprintf(probes, sizeof(probes), "[probe]");
@@ -648,6 +677,7 @@ static void M_StatsEndScene(void)
     memset(g_DC_LuaEvN, 0, sizeof(g_DC_LuaEvN));
     // Through the log thread: written straight to the serial port, the two
     // lines held the game up for a frame every window.
+#if defined(TRX_DC_WATCHDOG)
     DC_PROBE(
         DC_PROBE_LOG, DC_Watchdog_Print(line); DC_Watchdog_Print("\n");
         // The serial line is cut at ~400 bytes: lines of up to 300.
@@ -669,6 +699,7 @@ static void M_StatsEndScene(void)
                 break;
             }
         });
+#endif
     memset(m_Stats.sum, 0, sizeof(m_Stats.sum));
     memset(m_Stats.max, 0, sizeof(m_Stats.max));
     memset(m_Stats.probe_sum, 0, sizeof(m_Stats.probe_sum));
@@ -697,7 +728,7 @@ bool g_DC_BenchRequested = false;
 void Output_EndScene(void)
 {
     SceneCompositor_EndScene();
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     const uint64_t submit_start = timer_us_gettime64();
     DC_PVR_EndFrame();
     g_DC_SubmitUs = (uint32_t)(timer_us_gettime64() - submit_start);
@@ -707,6 +738,7 @@ void Output_EndScene(void)
 #endif
     m_DrawnFrames++;
     g_DC_FrameCount++;
+    OutputSource_Objects_PrepareCreatures();
     if (g_DC_FrameCount % M_MESH_EVICT_INTERVAL == 0) {
         OutputSource_Objects_EvictUnused(M_MESH_MAX_AGE);
         OutputSource_Objects_EvictToBudget(

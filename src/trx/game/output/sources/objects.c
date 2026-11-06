@@ -14,6 +14,12 @@
 #include <trx/game/output/water.h>
 #include <trx/version.h>
 
+#include <stdlib.h>
+
+#include <trx/game/const.h>
+#include <trx/game/items/manager.h>
+#include <trx/game/lara/common.h>
+
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_level_heap.h>
 #endif
@@ -425,6 +431,13 @@ int32_t OutputSource_Objects_EvictUnused(const uint32_t max_age)
     return count;
 }
 
+static int M_CompareAge(const void *const a, const void *const b)
+{
+    const uint32_t la = (*(M_MESH *const *)a)->last_used;
+    const uint32_t lb = (*(M_MESH *const *)b)->last_used;
+    return la < lb ? -1 : la > lb ? 1 : 0;
+}
+
 int32_t OutputSource_Objects_EvictToBudget(const int32_t max_vertices)
 {
     M_PRIV *const p = &m_Priv;
@@ -437,23 +450,25 @@ int32_t OutputSource_Objects_EvictToBudget(const int32_t max_vertices)
             total += p->meshes[i].mesh_batch->vertices->count;
         }
     }
+    if (total <= max_vertices) {
+        return 0;
+    }
+    // One sort of the candidates, oldest first, instead of a scan of every
+    // mesh for each one let go.
+    M_MESH **const order = Memory_Alloc(sizeof(M_MESH *) * p->mesh_count);
+    size_t n = 0;
+    for (size_t i = 0; i < p->mesh_count; i++) {
+        M_MESH *const batch = &p->meshes[i];
+        // The frame just drawn keeps its meshes.
+        if (batch->mesh_batch != nullptr
+            && g_DC_FrameCount - batch->last_used > 1) {
+            order[n++] = batch;
+        }
+    }
+    qsort(order, n, sizeof(M_MESH *), M_CompareAge);
     int32_t count = 0;
-    while (total > max_vertices) {
-        M_MESH *oldest = nullptr;
-        for (size_t i = 0; i < p->mesh_count; i++) {
-            M_MESH *const batch = &p->meshes[i];
-            // The frame just drawn keeps its meshes.
-            if (batch->mesh_batch == nullptr
-                || g_DC_FrameCount - batch->last_used <= 1) {
-                continue;
-            }
-            if (oldest == nullptr || batch->last_used < oldest->last_used) {
-                oldest = batch;
-            }
-        }
-        if (oldest == nullptr) {
-            break;
-        }
+    for (size_t i = 0; i < n && total > max_vertices; i++) {
+        M_MESH *const oldest = order[i];
         total -= oldest->mesh_batch->vertices->count;
         MeshBatcher_RemoveMesh(p->batcher, oldest->mesh_batch);
         Output_Mesh_Destroy(oldest->mesh_batch);
@@ -461,6 +476,7 @@ int32_t OutputSource_Objects_EvictToBudget(const int32_t max_vertices)
         oldest->is_built = false;
         count++;
     }
+    Memory_Free(order);
     return count;
 }
 #endif
@@ -566,29 +582,79 @@ static void M_ResyncGeometry(
     M_ForEachFaceVertex(mesh, batch, M_ResyncVertexGeometry, &update);
 }
 
+#if defined(__DREAMCAST__)
+// A level holds a few thousand meshes - every pickup, every inventory model -
+// of which a scene draws a handful. Built all at once they would not fit the
+// Dreamcast's memory, so each is built when it is first drawn (or just before,
+// see OutputSource_Objects_PrepareCreatures).
+static bool M_EnsureBuilt(const OBJECT_MESH *const mesh)
+{
+    M_PRIV *const p = &m_Priv;
+    M_MESH *const batch = &p->meshes[Object_GetMeshIndex(mesh)];
+    batch->last_used = g_DC_FrameCount;
+    if (batch->is_built) {
+        return false;
+    }
+    batch->is_built = true;
+    // In the level's memory, which it is (dc_level_heap.c).
+    DC_LevelHeap_Enter();
+    MESH_BUILDER *const builder = MeshBuilder_Create();
+    OUTPUT_MESH *result = nullptr;
+    M_BuildMesh(builder, Object_GetMeshIndex(mesh), &result);
+    MeshBuilder_Destroy(builder);
+    if (result != nullptr) {
+        MeshBatcher_AddMesh(p->batcher, result);
+        batch->mesh_batch = result;
+    }
+    DC_LevelHeap_Leave();
+    return true;
+}
+
+// Within this many blocks of Lara a creature in play gets its meshes built
+// ahead (at most two a frame) and kept from being let go: built in the frame
+// it first shows, all of its meshes at once, they cost several frames.
+    #define M_CREATURE_REACH (24 * WALL_L)
+    #define M_CREATURE_BUILDS_PER_FRAME 2
+
+void OutputSource_Objects_PrepareCreatures(void)
+{
+    M_PRIV *const p = &m_Priv;
+    const ITEM *const lara = Lara_GetItem();
+    if (p->meshes == nullptr || lara == nullptr) {
+        return;
+    }
+    int32_t builds = 0;
+    for (int16_t item_num = Item_GetNextSimulated(); item_num != NO_ITEM;
+         item_num = Item_Get(item_num)->next_simulated) {
+        const ITEM *const item = Item_Get(item_num);
+        const OBJECT *const obj = Object_Get(item->object_id);
+        if (!obj->intelligent || !obj->loaded
+            || ABS(item->pos.x - lara->pos.x) > M_CREATURE_REACH
+            || ABS(item->pos.z - lara->pos.z) > M_CREATURE_REACH) {
+            continue;
+        }
+        for (int32_t i = 0; i < obj->mesh_count; i++) {
+            const int32_t idx = obj->mesh_idx + i;
+            if (idx < 0 || idx >= (int32_t)p->mesh_count) {
+                break;
+            }
+            if (builds < M_CREATURE_BUILDS_PER_FRAME
+                && !p->meshes[idx].is_built) {
+                builds += M_EnsureBuilt(Object_GetMesh(idx)) ? 1 : 0;
+            } else if (p->meshes[idx].is_built) {
+                p->meshes[idx].last_used = g_DC_FrameCount;
+            }
+        }
+    }
+}
+#endif
+
 static void M_Stage(const OBJECT_MESH *const mesh)
 {
     M_PRIV *const p = &m_Priv;
     M_MESH *const batch = &p->meshes[Object_GetMeshIndex(mesh)];
 #if defined(__DREAMCAST__)
-    // A level holds a few thousand meshes - every pickup, every inventory
-    // model - of which a scene draws a handful. Built all at once they would
-    // not fit the Dreamcast's memory, so each is built when it is first drawn.
-    batch->last_used = g_DC_FrameCount;
-    if (!batch->is_built) {
-        batch->is_built = true;
-        // In the level's memory, which it is (dc_level_heap.c).
-        DC_LevelHeap_Enter();
-        MESH_BUILDER *const builder = MeshBuilder_Create();
-        OUTPUT_MESH *result = nullptr;
-        M_BuildMesh(builder, Object_GetMeshIndex(mesh), &result);
-        MeshBuilder_Destroy(builder);
-        if (result != nullptr) {
-            MeshBatcher_AddMesh(p->batcher, result);
-            batch->mesh_batch = result;
-        }
-        DC_LevelHeap_Leave();
-    }
+    M_EnsureBuilt(mesh);
 #endif
     if (batch->mesh_batch == nullptr) {
         return;

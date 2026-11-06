@@ -911,7 +911,7 @@ static void M_DrawSingleRoom(const ROOM *const room)
 #endif
         effect_num = effect->next_free;
     }
-    DC_PROBE_STOP(DC_PROBE_S_FX, probe_effects);
+    DC_PROBE_STOP(DC_PROBE_S_EFR, probe_effects);
 
     Matrix_Pop();
 }
@@ -1028,11 +1028,11 @@ void Room_DrawAllRooms(const int16_t current_room, const int16_t target_room)
     DC_PROBE_START(probe_fx);
     Output_Water_SetupAboveWater(false);
     if (!M_IsSceneryOnly()) {
-        FX_Draw();
-        Sparks_Draw();
+        DC_PROBE(DC_PROBE_S_FXM, FX_Draw());
+        DC_PROBE(DC_PROBE_S_SPK, Sparks_Draw());
     }
-    Rope_DrawAll();
-    Output_LensFlares_Draw();
+    DC_PROBE(DC_PROBE_S_ROPE, Rope_DrawAll());
+    DC_PROBE(DC_PROBE_S_FLARE, Output_LensFlares_Draw());
     DC_PROBE_STOP(DC_PROBE_S_FX, probe_fx);
 }
 

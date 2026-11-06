@@ -345,6 +345,41 @@ nolit:
     sts     macl,r1
     add     r1,r3                   ! plus the flicker
 noflick:
+    ! TR1/TR2 under water: the caustics (see xform_obj_sh4.S), run + 88. r2 is
+    ! on the vertex + 26: its place at -18, -16, -14.
+    mov.l   @(0,r15),r1
+    add     #88,r1
+    mov.l   @r1,r1
+    tst     r1,r1
+    bt      9f
+    mov.l   r1,@-r15
+    add     #-18,r2
+    mov.w   @r2,r0
+    mov.l   .Lhash_x,r1
+    mul.l   r1,r0
+    sts     macl,r4
+    mov.w   @(2,r2),r0
+    mov.l   .Lhash_y,r1
+    mul.l   r1,r0
+    sts     macl,r0
+    xor     r0,r4
+    mov.w   @(4,r2),r0
+    add     #18,r2
+    mov.l   .Lhash_z,r1
+    mul.l   r1,r0
+    sts     macl,r0
+    xor     r0,r4
+    shlr8   r4
+    shlr2   r4
+    shlr    r4
+    mov     #31,r0
+    and     r0,r4
+    shll2   r4
+    mov.l   @r15+,r1
+    add     r1,r4
+    mov.l   @r4,r0
+    add     r0,r3
+9:
     mov.l   .Lshade_max,r1
     cmp/gt  r1,r3
     bf      1f
@@ -541,6 +576,12 @@ finish:
     mov.l   @r15+,r8
 
     .align 2
+.Lhash_x:
+    .long   73856093
+.Lhash_y:
+    .long   19349663
+.Lhash_z:
+    .long   83492791
 .Lshade_max:
     .long   0x1FFF
 .Lnofog:

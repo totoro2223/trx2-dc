@@ -238,6 +238,11 @@ static void M_Draw(void)
             { -2.0f * size, size },
         };
 
+#if defined(__DREAMCAST__)
+        // One quad, no mesh: as the snow.
+        OutputSource_PolyFX_StageParticle(sprite_idx, &center, size, color);
+        continue;
+#endif
         OutputSource_PolyFX_StageTriExtUV(
             world_pos, tri_uvw, tri_size, disp, colors,
             VERT_NO_LIGHTING | VERT_NO_WIBBLE | VERT_BILLBOARD

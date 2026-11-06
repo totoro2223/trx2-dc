@@ -97,6 +97,10 @@ static int32_t M_GetParticleCount(void)
 {
     int32_t count = (int32_t)(M_BASE_WEATHER * m_Severity);
 #if defined(__DREAMCAST__)
+    // The PSX keeps 192 particles (TOMB3.EXE 0x73560).
+    if (count > 192) {
+        count = 192;
+    }
     if (g_DC_TestSnow >= 0 && count > g_DC_TestSnow) {
         count = g_DC_TestSnow;
     }
@@ -272,6 +276,13 @@ static void M_DrawRain(void)
             to.z - (wind.z * 4),
         };
 
+#if defined(__DREAMCAST__)
+        // The PSX's drop: a line from black to pale, added, no mesh.
+        OutputSource_PolyFX_StageStreak(
+            from, (RGBA_8888) { 0, 0, 0, 0xFF },
+            to, (RGBA_8888) { 0x30, 0x40, 0x40, 0xFF });
+        continue;
+#endif
         OutputSource_PolyFX_StageLineSegment(
             from, from_color, to, to_color, 1.0f, draw_type);
     }

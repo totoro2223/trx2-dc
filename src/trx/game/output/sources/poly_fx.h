@@ -69,4 +69,7 @@ void OutputSource_PolyFX_StageSpark(const SPARK *spark);
 // units at the camera's plane (the PSX's particle, TOMB3.EXE 0x73560).
 void OutputSource_PolyFX_StageParticle(
     int32_t sprite_idx, const XYZ_32 *pos, float half, RGBA_8888 color);
+// A raindrop's streak between two world points, added: no mesh, one quad.
+void OutputSource_PolyFX_StageStreak(
+    XYZ_32 from, RGBA_8888 from_color, XYZ_32 to, RGBA_8888 to_color);
 #endif

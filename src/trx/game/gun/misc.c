@@ -55,22 +55,26 @@ static bool M_TargetListContains(const ITEM *const item, const int16_t count)
     return false;
 }
 
+// Cheap range test, run before anything costlier: most items in a level are
+// far from Lara.
+static bool M_InBox(const M_TARGET_CONTEXT *const ctx, const ITEM *const item)
+{
+    return ABS(item->pos.x - ctx->start->x) <= ctx->max_dist
+        && ABS(item->pos.y - ctx->start->y) <= ctx->max_dist
+        && ABS(item->pos.z - ctx->start->z) <= ctx->max_dist;
+}
+
 static void M_ConsiderTarget(M_TARGET_CONTEXT *const ctx, ITEM *const item)
 {
-    if (item == ctx->lara_item || !Item_IsTargetable(item)) {
+    if (item == ctx->lara_item || !M_InBox(ctx, item)) {
         return;
     }
 
     const int32_t dx = item->pos.x - ctx->start->x;
     const int32_t dy = item->pos.y - ctx->start->y;
     const int32_t dz = item->pos.z - ctx->start->z;
-    if (ABS(dx) > ctx->max_dist || ABS(dy) > ctx->max_dist
-        || ABS(dz) > ctx->max_dist) {
-        return;
-    }
-
     const int32_t dist = SQUARE(dx) + SQUARE(dy) + SQUARE(dz);
-    if (dist >= SQUARE(ctx->max_dist)) {
+    if (dist >= SQUARE(ctx->max_dist) || !Item_IsTargetable(item)) {
         return;
     }
 
@@ -556,7 +560,8 @@ void Gun_GetNewTarget(const WEAPON_INFO *const weapon)
     // ITEM is NOT in the active item list
     for (int32_t item_num = 0; item_num < Item_GetLevelCount(); item_num++) {
         ITEM *const item = Item_Get(item_num);
-        if (M_TargetListContains(item, ctx.num_targets)) {
+        if (!M_InBox(&ctx, item)
+            || M_TargetListContains(item, ctx.num_targets)) {
             continue;
         }
         M_ConsiderTarget(&ctx, item);

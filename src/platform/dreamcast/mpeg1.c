@@ -8,7 +8,48 @@
 // minsize build.
 #pragma GCC optimize("O3")
 
+#include "dc_level_heap.h"
+
+#include <malloc.h>
 #include <stdlib.h>
+#include <string.h>
+
+// The decoder's pictures take some 2.7 MB in one block. Once a level has been
+// loaded the game's region holds nearly all of the heap (dc_level_heap.c) and
+// newlib has too little left, so a film after a game or level restart showed
+// no picture while its sound played. The big blocks come from the region (a
+// title or a film has it free) and the heap keeps its slack for the rest of
+// the film; the pointer is kept before the block so that the free finds the
+// start. Before the first level there is no region, and the heap serves.
+static void *M_Memalign(const size_t align, const size_t size)
+{
+    if (size < 64 * 1024) {
+        return memalign(align, size);
+    }
+    uint8_t *const raw = DC_LevelHeap_Alloc(size + align + sizeof(void *));
+    if (raw == NULL) {
+        return memalign(align, size);
+    }
+    uint8_t *const aligned = (uint8_t *)(((uintptr_t)raw + sizeof(void *) + align - 1)
+        & ~(uintptr_t)(align - 1));
+    ((void **)aligned)[-1] = raw;
+    return aligned;
+}
+
+static void M_Free(void *const ptr)
+{
+    if (ptr != NULL && DC_LevelHeap_Owns(ptr)) {
+        DC_LevelHeap_Free(((void **)ptr)[-1]);
+    } else {
+        free(ptr);
+    }
+}
+
+#define MPEG_MALLOC(sz) malloc(sz)
+#define MPEG_FREE(p) M_Free(p)
+#define MPEG_REALLOC(p, sz) realloc((p), (sz))
+#define MPEG_MEMALIGN(a, sz) M_Memalign((a), (sz))
+#define MPEG_MEMZERO(p, sz) memset((p), 0, (sz))
 
 #include <kos.h>
 #include <mpeg.h>

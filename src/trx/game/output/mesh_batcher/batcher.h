@@ -70,13 +70,40 @@ void MeshBatcher_Stage(
 typedef struct {
     float pos[3];
     float half;
+    float half_h; // 0: a square of half
+    float sn; // turn about the centre, as sin and cos (0 and 1: none)
+    float cs;
+    int32_t blend; // 0 added, 1 alpha, 2 subtracted
     uint32_t argb;
-    int32_t page;
+    int32_t page; // DC_PVR_NO_TEXTURE for a flat one
     float u[4];
     float v[4];
 } DC_PARTICLE;
 void DC_MeshBatcher_StageParticle(
     MESH_BATCHER *batcher, const DC_PARTICLE *particle);
+// A streak (a raindrop, the PSX's line): two world points and a colour at
+// each, drawn added as one thin untextured quad, no mesh instance.
+typedef struct {
+    float a[3];
+    float b[3];
+    uint32_t argb_a;
+    uint32_t argb_b;
+} DC_STREAK;
+void DC_MeshBatcher_StageStreak(MESH_BATCHER *batcher, const DC_STREAK *streak);
+// A triangle (n 3) or quad (n 4) of the world, one picture and a colour per
+// corner, no mesh instance. pull moves its depth towards the eye by that
+// fraction (a footprint kept off the floor).
+typedef struct {
+    float p[4][3];
+    float u[4];
+    float v[4];
+    uint32_t argb[4];
+    int32_t page; // -1: flat
+    int32_t blend; // 0 added, 1 alpha, 2 subtracted
+    int32_t n;
+    float pull;
+} DC_QUAD;
+void DC_MeshBatcher_StageQuad(MESH_BATCHER *batcher, const DC_QUAD *quad);
 // Whether a wall of the room, with nothing you can see through on it, lies
 // between the eye and the point (both in the world).
 bool DC_MeshBatcher_RayBlocked(

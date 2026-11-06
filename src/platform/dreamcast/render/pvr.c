@@ -1475,7 +1475,7 @@ void DC_PVR_BeginFrame(void)
     m_ScreenScale = m_LowRes ? 0.5f : 1.0f;
 }
 
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
 // The tile accelerator sorts what it is given into the 32x32 pixel tiles of
 // the screen, and keeps for each tile and list a block of object
 // pointers (opb_sizes in M_InitHardware): one per strip that touches the
@@ -1617,7 +1617,7 @@ void DC_PVR_EndFrame(void)
         const float kept = m_Lists[i].peak * M_PEAK_DECAY;
         m_Lists[i].peak = demand > kept ? demand : kept;
     }
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     M_AuditBins();
 #endif
     // Each list once, as the tile accelerator wants; KOS sends a blank one

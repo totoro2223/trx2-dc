@@ -77,7 +77,7 @@ static void M_RenderSourcePass(const M_PRIV *const p, const SCENE_PASS pass)
     }
 }
 
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
 #include <arch/timer.h>
 
 // Time spent in the passes this frame, for the frame statistics.
@@ -88,7 +88,7 @@ static void M_RenderScenePassesTimed(const M_PRIV *p);
 
 static void M_RenderScenePasses(const M_PRIV *const p)
 {
-#if defined(TRX_DC_WATCHDOG)
+#if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     const uint64_t start = timer_us_gettime64();
     M_RenderScenePassesTimed(p);
     g_DC_PassUs += (uint32_t)(timer_us_gettime64() - start);

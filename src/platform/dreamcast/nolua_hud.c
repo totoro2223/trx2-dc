@@ -29,6 +29,7 @@
 #include <trx/game/ui/scaler.h>
 #include <trx/game/ui/text.h>
 #include <trx/version.h>
+#include <platform/dreamcast/dc_probe.h>
 
 #include <arch/arch.h>
 #include <stdarg.h>
@@ -55,7 +56,7 @@ void *sbrk(ptrdiff_t increment);
 #define M_HIT_TIME 40
 #define M_OPENING_TIME 100
 #define M_AMMO_SCALE 1.5f
-#define M_MAX_WIDGETS 6
+#define M_MAX_WIDGETS 18
 
 #define M_RGB(hex)                                                             \
     { ((hex) >> 16) & 0xFF, ((hex) >> 8) & 0xFF, (hex) & 0xFF, 0xFF }
@@ -174,12 +175,13 @@ typedef struct {
     int32_t slot;
 } M_STACK;
 
-enum { M_TOP_LEFT, M_TOP_RIGHT, M_BOTTOM_LEFT, M_STACK_COUNT };
+enum { M_TOP_LEFT, M_TOP_RIGHT, M_BOTTOM_LEFT, M_CENTER, M_STACK_COUNT };
 
 static M_STACK m_Stacks[M_STACK_COUNT] = {
     [M_TOP_LEFT] = { .region = UI_REGION_TOP_LEFT, .slot = -1 },
     [M_TOP_RIGHT] = { .region = UI_REGION_TOP_RIGHT, .right = true, .slot = -1 },
     [M_BOTTOM_LEFT] = { .region = UI_REGION_BOTTOM_LEFT, .slot = -1 },
+    [M_CENTER] = { .region = UI_REGION_CENTER, .slot = -1 },
 };
 
 static struct {
@@ -455,6 +457,16 @@ static bool M_OnTick(
         }
         M_Push(M_TOP_LEFT, -1, 0.0f, m_FPSText, 1.0f);
     }
+#if defined(TRX_DC_PROBES)
+    // The frame timers on screen, in the middle: the console has no serial.
+    if (playing) {
+        for (int32_t i = 0; i < DC_PROBE_SCREEN_LINES; i++) {
+            if (g_DC_ProbeScreen[i][0] != ' ') {
+                M_Push(M_CENTER, -1, 0.0f, g_DC_ProbeScreen[i], 1.0f);
+            }
+        }
+    }
+#endif
     return false;
 }
 

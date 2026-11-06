@@ -196,6 +196,39 @@ own_loop:
     ftrc    fr0,fpul
     sts     fpul,r0                 ! mode 2: adder + shade, whole
 1:  mov     r0,r3
+    mov     r4,r1                   ! the caustics (see xform_obj_sh4.S)
+    add     #92,r1
+    mov.l   @r1,r1
+    tst     r1,r1
+    bt      9f
+    mov.l   r5,@-r15
+    mov.l   r1,@-r15
+    mov.w   @(8,r2),r0
+    mov.l   .Lhash_x,r1
+    mul.l   r1,r0
+    sts     macl,r5
+    mov.w   @(10,r2),r0
+    mov.l   .Lhash_y,r1
+    mul.l   r1,r0
+    sts     macl,r0
+    xor     r0,r5
+    mov.w   @(12,r2),r0
+    mov.l   .Lhash_z,r1
+    mul.l   r1,r0
+    sts     macl,r0
+    xor     r0,r5
+    shlr8   r5
+    shlr2   r5
+    shlr    r5
+    mov     #31,r0
+    and     r0,r5
+    shll2   r5
+    mov.l   @r15+,r1
+    add     r1,r5
+    mov.l   @r5,r0
+    add     r0,r3
+    mov.l   @r15+,r5
+9:
     mov.l   .Lshade_maxa,r1
     cmp/gt  r1,r3
     bf      1f
@@ -257,6 +290,12 @@ kdone:
     bra     placed
     nop
     .align 2
+.Lhash_x:
+    .long   73856093
+.Lhash_y:
+    .long   19349663
+.Lhash_z:
+    .long   83492791
 .Lshade_maxa:
     .long   0x1FFF
 place:
