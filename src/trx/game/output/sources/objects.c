@@ -77,24 +77,6 @@ typedef struct {
 static M_PRIV m_Priv = {};
 static VECTOR *m_MeshPolicies = nullptr;
 
-// Returns the policy of the idx-th registration for the given mesh, or
-// nullptr once idx runs past them; registration order is preserved.
-static const OUTPUT_OBJECT_MESH_POLICY *M_GetMeshPolicy(
-    const int32_t mesh_idx, const int32_t idx)
-{
-    if (m_MeshPolicies == nullptr) {
-        return nullptr;
-    }
-    int32_t left = idx;
-    for (int32_t i = 0; i < m_MeshPolicies->count; i++) {
-        const M_POLICY_ENTRY *const entry = Vector_Get(m_MeshPolicies, i);
-        if (entry->mesh_idx == mesh_idx && left-- == 0) {
-            return entry->policy;
-        }
-    }
-    return nullptr;
-}
-
 // Collects a mesh's policies once, so face building need not search them for
 // every vertex.
 static void M_GatherMeshPolicies(
@@ -652,7 +634,8 @@ void OutputSource_Objects_PrepareCreatures(void)
 static void M_Stage(const OBJECT_MESH *const mesh)
 {
     M_PRIV *const p = &m_Priv;
-    M_MESH *const batch = &p->meshes[Object_GetMeshIndex(mesh)];
+    const int32_t mesh_idx = Object_GetMeshIndex(mesh);
+    M_MESH *const batch = &p->meshes[mesh_idx];
 #if defined(__DREAMCAST__)
     M_EnsureBuilt(mesh);
 #endif
@@ -661,12 +644,15 @@ static void M_Stage(const OBJECT_MESH *const mesh)
     }
 
     OUTPUT_LIGHT_INFO light_info = Output_GetLightInfo();
-    const OUTPUT_OBJECT_MESH_POLICY *policy;
-    for (int32_t i = 0;
-         (policy = M_GetMeshPolicy(Object_GetMeshIndex(mesh), i)) != nullptr;
-         i++) {
-        if (policy->adjust_light_info != nullptr) {
-            policy->adjust_light_info(&light_info);
+    // One pass over the registrations, in order, instead of a rescan of all of
+    // them for each one found.
+    if (m_MeshPolicies != nullptr) {
+        for (int32_t i = 0; i < m_MeshPolicies->count; i++) {
+            const M_POLICY_ENTRY *const entry = Vector_Get(m_MeshPolicies, i);
+            if (entry->mesh_idx == mesh_idx
+                && entry->policy->adjust_light_info != nullptr) {
+                entry->policy->adjust_light_info(&light_info);
+            }
         }
     }
     Output_Lights_FillInstanceLight(&light_info, g_WMatrixPtr);
@@ -676,11 +662,14 @@ static void M_Stage(const OBJECT_MESH *const mesh)
     const bool has_water_line = Output_GetWaterLine(&water_line);
     RGB_888 span_from = {};
     const bool has_ambient_span = Output_Water_GetLaraAmbientSpan(&span_from);
-    const RGB_F ambient_span_from = {
-        span_from.r / 255.0f,
-        span_from.g / 255.0f,
-        span_from.b / 255.0f,
-    };
+    RGB_F ambient_span_from = {};
+    if (has_ambient_span) {
+        ambient_span_from = (RGB_F) {
+            span_from.r / 255.0f,
+            span_from.g / 255.0f,
+            span_from.b / 255.0f,
+        };
+    }
     const MESH_INSTANCE inst = {
         .mesh = batch->mesh_batch,
         .cwmatrix = *g_MatrixPtr,

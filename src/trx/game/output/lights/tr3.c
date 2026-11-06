@@ -156,8 +156,14 @@ static void M_CalculateLightSmoothed(
         const int32_t dx = (light->pos.x - pos.x) >> 2;
         const int32_t dy = (light->pos.y - pos.y) >> 2;
         const int32_t dz = (light->pos.z - pos.z) >> 2;
-        const uint32_t distance =
-            Math_Sqrt((uint32_t)(SQUARE(dx) + SQUARE(dy) + SQUARE(dz)));
+        const uint32_t dist_sq = (uint32_t)(SQUARE(dx) + SQUARE(dy) + SQUARE(dz));
+        // floor(sqrt(sq)) > falloff exactly when sq >= (falloff + 1)^2: lights
+        // out of reach skip the root.
+        if (falloff < 46000
+            && dist_sq >= (uint32_t)(falloff + 1) * (uint32_t)(falloff + 1)) {
+            continue;
+        }
+        const uint32_t distance = Math_Sqrt(dist_sq);
 
         if ((int32_t)distance > falloff) {
             continue;
