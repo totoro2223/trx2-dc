@@ -86,6 +86,9 @@ deshace y se anota como FALLIDO.
 
 ## C. Optimización del render (lo que de verdad queda)
 
+- Migraciones a ASM: lo hecho, lo pendiente por coste medido y cómo se verifica están en
+  [MIGRACION_ASM.md](MIGRACION_ASM.md) (Antártida sigue en 36-37 fps).
+
 Reparto de Londres (graphics, ms por frame): pass ~12,7 (estáticos y sprites
 3,2, emisión 3,0, objetos 1,6, salas 1,5), stage ~7, Lua ~2,6, lógica ~4,2.
 
