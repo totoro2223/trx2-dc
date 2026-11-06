@@ -9,6 +9,7 @@
 // fixed 640x480 screen.
 
 #include "dc_games.h"
+#include "vmu_screen.h"
 
 #include <SDL2/SDL.h>
 
@@ -265,6 +266,7 @@ static void M_StopLatch(void)
 static void M_PollController(void)
 {
     M_StartLatch();
+    DC_VMU_Poll();
     maple_device_t *const device = maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
     cont_state_t *const state =
         device != nullptr ? (cont_state_t *)maple_dev_status(device) : nullptr;

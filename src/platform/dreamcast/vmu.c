@@ -10,6 +10,7 @@
 // payload begins with the name it has in the saves directory.
 
 #include "vmu.h"
+#include "vmu_screen.h"
 #include "render/pvr.h"
 #include "dc_games.h"
 
@@ -138,6 +139,78 @@ static void M_FillIcon(vmu_pkg_t *const pkg, uint8_t *const icon)
 
 static void M_WaitIdle(maple_device_t *card);
 
+#define M_FONT_W 4
+#define M_FONT_H 6
+#define M_MAX_LINES 6
+
+void DC_VMU_PrintCentered(
+    vmufb_t *const fb, const int y, const int height, const int line_spacing,
+    const char *const text)
+{
+    const char *starts[M_MAX_LINES];
+    int lengths[M_MAX_LINES];
+    int lines = 0;
+    for (const char *p = text; lines < M_MAX_LINES;) {
+        const char *end = strchr(p, '\n');
+        starts[lines] = p;
+        lengths[lines++] = end != nullptr ? (int)(end - p) : (int)strlen(p);
+        if (end == nullptr) {
+            break;
+        }
+        p = end + 1;
+    }
+    const int block = lines * M_FONT_H + (lines - 1) * line_spacing;
+    int top = y + (height - block) / 2;
+    for (int i = 0; i < lines; i++, top += M_FONT_H + line_spacing) {
+        // The font leaves a blank column after each letter: not part of the line.
+        const int width = lengths[i] * M_FONT_W - 1;
+        const int left = width < VMU_SCREEN_WIDTH ? (VMU_SCREEN_WIDTH - width) / 2 : 0;
+        char line[32];
+        snprintf(line, sizeof(line), "%.*s", lengths[i], starts[i]);
+        vmufb_print_string_into(
+            fb, nullptr, left, top, lengths[i] * M_FONT_W, M_FONT_H, 0, line);
+    }
+}
+
+// Which screens were plugged in at the last look (a bit per port and unit),
+// and the picture they were last given.
+static uint32_t m_Plugged = 0;
+static vmufb_t m_Last;
+static bool m_HasLast = false;
+
+void DC_VMU_Present(const vmufb_t *const fb, maple_device_t *const dev)
+{
+    m_Last = *fb;
+    m_HasLast = true;
+    vmufb_present(fb, dev);
+}
+
+void DC_VMU_Poll(void)
+{
+    uint32_t plugged = 0;
+    maple_device_t *added[8];
+    int added_count = 0;
+    for (int i = 0;; i++) {
+        maple_device_t *const dev = maple_enum_type(i, MAPLE_FUNC_LCD);
+        if (dev == nullptr) {
+            break;
+        }
+        const uint32_t bit = 1u << (dev->port * 6 + dev->unit);
+        plugged |= bit;
+        if (!(m_Plugged & bit) && added_count < 8) {
+            added[added_count++] = dev;
+        }
+    }
+    if (plugged != m_Plugged) {
+        LOG_INFO("VMU screens: %06lx -> %06lx", (unsigned long)m_Plugged, (unsigned long)plugged);
+    }
+    m_Plugged = plugged;
+    for (int i = 0; i < added_count && m_HasLast; i++) {
+        M_WaitIdle(added[i]);
+        vmufb_present(&m_Last, added[i]);
+    }
+}
+
 // What the screen says at the menus: a name for each game and expansion.
 static const char *M_LogoText(void)
 {
@@ -168,13 +241,13 @@ void DC_VMU_DrawLogo(void)
     // The game's name, in two or three lines.
     vmufb_t fb;
     vmufb_clear(&fb);
-    vmufb_print_string_into(&fb, nullptr, 1, 2, 46, 28, 2, M_LogoText());
+    DC_VMU_PrintCentered(&fb, 0, VMU_SCREEN_HEIGHT, 2, M_LogoText());
     for (int i = 0;; i++) {
         maple_device_t *const dev = maple_enum_type(i, MAPLE_FUNC_LCD);
         if (dev == nullptr) {
             break;
         }
-        vmufb_present(&fb, dev);
+        DC_VMU_Present(&fb, dev);
     }
 }
 
@@ -215,7 +288,7 @@ void DC_VMU_ShowSwitching(void)
     vmufb_clear(&fb);
     vmufb_print_string_into(&fb, nullptr, 1, 8, 46, 24, 2, "SWITCHING\nGAMES");
     M_WaitIdle(vmu);
-    vmufb_present(&fb, vmu);
+    DC_VMU_Present(&fb, vmu);
     DC_VMU_Hud_Hold();
 }
 
@@ -237,19 +310,19 @@ void DC_VMU_ShowLoading(const int percent)
     vmufb_clear(&fb);
     char text[24];
     snprintf(text, sizeof(text), "LOADING\n %3d%%", percent < 100 ? percent : 100);
-    vmufb_print_string_into(&fb, nullptr, 8, 3, 36, 16, 2, text);
+    DC_VMU_PrintCentered(&fb, 3, 14, 2, text);
     // The bar: a frame, and inside it a row of columns per percent.
     const int fill = percent * 42 / 100;
     for (int x = 2; x < 46; x++) {
-        for (int y = 22; y < 29; y++) {
-            const bool edge = x == 2 || x == 45 || y == 22 || y == 28;
+        for (int y = 21; y < 28; y++) {
+            const bool edge = x == 2 || x == 45 || y == 21 || y == 27;
             if (edge || x - 3 < fill) {
                 const int bit = y * VMU_SCREEN_WIDTH + x;
                 ((uint8_t *)fb.data)[bit / 8] |= (uint8_t)(0x80 >> (bit % 8));
             }
         }
     }
-    vmufb_present(&fb, vmu);
+    DC_VMU_Present(&fb, vmu);
 }
 
 // The card takes one command at a time and answers it a frame or so later;
@@ -268,10 +341,9 @@ static void M_ShowText(maple_device_t *const card, const char *const text)
 {
     vmufb_t fb;
     vmufb_clear(&fb);
-    vmufb_print_string_into(
-        &fb, nullptr, 0, 4, VMU_SCREEN_WIDTH, VMU_SCREEN_HEIGHT - 4, 2, text);
+    DC_VMU_PrintCentered(&fb, 0, VMU_SCREEN_HEIGHT, 2, text);
     M_WaitIdle(card);
-    vmufb_present(&fb, card);
+    DC_VMU_Present(&fb, card);
 }
 
 static void M_Beep(maple_device_t *const card)

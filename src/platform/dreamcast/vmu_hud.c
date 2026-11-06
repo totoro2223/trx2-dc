@@ -8,6 +8,7 @@
 // (a busy card drops it), so nothing here holds the game up.
 
 #include "vmu.h"
+#include "vmu_screen.h"
 
 #include <trx/core/math.h>
 #include <trx/game/camera.h>
@@ -152,9 +153,8 @@ static void M_ShowStats(maple_device_t *const vmu)
 
     vmufb_t fb;
     vmufb_clear(&fb);
-    vmufb_print_string_into(
-        &fb, nullptr, 0, 2, VMU_SCREEN_WIDTH, VMU_SCREEN_HEIGHT - 2, 2, text);
-    vmufb_present(&fb, vmu);
+    DC_VMU_PrintCentered(&fb, 0, VMU_SCREEN_HEIGHT, 2, text);
+    DC_VMU_Present(&fb, vmu);
 }
 
 static void M_FindSpots(const GF_LEVEL *const level)
@@ -255,9 +255,8 @@ static bool M_RunFinder(maple_device_t *const vmu, const bool draw)
     vmufb_t fb;
     vmufb_clear(&fb);
     if (!found) {
-        vmufb_print_string_into(
-            &fb, nullptr, 0, 8, VMU_SCREEN_WIDTH, 16, 2, "NO SECRETS\n   LEFT");
-        vmufb_present(&fb, vmu);
+        DC_VMU_PrintCentered(&fb, 0, VMU_SCREEN_HEIGHT, 2, "NO SECRETS\nLEFT");
+        DC_VMU_Present(&fb, vmu);
         return beeped;
     }
 
@@ -290,7 +289,7 @@ static bool M_RunFinder(maple_device_t *const vmu, const bool draw)
     } else if (rise < -WALL_L) {
         vmufb_print_string_into(&fb, nullptr, 0, 0, 8, 6, 0, "DN");
     }
-    vmufb_present(&fb, vmu);
+    DC_VMU_Present(&fb, vmu);
     return beeped;
 }
 
