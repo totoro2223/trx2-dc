@@ -302,6 +302,17 @@ static int M_RunGame(int argc, char *argv[])
         }
         fclose(snow);
     }
+    // A test disc that leaves assembly routines out (make_disc.sh's
+    // TRX_DC_ASMOFF).
+    g_DC_AsmOff = 0;
+    FILE *const asm_off = M_Open("ASMOFF.TXT");
+    if (asm_off != nullptr) {
+        unsigned mask = 0;
+        if (fscanf(asm_off, "%u", &mask) == 1) {
+            g_DC_AsmOff = mask;
+        }
+        fclose(asm_off);
+    }
     // A test disc with its own fog distances (make_disc.sh's TRX_DC_FOG).
     FILE *const fog = M_Open("FOG.TXT");
     if (fog != nullptr) {

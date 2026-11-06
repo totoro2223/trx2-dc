@@ -625,9 +625,15 @@ static void M_VerifyUpdate(
     void (*const asm_fn)(void *), M_WEATHER_CTL *const ctl,
     void (*const c_fn)(void))
 {
-    static uint8_t before[M_BASE_WEATHER * 2 * 52];
-    static uint8_t after_asm[M_BASE_WEATHER * 2 * 52];
+    static uint8_t *before = nullptr;
+    static uint8_t *after_asm = nullptr;
     const size_t bytes = size * M_MAX_WEATHER;
+    if (before == nullptr) {
+        // Only a level with weather pays for these: the verify build has
+        // little heap to spare.
+        before = Memory_Alloc(M_BASE_WEATHER * 2 * 52);
+        after_asm = Memory_Alloc(M_BASE_WEATHER * 2 * 52);
+    }
     memcpy(before, particles, bytes);
     const uint32_t seed0 = *Random_GetDrawState();
     asm_fn(ctl);
@@ -656,6 +662,10 @@ static void M_VerifyList(
 
 static void M_UpdateRain(void)
 {
+    if ((g_DC_AsmOff & 8) != 0) {
+        M_UpdateRainC();
+        return;
+    }
     const XZ_32 wind = Sparks_GetSmokeWind();
     M_WEATHER_CTL ctl =
         M_MakeCtl(m_Raindrops, 4 * wind.x, 4 * wind.z, M_SpawnRainDropV);
@@ -670,6 +680,10 @@ static void M_UpdateRain(void)
 
 static void M_UpdateSnow(void)
 {
+    if ((g_DC_AsmOff & 8) != 0) {
+        M_UpdateSnowC();
+        return;
+    }
     const XZ_32 wind = Sparks_GetSmokeWind();
     M_WEATHER_CTL ctl =
         M_MakeCtl(m_Snowflakes, 2 * wind.x, 2 * wind.z, M_SpawnSnowflakeV);
@@ -684,6 +698,10 @@ static void M_UpdateSnow(void)
 
 static void M_DrawRain(void)
 {
+    if ((g_DC_AsmOff & 16) != 0) {
+        M_DrawRainC();
+        return;
+    }
     const XZ_32 wind = Sparks_GetSmokeWind();
     const TRX_REAL ratio = Interpolation_GetWorldRate();
     int32_t room = 0;
@@ -692,7 +710,10 @@ static void M_DrawRain(void)
         return;
     }
     #if defined(DC_EMIT_VERIFY)
-    static uint8_t scratch[768 * 32];
+    static uint8_t *scratch = nullptr;
+    if (scratch == nullptr) {
+        scratch = Memory_Alloc(768 * 32);
+    }
     const int32_t room_real = room;
     room = MIN(room, 768);
     #endif
@@ -727,6 +748,10 @@ static void M_DrawRain(void)
 
 static void M_DrawSnow(void)
 {
+    if ((g_DC_AsmOff & 16) != 0) {
+        M_DrawSnowC();
+        return;
+    }
     const OBJECT *const obj = Object_Get(O_SNOWFLAKE);
     if (!obj->loaded) {
         return;
@@ -740,7 +765,10 @@ static void M_DrawSnow(void)
     float picture[9];
     OutputSource_PolyFX_GetPicture(obj->mesh_idx, picture);
     #if defined(DC_EMIT_VERIFY)
-    static uint8_t scratch[512 * M_PARTICLE_BYTES];
+    static uint8_t *scratch = nullptr;
+    if (scratch == nullptr) {
+        scratch = Memory_Alloc(512 * M_PARTICLE_BYTES);
+    }
     const int32_t room_real = room;
     room = MIN(room, 512);
     #endif

@@ -13,6 +13,7 @@
 #include <trx/game/lara/mesh.h>
 #include <trx/game/matrix.h>
 #include <trx/game/output.h>
+#include <trx/core/memory.h>
 #include <trx/game/output/bind.h>
 #include <trx/game/output/sources/rooms.h>
 #include <trx/game/output/water.h>
@@ -27,6 +28,7 @@
 
 // TEMP: see platform/dreamcast/dc_probe.h
 #if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_mode.h>
     #include <platform/dreamcast/dc_probe.h>
     #include <platform/dreamcast/render/shadow.h>
 #else
@@ -441,7 +443,7 @@ static bool M_ObjectHidden(
 }
 #endif
 
-static void M_GetBounds(void)
+[[maybe_unused]] static void M_GetBoundsC(void)
 {
     while (m_BoundStart != m_BoundEnd) {
         const int16_t room_num = m_BoundRooms[m_BoundStart % M_MAX_BOUND_ROOMS];
@@ -634,6 +636,227 @@ static void M_SetBounds(
         bind->test_bottom = bottom;
     }
 }
+
+#if defined(__DREAMCAST__)
+// The walk over the queue of rooms is in assembly (room_sh4.S); the C above is
+// its reference (DC_EMIT_VERIFY runs both and compares) and the other
+// platforms' code.
+typedef struct {
+    ROOM *rooms;
+    int32_t room_size;
+    OUTPUT_ROOM_BIND *binds;
+    int32_t bind_size;
+    int32_t *queue;
+    int32_t start;
+    int32_t end;
+    int32_t outside;
+    int32_t out_left;
+    int32_t out_top;
+    int32_t out_right;
+    int32_t out_bottom;
+    const MATRIX *matrix;
+    const MATRIX *view;
+    const XYZ_32 *eye;
+    int32_t far_z;
+    int32_t persp;
+    int32_t center_x;
+    int32_t center_y;
+    int32_t phd_left;
+    int32_t phd_right;
+    int32_t phd_top;
+    int32_t phd_bottom;
+    int32_t min_x;
+    int32_t max_x;
+    int32_t min_y;
+    int32_t max_y;
+    void (*mark)(int32_t);
+    int32_t off_pos;
+    int32_t off_portals;
+    int32_t off_outside;
+    int32_t off_inside;
+} M_BOUNDRUN;
+_Static_assert(offsetof(M_BOUNDRUN, mark) == 108, "room_sh4.S layout");
+_Static_assert(offsetof(M_BOUNDRUN, off_inside) == 124, "room_sh4.S layout");
+_Static_assert(sizeof(PORTAL) == 56, "room_sh4.S: sizeof(PORTAL)");
+_Static_assert(offsetof(PORTAL, normal) == 2, "room_sh4.S layout");
+_Static_assert(offsetof(PORTAL, vertex) == 8, "room_sh4.S layout");
+_Static_assert(offsetof(PORTALS, portal) == 2, "room_sh4.S layout");
+_Static_assert(sizeof(OUTPUT_ROOM_BIND) == 20, "room_sh4.S layout");
+_Static_assert(offsetof(OUTPUT_ROOM_BIND, bound_left) == 4, "room_sh4.S layout");
+_Static_assert(offsetof(OUTPUT_ROOM_BIND, test_left) == 12, "room_sh4.S layout");
+_Static_assert(offsetof(OUTPUT_ROOM_BIND, test_bottom) == 18, "room_sh4.S layout");
+_Static_assert(offsetof(MATRIX, _20) == 64, "room_sh4.S layout");
+
+extern void dc_get_bounds(M_BOUNDRUN *run);
+
+static void M_MarkV(const int32_t room_num)
+{
+    Room_MarkToBeDrawn((int16_t)room_num);
+}
+
+    #if defined(DC_EMIT_VERIFY)
+static int32_t m_MarkLog[MAX_ROOMS];
+static int32_t m_MarkCount;
+
+static void M_MarkLog(const int32_t room_num)
+{
+    if (m_MarkCount < MAX_ROOMS) {
+        m_MarkLog[m_MarkCount++] = room_num;
+    }
+}
+    #endif
+
+static void M_GetBounds(void)
+{
+    if (g_MatrixWorldOnly || Room_GetCount() <= 0
+        || (g_DC_AsmOff & 1) != 0) {
+        M_GetBoundsC();
+        return;
+    }
+    ROOM *const first = Room_Get(0);
+    M_BOUNDRUN run = {
+        .rooms = first,
+        .room_size = sizeof(ROOM),
+        .binds = Output_Bind_GetRoom(first),
+        .bind_size = sizeof(OUTPUT_ROOM_BIND),
+        .queue = m_BoundRooms,
+        .start = m_BoundStart,
+        .end = m_BoundEnd,
+        .outside = m_Outside,
+        .out_left = m_OutsideLeft,
+        .out_top = m_OutsideTop,
+        .out_right = m_OutsideRight,
+        .out_bottom = m_OutsideBottom,
+        .matrix = g_MatrixPtr,
+        .view = &g_ViewMatrix,
+        .eye = &g_ViewPos,
+        .far_z = Output_GetFarZ(),
+        .persp = g_PhdPersp,
+        .center_x = Viewport_GetCenterX(VIEWPORT_GAME),
+        .center_y = Viewport_GetCenterY(VIEWPORT_GAME),
+        .phd_left = g_PhdLeft,
+        .phd_right = g_PhdRight,
+        .phd_top = g_PhdTop,
+        .phd_bottom = g_PhdBottom,
+        .min_x = Viewport_GetMinX(VIEWPORT_GAME),
+        .max_x = Viewport_GetMaxX(VIEWPORT_GAME),
+        .min_y = Viewport_GetMinY(VIEWPORT_GAME),
+        .max_y = Viewport_GetMaxY(VIEWPORT_GAME),
+        .mark = M_MarkV,
+        .off_pos = offsetof(ROOM, pos),
+        .off_portals = offsetof(ROOM, portals),
+        .off_outside = offsetof(ROOM, flags.outside),
+        .off_inside = offsetof(ROOM, flags.inside),
+    };
+    #if defined(DC_EMIT_VERIFY)
+    {
+        const int32_t room_count = Room_GetCount();
+        static OUTPUT_ROOM_BIND *before = nullptr;
+        static OUTPUT_ROOM_BIND *after_asm = nullptr;
+        static int32_t cap = 0;
+        if (room_count > cap) {
+            // Kept small: the verify build has little heap to spare.
+            Memory_Free(before);
+            Memory_Free(after_asm);
+            cap = room_count;
+            before = Memory_Alloc(sizeof(OUTPUT_ROOM_BIND) * cap);
+            after_asm = Memory_Alloc(sizeof(OUTPUT_ROOM_BIND) * cap);
+        }
+        static int32_t queue_before[M_MAX_BOUND_ROOMS];
+        static int32_t queue_asm[M_MAX_BOUND_ROOMS];
+        static int32_t marks_asm[MAX_ROOMS];
+        static uint32_t m_Runs;
+        static uint32_t m_Bad;
+        memcpy(before, run.binds, sizeof(before[0]) * room_count);
+        memcpy(queue_before, m_BoundRooms, sizeof(queue_before));
+        const int32_t start0 = m_BoundStart;
+        const int32_t end0 = m_BoundEnd;
+        const int32_t outside0 = m_Outside;
+        const int32_t window0[4] = { m_OutsideLeft, m_OutsideTop,
+                                     m_OutsideRight, m_OutsideBottom };
+        run.mark = M_MarkLog;
+        m_MarkCount = 0;
+        dc_get_bounds(&run);
+        const int32_t marks_n = m_MarkCount;
+        memcpy(marks_asm, m_MarkLog, sizeof(marks_asm));
+        memcpy(after_asm, run.binds, sizeof(after_asm[0]) * room_count);
+        memcpy(queue_asm, m_BoundRooms, sizeof(queue_asm));
+        // The C code now, from the same start.
+        memcpy(run.binds, before, sizeof(before[0]) * room_count);
+        memcpy(m_BoundRooms, queue_before, sizeof(queue_before));
+        m_BoundStart = start0;
+        m_BoundEnd = end0;
+        m_Outside = outside0;
+        m_OutsideLeft = window0[0];
+        m_OutsideTop = window0[1];
+        m_OutsideRight = window0[2];
+        m_OutsideBottom = window0[3];
+        const int32_t drawn_before = Room_DrawGetCount();
+        M_GetBoundsC();
+        bool ok = memcmp(after_asm, run.binds, sizeof(after_asm[0]) * room_count)
+                == 0
+            && memcmp(queue_asm, m_BoundRooms, sizeof(queue_asm)) == 0
+            && run.start == m_BoundStart && run.end == m_BoundEnd
+            && run.outside == m_Outside && run.out_left == m_OutsideLeft
+            && run.out_top == m_OutsideTop && run.out_right == m_OutsideRight
+            && run.out_bottom == m_OutsideBottom
+            && marks_n == Room_DrawGetCount() - drawn_before;
+        for (int32_t i = 0; ok && i < marks_n; i++) {
+            ok = marks_asm[i] == Room_DrawGetRoom(drawn_before + i);
+        }
+        m_Runs++;
+        if (!ok && ++m_Bad <= 6) {
+            LOG_WARNING(
+                "[bounds-verify] MISMATCH marks asm %d C %d, end %d/%d",
+                (int)marks_n, (int)(Room_DrawGetCount() - drawn_before),
+                (int)run.end, (int)m_BoundEnd);
+            int32_t shown = 0;
+            for (int32_t i = 0; i < room_count && shown < 4; i++) {
+                const OUTPUT_ROOM_BIND *const a = &after_asm[i];
+                const OUTPUT_ROOM_BIND *const c = &run.binds[i];
+                if (memcmp(a, c, sizeof(*a)) == 0) {
+                    continue;
+                }
+                shown++;
+                LOG_WARNING(
+                    "[bounds-verify]  room %d asm act %d drw %d b %d %d %d %d "
+                    "t %d %d %d %d | C act %d drw %d b %d %d %d %d t %d %d %d "
+                    "%d",
+                    (int)i, a->active, a->drawn, a->bound_left, a->bound_right,
+                    a->bound_top, a->bound_bottom, a->test_left, a->test_right,
+                    a->test_top, a->test_bottom, c->active, c->drawn,
+                    c->bound_left, c->bound_right, c->bound_top,
+                    c->bound_bottom, c->test_left, c->test_right, c->test_top,
+                    c->test_bottom);
+            }
+            LOG_WARNING(
+                "[bounds-verify]  start0 %d end0 %d queue0 %d far %d persp %d",
+                (int)start0, (int)end0, (int)queue_before[start0 & 127],
+                (int)run.far_z, (int)run.persp);
+        }
+        if (m_Runs % 300 == 0) {
+            LOG_WARNING(
+                "[bounds-verify] %u runs, %u bad", (unsigned)m_Runs,
+                (unsigned)m_Bad);
+        }
+    }
+    #else
+    dc_get_bounds(&run);
+    m_BoundStart = run.start;
+    m_BoundEnd = run.end;
+    m_Outside = run.outside;
+    m_OutsideLeft = run.out_left;
+    m_OutsideTop = run.out_top;
+    m_OutsideRight = run.out_right;
+    m_OutsideBottom = run.out_bottom;
+    #endif
+}
+#else
+static void M_GetBounds(void)
+{
+    M_GetBoundsC();
+}
+#endif
 
 static void M_DrawSkybox(void)
 {

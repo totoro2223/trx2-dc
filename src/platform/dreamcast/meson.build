@@ -92,6 +92,7 @@ dc_sources = files(
   'render/sparks_sh4.S',
   'render/sparks_ctl_sh4.S',
   'render/weather_sh4.S',
+  'render/room_sh4.S',
   'render/xform_sh4.S',
   'render/xform_obj_sh4.S',
   'render/xform_own_sh4.S',

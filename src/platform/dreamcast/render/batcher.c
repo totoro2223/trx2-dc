@@ -2629,7 +2629,7 @@ static void M_XformOwn(
 // A coloured fog's share (oargb) for the vertices of the ranges, found from
 // the eye position the fast transforms leave in the vertices: only those they
 // marked fogged cost anything, so the lit part keeps its assembly.
-static void M_FogColours(
+[[maybe_unused]] static void M_FogColoursC(
     MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
     const M_XFORM *const c, const int32_t (*const ranges)[2], const int32_t n)
 {
@@ -2653,6 +2653,91 @@ static void M_FogColours(
             batcher->oargb[i] = out;
         }
     }
+}
+
+// The same in assembly (room_sh4.S); a build with DC_EMIT_VERIFY runs the C
+// above too, into a copy, and compares.
+typedef struct {
+    const M_XVERT *xverts;
+    uint32_t *oargb;
+    const int32_t (*ranges)[2];
+    int32_t n;
+    float fog_start_sq;
+    float fog_start;
+    float fog_scale;
+    float r;
+    float g;
+    float b;
+    float k255;
+} M_FOGRUN;
+_Static_assert(sizeof(M_XVERT) == 32, "room_sh4.S layout");
+_Static_assert(offsetof(M_XVERT, clip) == 28, "room_sh4.S layout");
+_Static_assert(M_CLIP_FOGGED == 0x40, "room_sh4.S layout");
+extern void dc_fog_colours(M_FOGRUN *run);
+
+static void M_FogColours(
+    MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
+    const M_XFORM *const c, const int32_t (*const ranges)[2], const int32_t n)
+{
+    batcher->oargb_used = c->fog;
+    if (!c->fog) {
+        return;
+    }
+    if ((g_DC_AsmOff & 2) != 0) {
+        M_FogColoursC(batcher, inst, c, ranges, n);
+        return;
+    }
+    M_FOGRUN run = {
+        .xverts = batcher->xverts,
+        .oargb = batcher->oargb,
+        .ranges = ranges,
+        .n = n,
+        .fog_start_sq = c->fog_start_sq,
+        .fog_start = c->fog_start,
+        .fog_scale = c->fog_scale,
+        .r = m_Frame.fog_color[0] * inst->tint.r,
+        .g = m_Frame.fog_color[1] * inst->tint.g,
+        .b = m_Frame.fog_color[2] * inst->tint.b,
+        .k255 = 255.0f,
+    };
+    dc_fog_colours(&run);
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t *saved = nullptr;
+    static int32_t saved_cap = 0;
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    int32_t top = 0;
+    for (int32_t r = 0; r < n; r++) {
+        top = MAX(top, ranges[r][0] + ranges[r][1]);
+    }
+    if (top > saved_cap) {
+        Memory_Free(saved);
+        saved_cap = top;
+        saved = Memory_Alloc(sizeof(uint32_t) * saved_cap);
+    }
+    memcpy(saved, batcher->oargb, sizeof(uint32_t) * top);
+    M_FogColoursC(batcher, inst, c, ranges, n);
+    m_Runs++;
+    bool bad = false;
+    for (int32_t r = 0; r < n && !bad; r++) {
+        for (int32_t i = ranges[r][0]; i < ranges[r][0] + ranges[r][1]; i++) {
+            if (saved[i] != batcher->oargb[i]) {
+                bad = true;
+                if (m_Bad < 8) {
+                    LOG_WARNING(
+                        "[fog-verify] MISMATCH %d: asm %08x | C %08x", (int)i,
+                        (unsigned)saved[i], (unsigned)batcher->oargb[i]);
+                }
+                break;
+            }
+        }
+    }
+    m_Bad += bad;
+    if (m_Runs % 600 == 0) {
+        LOG_WARNING(
+            "[fog-verify] %u runs, %u bad", (unsigned)m_Runs, (unsigned)m_Bad);
+    }
+#endif
 }
 
 // Everything else: sprites, meshes lit by their own light or not at all,
@@ -3009,7 +3094,7 @@ typedef struct {
 // the ray crosses the grid's sectors outside the box (foot: its sectors, x0
 // z0 x1 z1) and stops at the first such wall. A ray goes through the rest of
 // the room as the eye is, so that a room seen from another one is tested too.
-static bool M_SightBlocked(
+[[maybe_unused]] static bool M_SightBlockedC(
     const M_SIGHT *const s, const float to[3], const int32_t foot[4])
 {
     const ROOM *const room = s->room;
@@ -3083,6 +3168,96 @@ static bool M_SightBlocked(
         }
     }
     return false;
+}
+
+// The same in assembly (room_sh4.S); a build with DC_EMIT_VERIFY asks the C
+// above too and compares.
+typedef struct {
+    int32_t size_x;
+    int32_t size_z;
+    const SECTOR *sectors;
+    int32_t sector_size;
+    int32_t off_height;
+    int32_t off_wall;
+    int32_t off_pit;
+    int32_t off_split;
+    int32_t off_tilt_x;
+    int32_t off_tilt_z;
+    int32_t pos_y;
+    const uint8_t *see_through;
+    const float *wall_top;
+    float eye[3];
+    float y_lo;
+    float y_hi;
+    float to[3];
+    int32_t foot[4];
+    float inv;
+    float flt_max;
+    float k256;
+    float k384;
+    int32_t no_height;
+    int32_t steps;
+} M_SIGHTRUN;
+_Static_assert(offsetof(M_SIGHTRUN, eye) == 52, "room_sh4.S layout");
+_Static_assert(offsetof(M_SIGHTRUN, foot) == 84, "room_sh4.S layout");
+_Static_assert(offsetof(M_SIGHTRUN, steps) == 120, "room_sh4.S layout");
+_Static_assert(NO_ROOM == -1, "room_sh4.S: no room is -1");
+_Static_assert(sizeof(((SECTOR *)0)->portal_room.pit) == 2, "room_sh4.S layout");
+_Static_assert(sizeof(((SECTOR *)0)->floor.tilt.x) == 2, "room_sh4.S layout");
+_Static_assert(sizeof(((SECTOR *)0)->floor.is_split) == 1, "room_sh4.S layout");
+extern int32_t dc_sight_blocked(M_SIGHTRUN *run);
+
+static bool M_SightBlocked(
+    const M_SIGHT *const s, const float to[3], const int32_t foot[4])
+{
+    if ((g_DC_AsmOff & 4) != 0) {
+        return M_SightBlockedC(s, to, foot);
+    }
+    const ROOM *const room = s->room;
+    M_SIGHTRUN run = {
+        .size_x = room->size.x,
+        .size_z = room->size.z,
+        .sectors = room->sectors,
+        .sector_size = sizeof(SECTOR),
+        .off_height = offsetof(SECTOR, floor.height),
+        .off_wall = offsetof(SECTOR, portal_room.wall),
+        .off_pit = offsetof(SECTOR, portal_room.pit),
+        .off_split = offsetof(SECTOR, floor.is_split),
+        .off_tilt_x = offsetof(SECTOR, floor.tilt.x),
+        .off_tilt_z = offsetof(SECTOR, floor.tilt.z),
+        .pos_y = room->pos.y,
+        .see_through = s->see_through,
+        .wall_top = s->wall_top,
+        .eye = { s->eye[0], s->eye[1], s->eye[2] },
+        .y_lo = s->y_lo,
+        .y_hi = s->y_hi,
+        .to = { to[0], to[1], to[2] },
+        .foot = { foot[0], foot[1], foot[2], foot[3] },
+        .inv = 1.0f / WALL_L,
+        .flt_max = FLT_MAX,
+        .k256 = 256.0f,
+        .k384 = M_WALL_TOP_MARGIN,
+        .no_height = NO_HEIGHT,
+        .steps = M_SIGHT_STEPS,
+    };
+    const bool blocked = dc_sight_blocked(&run) != 0;
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    m_Runs++;
+    if (blocked != M_SightBlockedC(s, to, foot) && ++m_Bad <= 8) {
+        LOG_WARNING(
+            "[sight-verify] MISMATCH asm %d eye %g %g %g to %g %g %g",
+            (int)blocked, (double)s->eye[0], (double)s->eye[1],
+            (double)s->eye[2], (double)to[0], (double)to[1], (double)to[2]);
+    }
+    if (m_Runs % 20000 == 0) {
+        LOG_WARNING(
+            "[sight-verify] %u rays, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+#endif
+    return blocked;
 }
 
 // Whether the walls hide the whole of the chunk from the eye: five rays, to its

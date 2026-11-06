@@ -35,6 +35,10 @@ extern int32_t g_DC_TestShadow;
 // -1 leaves them to the mode).
 // A test disc that caps the snowflakes/raindrops (make_disc.sh TRX_DC_SNOW, -1: no cap).
 extern int32_t g_DC_TestSnow;
+// Test discs (make_disc.sh TRX_DC_ASMOFF): the assembly routines to leave out,
+// a bit each, so that one at fault can be told apart: 1 portal windows, 2
+// coloured fog, 4 sight rays, 8 weather update, 16 weather draw, 32 effects.
+extern uint32_t g_DC_AsmOff;
 // A test disc's fog start and end in blocks (make_disc.sh TRX_DC_FOG), -1: the fixed ones.
 extern int32_t g_DC_TestFogStart;
 extern int32_t g_DC_TestFogEnd;

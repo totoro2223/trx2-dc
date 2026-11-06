@@ -62,6 +62,7 @@ int32_t g_DC_TestCel = -1;
 int32_t g_DC_TestFps = -1;
 int32_t g_DC_TestOriginalAI = -1;
 int32_t g_DC_TestSnow = -1;
+uint32_t g_DC_AsmOff = 0;
 int32_t g_DC_TestFogStart = -1;
 int32_t g_DC_TestFogEnd = -1;
 int32_t g_DC_TestRoomCel = -1;

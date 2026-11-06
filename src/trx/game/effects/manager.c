@@ -8,6 +8,10 @@
 
 #include <string.h>
 
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_mode.h>
+#endif
+
 static EFFECT *m_Effects = nullptr;
 static int16_t m_NextEffectFree = NO_EFFECT;
 static int16_t m_NextEffectActive = NO_EFFECT;
@@ -106,6 +110,10 @@ static void *M_FindControl(const OBJECT_ID object_id)
 
 void Effect_Control(void)
 {
+    if ((g_DC_AsmOff & 32) != 0) {
+        M_ControlC();
+        return;
+    }
     M_EFFCTL ctl = {
         .effects = m_Effects,
         .first = m_NextEffectActive,

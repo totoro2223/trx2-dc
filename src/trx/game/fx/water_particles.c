@@ -2,6 +2,7 @@
 #include <trx/core/json/util/read_io.h>
 #include <trx/core/json/util/write_io.h>
 #include <trx/core/math.h>
+#include <trx/core/memory.h>
 #include <trx/core/utils.h>
 #include <trx/game/camera/vars.h>
 #include <trx/game/fx/common.h>
@@ -16,6 +17,10 @@
 #include <trx/game/random.h>
 #include <trx/game/rooms.h>
 #include <trx/version.h>
+
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_mode.h>
+#endif
 
 #include <string.h>
 
@@ -305,6 +310,10 @@ static void M_SpawnV(void *const particle)
 
 static void M_Control(void)
 {
+    if ((g_DC_AsmOff & 8) != 0) {
+        M_ControlC();
+        return;
+    }
     if (!M_IsEnabled()) {
         M_Clear();
         return;
@@ -320,21 +329,26 @@ static void M_Control(void)
         .spawn = M_SpawnV,
     };
     #if defined(DC_EMIT_VERIFY)
-    static M_WATER_PARTICLE before[M_MAX_WATER_PARTICLES];
-    static M_WATER_PARTICLE after_asm[M_MAX_WATER_PARTICLES];
+    static M_WATER_PARTICLE *before = nullptr;
+    static M_WATER_PARTICLE *after_asm = nullptr;
+    if (before == nullptr) {
+        before = Memory_Alloc(sizeof(M_WATER_PARTICLE) * M_MAX_WATER_PARTICLES);
+        after_asm =
+            Memory_Alloc(sizeof(M_WATER_PARTICLE) * M_MAX_WATER_PARTICLES);
+    }
     static uint32_t m_Runs;
     static uint32_t m_Bad;
-    memcpy(before, m_WaterParticles, sizeof(before));
+    memcpy(before, m_WaterParticles, sizeof(M_WATER_PARTICLE) * M_MAX_WATER_PARTICLES);
     const uint32_t seed0 = *Random_GetDrawState();
     dc_water_update(&ctl);
-    memcpy(after_asm, m_WaterParticles, sizeof(after_asm));
+    memcpy(after_asm, m_WaterParticles, sizeof(M_WATER_PARTICLE) * M_MAX_WATER_PARTICLES);
     const uint32_t seed_asm = *Random_GetDrawState();
-    memcpy(m_WaterParticles, before, sizeof(before));
+    memcpy(m_WaterParticles, before, sizeof(M_WATER_PARTICLE) * M_MAX_WATER_PARTICLES);
     *Random_GetDrawState() = seed0;
     M_ControlC();
     m_Runs++;
     if (seed_asm != *Random_GetDrawState()
-        || memcmp(after_asm, m_WaterParticles, sizeof(after_asm)) != 0) {
+        || memcmp(after_asm, m_WaterParticles, sizeof(M_WATER_PARTICLE) * M_MAX_WATER_PARTICLES) != 0) {
         if (++m_Bad <= 6) {
             LOG_WARNING("[weather-verify] water-update MISMATCH");
         }
@@ -351,6 +365,10 @@ static void M_Control(void)
 
 static void M_Draw(void)
 {
+    if ((g_DC_AsmOff & 16) != 0) {
+        M_DrawC();
+        return;
+    }
     if (!M_IsEnabled()) {
         return;
     }
@@ -367,7 +385,10 @@ static void M_Draw(void)
     float picture[9];
     OutputSource_PolyFX_GetPicture(sprite_idx, picture);
     #if defined(DC_EMIT_VERIFY)
-    static uint8_t scratch[M_MAX_WATER_PARTICLES * 72];
+    static uint8_t *scratch = nullptr;
+    if (scratch == nullptr) {
+        scratch = Memory_Alloc(M_MAX_WATER_PARTICLES * 72);
+    }
     const int32_t room_real = room;
     room = MIN(room, M_MAX_WATER_PARTICLES);
     #endif
