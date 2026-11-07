@@ -100,6 +100,7 @@ dc_sources = files(
   'render/vol_sh4.S',
   'render/bump_sh4.S',
   'render/xform_gen_sh4.S',
+  'render/light_sh4.S',
   'render/xform_own_sh4.S',
   'render/lights_tr4.c',
   'render/output_common.c',

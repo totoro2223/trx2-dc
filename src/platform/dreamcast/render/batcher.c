@@ -1722,6 +1722,10 @@ extern void dc_env_vertex(M_ENVRUN *run);
     *eargb = M_PackARGB(1.0f, e[0], e[1], e[2]);
 }
 
+#if defined(DC_EMIT_VERIFY)
+static bool M_XNear(const float a, const float b);
+static bool M_ArgbNear(const uint32_t a, const uint32_t b);
+#endif
 static void M_EnvVertex(
     MESH_BATCHER *const batcher, const int32_t i,
     const OUTPUT_MESH_VERTEX *const vertex, const float mv[4][4],
@@ -2514,6 +2518,12 @@ _Static_assert(offsetof(M_XOWN, tr3_double) == 48, "xform_own_sh4.S reads these"
 _Static_assert(offsetof(M_XOWN, tint) == 64, "xform_own_sh4.S reads these");
 extern void dc_xform_own(M_XOWN *run);
 
+#if defined(DC_EMIT_VERIFY)
+static void M_VerifyLight(
+    const M_BINDING *bind, const MESH_INSTANCE *inst,
+    const M_INSTANCE_LIGHT *il);
+#endif
+
 // Statics and sprites: meshes lit by their own light or not at all, with no
 // room light, object light, reflection or coloured fog to add. M_XformGeneric's
 // answer in integers, as the rooms' and objects'.
@@ -2587,6 +2597,9 @@ static void M_XformOwn(
         .caus = M_CausticTable(il),
     };
     g_DC_ProbeUs[fast ? DC_PROBE_N_OWNFAST : DC_PROBE_N_OWNSLOW] += count; // TEMP
+#if defined(DC_EMIT_VERIFY)
+    M_VerifyLight(bind, inst, il);
+#endif
 #if !defined(DC_EMIT_VERIFY)
     if (fast) {
         dc_xform_own(&run);
@@ -2937,7 +2950,57 @@ struct M_GENRUN {
     float k255;                         // 212
     float half;                         // 216
     float neutral;                      // 220
+    // dc_light_slow (light_sh4.S)
+    const float *caus_f;                // 224
+    const M_RGB_LIGHT *rgb_p;           // 228
+    const M_POINT_LIGHT *lights_p;      // 232
+    const float *world_p;               // 236
+    int32_t tr3;                        // 240
+    int32_t caustics;                   // 244
+    int32_t room_lights;                // 248
+    int32_t num_lights;                 // 252
+    int32_t num_rgb;                    // 256
+    int32_t tr3_count;                  // 260
+    float tr3_double;                   // 264
+    float flicker;                      // 268
+    float inv32;                        // 272
+    float k16;                          // 276
+    float scratch;                      // 280
+    int32_t hash_x;                     // 284
+    int32_t hash_y;                     // 288
+    int32_t hash_z;                     // 292
 };
+_Static_assert(offsetof(M_GENRUN, caus_f) == 224, "light_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, hash_z) == 292, "light_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, tr3_double) == 264, "light_sh4.S layout");
+_Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_ambient) == 24, "light_sh4.S layout");
+_Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_dir) == 40, "light_sh4.S layout");
+_Static_assert(offsetof(M_INSTANCE_LIGHT, tr3_color) == 76, "light_sh4.S layout");
+_Static_assert(sizeof(M_RGB_LIGHT) == 32, "light_sh4.S layout");
+_Static_assert(sizeof(M_POINT_LIGHT) == 24, "light_sh4.S layout");
+_Static_assert(offsetof(M_RGB_LIGHT, radius) == 12, "light_sh4.S layout");
+_Static_assert(offsetof(M_POINT_LIGHT, radius_sq) == 12, "light_sh4.S layout");
+_Static_assert(offsetof(OUTPUT_MESH_VERTEX, light_table_idx) == 26, "light_sh4.S layout");
+_Static_assert(offsetof(OUTPUT_MESH_VERTEX, pos) == 8, "light_sh4.S layout");
+_Static_assert(offsetof(OUTPUT_MESH_VERTEX, normal) == 16, "light_sh4.S layout");
+extern void dc_light_slow(M_GENRUN *run, const OUTPUT_MESH_VERTEX *vertex);
+
+// The caustics' 32 sines turned to the frame's time, as floats: the slot is the
+// vertex hash's own five bits.
+static const float *M_CausticTableF(const M_INSTANCE_LIGHT *const il)
+{
+    static float tab[M_CAUSTIC_SIZE];
+    if (!il->caustics || !m_Frame.lighting) {
+        return nullptr;
+    }
+    const OUTPUT_MESH_VERTEX zero = {};
+    (void)M_Caustic(&zero); // makes the sines
+    const int32_t t = (int32_t)m_Frame.time_in_game;
+    for (int32_t j = 0; j < M_CAUSTIC_SIZE; j++) {
+        tab[j] = m_CausticSine[(t + j) & (M_CAUSTIC_SIZE - 1)];
+    }
+    return tab;
+}
 _Static_assert(offsetof(M_GENRUN, tint) == 32, "xform_gen_sh4.S layout");
 _Static_assert(offsetof(M_GENRUN, lighting) == 72, "xform_gen_sh4.S layout");
 _Static_assert(offsetof(M_GENRUN, adder) == 88, "xform_gen_sh4.S layout");
@@ -2957,7 +3020,81 @@ _Static_assert(offsetof(OUTPUT_MESH_VERTEX, flags) == 22, "xform_gen_sh4.S layou
 _Static_assert(offsetof(OUTPUT_MESH_VERTEX, shade) == 24, "xform_gen_sh4.S layout");
 extern void dc_xform_generic(M_GENRUN *run);
 
-static void M_GenLight(M_GENRUN *const run, const OUTPUT_MESH_VERTEX *const vertex)
+
+#if defined(DC_EMIT_VERIFY)
+// Every vertex of the instance lit by dc_light_slow and by M_LightVertex, to
+// compare: the generic transform alone seldom reaches the assembly.
+static void M_VerifyLight(
+    const M_BINDING *const bind, const MESH_INSTANCE *const inst,
+    const M_INSTANCE_LIGHT *const il)
+{
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    const OUTPUT_MESH_VERTEX *const vertices =
+        Vector_GetData(bind->mesh->vertices);
+    M_GENRUN run = {
+        .il = il,
+        .tint = { inst->tint.r, inst->tint.g, inst->tint.b, inst->tint.a },
+        .lighting = m_Frame.lighting,
+        .min_shade = m_Frame.min_shade,
+        .adder = il->adder,
+        .has_direction = il->has_direction,
+        .l = { il->l[0], il->l[1], il->l[2] },
+        .inv255 = 1.0f / 255.0f,
+        .shade_max = M_SHADE_MAX,
+        .inv65536 = 1.0f / (float)(1 << 16),
+        .two = 2.0f,
+        .inv_neutral = 1.0f / M_SHADE_NEUTRAL,
+        .k255 = 255.0f,
+        .neutral = M_SHADE_NEUTRAL,
+        .caus_f = M_CausticTableF(il),
+        .rgb_p = il->rgb,
+        .lights_p = il->lights,
+        .world_p = &il->world[0][0],
+        .tr3 = il->tr3,
+        .caustics = il->caustics && m_Frame.lighting,
+        .room_lights = il->has_room_lights,
+        .num_lights = il->num_lights,
+        .num_rgb = il->num_rgb,
+        .tr3_count = il->tr3_count,
+        .tr3_double = il->tr3_double,
+        .flicker = il->flicker,
+        .inv32 = 1.0f / 32.0f,
+        .k16 = 16.0f,
+        .hash_x = 73856093,
+        .hash_y = 19349663,
+        .hash_z = 83492791,
+    };
+    for (int32_t i = 0; i < bind->vertex_count; i++) {
+        const OUTPUT_MESH_VERTEX *const vertex = M_Corner(bind, vertices, i);
+        float ref[4];
+        float mul;
+        M_LightVertex(vertex, il, &inst->wmatrix, inst->tint, ref, &mul);
+        dc_light_slow(&run, vertex);
+        bool bad = false;
+        for (int32_t c = 0; c < 4; c++) {
+            const float d = run.rgba[c] - ref[c];
+            const float tol = 1e-4f + 1e-4f * (ref[c] < 0 ? -ref[c] : ref[c]);
+            bad |= !(d <= tol && d >= -tol);
+        }
+        m_Runs++;
+        if (bad && ++m_Bad <= 12) {
+            LOG_WARNING(
+                "[light-verify] MISMATCH tr3 %d flags %04x asm %g %g %g %g | "
+                "C %g %g %g %g",
+                (int)il->tr3, (unsigned)vertex->flags, (double)run.rgba[0],
+                (double)run.rgba[1], (double)run.rgba[2], (double)run.rgba[3],
+                (double)ref[0], (double)ref[1], (double)ref[2], (double)ref[3]);
+        }
+        if (m_Runs % 200000 == 0) {
+            LOG_WARNING(
+                "[light-verify] %u vertices, %u bad", (unsigned)m_Runs,
+                (unsigned)m_Bad);
+        }
+    }
+}
+#endif
+[[maybe_unused]] static void M_GenLight(M_GENRUN *const run, const OUTPUT_MESH_VERTEX *const vertex)
 {
     float mul;
     M_LightVertex(
@@ -3008,7 +3145,7 @@ static void M_XformGeneric(
         .l = { il->l[0], il->l[1], il->l[2] },
         // A room's lights that pass, or flicker: the C finds the shade.
         .dyn = il->has_room_lights && (il->num_lights > 0 || il->flicker != 0.0f),
-        .light = M_GenLight,
+        .light = dc_light_slow,
         .env_cb = M_GenEnv,
         .batcher = batcher,
         .inst = inst,
@@ -3022,8 +3159,26 @@ static void M_XformGeneric(
         .k255 = 255.0f,
         .half = 0.5f,
         .neutral = M_SHADE_NEUTRAL,
+        .caus_f = M_CausticTableF(il),
+        .rgb_p = il->rgb,
+        .lights_p = il->lights,
+        .world_p = &il->world[0][0],
+        .tr3 = il->tr3,
+        .caustics = il->caustics && m_Frame.lighting,
+        .room_lights = il->has_room_lights,
+        .num_lights = il->num_lights,
+        .num_rgb = il->num_rgb,
+        .tr3_count = il->tr3_count,
+        .tr3_double = il->tr3_double,
+        .flicker = il->flicker,
+        .inv32 = 1.0f / 32.0f,
+        .k16 = 16.0f,
+        .hash_x = 73856093,
+        .hash_y = 19349663,
+        .hash_z = 83492791,
     };
 #if defined(DC_EMIT_VERIFY)
+    M_VerifyLight(bind, inst, il);
     const int32_t n = bind->vertex_count;
     M_XVERT *const saved = Memory_Alloc(sizeof(M_XVERT) * n);
     uint32_t *const saved_o = Memory_Alloc(sizeof(uint32_t) * n);
