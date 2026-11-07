@@ -14,26 +14,17 @@
 #include <trx/gl/context.h>
 
 #include <math.h>
+#include <string.h>
 
-CLIP Output_CheckBoundsClip(const BOUNDS_16 *const bounds)
+typedef struct {
+    int32_t num_z, x_min, x_max, y_min, y_max;
+} M_BOX;
+
+// The eight corners of the box through the matrix: the C as it was.
+static void M_BoxC(
+    const XYZ_32 vtx[8], const int32_t near_z, const int32_t far_z,
+    M_BOX *const out)
 {
-    const int32_t near_z = Output_GetNearZ();
-    const int32_t far_z = Output_GetFarZ();
-    if (g_MatrixPtr->_23 >= far_z) {
-        return CLIP_NOT_VISIBLE;
-    }
-
-    const XYZ_32 vtx[8] = {
-        { .x = bounds->min.x, .y = bounds->min.y, .z = bounds->min.z },
-        { .x = bounds->max.x, .y = bounds->min.y, .z = bounds->min.z },
-        { .x = bounds->max.x, .y = bounds->max.y, .z = bounds->min.z },
-        { .x = bounds->min.x, .y = bounds->max.y, .z = bounds->min.z },
-        { .x = bounds->min.x, .y = bounds->min.y, .z = bounds->max.z },
-        { .x = bounds->max.x, .y = bounds->min.y, .z = bounds->max.z },
-        { .x = bounds->max.x, .y = bounds->max.y, .z = bounds->max.z },
-        { .x = bounds->min.x, .y = bounds->max.y, .z = bounds->max.z },
-    };
-
     int32_t num_z = 0;
     int32_t x_min = INT32_MAX;
     int32_t y_min = INT32_MAX;
@@ -91,6 +82,134 @@ CLIP Output_CheckBoundsClip(const BOUNDS_16 *const bounds)
         CLAMPG(y_min, yv);
         CLAMPL(y_max, yv);
     }
+
+    out->num_z = num_z;
+    out->x_min = x_min;
+    out->x_max = x_max;
+    out->y_min = y_min;
+    out->y_max = y_max;
+}
+
+#if defined(__DREAMCAST__)
+extern uint32_t g_DC_AsmOff;
+
+// The same with the products as the SH-4 does them best: a matrix whose terms
+// all fit 32 bits (they do, but for a far translation) takes a 32 by 32
+// multiply into 64 in a single instruction where the 64-bit product of the
+// C is a library call, nine a corner. The depth keeps only 32 bits, so a
+// wrapping sum gives it; the sides keep the 64-bit sum for the float.
+static bool M_BoxNarrow(void)
+{
+    const int64_t *const m = &g_MatrixPtr->_00;
+    for (int32_t i = 0; i < 12; i++) {
+        if (m[i] != (int64_t)(int32_t)m[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void M_BoxNarrowRun(
+    const XYZ_32 vtx[8], const int32_t near_z, const int32_t far_z,
+    M_BOX *const out)
+{
+    const int32_t m00 = (int32_t)g_MatrixPtr->_00;
+    const int32_t m01 = (int32_t)g_MatrixPtr->_01;
+    const int32_t m02 = (int32_t)g_MatrixPtr->_02;
+    const int32_t m03 = (int32_t)g_MatrixPtr->_03;
+    const int32_t m10 = (int32_t)g_MatrixPtr->_10;
+    const int32_t m11 = (int32_t)g_MatrixPtr->_11;
+    const int32_t m12 = (int32_t)g_MatrixPtr->_12;
+    const int32_t m13 = (int32_t)g_MatrixPtr->_13;
+    const int32_t m20 = (int32_t)g_MatrixPtr->_20;
+    const int32_t m21 = (int32_t)g_MatrixPtr->_21;
+    const int32_t m22 = (int32_t)g_MatrixPtr->_22;
+    const int32_t m23 = (int32_t)g_MatrixPtr->_23;
+    int32_t num_z = 0;
+    int32_t x_min = INT32_MAX;
+    int32_t y_min = INT32_MAX;
+    int32_t x_max = INT32_MIN;
+    int32_t y_max = INT32_MIN;
+    for (int32_t i = 0; i < 8; i++) {
+        const int32_t x = vtx[i].x;
+        const int32_t y = vtx[i].y;
+        const int32_t z = vtx[i].z;
+        const int32_t zv = (int32_t)((uint32_t)m20 * (uint32_t)x
+                                     + (uint32_t)m21 * (uint32_t)y
+                                     + (uint32_t)m22 * (uint32_t)z
+                                     + (uint32_t)m23);
+        if (zv <= near_z || zv >= far_z) {
+            continue;
+        }
+        num_z++;
+        const int32_t zp = zv / g_PhdPersp;
+        const float inv_zp = 1.0f / (float)zp;
+        const int64_t sx = (int64_t)m00 * x + (int64_t)m01 * y
+            + (int64_t)m02 * z + m03;
+        const int64_t sy = (int64_t)m10 * x + (int64_t)m11 * y
+            + (int64_t)m12 * z + m13;
+        const int32_t xv = (int32_t)(Output_MatrixToFloat(sx) * inv_zp);
+        const int32_t yv = (int32_t)(Output_MatrixToFloat(sy) * inv_zp);
+        CLAMPG(x_min, xv);
+        CLAMPL(x_max, xv);
+        CLAMPG(y_min, yv);
+        CLAMPL(y_max, yv);
+    }
+    out->num_z = num_z;
+    out->x_min = x_min;
+    out->x_max = x_max;
+    out->y_min = y_min;
+    out->y_max = y_max;
+}
+#endif
+
+CLIP Output_CheckBoundsClip(const BOUNDS_16 *const bounds)
+{
+    const int32_t near_z = Output_GetNearZ();
+    const int32_t far_z = Output_GetFarZ();
+    if (g_MatrixPtr->_23 >= far_z) {
+        return CLIP_NOT_VISIBLE;
+    }
+
+    const XYZ_32 vtx[8] = {
+        { .x = bounds->min.x, .y = bounds->min.y, .z = bounds->min.z },
+        { .x = bounds->max.x, .y = bounds->min.y, .z = bounds->min.z },
+        { .x = bounds->max.x, .y = bounds->max.y, .z = bounds->min.z },
+        { .x = bounds->min.x, .y = bounds->max.y, .z = bounds->min.z },
+        { .x = bounds->min.x, .y = bounds->min.y, .z = bounds->max.z },
+        { .x = bounds->max.x, .y = bounds->min.y, .z = bounds->max.z },
+        { .x = bounds->max.x, .y = bounds->max.y, .z = bounds->max.z },
+        { .x = bounds->min.x, .y = bounds->max.y, .z = bounds->max.z },
+    };
+
+    M_BOX box;
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff & 33554432) == 0 && M_BoxNarrow()) {
+        M_BoxNarrowRun(vtx, near_z, far_z, &box);
+    #if defined(DC_EMIT_VERIFY)
+        static int32_t s_runs = 0;
+        static int32_t s_bad = 0;
+        M_BOX ref;
+        M_BoxC(vtx, near_z, far_z, &ref);
+        s_runs++;
+        if (memcmp(&ref, &box, sizeof(box)) != 0) {
+            s_bad++;
+        }
+        if (s_runs % 20000 == 0) {
+            LOG_INFO("[boxclip-verify] %d runs, %d bad", s_runs, s_bad);
+        }
+    #endif
+    } else {
+        M_BoxC(vtx, near_z, far_z, &box);
+    }
+#else
+    M_BoxC(vtx, near_z, far_z, &box);
+#endif
+    const int32_t num_z = box.num_z;
+    int32_t x_min = box.x_min;
+    int32_t x_max = box.x_max;
+    int32_t y_min = box.y_min;
+    int32_t y_max = box.y_max;
 
     if (num_z == 0) {
         return CLIP_NOT_VISIBLE; // out of screen
