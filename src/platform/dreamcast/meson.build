@@ -104,6 +104,8 @@ dc_sources = files(
   'render/xform_own_sh4.S',
   'render/inst_sh4.S',
   'render/cull_sh4.S',
+  'render/visibility_sh4.S',
+  'game_sh4.S',
   'render/lights_tr4.c',
   'render/output_common.c',
   'render/pvr.c',

@@ -131,7 +131,7 @@ static void M_EnsureRoomsToDraw(void)
 static void M_SetBounds(
     const PORTAL *const portal, int32_t room_num, const ROOM *parent);
 
-static inline bool M_PortalFacesCamera(
+static inline bool M_PortalFacesCameraC(
     const ROOM *const room, const PORTAL *const portal)
 {
     // clang-format off
@@ -143,6 +143,47 @@ static inline bool M_PortalFacesCamera(
     // clang-format on
     return offset.x + offset.y + offset.z < 0;
 }
+
+#if defined(__DREAMCAST__)
+// In assembly (visibility_sh4.S); a build with DC_EMIT_VERIFY runs the C too
+// and compares. TRX_DC_ASMOFF bit 262144 turns it off.
+extern int dc_portal_faces(
+    const int32_t *room_pos, const PORTAL *portal, const int32_t *view_pos);
+extern uint32_t g_DC_AsmOff;
+
+static inline bool M_PortalFacesCamera(
+    const ROOM *const room, const PORTAL *const portal)
+{
+    if ((g_DC_AsmOff & 262144) != 0) {
+        return M_PortalFacesCameraC(room, portal);
+    }
+    const bool faces = dc_portal_faces(
+                           (const int32_t *)&room->pos, portal,
+                           (const int32_t *)&g_ViewPos)
+        != 0;
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    m_Runs++;
+    if (faces != M_PortalFacesCameraC(room, portal)) {
+        m_Bad++;
+        LOG_WARNING("[portal-verify] MISMATCH %d", (int)faces);
+    }
+    if (m_Runs % 20000 == 0) {
+        LOG_WARNING(
+            "[portal-verify] %u runs, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+#endif
+    return faces;
+}
+#else
+static inline bool M_PortalFacesCamera(
+    const ROOM *const room, const PORTAL *const portal)
+{
+    return M_PortalFacesCameraC(room, portal);
+}
+#endif
 
 #if defined(__DREAMCAST__)
 static int16_t m_OcclusionQueue[MAX_ROOMS];

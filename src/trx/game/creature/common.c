@@ -830,7 +830,7 @@ int16_t Creature_Turn(ITEM *const item, int16_t max_turn)
     return angle;
 }
 
-void Creature_TurnTo(
+static void M_TurnToC(
     ITEM *const item, const int16_t angle, const int16_t max_turn)
 {
     if (angle > max_turn) {
@@ -840,6 +840,55 @@ void Creature_TurnTo(
     } else {
         item->rot.y += angle;
     }
+}
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S); a build with DC_EMIT_VERIFY runs the C too and
+// compares. TRX_DC_ASMOFF bit 524288 turns the group off.
+extern void dc_clamp_step(
+    int16_t *f, int32_t required, int32_t max_change, int32_t arc);
+extern void dc_creature_tilt(int16_t *rot_z, int32_t angle, int32_t max);
+extern void dc_creature_turn_to(
+    int16_t *rot_y, int32_t angle, int32_t max_turn);
+extern uint32_t g_DC_AsmOff;
+    #if defined(DC_EMIT_VERIFY)
+static uint32_t m_CreatureRuns;
+static uint32_t m_CreatureBad;
+static void M_CreatureCheck(
+    const char *const what, const int16_t asm_value, const int16_t c_value)
+{
+    m_CreatureRuns++;
+    if (asm_value != c_value && m_CreatureBad++ < 8) {
+        LOG_WARNING(
+            "[creature-verify] MISMATCH %s: asm %d | C %d", what,
+            (int)asm_value, (int)c_value);
+    }
+    if (m_CreatureRuns % 50000 == 0) {
+        LOG_WARNING(
+            "[creature-verify] %u runs, %u bad", (unsigned)m_CreatureRuns,
+            (unsigned)m_CreatureBad);
+    }
+}
+    #endif
+#endif
+
+void Creature_TurnTo(
+    ITEM *const item, const int16_t angle, const int16_t max_turn)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff & 524288) == 0) {
+    #if defined(DC_EMIT_VERIFY)
+        ITEM copy = *item;
+        M_TurnToC(&copy, angle, max_turn);
+    #endif
+        dc_creature_turn_to(&item->rot.y, angle, max_turn);
+    #if defined(DC_EMIT_VERIFY)
+        M_CreatureCheck("turn_to", item->rot.y, copy.rot.y);
+    #endif
+        return;
+    }
+#endif
+    M_TurnToC(item, angle, max_turn);
 }
 
 bool Creature_MoveTo(
@@ -876,9 +925,51 @@ bool Creature_MoveTo(
 
 void Creature_Tilt(ITEM *const item, int16_t angle)
 {
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff & 524288) == 0) {
+    #if defined(DC_EMIT_VERIFY)
+        int16_t want = angle * 4 - item->rot.z;
+        CLAMP(want, -M_MAX_TILT, M_MAX_TILT);
+        want = (int16_t)(item->rot.z + want);
+    #endif
+        dc_creature_tilt(&item->rot.z, angle, M_MAX_TILT);
+    #if defined(DC_EMIT_VERIFY)
+        M_CreatureCheck("tilt", item->rot.z, want);
+    #endif
+        return;
+    }
+#endif
     angle = angle * 4 - item->rot.z;
     CLAMP(angle, -M_MAX_TILT, M_MAX_TILT);
     item->rot.z += angle;
+}
+
+// Head, neck and joints: a rotation follows the one asked for by a step of at
+// most max_change, and stays within +-arc.
+static void M_ClampStep(
+    int16_t *const field, const int16_t required, const int32_t max_change,
+    const int32_t arc)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff & 524288) == 0) {
+    #if defined(DC_EMIT_VERIFY)
+        int16_t want = *field;
+        int16_t change = required - want;
+        CLAMP(change, -max_change, max_change);
+        want += change;
+        CLAMP(want, -arc, arc);
+    #endif
+        dc_clamp_step(field, required, max_change, arc);
+    #if defined(DC_EMIT_VERIFY)
+        M_CreatureCheck("clamp_step", *field, want);
+    #endif
+        return;
+    }
+#endif
+    int16_t change = required - *field;
+    CLAMP(change, -max_change, max_change);
+    *field += change;
+    CLAMP(*field, -arc, arc);
 }
 
 void Creature_Head(ITEM *const item, const int16_t required)
@@ -887,12 +978,7 @@ void Creature_Head(ITEM *const item, const int16_t required)
     if (creature == nullptr) {
         return;
     }
-
-    int16_t change = required - creature->head_rotation;
-    CLAMP(change, -M_MAX_HEAD_CHANGE, M_MAX_HEAD_CHANGE);
-
-    creature->head_rotation += change;
-    CLAMP(creature->head_rotation, -M_HEAD_ARC, M_HEAD_ARC);
+    M_ClampStep(&creature->head_rotation, required, M_MAX_HEAD_CHANGE, M_HEAD_ARC);
 }
 
 void Creature_Neck(ITEM *const item, const int16_t required)
@@ -901,12 +987,7 @@ void Creature_Neck(ITEM *const item, const int16_t required)
     if (creature == nullptr) {
         return;
     }
-
-    int16_t change = required - creature->neck_rotation;
-    CLAMP(change, -M_MAX_HEAD_CHANGE, M_MAX_HEAD_CHANGE);
-
-    creature->neck_rotation += change;
-    CLAMP(creature->neck_rotation, -M_HEAD_ARC, M_HEAD_ARC);
+    M_ClampStep(&creature->neck_rotation, required, M_MAX_HEAD_CHANGE, M_HEAD_ARC);
 }
 
 void Creature_Joint(
@@ -916,12 +997,7 @@ void Creature_Joint(
     if (creature == nullptr) {
         return;
     }
-
-    int16_t change = required - creature->joint_rotation[joint];
-    CLAMP(change, -M_MAX_JOINT_CHANGE, M_MAX_JOINT_CHANGE);
-
-    creature->joint_rotation[joint] += change;
-    CLAMP(creature->joint_rotation[joint], -M_JOINT_ARC, M_JOINT_ARC);
+    M_ClampStep(&creature->joint_rotation[joint], required, M_MAX_JOINT_CHANGE, M_JOINT_ARC);
 }
 
 void Creature_Float(const int16_t item_num)
