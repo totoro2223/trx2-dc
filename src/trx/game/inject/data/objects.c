@@ -1,11 +1,30 @@
 #include <trx/core/file.h>
 #include <trx/core/vector.h>
 #include <trx/debug.h>
+#include <trx/game/gun/registry.h>
 #include <trx/game/inject.h>
 #include <trx/game/inject/canonical.h>
 #include <trx/game/objects/common.h>
 
 static VECTOR *m_ProcessedMeshes = nullptr;
+
+#if defined(__DREAMCAST__)
+// The long guns' injected objects carry placeholder meshes (a block for the
+// hand), because the remaster draws the real model from the outfit's gun-swap
+// object. The disc leaves that object out for memory, so the level's own
+// object is the only source of the model: keep its meshes and take only the
+// injection's animations.
+static bool M_IsLaraGunObject(const OBJECT_ID obj_id)
+{
+    for (int32_t i = 0; i < Gun_Registry_GetCount(); i++) {
+        const WEAPON_INFO *const weapon = Gun_Registry_GetByIndex(i);
+        if (weapon != nullptr && weapon->anim_object_id == obj_id) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
 
 static void M_ReadBounds16(BOUNDS_16 *const bounds, TRX_FILE *const file)
 {
@@ -51,9 +70,19 @@ static void M_ReadObject(const INJECTION_CHUNK chunk)
 
     // Omitted mesh data indicates that we wish to retain what's already
     // defined in level data to avoid duplicate texture page usage.
+#if defined(__DREAMCAST__)
+    // A gun object the level already holds keeps the level's meshes: the
+    // injected set is a placeholder and the real model comes from the outfit
+    // object, which the disc leaves out.
+    const bool keep_meshes = obj->loaded && M_IsLaraGunObject(obj_info.id);
+#else
+    const bool keep_meshes = false;
+#endif
     if (!obj->loaded || num_meshes != 0) {
-        obj->mesh_count = num_meshes;
-        obj->mesh_idx = mesh_idx + cached_info.mesh_ptr_count;
+        if (!keep_meshes) {
+            obj->mesh_count = num_meshes;
+            obj->mesh_idx = mesh_idx + cached_info.mesh_ptr_count;
+        }
         obj->bone_idx = bone_idx + cached_info.anims.bone_count;
     }
 
@@ -78,9 +107,11 @@ static void M_ReadObject(const INJECTION_CHUNK chunk)
         obj->loaded = true;
     }
 
-    for (int32_t i = 0; i < num_meshes; i++) {
-        OBJECT_MESH *const mesh = Object_GetMesh(obj->mesh_idx + i);
-        M_AlignTextureReferences(mesh, cached_info.textures.object_count);
+    if (!keep_meshes) {
+        for (int32_t i = 0; i < num_meshes; i++) {
+            OBJECT_MESH *const mesh = Object_GetMesh(obj->mesh_idx + i);
+            M_AlignTextureReferences(mesh, cached_info.textures.object_count);
+        }
     }
 }
 

@@ -1647,30 +1647,47 @@ static void M_InitWhite(void)
 // the vertices of the list, when there is one (the chunks that show).
 // A reflective vertex's place on the sphere map and its colour there, from
 // its eye space position, the fog it keeps and its lit colour (0 to 1).
-M_HOT void M_EnvVertex(
-    MESH_BATCHER *const batcher, const int32_t i,
-    const OUTPUT_MESH_VERTEX *const vertex, const float mv[4][4],
-    const float x, const float y, const float z, const float keep,
-    const float lit[3])
+// The environment reflection of one vertex (M_EnvVertex), as dc_env_vertex in
+// env_sh4.S.
+typedef struct {
+    float *env_uv;     // 0 (eu, ev out)
+    uint32_t *eargb;   // 4 (packed out)
+    float nx, ny, nz;  // 8, 12, 16
+    float m0[3];       // 20, 24, 28 (mv column 0)
+    float m1[3];       // 32, 36, 40
+    float m2[3];       // 44, 48, 52
+    float x, y, z;     // 56, 60, 64
+    float keep;        // 68
+    float lit[3];      // 72, 76, 80
+    float strength;    // 84
+    float env_x;       // 88
+    float env_y;       // 92
+    float k05;         // 96
+    float k2;          // 100
+    float k255;        // 104
+} M_ENVRUN;
+_Static_assert(offsetof(M_ENVRUN, x) == 56, "env_sh4.S layout");
+_Static_assert(offsetof(M_ENVRUN, keep) == 68, "env_sh4.S layout");
+_Static_assert(offsetof(M_ENVRUN, lit) == 72, "env_sh4.S layout");
+_Static_assert(offsetof(M_ENVRUN, strength) == 84, "env_sh4.S layout");
+_Static_assert(offsetof(M_ENVRUN, env_x) == 88, "env_sh4.S layout");
+extern void dc_env_vertex(M_ENVRUN *run);
+
+[[maybe_unused]] static void M_EnvVertexC(
+    float *const env_uv, uint32_t *const eargb, const M_ENVRUN *const run)
 {
-    // The normal in eye space (the camera at the origin, looking down z),
-    // turned to face the camera, mirrors the way to the vertex; the sphere
-    // map holds what lies that way.
-    const float nx = vertex->normal.x;
-    const float ny = vertex->normal.y;
-    const float nz = vertex->normal.z;
     float n[3] = {
-        mv[0][0] * nx + mv[1][0] * ny + mv[2][0] * nz,
-        mv[0][1] * nx + mv[1][1] * ny + mv[2][1] * nz,
-        mv[0][2] * nx + mv[1][2] * ny + mv[2][2] * nz,
+        run->m0[0] * run->nx + run->m0[1] * run->ny + run->m0[2] * run->nz,
+        run->m1[0] * run->nx + run->m1[1] * run->ny + run->m1[2] * run->nz,
+        run->m2[0] * run->nx + run->m2[1] * run->ny + run->m2[2] * run->nz,
     };
-    const float d_len_sq = x * x + y * y + z * z;
+    const float d_len_sq = run->x * run->x + run->y * run->y + run->z * run->z;
     const float n_len_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
     float eu = 0.5f;
     float ev = 0.5f;
     if (d_len_sq > 0.0f && n_len_sq > 0.0f) {
         const float inv_d = M_InvSqrt(d_len_sq);
-        const float d[3] = { x * inv_d, y * inv_d, z * inv_d };
+        const float d[3] = { run->x * inv_d, run->y * inv_d, run->z * inv_d };
         const float inv_n = M_InvSqrt(n_len_sq);
         float d_n = 0.0f;
         for (int32_t k = 0; k < 3; k++) {
@@ -1688,28 +1705,79 @@ M_HOT void M_EnvVertex(
             d[1] - 2.0f * d_n * n[1],
             d[2] - 2.0f * d_n * n[2],
         };
-        // Straight back at the camera is the map's middle, away from it its
-        // rim; right and down on the screen, in eye space, by the
-        // projection's signs.
         const float m2 =
             r[0] * r[0] + r[1] * r[1] + (r[2] - 1.0f) * (r[2] - 1.0f);
         if (m2 > 0.0f) {
             const float inv_m = 0.5f * M_InvSqrt(m2);
-            const float env_x = m_Frame.proj_x < 0.0f ? -1.0f : 1.0f;
-            const float env_y = m_Frame.proj_y < 0.0f ? -1.0f : 1.0f;
-            eu = 0.5f + env_x * r[0] * inv_m;
-            ev = 0.5f + env_y * r[1] * inv_m;
+            eu = 0.5f + run->env_x * r[0] * inv_m;
+            ev = 0.5f + run->env_y * r[1] * inv_m;
         }
     }
-    batcher->env_uv[i][0] = eu;
-    batcher->env_uv[i][1] = ev;
-    // Half its own, half the light on it: metal shows its surroundings even
-    // in the shade, if less.
+    env_uv[0] = eu;
+    env_uv[1] = ev;
     float e[3];
     for (int32_t k = 0; k < 3; k++) {
-        e[k] = keep * M_ENV_STRENGTH * (0.5f + 0.5f * lit[k]);
+        e[k] = run->keep * run->strength * (0.5f + 0.5f * run->lit[k]);
     }
-    batcher->eargb[i] = M_PackARGB(1.0f, e[0], e[1], e[2]);
+    *eargb = M_PackARGB(1.0f, e[0], e[1], e[2]);
+}
+
+static void M_EnvVertex(
+    MESH_BATCHER *const batcher, const int32_t i,
+    const OUTPUT_MESH_VERTEX *const vertex, const float mv[4][4],
+    const float x, const float y, const float z, const float keep,
+    const float lit[3])
+{
+    M_ENVRUN run = {
+        .env_uv = batcher->env_uv[i],
+        .eargb = &batcher->eargb[i],
+        .nx = vertex->normal.x,
+        .ny = vertex->normal.y,
+        .nz = vertex->normal.z,
+        .m0 = { mv[0][0], mv[1][0], mv[2][0] },
+        .m1 = { mv[0][1], mv[1][1], mv[2][1] },
+        .m2 = { mv[0][2], mv[1][2], mv[2][2] },
+        .x = x,
+        .y = y,
+        .z = z,
+        .keep = keep,
+        .lit = { lit[0], lit[1], lit[2] },
+        .strength = M_ENV_STRENGTH,
+        .env_x = m_Frame.proj_x < 0.0f ? -1.0f : 1.0f,
+        .env_y = m_Frame.proj_y < 0.0f ? -1.0f : 1.0f,
+        .k05 = 0.5f,
+        .k2 = 2.0f,
+        .k255 = 255.0f,
+    };
+    if ((g_DC_AsmOff & 128) != 0) {
+        M_EnvVertexC(run.env_uv, run.eargb, &run);
+        return;
+    }
+#if defined(DC_EMIT_VERIFY)
+    float ref_uv[2];
+    uint32_t ref_argb;
+    M_EnvVertexC(ref_uv, &ref_argb, &run);
+    dc_env_vertex(&run);
+    static uint32_t m_EnvN;
+    static uint32_t m_EnvBad;
+    m_EnvN++;
+    const bool ok = M_ArgbNear(ref_argb, run.eargb[0])
+        && M_XNear(ref_uv[0], run.env_uv[0])
+        && M_XNear(ref_uv[1], run.env_uv[1]);
+    if (!ok && ++m_EnvBad <= 12) {
+        LOG_WARNING(
+            "[env-verify] MISMATCH argb %08x vs %08x uv %f %f",
+            (unsigned)ref_argb, (unsigned)run.eargb[0], (double)run.env_uv[0],
+            (double)run.env_uv[1]);
+    }
+    if (m_EnvN % 20000 == 0) {
+        LOG_WARNING(
+            "[env-verify] %u vertices, %u bad", (unsigned)m_EnvN,
+            (unsigned)m_EnvBad);
+    }
+#else
+    dc_env_vertex(&run);
+#endif
 }
 
 #if defined(DC_EMIT_VERIFY)
@@ -2743,7 +2811,7 @@ static void M_FogColours(
 // Everything else: sprites, meshes lit by their own light or not at all,
 // coloured fog, reflections, the UI's models. The desktop shader's lighting
 // in floats, a vertex at a time.
-static void M_XformGeneric(
+[[maybe_unused]] static void M_XformGenericC(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
     M_XFORM *const c, const float mv[4][4], const float scale,
@@ -2818,6 +2886,190 @@ static void M_XformGeneric(
             M_EnvVertex(batcher, i, vertex, mv, x, y, z, keep, lit);
         }
     }
+}
+
+// The generic transform in assembly (xform_gen_sh4.S): the loop of
+// M_XformGenericC. What the assembly leaves to C goes through two callbacks:
+// M_LightVertex (TR3, the caustics, passing lights and flicker) and
+// M_EnvVertex (reflections). A build with DC_EMIT_VERIFY runs the C too and
+// compares them. TRX_DC_ASMOFF bit 1024 turns it off.
+typedef struct M_GENRUN M_GENRUN;
+struct M_GENRUN {
+    const OUTPUT_MESH_VERTEX *vertices; // 0
+    const uint16_t *vref;               // 4
+    M_XVERT *xverts;                    // 8
+    uint32_t *oargb;                    // 12
+    uint32_t *sargb;                    // 16
+    int32_t count;                      // 20
+    M_XFORM *c;                         // 24
+    const M_INSTANCE_LIGHT *il;         // 28
+    float tint[4];                      // 32
+    float scale;                        // 48
+    float cel_scale;                    // 52
+    float cel_shade;                    // 56
+    float fog_color[3];                 // 60
+    int32_t lighting;                   // 72
+    float min_shade;                    // 76
+    int32_t env;                        // 80
+    int32_t slow;                       // 84
+    float adder;                        // 88
+    int32_t has_direction;              // 92
+    float l[3];                         // 96
+    int32_t dyn;                        // 108
+    void (*light)(M_GENRUN *, const OUTPUT_MESH_VERTEX *); // 112
+    void (*env_cb)(M_GENRUN *);         // 116
+    float rgba[4];                      // 120
+    int32_t unused;                     // 136
+    int32_t cur_i;                      // 140
+    const OUTPUT_MESH_VERTEX *cur_vertex; // 144
+    float cur[3];                       // 148
+    float cur_keep;                     // 160
+    float lit[3];                       // 164
+    MESH_BATCHER *batcher;              // 176
+    const MESH_INSTANCE *inst;          // 180
+    const float (*mv)[4];               // 184
+    float inv255;                       // 188
+    float shade_max;                    // 192
+    float inv65536;                     // 196
+    float two;                          // 200
+    float inv_neutral;                  // 204
+    float cel_edge;                     // 208
+    float k255;                         // 212
+    float half;                         // 216
+    float neutral;                      // 220
+};
+_Static_assert(offsetof(M_GENRUN, tint) == 32, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, lighting) == 72, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, adder) == 88, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, dyn) == 108, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, light) == 112, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, rgba) == 120, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, cur_i) == 140, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, cur) == 148, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, lit) == 164, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, inv255) == 188, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_GENRUN, neutral) == 220, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_XFORM, ortho) == 48, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_XFORM, proj_x) == 52, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(M_XFORM, max_inv_z) == 76, "xform_gen_sh4.S layout");
+_Static_assert(sizeof(OUTPUT_MESH_VERTEX) == 28, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(OUTPUT_MESH_VERTEX, flags) == 22, "xform_gen_sh4.S layout");
+_Static_assert(offsetof(OUTPUT_MESH_VERTEX, shade) == 24, "xform_gen_sh4.S layout");
+extern void dc_xform_generic(M_GENRUN *run);
+
+static void M_GenLight(M_GENRUN *const run, const OUTPUT_MESH_VERTEX *const vertex)
+{
+    float mul;
+    M_LightVertex(
+        vertex, run->il, &run->inst->wmatrix, run->inst->tint, run->rgba, &mul);
+}
+
+static void M_GenEnv(M_GENRUN *const run)
+{
+    M_EnvVertex(
+        run->batcher, run->cur_i, run->cur_vertex, run->mv, run->cur[0],
+        run->cur[1], run->cur[2], run->cur_keep, run->lit);
+}
+
+static void M_XformGeneric(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    M_XFORM *const c, const float mv[4][4], const float scale,
+    const float cel_scale, const bool black_fog)
+{
+    if ((g_DC_AsmOff & 1024) != 0) {
+        M_XformGenericC(
+            batcher, bind, inst, il, c, mv, scale, cel_scale, black_fog);
+        return;
+    }
+    batcher->oargb_used = !black_fog;
+    M_GENRUN run = {
+        .vertices = Vector_GetData(bind->mesh->vertices),
+        .vref = bind->vref,
+        .xverts = batcher->xverts,
+        .oargb = black_fog ? nullptr : batcher->oargb,
+        .sargb = batcher->cel ? batcher->sargb : nullptr,
+        .count = bind->vertex_count,
+        .c = c,
+        .il = il,
+        .tint = { inst->tint.r, inst->tint.g, inst->tint.b, inst->tint.a },
+        .scale = scale,
+        .cel_scale = cel_scale,
+        .cel_shade = m_CelShade,
+        .fog_color = { m_Frame.fog_color[0], m_Frame.fog_color[1],
+                       m_Frame.fog_color[2] },
+        .lighting = m_Frame.lighting,
+        .min_shade = m_Frame.min_shade,
+        .env = batcher->env,
+        // TR3's lighting and the caustics go to the C.
+        .slow = il->tr3 || il->caustics,
+        .adder = il->adder,
+        .has_direction = il->has_direction,
+        .l = { il->l[0], il->l[1], il->l[2] },
+        // A room's lights that pass, or flicker: the C finds the shade.
+        .dyn = il->has_room_lights && (il->num_lights > 0 || il->flicker != 0.0f),
+        .light = M_GenLight,
+        .env_cb = M_GenEnv,
+        .batcher = batcher,
+        .inst = inst,
+        .mv = mv,
+        .inv255 = 1.0f / 255.0f,
+        .shade_max = M_SHADE_MAX,
+        .inv65536 = 1.0f / (float)(1 << 16),
+        .two = 2.0f,
+        .inv_neutral = 1.0f / M_SHADE_NEUTRAL,
+        .cel_edge = M_CEL_EDGE,
+        .k255 = 255.0f,
+        .half = 0.5f,
+        .neutral = M_SHADE_NEUTRAL,
+    };
+#if defined(DC_EMIT_VERIFY)
+    const int32_t n = bind->vertex_count;
+    M_XVERT *const saved = Memory_Alloc(sizeof(M_XVERT) * n);
+    uint32_t *const saved_o = Memory_Alloc(sizeof(uint32_t) * n);
+    uint32_t *const saved_s = Memory_Alloc(sizeof(uint32_t) * n);
+    mat_load(&batcher->mv);
+    dc_xform_generic(&run);
+    memcpy(saved, batcher->xverts, sizeof(M_XVERT) * n);
+    memcpy(saved_o, batcher->oargb, sizeof(uint32_t) * n);
+    memcpy(saved_s, batcher->sargb, sizeof(uint32_t) * n);
+    M_XformGenericC(
+        batcher, bind, inst, il, c, mv, scale, cel_scale, black_fog);
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    bool bad = false;
+    for (int32_t i = 0; i < n && !bad; i++) {
+        const M_XVERT *const a = &saved[i];
+        const M_XVERT *const b = &batcher->xverts[i];
+        bad = a->clip != b->clip || !M_XNear(a->x, b->x) || !M_XNear(a->y, b->y)
+            || !M_XNear(a->z, b->z) || !M_ArgbNear(a->argb, b->argb)
+            || (!black_fog && !M_ArgbNear(saved_o[i], batcher->oargb[i]))
+            || (batcher->cel && !M_ArgbNear(saved_s[i], batcher->sargb[i]));
+        // The screen position is only set in front of the near plane.
+        if (!bad && (b->clip & M_CLIP_NEAR) == 0 && !c->ortho) {
+            bad = !M_XNear(a->sx, b->sx) || !M_XNear(a->sy, b->sy)
+                || !M_XNear(a->inv_z, b->inv_z);
+        }
+        if (bad && m_Bad++ < 8) {
+            LOG_WARNING(
+                "[xgen-verify] vertex %d clip %02x/%02x argb %08x/%08x", (int)i,
+                a->clip, b->clip, (unsigned)a->argb, (unsigned)b->argb);
+        }
+    }
+    m_Runs++;
+    if (m_Runs % 2000 == 0) {
+        LOG_WARNING(
+            "[xgen-verify] %u runs, %u bad", (unsigned)m_Runs, (unsigned)m_Bad);
+    }
+    Memory_Free(saved);
+    Memory_Free(saved_o);
+    Memory_Free(saved_s);
+#else
+    // Whatever ran since the instance's mat_load (soft lights, chunks) may
+    // have left another matrix in XMTRX.
+    mat_load(&batcher->mv);
+    dc_xform_generic(&run);
+#endif
 }
 
 // Cel shading only this near the camera: further off, an enemy is a few
@@ -3197,10 +3449,15 @@ typedef struct {
     float k384;
     int32_t no_height;
     int32_t steps;
+    // dc_chunk_hidden's own constants (0.5 for midpoints, M_SIGHT_INSET).
+    float k05;
+    float k16;
 } M_SIGHTRUN;
 _Static_assert(offsetof(M_SIGHTRUN, eye) == 52, "room_sh4.S layout");
 _Static_assert(offsetof(M_SIGHTRUN, foot) == 84, "room_sh4.S layout");
 _Static_assert(offsetof(M_SIGHTRUN, steps) == 120, "room_sh4.S layout");
+_Static_assert(offsetof(M_SIGHTRUN, k05) == 124, "room_sh4.S layout");
+_Static_assert(offsetof(M_SIGHTRUN, k16) == 128, "room_sh4.S layout");
 _Static_assert(NO_ROOM == -1, "room_sh4.S: no room is -1");
 _Static_assert(sizeof(((SECTOR *)0)->portal_room.pit) == 2, "room_sh4.S layout");
 _Static_assert(sizeof(((SECTOR *)0)->floor.tilt.x) == 2, "room_sh4.S layout");
@@ -3261,8 +3518,14 @@ static bool M_SightBlocked(
 }
 
 // Whether the walls hide the whole of the chunk from the eye: five rays, to its
-// middle and its four corners, at two heights, all stopped.
-static bool M_ChunkHidden(const M_SIGHT *const s, const M_CHUNK *const chunk)
+// middle and its four corners, at two heights, all stopped (dc_chunk_hidden in
+// room_sh4.S, with the C below as the reference).
+extern int32_t dc_chunk_hidden(M_SIGHTRUN *run, const M_CHUNK *chunk);
+_Static_assert(offsetof(M_CHUNK, lo) == 16, "room_sh4.S chunk layout");
+_Static_assert(offsetof(M_CHUNK, hi) == 28, "room_sh4.S chunk layout");
+
+[[maybe_unused]] static bool M_ChunkHiddenC(
+    const M_SIGHT *const s, const M_CHUNK *const chunk)
 {
     const int32_t foot[4] = {
         (int32_t)floorf(chunk->lo[0] * (1.0f / WALL_L)),
@@ -3295,6 +3558,57 @@ static bool M_ChunkHidden(const M_SIGHT *const s, const M_CHUNK *const chunk)
         }
     }
     return true;
+}
+
+static bool M_ChunkHidden(const M_SIGHT *const s, const M_CHUNK *const chunk)
+{
+    if ((g_DC_AsmOff & 4) != 0) {
+        return M_ChunkHiddenC(s, chunk);
+    }
+    const ROOM *const room = s->room;
+    M_SIGHTRUN run = {
+        .size_x = room->size.x,
+        .size_z = room->size.z,
+        .sectors = room->sectors,
+        .sector_size = sizeof(SECTOR),
+        .off_height = offsetof(SECTOR, floor.height),
+        .off_wall = offsetof(SECTOR, portal_room.wall),
+        .off_pit = offsetof(SECTOR, portal_room.pit),
+        .off_split = offsetof(SECTOR, floor.is_split),
+        .off_tilt_x = offsetof(SECTOR, floor.tilt.x),
+        .off_tilt_z = offsetof(SECTOR, floor.tilt.z),
+        .pos_y = room->pos.y,
+        .see_through = s->see_through,
+        .wall_top = s->wall_top,
+        .eye = { s->eye[0], s->eye[1], s->eye[2] },
+        .y_lo = s->y_lo,
+        .y_hi = s->y_hi,
+        .inv = 1.0f / WALL_L,
+        .flt_max = FLT_MAX,
+        .k256 = 256.0f,
+        .k384 = M_WALL_TOP_MARGIN,
+        .no_height = NO_HEIGHT,
+        .steps = M_SIGHT_STEPS,
+        .k05 = 0.5f,
+        .k16 = M_SIGHT_INSET,
+    };
+    const bool hidden = dc_chunk_hidden(&run, chunk) != 0;
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_ChunkRuns;
+    static uint32_t m_ChunkBad;
+    m_ChunkRuns++;
+    if (hidden != M_ChunkHiddenC(s, chunk) && ++m_ChunkBad <= 8) {
+        LOG_WARNING(
+            "[chunk-verify] MISMATCH asm %d eye %g %g %g", (int)hidden,
+            (double)s->eye[0], (double)s->eye[1], (double)s->eye[2]);
+    }
+    if (m_ChunkRuns % 20000 == 0) {
+        LOG_WARNING(
+            "[chunk-verify] %u chunks, %u bad", (unsigned)m_ChunkRuns,
+            (unsigned)m_ChunkBad);
+    }
+#endif
+    return hidden;
 }
 
 // The sectors about a room the cells cover, the eye's height step, and how
@@ -4797,6 +5111,125 @@ static float M_PerspScale(const float dist, const float z)
     return dist * r * r;
 }
 
+// What a vertex lies past of the soft shadow's cell, as bits.
+#define M_SOFT_OFF_LEFT 0x01
+#define M_SOFT_OFF_RIGHT 0x02
+#define M_SOFT_OFF_TOP 0x04
+#define M_SOFT_OFF_BOTTOM 0x08
+#define M_SOFT_OFF_FAR 0x10
+#define M_SOFT_OFF_BEHIND 0x20
+
+// The soft shadow's per-vertex projection (soft[][] and soft_off[]), as
+// dc_soft_project in soft_sh4.S.
+typedef struct {
+    const M_XVERT *xverts;   // 0
+    float (*soft)[3];        // 4
+    uint8_t *soft_off;       // 8
+    const int32_t (*vr)[2];  // 12
+    int32_t nvr;             // 16
+    matrix_t m;              // 20 (row-major, as mat_trans_nodiv takes it)
+    int32_t persp;           // 84
+    float dist;              // 88
+    int32_t world;           // 92
+    float reach;             // 96
+    float behind;            // 100
+    float k05;               // 104
+    float k3;                // 108
+} M_SOFTRUN;
+_Static_assert(offsetof(M_SOFTRUN, m) == 24, "soft_sh4.S layout");
+_Static_assert(offsetof(M_SOFTRUN, persp) == 88, "soft_sh4.S layout");
+_Static_assert(offsetof(M_SOFTRUN, dist) == 92, "soft_sh4.S layout");
+_Static_assert(offsetof(M_SOFTRUN, world) == 96, "soft_sh4.S layout");
+_Static_assert(offsetof(M_SOFTRUN, reach) == 100, "soft_sh4.S layout");
+_Static_assert(offsetof(M_SOFTRUN, behind) == 104, "soft_sh4.S layout");
+_Static_assert(offsetof(M_SOFTRUN, k05) == 108, "soft_sh4.S layout");
+_Static_assert(offsetof(M_SOFTRUN, k3) == 112, "soft_sh4.S layout");
+_Static_assert(offsetof(M_XVERT, x) == 0, "soft_sh4.S layout");
+_Static_assert(offsetof(M_XVERT, z) == 8, "soft_sh4.S layout");
+extern void dc_soft_project(M_SOFTRUN *run);
+
+[[maybe_unused]] static void M_SoftProjectC(const M_SOFTRUN *const run)
+{
+    mat_load(&run->m);
+    for (int32_t r = 0; r < run->nvr; r++) {
+        const int32_t end = run->vr[r][0] + run->vr[r][1];
+        for (int32_t i = run->vr[r][0]; i < end; i++) {
+            const M_XVERT *const xv = &run->xverts[i];
+            float x = xv->x;
+            float y = xv->y;
+            float z = xv->z;
+            float w = 1.0f;
+            mat_trans_nodiv(x, y, z, w);
+            if (run->persp) {
+                const float f = M_PerspScale(run->dist, z);
+                x = 0.5f + (x - 0.5f) * f;
+                y = 0.5f + (y - 0.5f) * f;
+            }
+            run->soft[i][0] = x;
+            run->soft[i][1] = y;
+            run->soft[i][2] = z;
+            uint8_t off = (x < 0.0f ? M_SOFT_OFF_LEFT : 0)
+                | (x > 1.0f ? M_SOFT_OFF_RIGHT : 0)
+                | (y < 0.0f ? M_SOFT_OFF_TOP : 0)
+                | (y > 1.0f ? M_SOFT_OFF_BOTTOM : 0);
+            if (run->world) {
+                off |= (z > run->reach ? M_SOFT_OFF_FAR : 0)
+                    | (z < run->behind ? M_SOFT_OFF_BEHIND : 0);
+            }
+            run->soft_off[i] = off;
+        }
+    }
+}
+
+static void M_SoftProject(M_SOFTRUN *const run)
+{
+    if ((g_DC_AsmOff & 64) != 0) {
+        M_SoftProjectC(run);
+        return;
+    }
+#if defined(DC_EMIT_VERIFY)
+    int32_t total = 0;
+    for (int32_t r = 0; r < run->nvr; r++) {
+        const int32_t e = run->vr[r][0] + run->vr[r][1];
+        total = e > total ? e : total;
+    }
+    static float(*saved)[3] = nullptr;
+    static uint8_t *saved_off = nullptr;
+    static int32_t saved_cap = 0;
+    if (total > saved_cap) {
+        Memory_Free(saved);
+        Memory_Free(saved_off);
+        saved_cap = total;
+        saved = Memory_Alloc(sizeof(*saved) * saved_cap);
+        saved_off = Memory_Alloc(saved_cap);
+    }
+    M_SoftProjectC(run);
+    memcpy(saved, run->soft, sizeof(*saved) * total);
+    memcpy(saved_off, run->soft_off, total);
+    dc_soft_project(run);
+    static uint32_t m_SoftN;
+    static uint32_t m_SoftBad;
+    for (int32_t i = 0; i < total; i++) {
+        const bool ok = saved_off[i] == run->soft_off[i]
+            && M_XNear(saved[i][0], run->soft[i][0])
+            && M_XNear(saved[i][1], run->soft[i][1])
+            && M_XNear(saved[i][2], run->soft[i][2]);
+        m_SoftN++;
+        if (!ok && ++m_SoftBad <= 12) {
+            LOG_WARNING("[soft-verify] MISMATCH vertex %d", (int)i);
+        }
+    }
+    if (m_SoftN >= 400000) {
+        LOG_WARNING(
+            "[soft-verify] %u vertices, %u bad", (unsigned)m_SoftN,
+            (unsigned)m_SoftBad);
+        m_SoftN = 0;
+    }
+#else
+    dc_soft_project(run);
+#endif
+}
+
 static void M_EmitShadowFaces(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const int32_t l, const int32_t slot, const bool world)
@@ -4858,50 +5291,26 @@ static void M_EmitShadowFaces(
     // Per vertex, what it lies past, as bits: a face whose corners all lie
     // past one same thing is off, told with two ands instead of eighteen
     // comparisons. The near plane's bit comes from the clip.
-    enum {
-        M_SOFT_OFF_LEFT = 0x01,
-        M_SOFT_OFF_RIGHT = 0x02,
-        M_SOFT_OFF_TOP = 0x04,
-        M_SOFT_OFF_BOTTOM = 0x08,
-        M_SOFT_OFF_FAR = 0x10,
-        M_SOFT_OFF_BEHIND = 0x20,
-    };
-    mat_load(&m);
     float(*const soft)[3] = batcher->soft;
     uint8_t *const soft_off = batcher->soft_off;
-    // Only the vertices transformed this instance: a room's chunks off the
-    // screen were not.
-    const int32_t whole[1][2] = { { 0, bind->vertex_count } };
-    const int32_t(*const vr)[2] =
-        batcher->vrange_count < 0 ? whole : batcher->vranges;
-    const int32_t nvr = batcher->vrange_count < 0 ? 1 : batcher->vrange_count;
-    for (int32_t r = 0; r < nvr; r++) {
-        const int32_t end = vr[r][0] + vr[r][1];
-        for (int32_t i = vr[r][0]; i < end; i++) {
-            const M_XVERT *const xv = &batcher->xverts[i];
-            float x = xv->x;
-            float y = xv->y;
-            float z = xv->z;
-            float w = 1.0f;
-            mat_trans_nodiv(x, y, z, w);
-            if (persp) {
-                const float f = M_PerspScale(light->dist, z);
-                x = 0.5f + (x - 0.5f) * f;
-                y = 0.5f + (y - 0.5f) * f;
-            }
-            soft[i][0] = x;
-            soft[i][1] = y;
-            soft[i][2] = z;
-            uint8_t off = (x < 0.0f ? M_SOFT_OFF_LEFT : 0)
-                | (x > 1.0f ? M_SOFT_OFF_RIGHT : 0)
-                | (y < 0.0f ? M_SOFT_OFF_TOP : 0)
-                | (y > 1.0f ? M_SOFT_OFF_BOTTOM : 0);
-            if (world) {
-                off |= (z > M_SOFT_REACH ? M_SOFT_OFF_FAR : 0)
-                    | (z < -M_SOFT_SPAN * 0.25f ? M_SOFT_OFF_BEHIND : 0);
-            }
-            soft_off[i] = off;
-        }
+    {
+        const int32_t whole[1][2] = { { 0, bind->vertex_count } };
+        M_SOFTRUN run = {
+            .xverts = batcher->xverts,
+            .soft = soft,
+            .soft_off = soft_off,
+            .vr = batcher->vrange_count < 0 ? whole : batcher->vranges,
+            .nvr = batcher->vrange_count < 0 ? 1 : batcher->vrange_count,
+            .persp = persp,
+            .dist = light->dist,
+            .world = world,
+            .reach = M_SOFT_REACH,
+            .behind = -M_SOFT_SPAN * 0.25f,
+            .k05 = 0.5f,
+            .k3 = 1.0f / 3.0f,
+        };
+        memcpy(run.m, m, sizeof(run.m));
+        M_SoftProject(&run);
     }
 
     const OUTPUT_MESH *const mesh = bind->mesh;
@@ -5260,7 +5669,7 @@ static void M_BumpGatherLights(
 // over a long stretch, so that none starts suddenly; and wherever a flash or
 // other passing light reaches the vertex, however far from the camera, by how
 // near it stands to that light.
-static uint32_t M_BumpVertex(
+[[maybe_unused]] static uint32_t M_BumpVertexC(
     const M_BUMP_LIGHTS *const lights, const M_BUMP_FRAME *const frame,
     const M_XVERT *const vert, const bool glow, float *const fade,
     float *const by_light)
@@ -5339,6 +5748,93 @@ static uint32_t M_BumpVertex(
         strength *= lit * lit;
     }
     return M_BumpAt(frame, pos, light, strength, glow);
+}
+
+// The relief's vertex colour in assembly (bump_sh4.S): what M_BumpVertexC
+// does, with the constants it uses in a table (the index of each is in the
+// assembly). A build with DC_EMIT_VERIFY runs the C too and compares them.
+// TRX_DC_ASMOFF bit 512 turns it off.
+typedef struct {
+    const M_BUMP_LIGHTS *lights;  // 0
+    const M_BUMP_FRAME *frame;    // 4
+    const M_XVERT *vert;          // 8
+    int32_t glow;                 // 12
+    float *fade;                  // 16
+    float *by_light;              // 20
+    const float *k;               // 24
+    float view1[3];               // 28, 32, 36
+    int32_t count;                // 40
+    const float *radius;          // 44
+    const float *power;           // 48
+    const bool *passing;          // 52
+} M_BUMPRUN;
+_Static_assert(offsetof(M_BUMPRUN, view1) == 28, "bump_sh4.S layout");
+_Static_assert(offsetof(M_BUMPRUN, passing) == 52, "bump_sh4.S layout");
+_Static_assert(offsetof(M_BUMP_LIGHTS, radius) == 192, "bump_sh4.S layout");
+_Static_assert(offsetof(M_BUMP_FRAME, tl) == 36, "bump_sh4.S layout");
+_Static_assert(offsetof(M_XVERT, argb) == 24, "bump_sh4.S layout");
+extern uint32_t dc_bump_vertex(M_BUMPRUN *run);
+
+static const float m_BumpK[33] = {
+    1.0f, 4.0f, 8.0f * WALL_L, M_BUMP_PASSING_TILT, 1.0e-6f, M_BUMP_RANGE,
+    1.0f / M_BUMP_FADE, M_BUMP_GLOW_RANGE, 1.0f / M_BUMP_GLOW_FADE,
+    M_BUMP_DEPTH, M_BUMP_GLOW, 1.0f / 255.0f, 255.0f, 0.5f, 1.0e-4f, 0.30f,
+    1.0f / 0.45f, 0.5f, 1.0f / 0.4f, 3.0f, 2.0f, M_BUMP_MIN_SIN,
+    -0.0464964749f, 0.15931422f, 0.327622764f, (float)(M_PI / 2.0),
+    (float)M_PI, 2.0f * (float)M_PI, 256.0f / (2.0f * (float)M_PI),
+    M_BUMP_FLOOR, 1.0f - M_BUMP_FLOOR, M_BUMP_DIM, 1.0f / M_BUMP_DEPTH,
+};
+
+static uint32_t M_BumpVertex(
+    const M_BUMP_LIGHTS *const lights, const M_BUMP_FRAME *const frame,
+    const M_XVERT *const vert, const bool glow, float *const fade,
+    float *const by_light)
+{
+    if ((g_DC_AsmOff & 512) != 0) {
+        return M_BumpVertexC(lights, frame, vert, glow, fade, by_light);
+    }
+    M_BUMPRUN run = {
+        .lights = lights,
+        .frame = frame,
+        .vert = vert,
+        .glow = glow,
+        .fade = fade,
+        .by_light = by_light,
+        .k = m_BumpK,
+        .view1 = { m_Frame.view[1][0], m_Frame.view[1][1], m_Frame.view[1][2] },
+        .count = lights->count,
+        .radius = lights->radius,
+        .power = lights->power,
+        .passing = lights->passing,
+    };
+    const uint32_t colour = dc_bump_vertex(&run);
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    float ref_fade;
+    float ref_by_light;
+    const uint32_t ref = M_BumpVertexC(
+        lights, frame, vert, glow, &ref_fade, &ref_by_light);
+    m_Runs++;
+    bool bad = fabsf(ref_fade - *fade) > 1.0e-3f
+        || fabsf(ref_by_light - *by_light) > 1.0e-3f;
+    for (int32_t shift = 0; shift < 32 && !bad; shift += 8) {
+        const int32_t a = (int32_t)((colour >> shift) & 0xFF);
+        const int32_t b = (int32_t)((ref >> shift) & 0xFF);
+        // The angle may be one step apart (it wraps at 256).
+        const int32_t d = abs(a - b);
+        bad = shift == 0 ? (d > 2 && d < 254) : d > 2;
+    }
+    if (bad && m_Bad++ < 8) {
+        LOG_INFO(
+            "[bump-verify] asm %08x, C %08x (glow %d)", (unsigned)colour,
+            (unsigned)ref, (int)glow);
+    }
+    if (m_Runs % 8192 == 0) {
+        LOG_INFO("[bump-verify] %u runs, %u different", m_Runs, m_Bad);
+    }
+#endif
+    return colour;
 }
 
 // How much of a face's relief must come from a passing light for the face to
@@ -8149,10 +8645,42 @@ static const int8_t m_BoxFaces[6][4] = {
     { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 },
 };
 
+// The shadow volume's geometry (M_BuildVolume), as dc_build_volume in
+// vol_sh4.S.
+typedef struct {
+    const M_CASTER *caster;   // 0
+    float dir[3];             // 4, 8, 12
+    float origin[3];          // 16, 20, 24
+    int32_t has_origin;       // 28
+    float length_max;         // 32
+    DC_PVR_TRIANGLE *out;     // 36
+    float near_z;             // 40
+    float proj_x;             // 44
+    float proj_y;             // 48
+    float center_x;           // 52
+    float center_y;           // 56
+    const float *view;        // 60
+    float (*depth)(float);    // 64
+    const int8_t *faces;      // 68
+    float min_drop;           // 72
+    float k15;                // 76
+    float k32;                // 80
+    float eighth;             // 84
+    float quarter;            // 88
+} M_VOLRUN;
+_Static_assert(offsetof(M_CASTER, bounds) == 4, "vol_sh4.S layout");
+_Static_assert(offsetof(M_CASTER, world) == 28, "vol_sh4.S layout");
+_Static_assert(offsetof(M_VOLRUN, out) == 36, "vol_sh4.S layout");
+_Static_assert(offsetof(M_VOLRUN, view) == 60, "vol_sh4.S layout");
+_Static_assert(offsetof(M_VOLRUN, depth) == 64, "vol_sh4.S layout");
+_Static_assert(offsetof(M_VOLRUN, faces) == 68, "vol_sh4.S layout");
+_Static_assert(sizeof(DC_PVR_TRIANGLE) == 36, "vol_sh4.S layout");
+extern int32_t dc_build_volume(M_VOLRUN *run);
+
 // The volume a box throws: the faces towards the light where they are, the
 // ones away from it pushed along the shadow, and the box's outline joining
 // the two, which closes it.
-static int32_t M_BuildVolume(
+[[maybe_unused]] static int32_t M_BuildVolumeC(
     const M_CASTER *const caster, const float dir[3], const float origin[3],
     const float length_max, DC_PVR_TRIANGLE *const out)
 {
@@ -8307,6 +8835,68 @@ static int32_t M_BuildVolume(
             count++;
         }
     }
+    return count;
+}
+
+// The volume of a box, in assembly (vol_sh4.S); a build with DC_EMIT_VERIFY
+// runs the C as well and compares them. TRX_DC_ASMOFF bit 256 turns it off.
+static int32_t M_BuildVolume(
+    const M_CASTER *const caster, const float dir[3], const float origin[3],
+    const float length_max, DC_PVR_TRIANGLE *const out)
+{
+    if ((g_DC_AsmOff & 256) != 0) {
+        return M_BuildVolumeC(caster, dir, origin, length_max, out);
+    }
+    M_VOLRUN run = {
+        .caster = caster,
+        .dir = { dir[0], dir[1], dir[2] },
+        .has_origin = origin != nullptr,
+        .length_max = length_max,
+        .out = out,
+        .near_z = m_Frame.near_z,
+        .proj_x = m_Frame.proj_x,
+        .proj_y = m_Frame.proj_y,
+        .center_x = m_Frame.center_x,
+        .center_y = m_Frame.center_y,
+        .view = &m_Frame.view[0][0],
+        .depth = DC_PVR_Depth3D,
+        .faces = &m_BoxFaces[0][0],
+        .min_drop = M_SHADOW_MIN_DROP,
+        .k15 = m_Frame.near_z * 1.5f,
+        .k32 = 32.0f,
+        .eighth = 0.125f,
+        .quarter = 0.25f,
+    };
+    if (origin != nullptr) {
+        memcpy(run.origin, origin, sizeof(run.origin));
+    }
+    mat_load(&m_Frame.view);
+    const int32_t count = dc_build_volume(&run);
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    DC_PVR_TRIANGLE ref[40];
+    const int32_t ref_count =
+        M_BuildVolumeC(caster, dir, origin, length_max, ref);
+    m_Runs++;
+    bool bad = count != ref_count;
+    for (int32_t t = 0; t < MIN(count, ref_count) && !bad; t++) {
+        for (int32_t j = 0; j < 9; j++) {
+            const float a = ((const float *)&out[t])[j];
+            const float b = ((const float *)&ref[t])[j];
+            if (fabsf(a - b) > 0.01f + 1.0e-4f * fabsf(b)) {
+                bad = true;
+            }
+        }
+    }
+    if (bad && m_Bad++ < 8) {
+        LOG_INFO(
+            "[vol-verify] asm %d, C %d triangles", (int)count, (int)ref_count);
+    }
+    if (m_Runs % 4096 == 0) {
+        LOG_INFO("[vol-verify] %u runs, %u different", m_Runs, m_Bad);
+    }
+#endif
     return count;
 }
 

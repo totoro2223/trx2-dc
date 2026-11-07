@@ -679,7 +679,9 @@ static void M_RotYXZ_Float(
 {
     const float k = 1.0f / (float)(1 << W2V_SHIFT);
     // r[j][i]: the row vector v turned is sum_j v[j] * r[j][i].
-    float r[4][4] = {
+    // mat_load reads it with 64-bit moves: aligned, as the stack gives no more
+    // than 4 bytes to a float array.
+    float r[4][4] __attribute__((aligned(32))) = {
         { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 }
     };
     // Each turn is folded in by the columns it changes, in the order Y, X, Z.

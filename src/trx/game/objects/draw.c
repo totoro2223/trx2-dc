@@ -18,6 +18,7 @@
 
 // TEMP: see platform/dreamcast/dc_probe.h
 #if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_mode.h>
     #include <platform/dreamcast/dc_probe.h>
     #include <platform/dreamcast/render/shadow.h>
 #else
@@ -171,7 +172,10 @@ static bool M_DrawInterpolatedObject(
     // The meshes below are drawn from the world stack alone (the batcher
     // never reads the view one), so the walk leaves the view stack out.
     const bool view_was_off = g_MatrixWorldOnly;
-    g_MatrixWorldOnly = true;
+    // On by default. It reset the console when M_RotYXZ_Float's mat_load read a
+    // misaligned stack array (DC build 1284); fixed in 1286. TRX_DC_ASMOFF
+    // bit 2048 turns it off.
+    g_MatrixWorldOnly = (g_DC_AsmOff & 2048) == 0;
 #endif
     ANIM_WALK walk;
     Anim_Walk_Begin(

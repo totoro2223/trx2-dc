@@ -33,8 +33,12 @@ static struct {
     uint64_t done;
     char name[32];
     int32_t shown_percent;
+    float shown; // what the bar shows: it follows the load, it does not jump
     uint64_t last_draw;
 } m_Priv = {};
+
+// How fast the bar may move, in percent per millisecond (40% a second).
+#define M_BAR_RATE 0.04f
 
 // Written on the disc by tools/dreamcast/make_disc.sh.
 static const char *M_GetVersion(void)
@@ -77,7 +81,17 @@ static void M_Draw(const bool force)
     if (!force && now - m_Priv.last_draw < M_REDRAW_INTERVAL_MS) {
         return;
     }
-    const int32_t percent = M_GetPercent();
+    // shortcut: the bar moves only as often as the disc is read (at most every
+    // M_REDRAW_INTERVAL_MS); to move on every frame it would need a thread that
+    // draws while the load computes.
+    const float target = (float)M_GetPercent();
+    const float step = (float)(now - m_Priv.last_draw) * M_BAR_RATE;
+    if (m_Priv.shown + step < target) {
+        m_Priv.shown += step;
+    } else if (target > m_Priv.shown) {
+        m_Priv.shown = target;
+    }
+    const int32_t percent = (int32_t)m_Priv.shown;
     m_Priv.last_draw = now;
     m_Priv.shown_percent = percent;
     char line1[96];
@@ -162,6 +176,10 @@ void DC_Loading_End(void)
     DC_Crumb(DC_CRUMB_LOADED, "loaded");
     m_Priv.done = m_Priv.total;
     strncpy(m_Priv.name, "", sizeof(m_Priv.name));
+    // The bar runs on to the end instead of jumping there.
+    for (int32_t at = (int32_t)m_Priv.shown + 10; at < 100; at += 10) {
+        DC_PVR_DrawLoadingScreen("", "", at);
+    }
     char line1[96];
     snprintf(line1, sizeof(line1), "LOADING  100%%   %s", M_GetVersion());
     DC_PVR_DrawLoadingScreen(

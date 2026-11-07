@@ -86,6 +86,12 @@ static void M_InstallRecovery(void)
         EXC_SLOT_FPU, EXC_FPU, EXC_NMI, EXC_DTLB_MISS_READ, EXC_DTLB_MISS_WRITE,
         EXC_DTLB_PV_READ, EXC_DTLB_PV_WRITE, EXC_ITLB_PV,
         EXC_INITIAL_PAGE_WRITE,
+        // A jump to a bad or odd address (a corrupted return address, a bad
+        // function pointer) lands here, and the KOS default for these gave no
+        // report.
+        EXC_INSTR_ADDRESS, EXC_ITLB_MISS, EXC_DTLB_MULTIPLE,
+        EXC_ITLB_MULTIPLE, EXC_USER_BREAK_PRE, EXC_USER_BREAK_POST,
+        EXC_DOUBLE_FAULT, EXC_UNHANDLED_EXC,
     };
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
         irq_set_handler(codes[i], M_Recover, nullptr);

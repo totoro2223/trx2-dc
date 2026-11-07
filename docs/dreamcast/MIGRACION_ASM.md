@@ -21,6 +21,13 @@ build normal solo corre el ASM. En las otras plataformas queda el C.
 | `dc_fog_colours` (`room_sh4.S`) | `M_FogColours`: parte de la niebla de color por vértice | `[fog-verify]`: sin diferencias, pocas corridas (< 600) | no medida aparte |
 | `dc_sight_blocked` (`room_sh4.S`) | `M_SightBlocked`: rayo de visión entre un ojo y un punto (núcleo de la oclusión) | `[sight-verify]`: sin diferencias, pocas corridas (< 20 000) | no medida aparte |
 
+| `dc_build_volume` (`vol_sh4.S`) | `M_BuildVolume`: volumen de sombra de una caja (esquinas, empuje, longitud, proyección, caras a la luz, tapas y contorno) | `[vol-verify]` en build de verify. **Sin correr aún** | — |
+| `dc_bump_vertex` (`bump_sh4.S`) | `M_BumpVertex` entera: reunir luces, `M_BumpAt`, `M_BumpShade`, `M_Atan2` (constantes en `m_BumpK`) | `[bump-verify]` en build de verify. **Sin correr aún** | — |
+| `dc_xform_generic` (`xform_gen_sh4.S`) | `M_XformGeneric`: bucle por vértice con cualquier bandera. Luz en línea (propia, de objeto, de sala sin luces que pasen ni parpadeo); TR3, cáusticas, luces que pasan y reflejos llaman a C (`M_LightVertex`, `M_EnvVertex`) | `[xgen-verify]` en build de verify. **Sin correr aún** | — |
+
+Bits nuevos de `TRX_DC_ASMOFF`: 256 volúmenes de sombra, 512 relieve, 1024 transformación genérica.
+Los tres usan `fsrra`/`fipr`/`ftrv`, así que difieren del C en el último bit: el verify compara con tolerancia.
+
 Otros cambios de esta tanda que no son ASM: caché de nodos de articulación para chispas
 (`Sparks_JointCache`), tabla UV de chispas, ganchos de prueba (ver 4).
 
@@ -77,7 +84,8 @@ Flujo:
    -Ddc_emit_verify=true` y correr los niveles de prueba (cambiar la opción obliga a recompilar
    todo, ~670 pasos). Después devolver la opción a `false` y medir con la build normal.
 5. Si algo falla: `TRX_DC_ASMOFF=<máscara>` (make_disc.sh) apaga rutinas por bit (1 ventanas de
-   portales, 2 niebla de color, 4 rayos, 8 clima actualización, 16 clima dibujo, 32 efectos).
+   portales, 2 niebla de color, 4 rayos, 8 clima actualización, 16 clima dibujo, 32 efectos,
+   256 volúmenes de sombra, 512 relieve, 1024 transformación genérica).
 6. Registrar en `PROBADO.md`; lo que no sea idéntico al bit va a "Cambios dudosos".
 
 Ganchos de prueba (todos en `tools/dreamcast/make_disc.sh`): `TRX_DC_GIVE`, `FIRE`, `NOHUD`,

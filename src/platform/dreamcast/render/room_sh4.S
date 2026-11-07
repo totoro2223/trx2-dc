@@ -1209,3 +1209,236 @@ sb_out:
     mov.l   @r15+,r8
     rts
     nop
+
+! ---- the walls hiding a chunk (batcher.c, M_ChunkHidden)
+!
+!   int dc_chunk_hidden(M_SIGHTRUN *run, const M_CHUNK *chunk);
+!
+! The shared fields of run (sizes, sectors, offsets, eye, y_lo, y_hi, the
+! constants, steps, k05, k16) are already filled by the caller; this fills to[]
+! and foot[] for each of the ten rays (two heights, five points: the middle and
+! four corners) and stops at the first that sees the chunk (dc_sight_blocked
+! returns 0). Returns 1 when every ray is stopped.
+!
+! r8 the run  r9 the chunk  fr12 mid_x  fr13 mid_z  fr14 0.5  fr15 16.0
+! The frame: 0 xs1  4 xs2  8 zs1  12 zs2  16 ys0  20 ys1
+
+    .macro CHRAY
+    mov     #72,r0
+    fmov.s  fr0,@(r0,r8)      ! to x
+    mov     #76,r0
+    fmov.s  fr1,@(r0,r8)      ! to y
+    mov     #80,r0
+    fmov.s  fr2,@(r0,r8)      ! to z
+    mov     r8,r4
+    bsr     _dc_sight_blocked
+    nop
+    tst     r0,r0
+    JT      ch_visible
+    .endm
+
+    .global _dc_chunk_hidden
+_dc_chunk_hidden:
+    sts.l   pr,@-r15
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    fmov.s  fr12,@-r15
+    fmov.s  fr13,@-r15
+    fmov.s  fr14,@-r15
+    fmov.s  fr15,@-r15
+    add     #-24,r15
+    mov     r4,r8
+    mov     r5,r9
+    mov     #100,r0
+    fmov.s  @(r0,r8),fr8      ! inv
+    mov     #124,r0
+    fmov.s  @(r0,r8),fr14     ! 0.5
+    mov     #128,r0
+    fmov.s  @(r0,r8),fr15     ! 16.0
+
+    ! foot: floor(lo/hi * inv), stored at 84, 88, 92, 96
+    mov     #16,r0
+    fmov.s  @(r0,r9),fr1      ! lo.x
+    fmul    fr8,fr1
+    FLOORI  fr1
+    mov     #84,r0
+    mov.l   r1,@(r0,r8)
+    mov     #24,r0
+    fmov.s  @(r0,r9),fr1      ! lo.z
+    fmul    fr8,fr1
+    FLOORI  fr1
+    mov     #88,r0
+    mov.l   r1,@(r0,r8)
+    mov     #28,r0
+    fmov.s  @(r0,r9),fr1      ! hi.x
+    fmul    fr8,fr1
+    FLOORI  fr1
+    mov     #92,r0
+    mov.l   r1,@(r0,r8)
+    mov     #36,r0
+    fmov.s  @(r0,r9),fr1      ! hi.z
+    fmul    fr8,fr1
+    FLOORI  fr1
+    mov     #96,r0
+    mov.l   r1,@(r0,r8)
+
+    ! mid_x, mid_z
+    mov     #16,r0
+    fmov.s  @(r0,r9),fr0
+    mov     #28,r0
+    fmov.s  @(r0,r9),fr1
+    fadd    fr1,fr0
+    fmul    fr14,fr0
+    fmov    fr0,fr12          ! mid_x
+    mov     #24,r0
+    fmov.s  @(r0,r9),fr0
+    mov     #36,r0
+    fmov.s  @(r0,r9),fr1
+    fadd    fr1,fr0
+    fmul    fr14,fr0
+    fmov    fr0,fr13          ! mid_z
+
+    ! xs1 = min(lo.x + 16, mid_x)
+    mov     #16,r0
+    fmov.s  @(r0,r9),fr0
+    fadd    fr15,fr0
+    fcmp/gt fr12,fr0          ! (lo.x+16) > mid_x ?
+    bf      1f
+    fmov    fr12,fr0
+1:  mov     #0,r0
+    fmov.s  fr0,@(r0,r15)
+    ! xs2 = max(hi.x - 16, mid_x)
+    mov     #28,r0
+    fmov.s  @(r0,r9),fr0
+    fsub    fr15,fr0
+    fcmp/gt fr12,fr0          ! (hi.x-16) > mid_x ?
+    bf      1f
+    bra     2f
+    nop
+1:  fmov    fr12,fr0
+2:  mov     #4,r0
+    fmov.s  fr0,@(r0,r15)
+    ! zs1 = min(lo.z + 16, mid_z)
+    mov     #24,r0
+    fmov.s  @(r0,r9),fr0
+    fadd    fr15,fr0
+    fcmp/gt fr13,fr0
+    bf      1f
+    fmov    fr13,fr0
+1:  mov     #8,r0
+    fmov.s  fr0,@(r0,r15)
+    ! zs2 = max(hi.z - 16, mid_z)
+    mov     #36,r0
+    fmov.s  @(r0,r9),fr0
+    fsub    fr15,fr0
+    fcmp/gt fr13,fr0
+    bf      1f
+    bra     2f
+    nop
+1:  fmov    fr13,fr0
+2:  mov     #12,r0
+    fmov.s  fr0,@(r0,r15)
+    ! ys0 = (lo.y + hi.y) * 0.5, ys1 = lo.y
+    mov     #20,r0
+    fmov.s  @(r0,r9),fr0
+    mov     #32,r0
+    fmov.s  @(r0,r9),fr1
+    fadd    fr1,fr0
+    fmul    fr14,fr0
+    mov     #16,r0
+    fmov.s  fr0,@(r0,r15)
+    mov     #20,r0
+    fmov.s  @(r0,r9),fr0
+    mov     #20,r0
+    fmov.s  fr0,@(r0,r15)
+
+    ! h = 0 (y = ys0): the middle then the four corners
+    fmov    fr12,fr0
+    mov     #16,r0
+    fmov.s  @(r0,r15),fr1
+    fmov    fr13,fr2
+    CHRAY
+    mov     #0,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #16,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #8,r0
+    fmov.s  @(r0,r15),fr2
+    CHRAY
+    mov     #0,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #16,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #12,r0
+    fmov.s  @(r0,r15),fr2
+    CHRAY
+    mov     #4,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #16,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #8,r0
+    fmov.s  @(r0,r15),fr2
+    CHRAY
+    mov     #4,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #16,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #12,r0
+    fmov.s  @(r0,r15),fr2
+    CHRAY
+
+    ! h = 1 (y = ys1)
+    fmov    fr12,fr0
+    mov     #20,r0
+    fmov.s  @(r0,r15),fr1
+    fmov    fr13,fr2
+    CHRAY
+    mov     #0,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #20,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #8,r0
+    fmov.s  @(r0,r15),fr2
+    CHRAY
+    mov     #0,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #20,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #12,r0
+    fmov.s  @(r0,r15),fr2
+    CHRAY
+    mov     #4,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #20,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #8,r0
+    fmov.s  @(r0,r15),fr2
+    CHRAY
+    mov     #4,r0
+    fmov.s  @(r0,r15),fr0
+    mov     #20,r0
+    fmov.s  @(r0,r15),fr1
+    mov     #12,r0
+    fmov.s  @(r0,r15),fr2
+    CHRAY
+
+    mov     #1,r0
+    bra     ch_out
+    nop
+ch_visible:
+    mov     #0,r0
+ch_out:
+    add     #24,r15
+    fmov.s  @r15+,fr15
+    fmov.s  @r15+,fr14
+    fmov.s  @r15+,fr13
+    fmov.s  @r15+,fr12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    lds.l   @r15+,pr
+    rts
+    nop
