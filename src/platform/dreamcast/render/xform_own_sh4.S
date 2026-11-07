@@ -149,6 +149,12 @@ _dc_xform_own:
     mov.l   r1,@(60,r15)
     mov.l   @r5,r1                  ! 80 the cel colours
     mov.l   r1,@(40,r15)
+    add     #16,r5
+    mov.l   @r5+,r1                 ! 96 billboards
+    mov.l   r1,@(20,r15)
+    mov.l   @r5,r1                  ! 100 their scale
+    mov     #44,r0
+    mov.l   r1,@(r0,r15)
     mov.l   @(0,r4),r13
     mov.l   @(4,r4),r8
     mov.l   @(8,r4),r9
@@ -286,6 +292,23 @@ kdone:
 #endif
     fldi1   fr3
     ftrv    xmtrx,fv0
+    mov.l   @(20,r15),r1            ! a billboard or a sprite: moved by the
+    tst     r1,r1                   ! normal, times the scale, in x and y
+    bt      9f
+    mov.l   @(16,r15),r1
+    mov.w   @(16,r1),r0
+    lds     r0,fpul
+    float   fpul,fr4
+    mov.w   @(18,r1),r0
+    lds     r0,fpul
+    float   fpul,fr5
+    mov     #44,r0
+    fmov.s  @(r0,r15),fr6
+    fmul    fr6,fr4
+    fmul    fr6,fr5
+    fadd    fr4,fr0
+    fadd    fr5,fr1
+9:
 
     mov     #0,r0
     movca.l r0,@r14                 ! the line is all written: no fetch of it
@@ -295,7 +318,12 @@ kdone:
     fmov.s  fr1,@-r4
     fmov.s  fr0,@-r4
     mov     #0,r5                   ! the clip
-    mov.b   @(2,r13),r0
+    mov.b   @(0,r13),r0             ! ortho: only x, y, z are kept
+    tst     r0,r0
+    bt      1f
+    bra     placed
+    nop
+1:  mov.b   @(2,r13),r0
     tst     r0,r0
     bt      place
     fcmp/gt fr2,fr10                ! near z > z

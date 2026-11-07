@@ -2460,7 +2460,11 @@ typedef struct {
     // red, 0) by the shade's step.
     const uint16_t (*light)[4];
     const int32_t *caus; // the caustics (M_CausticTable); nullptr: none
+    int32_t bill; // billboards and sprites: x, y moved by the normal * scale
+    float scale;
 } M_XOWN;
+_Static_assert(offsetof(M_XOWN, bill) == 96, "xform_own_sh4.S reads these");
+_Static_assert(offsetof(M_XOWN, scale) == 100, "xform_own_sh4.S reads these");
 _Static_assert(offsetof(M_XOWN, caus) == 92, "xform_own_sh4.S reads these");
 _Static_assert(offsetof(M_XOWN, sargb) == 80, "xform_own_sh4.S reads these");
 _Static_assert(offsetof(M_XOWN, light) == 88, "xform_own_sh4.S reads these");
@@ -2524,6 +2528,83 @@ static void M_VerifyLight(
     const M_INSTANCE_LIGHT *il);
 #endif
 
+// What M_XformOwn hands the assembly: per run of vertices whose deciding
+// flags agree, one call (the flags need not be uniform over the mesh).
+typedef struct {
+    MESH_BATCHER *batcher;
+    const M_BINDING *bind;
+    const OUTPUT_MESH_VERTEX *vertices;
+    M_XFORM *c;
+    const M_INSTANCE_LIGHT *il;
+    float scale;
+    int32_t min_shade;
+    uint32_t dbl;
+    uint32_t tint[4]; // a, r, g, b
+    bool white;
+    bool lighting;
+    bool fog_on;
+    bool tr3;
+} M_OWNCTX;
+
+static void M_OwnAsm(const M_OWNCTX *const x)
+{
+    const M_BINDING *const bind = x->bind;
+    const M_INSTANCE_LIGHT *const il = x->il;
+    const int32_t count = bind->vertex_count;
+    const uint16_t decisive = VERT_NO_LIGHTING | VERT_NO_FOG
+        | VERT_USE_OWN_LIGHT | VERT_BILLBOARD | VERT_ABS_SPRITE;
+    for (int32_t i = 0; i < count;) {
+        const uint16_t f =
+            M_Corner(bind, x->vertices, i)->flags & decisive;
+        int32_t j = i + 1;
+        while (j < count
+               && (M_Corner(bind, x->vertices, j)->flags & decisive) == f) {
+            j++;
+        }
+        const bool own_coloured = x->tr3 && x->lighting
+            && (f & (VERT_NO_LIGHTING | VERT_USE_OWN_LIGHT))
+                == VERT_USE_OWN_LIGHT;
+        M_XOWN run = {
+            .c = x->c,
+            .xverts = x->batcher->xverts + i,
+            .vertices = bind->vref != nullptr ? x->vertices
+                                              : x->vertices + i,
+            .vref = bind->vref != nullptr ? bind->vref + i : nullptr,
+            .count = j - i,
+            .min_shade = x->min_shade,
+            .white = x->white && !own_coloured ? m_WhiteARGB : nullptr,
+            .adder = il->adder,
+            .k0 = x->tr3 ? x->dbl
+                : (f & VERT_NO_LIGHTING) != 0 || !x->lighting
+                ? ((f & VERT_NO_LIGHTING) != 0
+                       ? 256
+                       : M_ShadeK(M_SHADE_NEUTRAL, x->min_shade))
+                : 0,
+            .mode = x->tr3 || (f & VERT_NO_LIGHTING) != 0 || !x->lighting ? 0
+                : (f & VERT_USE_OWN_LIGHT) != 0                           ? 2
+                                                                          : 1,
+            .fog = x->fog_on && (f & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0,
+            .coloured = own_coloured,
+            .tr3_double = il->tr3_double,
+            .ambient = { il->tr3_ambient[0], il->tr3_ambient[1],
+                         il->tr3_ambient[2] },
+            .tint = { x->tint[0], x->tint[1], x->tint[2], x->tint[3] },
+            .sargb = x->batcher->cel ? x->batcher->sargb + i : nullptr,
+            .dark = (uint32_t)(m_CelShade * 256.0f),
+            .light = own_coloured
+                ? M_OwnLight(
+                      il->tr3_ambient, il->tr3_double, x->tint[1], x->tint[2],
+                      x->tint[3])
+                : nullptr,
+            .caus = M_CausticTable(il),
+            .bill = (f & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0,
+            .scale = x->scale,
+        };
+        dc_xform_own(&run);
+        i = j;
+    }
+}
+
 // Statics and sprites: meshes lit by their own light or not at all, with no
 // room light, object light, reflection or coloured fog to add. M_XformGeneric's
 // answer in integers, as the rooms' and objects'.
@@ -2551,61 +2632,26 @@ static void M_XformOwn(
     const uint32_t tb = M_TintK(inst->tint.b);
     const bool white = bind->white && !bind->deforms && ta == 256 && tr == 256
         && tg == 256 && tb == 256;
-    // Vertices that share their flags, and none a billboard or a sprite,
-    // are done in assembly: the flags decide once what each vertex then
-    // computes.
-    // Only the bits that change what a vertex computes have to agree.
-    const uint16_t decisive = VERT_NO_LIGHTING | VERT_NO_FOG
-        | VERT_USE_OWN_LIGHT | VERT_BILLBOARD | VERT_ABS_SPRITE;
-    const uint16_t shared = bind->flags_or;
-    const bool fast = ((bind->flags_or ^ bind->flags_and) & decisive) == 0
-        && !c->ortho
-        && (shared & (VERT_BILLBOARD | VERT_ABS_SPRITE)) == 0
+    const bool own_asm = (g_DC_AsmOff & 4096) == 0
         && (bind->vref == nullptr || count <= 0xFFFF);
-    const bool own_coloured = tr3 && lighting
-        && (shared & (VERT_NO_LIGHTING | VERT_USE_OWN_LIGHT))
-            == VERT_USE_OWN_LIGHT;
-    M_XOWN run = {
-        .c = c,
-        .xverts = xverts,
-        .vertices = vertices,
-        .vref = bind->vref,
-        .count = count,
-        .min_shade = min_shade,
-        .white = white && !own_coloured ? m_WhiteARGB : nullptr,
-        .adder = adder,
-        .k0 = tr3 ? dbl
-            : (shared & VERT_NO_LIGHTING) != 0 || !lighting
-            ? ((shared & VERT_NO_LIGHTING) != 0
-                   ? 256
-                   : M_ShadeK(M_SHADE_NEUTRAL, min_shade))
-            : 0,
-        .mode = tr3 || (shared & VERT_NO_LIGHTING) != 0 || !lighting ? 0
-            : (shared & VERT_USE_OWN_LIGHT) != 0                     ? 2
-                                                                     : 1,
-        .fog = fog_on && (shared & (VERT_NO_FOG | VERT_NO_LIGHTING)) == 0,
-        .coloured = own_coloured,
-        .tr3_double = il->tr3_double,
-        .ambient = { il->tr3_ambient[0], il->tr3_ambient[1],
-                     il->tr3_ambient[2] },
-        .tint = { ta, tr, tg, tb },
-        .sargb = batcher->cel ? batcher->sargb : nullptr,
-        .dark = (uint32_t)(m_CelShade * 256.0f),
-        .light = fast && own_coloured
-            ? M_OwnLight(il->tr3_ambient, il->tr3_double, tr, tg, tb)
-            : nullptr,
-        .caus = M_CausticTable(il),
+    const M_OWNCTX ctx = {
+        .batcher = batcher, .bind = bind, .vertices = vertices, .c = c,
+        .il = il, .scale = scale, .min_shade = min_shade, .dbl = dbl,
+        .tint = { ta, tr, tg, tb }, .white = white, .lighting = lighting,
+        .fog_on = fog_on, .tr3 = tr3,
     };
-    g_DC_ProbeUs[fast ? DC_PROBE_N_OWNFAST : DC_PROBE_N_OWNSLOW] += count; // TEMP
+    g_DC_ProbeUs[own_asm ? DC_PROBE_N_OWNFAST : DC_PROBE_N_OWNSLOW] += count; // TEMP
 #if defined(DC_EMIT_VERIFY)
     M_VerifyLight(bind, inst, il);
 #endif
 #if !defined(DC_EMIT_VERIFY)
-    if (fast) {
-        dc_xform_own(&run);
+    if (own_asm) {
+        M_OwnAsm(&ctx);
         return;
     }
 #endif
+    uint32_t *const own_sargb = batcher->cel ? batcher->sargb : nullptr;
+    const uint32_t own_dark = (uint32_t)(m_CelShade * 256.0f);
     for (int32_t i = 0; i < count; i++) {
         const OUTPUT_MESH_VERTEX *const vertex = M_Corner(bind, vertices, i);
         __builtin_prefetch(vertex + 2);
@@ -2668,13 +2714,13 @@ static void M_XformOwn(
                                     k * tg >> 8, k * tb >> 8);
         }
         out->clip = clip;
-        if (run.sargb != nullptr) {
+        if (own_sargb != nullptr) {
             // Darkened as the lit colour is, no light on it: alpha 0.
-            run.sargb[i] = M_ScaleRGB8(out->argb, run.dark) & 0x00FFFFFFu;
+            own_sargb[i] = M_ScaleRGB8(out->argb, own_dark) & 0x00FFFFFFu;
         }
     }
 #if defined(DC_EMIT_VERIFY)
-    if (fast) {
+    if (own_asm) {
         // The assembly places them all again and the two are compared.
         static M_XVERT *saved = nullptr;
         static uint32_t *saved_s = nullptr;
@@ -2687,19 +2733,19 @@ static void M_XformOwn(
             saved_s = Memory_Alloc(sizeof(uint32_t) * saved_cap);
         }
         memcpy(saved, xverts, sizeof(M_XVERT) * count);
-        if (run.sargb != nullptr) {
-            memcpy(saved_s, run.sargb, sizeof(uint32_t) * count);
+        if (own_sargb != nullptr) {
+            memcpy(saved_s, own_sargb, sizeof(uint32_t) * count);
         }
-        dc_xform_own(&run);
+        M_OwnAsm(&ctx);
         const int32_t whole[1][2] = { { 0, count } };
         M_VerifyXform(saved, xverts, whole, 1);
-        for (int32_t i = 0; run.sargb != nullptr && i < count; i++) {
-            if (!M_ArgbNear(run.sargb[i], saved_s[i])) {
+        for (int32_t i = 0; own_sargb != nullptr && i < count; i++) {
+            if (!M_ArgbNear(own_sargb[i], saved_s[i])) {
                 m_XVerifyBad++;
                 if (m_XVerifyBad <= 12) {
                     LOG_WARNING(
                         "[xform-verify] MISMATCH own cel %d: asm %08x | C %08x",
-                        (int)i, (unsigned)run.sargb[i], (unsigned)saved_s[i]);
+                        (int)i, (unsigned)own_sargb[i], (unsigned)saved_s[i]);
                 }
             }
         }
@@ -4362,7 +4408,7 @@ static bool M_TransformInstance(
             bind->vertex_count; // TEMP
         DC_PROBE_START(probe_gen);
         if (!bind->needs_room_lights && !bind->needs_object_light
-            && !m_Frame.ortho && !batcher->env) {
+            && !batcher->env) {
             M_XformOwn(batcher, bind, inst, &il, &c, scale);
             if (!black_fog) {
                 const int32_t whole[1][2] = { { 0, bind->vertex_count } };
