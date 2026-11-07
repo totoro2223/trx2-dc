@@ -244,3 +244,158 @@ ff_fail:
     .align 2
 .Lroomoff2:
     .long   _g_DC_RoomOff
+
+! void dc_item_move(ITEM *item, const ANIM *anim);
+!
+! The end of Item_Animate (items/anim.c): the fall or the run of the animation's
+! speed, then the move along the item's yaw and across it. Layout words of
+! g_DC_ItemOff: 0 gravity (byte)  1 fall_speed  2 pos.y  3 speed  4 frame_num
+! 5 anim frame_base  6 velocity  7 acceleration  8 lateral_velocity
+! 9 lateral_acceleration  10 rot.y  11 pos.x  12 pos.z.
+    .text
+    .align 2
+    .global _dc_item_move
+_dc_item_move:
+    sts.l   pr,@-r15
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov     r4,r8                   ! item
+    mov     r5,r9                   ! anim
+    mov.l   .Litemoff,r10
+    mov     #0,r12                  ! lateral speed
+    mov.l   @r10,r0
+    mov.b   @(r0,r8),r1
+    tst     r1,r1
+    bt      im_run
+    mov.l   @(4,r10),r0
+    mov.w   @(r0,r8),r2             ! fall_speed
+    mov     #127,r1
+    cmp/gt  r1,r2
+    bt      im_fast
+    bra     im_fall
+    add     #6,r2
+im_fast:
+    add     #1,r2
+im_fall:
+    mov.w   r2,@(r0,r8)
+    exts.w  r2,r2
+    mov.l   @(8,r10),r0
+    mov.l   @(r0,r8),r3
+    add     r2,r3
+    mov.l   r3,@(r0,r8)
+    mov.l   @(12,r10),r0
+    mov.w   @(r0,r8),r11            ! speed
+    bra     im_move
+    nop
+im_run:
+    mov.l   @(16,r10),r0
+    mov.w   @(r0,r8),r2
+    mov.l   @(20,r10),r0
+    mov.w   @(r0,r9),r3
+    sub     r3,r2                   ! frame_ofs
+    mov.l   @(24,r10),r0
+    mov.l   @(r0,r9),r3
+    mov.l   @(28,r10),r0
+    mov.l   @(r0,r9),r1
+    mul.l   r1,r2
+    sts     macl,r1
+    add     r1,r3
+    mov     #-16,r1
+    shad    r1,r3
+    mov.l   @(12,r10),r0
+    mov.w   r3,@(r0,r8)
+    exts.w  r3,r11                  ! speed, as the item keeps it
+    mov.l   @(16,r10),r0
+    mov.w   @(r0,r8),r2
+    mov.l   @(20,r10),r0
+    mov.w   @(r0,r9),r3
+    sub     r3,r2
+    mov.l   @(32,r10),r0
+    mov.l   @(r0,r9),r3
+    mov.l   @(36,r10),r0
+    mov.l   @(r0,r9),r1
+    mul.l   r1,r2
+    sts     macl,r1
+    add     r1,r3
+    mov     #-16,r1
+    shad    r1,r3
+    mov     r3,r12                  ! lateral speed
+im_move:
+    mov.l   @(40,r10),r0
+    mov.w   @(r0,r8),r13            ! yaw
+    mov     r13,r4
+    mov.l   .Lmsin,r1
+    jsr     @r1
+    nop
+    mul.l   r11,r0
+    sts     macl,r0
+    mov     #-14,r1
+    shad    r1,r0
+    mov     r0,r2
+    mov.l   @(44,r10),r0
+    mov.l   @(r0,r8),r3
+    add     r2,r3
+    mov.l   r3,@(r0,r8)
+    mov     r13,r4
+    mov.l   .Lmcos,r1
+    jsr     @r1
+    nop
+    mul.l   r11,r0
+    sts     macl,r0
+    mov     #-14,r1
+    shad    r1,r0
+    mov     r0,r2
+    mov.l   @(48,r10),r0
+    mov.l   @(r0,r8),r3
+    add     r2,r3
+    mov.l   r3,@(r0,r8)
+    mov     #64,r1
+    shll8   r1                      ! DEG_90
+    add     r1,r13
+    exts.w  r13,r13                 ! the yaw across the item
+    mov     r13,r4
+    mov.l   .Lmsin,r1
+    jsr     @r1
+    nop
+    mul.l   r12,r0
+    sts     macl,r0
+    mov     #-14,r1
+    shad    r1,r0
+    mov     r0,r2
+    mov.l   @(44,r10),r0
+    mov.l   @(r0,r8),r3
+    add     r2,r3
+    mov.l   r3,@(r0,r8)
+    mov     r13,r4
+    mov.l   .Lmcos,r1
+    jsr     @r1
+    nop
+    mul.l   r12,r0
+    sts     macl,r0
+    mov     #-14,r1
+    shad    r1,r0
+    mov     r0,r2
+    mov.l   @(48,r10),r0
+    mov.l   @(r0,r8),r3
+    add     r2,r3
+    mov.l   r3,@(r0,r8)
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    lds.l   @r15+,pr
+    rts
+    nop
+    .align 2
+.Litemoff:
+    .long   _g_DC_ItemOff
+.Lmsin:
+    .long   _Math_Sin
+.Lmcos:
+    .long   _Math_Cos

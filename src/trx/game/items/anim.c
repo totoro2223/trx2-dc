@@ -1,6 +1,10 @@
 #include <trx/game/items/anim.h>
 
+#include <stddef.h>
+#include <string.h>
+
 #include <trx/config.h>
+#include <trx/core/log.h>
 #include <trx/core/math/geom.h>
 #include <trx/game/interpolation.h>
 #include <trx/game/items/actions.h>
@@ -257,6 +261,86 @@ static int32_t M_GetFrames(
     return (int32_t)((numerator * M_FRAME_INTERP_SCALE) + 0.5f);
 }
 
+static void M_MoveC(ITEM *const item, const ANIM *const anim)
+{
+    // TR4 animations may also carry a speed across the way the item faces,
+    // which is how its guides shimmy and sidestep. Earlier games leave it at
+    // zero.
+    int32_t lateral_speed = 0;
+    if (item->gravity) {
+        item->fall_speed += item->fall_speed < FAST_FALL_SPEED ? GRAVITY : 1;
+        item->pos.y += item->fall_speed;
+    } else {
+        const int32_t frame_ofs = item->frame_num - anim->frame_base;
+        item->speed = (anim->velocity + anim->acceleration * frame_ofs) >> 16;
+        lateral_speed =
+            (anim->lateral_velocity + anim->lateral_acceleration * frame_ofs)
+            >> 16;
+    }
+
+    item->pos = XYZ_32_OffsetYaw(item->pos, item->rot.y, item->speed);
+    item->pos =
+        XYZ_32_OffsetYaw(item->pos, item->rot.y + DEG_90, lateral_speed);
+}
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_item_move); a DC_EMIT_VERIFY build runs the C
+// on a copy and compares. TRX_DC_ASMOFF bit 4194304 turns it off.
+extern uint32_t g_DC_AsmOff;
+extern void dc_item_move(ITEM *item, const ANIM *anim);
+int32_t g_DC_ItemOff[13];
+
+static void M_Move(ITEM *const item, const ANIM *const anim)
+{
+    if ((g_DC_AsmOff & 4194304) != 0) {
+        M_MoveC(item, anim);
+        return;
+    }
+    if (g_DC_ItemOff[0] == 0) {
+        g_DC_ItemOff[0] = offsetof(ITEM, gravity);
+        g_DC_ItemOff[1] = offsetof(ITEM, fall_speed);
+        g_DC_ItemOff[2] = offsetof(ITEM, pos.y);
+        g_DC_ItemOff[3] = offsetof(ITEM, speed);
+        g_DC_ItemOff[4] = offsetof(ITEM, frame_num);
+        g_DC_ItemOff[5] = offsetof(ANIM, frame_base);
+        g_DC_ItemOff[6] = offsetof(ANIM, velocity);
+        g_DC_ItemOff[7] = offsetof(ANIM, acceleration);
+        g_DC_ItemOff[8] = offsetof(ANIM, lateral_velocity);
+        g_DC_ItemOff[9] = offsetof(ANIM, lateral_acceleration);
+        g_DC_ItemOff[10] = offsetof(ITEM, rot.y);
+        g_DC_ItemOff[11] = offsetof(ITEM, pos.x);
+        g_DC_ItemOff[12] = offsetof(ITEM, pos.z);
+    }
+#if defined(DC_EMIT_VERIFY)
+    static ITEM m_Copy;
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    memcpy(&m_Copy, item, sizeof(ITEM));
+    M_MoveC(&m_Copy, anim);
+#endif
+    dc_item_move(item, anim);
+#if defined(DC_EMIT_VERIFY)
+    m_Runs++;
+    if (m_Copy.pos.x != item->pos.x || m_Copy.pos.y != item->pos.y
+        || m_Copy.pos.z != item->pos.z || m_Copy.speed != item->speed
+        || m_Copy.fall_speed != item->fall_speed) {
+        m_Bad++;
+        LOG_WARNING("[itemmove-verify] MISMATCH");
+    }
+    if (m_Runs % 5000 == 0) {
+        LOG_WARNING(
+            "[itemmove-verify] %u runs, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+#endif
+}
+#else
+static void M_Move(ITEM *const item, const ANIM *const anim)
+{
+    M_MoveC(item, anim);
+}
+#endif
+
 void Item_Animate(ITEM *const item)
 {
     item->hit_status = false;
@@ -352,24 +436,7 @@ void Item_Animate(ITEM *const item)
         }
     }
 
-    // TR4 animations may also carry a speed across the way the item faces,
-    // which is how its guides shimmy and sidestep. Earlier games leave it at
-    // zero.
-    int32_t lateral_speed = 0;
-    if (item->gravity) {
-        item->fall_speed += item->fall_speed < FAST_FALL_SPEED ? GRAVITY : 1;
-        item->pos.y += item->fall_speed;
-    } else {
-        const int32_t frame_ofs = item->frame_num - anim->frame_base;
-        item->speed = (anim->velocity + anim->acceleration * frame_ofs) >> 16;
-        lateral_speed =
-            (anim->lateral_velocity + anim->lateral_acceleration * frame_ofs)
-            >> 16;
-    }
-
-    item->pos = XYZ_32_OffsetYaw(item->pos, item->rot.y, item->speed);
-    item->pos =
-        XYZ_32_OffsetYaw(item->pos, item->rot.y + DEG_90, lateral_speed);
+    M_Move(item, anim);
 }
 
 bool Item_GetAnimChange(ITEM *const item, const ANIM *const anim)
