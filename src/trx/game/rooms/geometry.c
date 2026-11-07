@@ -229,14 +229,12 @@ extern uint32_t g_DC_AsmOff;
 extern SECTOR *dc_room_sector(
     const ROOM *rooms, int32_t x, int32_t z, int16_t *room_num);
 const ROOM *Room_GetArray(void);
-int32_t g_DC_RoomOff[10];
+int32_t g_DC_RoomOff[16];
+extern bool dc_flat_floor(const SECTOR *sector, int32_t abyss_min, int32_t *out);
 static SECTOR *Room_GetSectorC(const XYZ_32 pos, int16_t *room_num);
 
-SECTOR *Room_GetSector(const XYZ_32 pos, int16_t *const room_num)
+static void M_RoomOffInit(void)
 {
-    if ((g_DC_AsmOff & 1048576) != 0) {
-        return Room_GetSectorC(pos, room_num);
-    }
     if (g_DC_RoomOff[0] == 0) {
         g_DC_RoomOff[0] = sizeof(ROOM);
         g_DC_RoomOff[1] = offsetof(ROOM, pos.x);
@@ -248,7 +246,19 @@ SECTOR *Room_GetSector(const XYZ_32 pos, int16_t *const room_num)
         g_DC_RoomOff[7] = offsetof(SECTOR, portal_room.wall);
         g_DC_RoomOff[8] = offsetof(SECTOR, portal_room.pit);
         g_DC_RoomOff[9] = offsetof(SECTOR, portal_room.sky);
+        g_DC_RoomOff[10] = offsetof(SECTOR, walkable);
+        g_DC_RoomOff[11] = offsetof(SECTOR, floor.height);
+        g_DC_RoomOff[12] = offsetof(SECTOR, floor.tilt);
+        g_DC_RoomOff[13] = offsetof(SECTOR, floor.is_split);
     }
+}
+
+SECTOR *Room_GetSector(const XYZ_32 pos, int16_t *const room_num)
+{
+    if ((g_DC_AsmOff & 1048576) != 0) {
+        return Room_GetSectorC(pos, room_num);
+    }
+    M_RoomOffInit();
 #if defined(DC_EMIT_VERIFY)
     const int16_t room_in = *room_num;
 #endif
@@ -497,10 +507,53 @@ int32_t Room_GetFloorHeightForSector(
     return M_GetSurfaceHeight(sector->floor, x, z, fix_tilts);
 }
 
+#if defined(__DREAMCAST__)
+static int32_t Room_GetHeightExC(
+    const SECTOR *sector, XYZ_32 pos, const ROOM_HEIGHT_CTX *ctx);
+
+// A flat floor of a sector with no pit portal and no walkable, in assembly
+// (game_sh4.S, dc_flat_floor); the rest stays in C. TRX_DC_ASMOFF bit 2097152
+// turns it off.
 int32_t Room_GetHeightEx(
     const SECTOR *const sector, const XYZ_32 pos,
     const ROOM_HEIGHT_CTX *const ctx)
 {
+    if ((g_DC_AsmOff & 2097152) == 0) {
+        M_RoomOffInit();
+        int32_t height;
+        if (dc_flat_floor(sector, m_AbyssMinHeight, &height)) {
+            m_HeightType = HT_WALL;
+#if defined(DC_EMIT_VERIFY)
+            static uint32_t m_Runs;
+            static uint32_t m_Bad;
+            m_Runs++;
+            if (height != Room_GetHeightExC(sector, pos, ctx)
+                || m_HeightType != HT_WALL) {
+                m_Bad++;
+                LOG_WARNING("[height-verify] MISMATCH");
+            }
+            if (m_Runs % 5000 == 0) {
+                LOG_WARNING(
+                    "[height-verify] %u fast, %u bad", (unsigned)m_Runs,
+                    (unsigned)m_Bad);
+            }
+#endif
+            return height;
+        }
+    }
+    return Room_GetHeightExC(sector, pos, ctx);
+}
+
+static int32_t Room_GetHeightExC(
+    const SECTOR *const sector, const XYZ_32 pos,
+    const ROOM_HEIGHT_CTX *const ctx)
+{
+#else
+int32_t Room_GetHeightEx(
+    const SECTOR *const sector, const XYZ_32 pos,
+    const ROOM_HEIGHT_CTX *const ctx)
+{
+#endif
     m_HeightType = HT_WALL;
 
     const SECTOR *const pit_sector = Room_GetPitSector(sector, pos.x, pos.z);

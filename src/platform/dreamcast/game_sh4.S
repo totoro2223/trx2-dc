@@ -198,3 +198,49 @@ rs_out:
     .align 2
 .Lroomoff:
     .long   _g_DC_RoomOff
+
+! bool dc_flat_floor(const SECTOR *sector, int32_t abyss_min, int32_t *out);
+!
+! The floor height of a sector whose floor is level and whole (no tilt, no
+! split), with no pit portal, no walkable and not an abyss: Room_GetHeightEx's
+! plain case (rooms/geometry.c). Stores the height in *out and returns 1, else
+! returns 0 (the C then does it). Layout words of g_DC_RoomOff: 8 pit  10 walkable
+! 11 floor.height  12 floor.tilt  13 floor.is_split (a byte).
+    .text
+    .align 2
+    .global _dc_flat_floor
+_dc_flat_floor:
+    mov.l   .Lroomoff2,r1
+    mov     #-1,r3
+    mov.l   @(32,r1),r0
+    mov.w   @(r0,r4),r2
+    cmp/eq  r3,r2
+    bf      ff_fail
+    mov.l   @(40,r1),r0
+    mov.l   @(r0,r4),r2
+    tst     r2,r2
+    bf      ff_fail
+    mov.l   @(52,r1),r0
+    mov.b   @(r0,r4),r2
+    tst     r2,r2
+    bf      ff_fail
+    mov.l   @(48,r1),r0
+    mov.l   @(r0,r4),r2
+    tst     r2,r2
+    bf      ff_fail
+    mov.l   @(44,r1),r0
+    mov.l   @(r0,r4),r2
+    tst     r5,r5
+    bt      ff_ok
+    cmp/ge  r5,r2
+    bt      ff_fail
+ff_ok:
+    mov.l   r2,@r6
+    rts
+    mov     #1,r0
+ff_fail:
+    rts
+    mov     #0,r0
+    .align 2
+.Lroomoff2:
+    .long   _g_DC_RoomOff
