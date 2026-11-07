@@ -818,7 +818,9 @@ static void M_FillTexture(
 
 // The model-view matrix of an instance, as GL lays it out (column first),
 // which is also how the SH-4's XMTRX takes it.
-static void M_ModelView(
+static bool M_XNear(const float a, const float b);
+
+[[maybe_unused]] static void M_ModelViewC(
     const MATRIX *const wmatrix, float out[4][4], float *const out_scale)
 {
     float model[4][4];
@@ -834,6 +836,49 @@ static void M_ModelView(
     *out_scale = sqrtf(
         model[0][0] * model[0][0] + model[0][1] * model[0][1]
         + model[0][2] * model[0][2]);
+}
+
+// The same in assembly (inst_sh4.S); a build with DC_EMIT_VERIFY runs the C
+// too and compares. TRX_DC_ASMOFF bit 8192 turns it off.
+extern void dc_model_view(
+    const float view[16], const float model[16], float out[16], float *scale);
+extern void dc_world_matrix(const MATRIX *m, float out[12]);
+
+static void M_ModelView(
+    const MATRIX *const wmatrix, float out[4][4], float *const out_scale)
+{
+    if ((g_DC_AsmOff & 8192) != 0) {
+        M_ModelViewC(wmatrix, out, out_scale);
+        return;
+    }
+    float model[4][4];
+    Output_FillMatrix(model, wmatrix);
+    dc_model_view(
+        &m_Frame.view[0][0], &model[0][0], &out[0][0], out_scale);
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    float ref[4][4];
+    float ref_scale;
+    M_ModelViewC(wmatrix, ref, &ref_scale);
+    bool bad = !M_XNear(ref_scale, *out_scale);
+    for (int32_t c = 0; c < 4; c++) {
+        for (int32_t r = 0; r < 4; r++) {
+            bad |= !M_XNear(ref[c][r], out[c][r]);
+        }
+    }
+    m_Runs++;
+    if (bad && m_Bad++ < 8) {
+        LOG_WARNING(
+            "[modelview-verify] MISMATCH scale %g/%g m30 %g/%g", (double)*out_scale,
+            (double)ref_scale, (double)out[3][0], (double)ref[3][0]);
+    }
+    if (m_Runs % 5000 == 0) {
+        LOG_WARNING(
+            "[modelview-verify] %u runs, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+#endif
 }
 
 static int32_t M_FlickerIndex(const int32_t mode, const float time)
@@ -971,7 +1016,7 @@ M_HOT void M_TR3DynamicRGB(
 }
 
 // An instance's world matrix (fixed point in TR) in world units, by rows.
-static void M_WorldMatrix(const MATRIX *const m, float out[3][4])
+[[maybe_unused]] static void M_WorldMatrixC(const MATRIX *const m, float out[3][4])
 {
     const float scale = 1.0f / (float)(1 << W2V_SHIFT);
     const int64_t rows[3][4] = {
@@ -986,6 +1031,30 @@ static void M_WorldMatrix(const MATRIX *const m, float out[3][4])
     }
 }
 
+static void M_WorldMatrix(const MATRIX *const m, float out[3][4])
+{
+    if ((g_DC_AsmOff & 8192) != 0) {
+        M_WorldMatrixC(m, out);
+        return;
+    }
+    dc_world_matrix(m, &out[0][0]);
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    float ref[3][4];
+    M_WorldMatrixC(m, ref);
+    m_Runs++;
+    if (memcmp(ref, out, sizeof(ref)) != 0 && m_Bad++ < 8) {
+        LOG_WARNING(
+            "[world-verify] MISMATCH %g/%g", (double)out[0][3], (double)ref[0][3]);
+    }
+    if (m_Runs % 5000 == 0) {
+        LOG_WARNING(
+            "[world-verify] %u runs, %u bad", (unsigned)m_Runs, (unsigned)m_Bad);
+    }
+#endif
+}
+
 // 2^e: the lights carry whole exponents, which need no libm (exp2f takes a
 // few hundred cycles, three times a light for every room instance).
 M_HOT float M_Exp2(const float e)
@@ -995,6 +1064,68 @@ M_HOT float M_Exp2(const float e)
         return i >= 0 ? (float)(1u << i) : 1.0f / (float)(1u << -i);
     }
     return exp2f(e);
+}
+
+// An instance's bounding sphere in the world (inst_sh4.S). TRX_DC_ASMOFF bit
+// 65536 turns the assembly off.
+extern void dc_room_sphere(const float world[12], const float bounds[6], float out[4]);
+
+static void M_RoomSphereC(
+    const float w[3][4], const float bounds[2][3], float center[3],
+    float *const radius)
+{
+    float local[3];
+    float half_sq = 0.0f;
+    for (int32_t k = 0; k < 3; k++) {
+        const float half = (bounds[1][k] - bounds[0][k]) * 0.5f;
+        local[k] = bounds[0][k] + half;
+        half_sq += half * half;
+    }
+    for (int32_t r = 0; r < 3; r++) {
+        center[r] = w[r][0] * local[0] + w[r][1] * local[1]
+            + w[r][2] * local[2] + w[r][3];
+    }
+    const float scale_sq =
+        w[0][0] * w[0][0] + w[1][0] * w[1][0] + w[2][0] * w[2][0];
+    *radius = sqrtf(half_sq * scale_sq);
+}
+
+static void M_RoomSphere(
+    const float w[3][4], const float bounds[2][3], float center[3],
+    float *const radius)
+{
+    if ((g_DC_AsmOff & 65536) != 0) {
+        M_RoomSphereC(w, bounds, center, radius);
+        return;
+    }
+    float res[4];
+    dc_room_sphere(&w[0][0], &bounds[0][0], res);
+    center[0] = res[0];
+    center[1] = res[1];
+    center[2] = res[2];
+    *radius = res[3];
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    float rc[3];
+    float rr;
+    M_RoomSphereC(w, bounds, rc, &rr);
+    m_Runs++;
+    bool bad = !M_XNear(rr, *radius);
+    for (int32_t k = 0; k < 3; k++) {
+        bad |= !M_XNear(rc[k], center[k]);
+    }
+    if (bad && m_Bad++ < 8) {
+        LOG_WARNING(
+            "[sphere-verify] MISMATCH r %g/%g c0 %g/%g", (double)*radius,
+            (double)rr, (double)center[0], (double)rc[0]);
+    }
+    if (m_Runs % 5000 == 0) {
+        LOG_WARNING(
+            "[sphere-verify] %u runs, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+#endif
 }
 
 static void M_PrepareRoomLights(
@@ -1012,22 +1143,9 @@ static void M_PrepareRoomLights(
     }
     // The instance's bounding sphere in the world: a light that does not
     // reach it lights none of its vertices, and is left out.
-    const float(*const w)[4] = out->world;
-    float local[3];
-    float half_sq = 0.0f;
-    for (int32_t k = 0; k < 3; k++) {
-        const float half = (bind->bounds[1][k] - bind->bounds[0][k]) * 0.5f;
-        local[k] = bind->bounds[0][k] + half;
-        half_sq += half * half;
-    }
     float center[3];
-    for (int32_t r = 0; r < 3; r++) {
-        center[r] = w[r][0] * local[0] + w[r][1] * local[1]
-            + w[r][2] * local[2] + w[r][3];
-    }
-    const float scale_sq =
-        w[0][0] * w[0][0] + w[1][0] * w[1][0] + w[2][0] * w[2][0];
-    const float inst_radius = sqrtf(half_sq * scale_sq);
+    float inst_radius;
+    M_RoomSphere(out->world, bind->bounds, center, &inst_radius);
     for (int32_t i = 0;
          i < lights->num_lights && out->num_lights < M_MAX_POINT_LIGHTS; i++) {
         const DC_UNIFORM_LIGHT *const light = &lights->lights[i];
@@ -1081,6 +1199,76 @@ static void M_PrepareRoomLights(
 // the uniform block and M_PrepareInstanceLight read it back, without the trip:
 // no compare, copy or upload per instance, and the TR3 directions normalised
 // with the SH-4's own reciprocal root.
+// A light's view-space direction taken into the object's space: out[c] =
+// (row c of mv . v) * k, or / k; mode 1 scales v to length 1 first. In
+// assembly (inst_sh4.S); a build with DC_EMIT_VERIFY runs the C and compares.
+// TRX_DC_ASMOFF bit 32768 turns the assembly off.
+extern void dc_light_dir(const float *mv, const float *v, const float *k, float *out);
+extern void dc_light_dir_n(const float *mv, const float *v, const float *k, float *out);
+extern void dc_light_dir_div(const float *mv, const float *v, const float *k, float *out);
+
+static void M_LightDirC(
+    const float mv[4][4], const float v_in[3], const float k, float out[3],
+    const int32_t mode)
+{
+    float v[3] = { v_in[0], v_in[1], v_in[2] };
+    if (mode == 1) {
+        const float len_sq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+        if (len_sq > 0.0f) {
+            const float inv_len = M_InvSqrt(len_sq);
+            v[0] *= inv_len;
+            v[1] *= inv_len;
+            v[2] *= inv_len;
+        }
+    }
+    for (int32_t c = 0; c < 3; c++) {
+        const float dot = mv[c][0] * v[0] + mv[c][1] * v[1] + mv[c][2] * v[2];
+        out[c] = mode == 2 ? dot / k : dot * k;
+    }
+}
+
+static void M_LightDir(
+    const float mv[4][4], const float v[3], const float k, float out[3],
+    const int32_t mode)
+{
+    if ((g_DC_AsmOff & 32768) != 0) {
+        M_LightDirC(mv, v, k, out, mode);
+        return;
+    }
+    const float kk = k;
+    if (mode == 1) {
+        dc_light_dir_n(&mv[0][0], v, &kk, out);
+    } else if (mode == 2) {
+        dc_light_dir_div(&mv[0][0], v, &kk, out);
+    } else {
+        dc_light_dir(&mv[0][0], v, &kk, out);
+    }
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    float ref[3];
+    M_LightDirC(mv, v, k, ref, mode);
+    bool bad = false;
+    for (int32_t c = 0; c < 3; c++) {
+        const float d = out[c] - ref[c];
+        const float a = ref[c] < 0 ? -ref[c] : ref[c];
+        bad |= !(d <= 1e-5f + 1e-4f * a && d >= -(1e-5f + 1e-4f * a));
+    }
+    m_Runs++;
+    if (bad && m_Bad++ < 8) {
+        LOG_WARNING(
+            "[lightdir-verify] MISMATCH mode %d: asm %g %g %g | C %g %g %g",
+            (int)mode, (double)out[0], (double)out[1], (double)out[2],
+            (double)ref[0], (double)ref[1], (double)ref[2]);
+    }
+    if (m_Runs % 2000 == 0) {
+        LOG_WARNING(
+            "[lightdir-verify] %u runs, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+#endif
+}
+
 static void M_ReadInstanceLight(
     const OUTPUT_LIGHT_INFO *const info, const M_BINDING *const bind,
     const float mv[4][4], M_INSTANCE_LIGHT *const out)
@@ -1105,18 +1293,8 @@ static void M_ReadInstanceLight(
                 (float)info->tr3_light_dir_view[i].y,
                 (float)info->tr3_light_dir_view[i].z,
             };
-            const float len_sq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-            if (len_sq > 0.0f) {
-                const float inv_len = M_InvSqrt(len_sq);
-                v[0] *= inv_len;
-                v[1] *= inv_len;
-                v[2] *= inv_len;
-            }
             float *const d = out->tr3_dir[out->tr3_count];
-            for (int32_t c = 0; c < 3; c++) {
-                d[c] = (mv[c][0] * v[0] + mv[c][1] * v[1] + mv[c][2] * v[2])
-                    * (1.0f / (float)(1 << 14));
-            }
+            M_LightDir(mv, v, 1.0f / (float)(1 << 14), d, 1);
             out->tr3_color[out->tr3_count][0] = col.r;
             out->tr3_color[out->tr3_count][1] = col.g;
             out->tr3_color[out->tr3_count][2] = col.b;
@@ -1144,10 +1322,7 @@ static void M_ReadInstanceLight(
             (float)info->ls_vector_view.y,
             (float)info->ls_vector_view.z,
         };
-        for (int32_t c = 0; c < 3; c++) {
-            out->l[c] =
-                (mv[c][0] * v[0] + mv[c][1] * v[1] + mv[c][2] * v[2]) * inv_div;
-        }
+        M_LightDir(mv, v, inv_div, out->l, 0);
         out->has_direction = true;
     }
 }
@@ -1299,9 +1474,8 @@ static void M_PrepareInstanceLight(
             }
             const float *const v = ls3->dir_view[i];
             float *const d = out->tr3_dir[out->tr3_count];
+            M_LightDir(mv, v, 1.0f / (float)(1 << 14), d, 0);
             for (int32_t c = 0; c < 3; c++) {
-                d[c] = (mv[c][0] * v[0] + mv[c][1] * v[1] + mv[c][2] * v[2])
-                    * (1.0f / (float)(1 << 14));
                 out->tr3_color[out->tr3_count][c] = col[c];
             }
             if (sum > best) {
@@ -1327,11 +1501,7 @@ static void M_PrepareInstanceLight(
         // The view-space light vector, taken into object space by the
         // transpose of the model-view rotation.
         const float *const v = ls->vector_view;
-        for (int32_t c = 0; c < 3; c++) {
-            out->l[c] =
-                (mv[c][0] * v[0] + mv[c][1] * v[1] + mv[c][2] * v[2])
-                / ls->divider;
-        }
+        M_LightDir(mv, v, ls->divider, out->l, 2);
         out->has_direction = true;
     }
 }
@@ -4173,6 +4343,118 @@ static void M_EmitChunk(
     }
 }
 
+// The test an instance's bounding sphere gets before its vertices are
+// transformed (cull_sh4.S): wholly past the end of the fog, wholly before its
+// start, wholly past the near plane, wholly past a side or wholly within them
+// all. TRX_DC_ASMOFF bit 16384 turns the assembly off.
+typedef struct {
+    const float *mv;
+    float lo[3];
+    float hi[3];
+    float scale;
+    float fog_end;
+    float fog_start;
+    float near_z;
+    float planes[4][2];
+    int32_t fog;
+    int32_t billboard;
+    float eye_sq;
+    float z_near;
+    int32_t flags;
+    float eye[3];
+} M_CULL;
+_Static_assert(offsetof(M_CULL, scale) == 28, "cull_sh4.S layout");
+_Static_assert(offsetof(M_CULL, planes) == 44, "cull_sh4.S layout");
+_Static_assert(offsetof(M_CULL, fog) == 76, "cull_sh4.S layout");
+_Static_assert(offsetof(M_CULL, eye_sq) == 84, "cull_sh4.S layout");
+_Static_assert(offsetof(M_CULL, flags) == 92, "cull_sh4.S layout");
+_Static_assert(offsetof(M_CULL, eye) == 96, "cull_sh4.S layout");
+#define M_CULL_FOG_END 1
+#define M_CULL_FOG_OFF 2
+#define M_CULL_NEAR 4
+#define M_CULL_SIDES 8
+#define M_CULL_SIDE 16
+extern int dc_inst_cull(M_CULL *p);
+
+[[maybe_unused]] static int32_t M_InstCullC(M_CULL *const p)
+{
+    float center[3];
+    float radius_sq = 0.0f;
+    for (int32_t k = 0; k < 3; k++) {
+        const float half = (p->hi[k] - p->lo[k]) * 0.5f;
+        center[k] = p->lo[k] + half;
+        radius_sq += half * half;
+    }
+    const float(*const mv)[4] = (const float(*)[4])p->mv;
+    float eye[3];
+    for (int32_t r = 0; r < 3; r++) {
+        eye[r] = mv[0][r] * center[0] + mv[1][r] * center[1]
+            + mv[2][r] * center[2] + mv[3][r];
+    }
+    const float radius = sqrtf(radius_sq) * p->scale;
+    const float eye_sq = eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2];
+    p->eye_sq = eye_sq;
+    p->z_near = eye[2] - radius;
+    int32_t flags = 0;
+    const float reach = p->fog_end + radius;
+    if (p->fog && eye_sq > reach * reach) {
+        flags |= M_CULL_FOG_END;
+    }
+    const float clear = p->fog_start - radius;
+    if (clear > 0.0f && eye_sq < clear * clear) {
+        flags |= M_CULL_FOG_OFF;
+    }
+    if (eye[2] - radius < p->near_z) {
+        flags |= M_CULL_NEAR;
+    }
+    if (p->billboard) {
+        flags |= M_CULL_SIDES;
+    } else {
+        bool inside = true;
+        for (int32_t k = 0; k < 4; k++) {
+            const float a = p->planes[k][0];
+            const float b = p->planes[k][1];
+            const float d = a * eye[k < 2 ? 0 : 1] + b * eye[2];
+            const float rr = radius * radius * (a * a + b * b);
+            if (d > 0.0f && d * d > rr) {
+                flags |= M_CULL_SIDE;
+            }
+            if (!(d < 0.0f && d * d > rr)) {
+                inside = false;
+            }
+        }
+        if (!inside) {
+            flags |= M_CULL_SIDES;
+        }
+    }
+    return flags;
+}
+
+static int32_t M_InstCull(M_CULL *const p)
+{
+    if ((g_DC_AsmOff & 16384) != 0) {
+        return M_InstCullC(p);
+    }
+    const int32_t flags = dc_inst_cull(p);
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    M_CULL ref = *p;
+    const int32_t want = M_InstCullC(&ref);
+    m_Runs++;
+    if (want != flags && m_Bad++ < 12) {
+        LOG_WARNING(
+            "[cull-verify] MISMATCH flags asm %d | C %d (eye_sq %g/%g)",
+            (int)flags, (int)want, (double)p->eye_sq, (double)ref.eye_sq);
+    }
+    if (m_Runs % 20000 == 0) {
+        LOG_WARNING(
+            "[cull-verify] %u runs, %u bad", (unsigned)m_Runs, (unsigned)m_Bad);
+    }
+#endif
+    return flags;
+}
+
 static bool M_TransformInstance(
     MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
     M_BINDING *const bind)
@@ -4224,53 +4506,32 @@ static bool M_TransformInstance(
     batcher->z_near = -FLT_MAX;
     batcher->vrange_count = -1;
     if (!m_Frame.ortho) {
-        float center[3];
-        float radius_sq = 0.0f;
-        for (int32_t k = 0; k < 3; k++) {
-            const float half = (bind->bounds[1][k] - bind->bounds[0][k]) * 0.5f;
-            center[k] = bind->bounds[0][k] + half;
-            radius_sq += half * half;
-        }
-        float eye[3];
-        for (int32_t r = 0; r < 3; r++) {
-            eye[r] = mv[0][r] * center[0] + mv[1][r] * center[1]
-                + mv[2][r] * center[2] + mv[3][r];
-        }
-        const float radius = sqrtf(radius_sq) * scale;
-        eye_sq = eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2];
-        batcher->z_near = eye[2] - radius;
-        // Wholly past the end of the fog: nothing of it would show.
-        const float reach = m_Frame.fog_end + radius;
-        if (m_Frame.fog && eye_sq > reach * reach) {
+        M_CULL cu = {
+            .mv = &mv[0][0],
+            .lo = { bind->bounds[0][0], bind->bounds[0][1], bind->bounds[0][2] },
+            .hi = { bind->bounds[1][0], bind->bounds[1][1], bind->bounds[1][2] },
+            .scale = scale,
+            .fog_end = m_Frame.fog_end,
+            .fog_start = m_Frame.fog_start,
+            .near_z = m_Frame.near_z,
+            .planes = { { c.planes[0][0], c.planes[0][1] },
+                        { c.planes[1][0], c.planes[1][1] },
+                        { c.planes[2][0], c.planes[2][1] },
+                        { c.planes[3][0], c.planes[3][1] } },
+            .fog = m_Frame.fog,
+            .billboard = bind->billboard,
+        };
+        const int32_t cull = M_InstCull(&cu);
+        eye_sq = cu.eye_sq;
+        batcher->z_near = cu.z_near;
+        if ((cull & (M_CULL_FOG_END | M_CULL_SIDE)) != 0) {
             return false;
         }
-        // Wholly before the fog starts: no vertex needs the fog worked out.
-        const float clear = m_Frame.fog_start - radius;
-        if (clear > 0.0f && eye_sq < clear * clear) {
+        if ((cull & M_CULL_FOG_OFF) != 0) {
             c.fog = false;
         }
-        // Wholly past the near plane: no vertex can lie before it. (Sprites'
-        // corners stand off their middle in x and y only.)
-        c.near = eye[2] - radius < m_Frame.near_z;
-        // Wholly past one of the sides, or wholly within them all. Each
-        // side is a plane through the eye, sx = side for x:
-        // proj_x * x - side * z = 0, the same for y.
-        if (!bind->billboard) {
-            bool inside = true;
-            for (int32_t p = 0; p < 4; p++) {
-                const float a = c.planes[p][0];
-                const float b = c.planes[p][1];
-                const float d = a * eye[p < 2 ? 0 : 1] + b * eye[2];
-                const float rr = radius * radius * (a * a + b * b);
-                if (d > 0.0f && d * d > rr) {
-                    return false;
-                }
-                if (!(d < 0.0f && d * d > rr)) {
-                    inside = false;
-                }
-            }
-            c.sides = !inside;
-        }
+        c.near = (cull & M_CULL_NEAR) != 0;
+        c.sides = (cull & M_CULL_SIDES) != 0;
     }
 
     g_DC_BatcherFrameInstances++;
@@ -8326,37 +8587,15 @@ static void M_FindTwins(M_BINDING *const bind)
     bind->twin = twin;
 }
 
-void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
+// What a mesh's vertices say as a whole: the flags ANDed and ORed, whether
+// every colour is white, whether each is a plain object light, the box. In
+// assembly (inst_sh4.S); a build with DC_EMIT_VERIFY runs the C too and
+// compares. TRX_DC_ASMOFF bit 131072 turns the assembly off.
+extern void dc_scan_vertices(const OUTPUT_MESH_VERTEX *v, int32_t n, int32_t *out);
+
+[[maybe_unused]] static void M_ScanVerticesC(
+    M_BINDING *const bind, const OUTPUT_MESH_VERTEX *const vertices)
 {
-    ASSERT(mesh->sealed == 1);
-    // The mesh grew by doubling as it was built; it is kept for the level's
-    // life, so the room it does not use goes back.
-    Vector_ShrinkToFit(mesh->vertices);
-    Vector_ShrinkToFit(mesh->opaque_vertex_indices);
-    Vector_ShrinkToFit(mesh->blend_add_vertex_indices);
-    Vector_ShrinkToFit(mesh->transparent_faces);
-    Vector_ShrinkToFit(mesh->animated_vertices);
-    // Each run of indices is drawn on its own (see M_DrawInstance).
-    OUTPUT_MESH_INDEX *const opaque = Vector_GetData(mesh->opaque_vertex_indices);
-    const int32_t clean = mesh->opaque_nodiscard_count;
-    M_PairQuads(opaque, clean);
-    M_PairQuads(opaque + clean, mesh->opaque_vertex_indices->count - clean);
-    M_PairQuads(
-        Vector_GetData(mesh->blend_add_vertex_indices),
-        mesh->blend_add_vertex_indices->count);
-    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
-        OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, i);
-        M_PairQuads((OUTPUT_MESH_INDEX *)face->vertex_indices, face->vertex_count);
-    }
-    M_BINDING *const bind = Memory_Alloc(sizeof(M_BINDING));
-    bind->special = nullptr;
-    bind->special_count = 0;
-    bind->special_mask = 0;
-    bind->mesh = mesh;
-    bind->vertex_count = mesh->vertices->count;
-    bind->uv = Memory_Alloc(sizeof(uint16_t) * 2 * (bind->vertex_count + 1));
-    bind->page = Memory_Alloc(bind->vertex_count + 1);
-    const OUTPUT_MESH_VERTEX *const vertices = Vector_GetData(mesh->vertices);
     bind->plain_object = bind->vertex_count > 0;
     bind->flags_and = bind->vertex_count > 0 ? 0xFFFF : 0;
     bind->white = bind->vertex_count > 0;
@@ -8388,6 +8627,100 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
                                      | VERT_ABS_SPRITE))
             == VERT_USE_OBJECT_LIGHT;
     }
+}
+
+#define M_PLAIN_MASK                                                               (VERT_USE_OBJECT_LIGHT | VERT_NO_LIGHTING | VERT_USE_OWN_LIGHT                  | VERT_USE_DYNAMIC_LIGHT | VERT_BILLBOARD | VERT_ABS_SPRITE)
+
+static void M_ScanVertices(
+    M_BINDING *const bind, const OUTPUT_MESH_VERTEX *const vertices)
+{
+    if ((g_DC_AsmOff & 131072) != 0 || bind->vertex_count <= 0) {
+        M_ScanVerticesC(bind, vertices);
+        return;
+    }
+#if defined(DC_EMIT_VERIFY)
+    M_BINDING ref = *bind;
+    M_ScanVerticesC(&ref, vertices);
+#endif
+    int32_t r[12] = {};
+    r[10] = M_PLAIN_MASK;
+    r[11] = VERT_USE_OBJECT_LIGHT;
+    dc_scan_vertices(vertices, bind->vertex_count, r);
+    bind->flags_and = (uint16_t)r[0];
+    bind->flags_or |= (uint16_t)r[1];
+    bind->white = r[2] != 0;
+    bind->plain_object = r[3] != 0;
+    for (int32_t k = 0; k < 3; k++) {
+        bind->bounds[0][k] = (float)r[4 + k];
+        bind->bounds[1][k] = (float)r[7 + k];
+    }
+    bind->needs_room_lights |= (bind->flags_or & VERT_USE_DYNAMIC_LIGHT) != 0;
+    bind->needs_object_light |= (bind->flags_or & VERT_USE_OBJECT_LIGHT) != 0;
+    bind->needs_own_light |= (bind->flags_or & VERT_USE_OWN_LIGHT) != 0;
+    bind->billboard |=
+        (bind->flags_or & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0;
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Bad;
+    m_Runs++;
+    const bool bad = ref.flags_and != bind->flags_and
+        || ref.flags_or != bind->flags_or || ref.white != bind->white
+        || ref.plain_object != bind->plain_object
+        || ref.needs_room_lights != bind->needs_room_lights
+        || ref.needs_object_light != bind->needs_object_light
+        || ref.needs_own_light != bind->needs_own_light
+        || ref.billboard != bind->billboard
+        || memcmp(ref.bounds, bind->bounds, sizeof(ref.bounds)) != 0;
+    if (bad) {
+        m_Bad++;
+        LOG_WARNING(
+            "[scan-verify] MISMATCH and %04x/%04x or %04x/%04x white %d/%d "
+            "plain %d/%d",
+            (unsigned)bind->flags_and, (unsigned)ref.flags_and,
+            (unsigned)bind->flags_or, (unsigned)ref.flags_or,
+            (int)bind->white, (int)ref.white, (int)bind->plain_object,
+            (int)ref.plain_object);
+    }
+    if (m_Runs % 200 == 0) {
+        LOG_WARNING(
+            "[scan-verify] %u meshes, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Bad);
+    }
+#endif
+}
+
+void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
+{
+    ASSERT(mesh->sealed == 1);
+    // The mesh grew by doubling as it was built; it is kept for the level's
+    // life, so the room it does not use goes back.
+    Vector_ShrinkToFit(mesh->vertices);
+    Vector_ShrinkToFit(mesh->opaque_vertex_indices);
+    Vector_ShrinkToFit(mesh->blend_add_vertex_indices);
+    Vector_ShrinkToFit(mesh->transparent_faces);
+    Vector_ShrinkToFit(mesh->animated_vertices);
+    // Each run of indices is drawn on its own (see M_DrawInstance).
+    OUTPUT_MESH_INDEX *const opaque = Vector_GetData(mesh->opaque_vertex_indices);
+    const int32_t clean = mesh->opaque_nodiscard_count;
+    M_PairQuads(opaque, clean);
+    M_PairQuads(opaque + clean, mesh->opaque_vertex_indices->count - clean);
+    M_PairQuads(
+        Vector_GetData(mesh->blend_add_vertex_indices),
+        mesh->blend_add_vertex_indices->count);
+    for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
+        OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, i);
+        M_PairQuads((OUTPUT_MESH_INDEX *)face->vertex_indices, face->vertex_count);
+    }
+    M_BINDING *const bind = Memory_Alloc(sizeof(M_BINDING));
+    bind->special = nullptr;
+    bind->special_count = 0;
+    bind->special_mask = 0;
+    bind->mesh = mesh;
+    bind->vertex_count = mesh->vertices->count;
+    bind->uv = Memory_Alloc(sizeof(uint16_t) * 2 * (bind->vertex_count + 1));
+    bind->page = Memory_Alloc(bind->vertex_count + 1);
+    const OUTPUT_MESH_VERTEX *const vertices = Vector_GetData(mesh->vertices);
+    M_ScanVertices(bind, vertices);
     M_RefillTextures(bind);
     M_BuildChunks(bind);
     M_SortByPage(
