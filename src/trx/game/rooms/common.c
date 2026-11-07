@@ -154,6 +154,13 @@ ROOM *Room_FromHandle(const TRX_HANDLE handle)
     return Room_Get(handle.id);
 }
 
+#if defined(__DREAMCAST__)
+const ROOM *Room_GetArray(void)
+{
+    return m_Rooms;
+}
+#endif
+
 ROOM *Room_Get(const int32_t room_num)
 {
     if (m_Rooms == nullptr) {

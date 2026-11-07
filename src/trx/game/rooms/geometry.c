@@ -1,5 +1,6 @@
 #include <trx/game/rooms/geometry.h>
 
+#include <stddef.h>
 #include <trx/config.h>
 #include <trx/core/math/util.h>
 #include <trx/core/utils.h>
@@ -220,8 +221,76 @@ BOUNDS_32 Room_GetRoomBounds(const ROOM *const room)
     };
 }
 
+#if defined(__DREAMCAST__)
+// The walls and the plain case in assembly (game_sh4.S, dc_room_sector); the
+// rest, with pits and skies, stays in C. TRX_DC_ASMOFF bit 1048576 turns it
+// off; a DC_EMIT_VERIFY build runs the C too and compares.
+extern uint32_t g_DC_AsmOff;
+extern SECTOR *dc_room_sector(
+    const ROOM *rooms, int32_t x, int32_t z, int16_t *room_num);
+const ROOM *Room_GetArray(void);
+int32_t g_DC_RoomOff[10];
+static SECTOR *Room_GetSectorC(const XYZ_32 pos, int16_t *room_num);
+
 SECTOR *Room_GetSector(const XYZ_32 pos, int16_t *const room_num)
 {
+    if ((g_DC_AsmOff & 1048576) != 0) {
+        return Room_GetSectorC(pos, room_num);
+    }
+    if (g_DC_RoomOff[0] == 0) {
+        g_DC_RoomOff[0] = sizeof(ROOM);
+        g_DC_RoomOff[1] = offsetof(ROOM, pos.x);
+        g_DC_RoomOff[2] = offsetof(ROOM, pos.z);
+        g_DC_RoomOff[3] = offsetof(ROOM, size.x);
+        g_DC_RoomOff[4] = offsetof(ROOM, size.z);
+        g_DC_RoomOff[5] = sizeof(SECTOR);
+        g_DC_RoomOff[6] = offsetof(ROOM, sectors);
+        g_DC_RoomOff[7] = offsetof(SECTOR, portal_room.wall);
+        g_DC_RoomOff[8] = offsetof(SECTOR, portal_room.pit);
+        g_DC_RoomOff[9] = offsetof(SECTOR, portal_room.sky);
+    }
+#if defined(DC_EMIT_VERIFY)
+    const int16_t room_in = *room_num;
+#endif
+    SECTOR *const sector = dc_room_sector(Room_GetArray(), pos.x, pos.z, room_num);
+#if defined(DC_EMIT_VERIFY)
+    static uint32_t m_Runs;
+    static uint32_t m_Fast;
+    static uint32_t m_Bad;
+    int16_t room_c = room_in;
+    const SECTOR *const sector_c = Room_GetSectorC(pos, &room_c);
+    m_Runs++;
+    if (sector != nullptr) {
+        m_Fast++;
+        if (sector != sector_c || *room_num != room_c) {
+            m_Bad++;
+            LOG_WARNING("[sector-verify] MISMATCH");
+        }
+    }
+    if (m_Runs % 5000 == 0) {
+        LOG_WARNING(
+            "[sector-verify] %u runs, %u fast, %u bad", (unsigned)m_Runs,
+            (unsigned)m_Fast, (unsigned)m_Bad);
+    }
+    if (sector == nullptr) {
+        *room_num = room_c;
+        return (SECTOR *)sector_c;
+    }
+    return sector;
+#else
+    if (sector != nullptr) {
+        return sector;
+    }
+    return Room_GetSectorC(pos, room_num);
+#endif
+}
+
+static SECTOR *Room_GetSectorC(const XYZ_32 pos, int16_t *const room_num)
+{
+#else
+SECTOR *Room_GetSector(const XYZ_32 pos, int16_t *const room_num)
+{
+#endif
     SECTOR *sector = nullptr;
 
     while (true) {
