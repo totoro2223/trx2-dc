@@ -151,6 +151,8 @@ typedef struct M_BINDING {
     // The texture coordinates are to be looked up again before the mesh is
     // next drawn (M_RefillTextures).
     bool tex_dirty;
+    // Filled whole once (the animated runs alone move after that).
+    bool filled;
     // Object space bounding box: minimum then maximum corner.
     float bounds[2][3];
     // The longest of its normals, for the cel shading (0 until it is told).
@@ -7134,6 +7136,58 @@ static void M_RefillTextures(M_BINDING *const bind)
 {
     const OUTPUT_MESH_VERTEX *const vertices =
         Vector_GetData(bind->mesh->vertices);
+    // The animated textures move only the corners in the animated runs: the
+    // rest keep what the first fill gave them (TRX_DC_ASMOFF 16777216: all).
+    // Not with bilinear filtering, where the faces are pulled in as a whole.
+    if (!m_InsetUV && bind->filled && (g_DC_AsmOff & 16777216) == 0) {
+        const VECTOR *const runs = bind->mesh->animated_vertices;
+#if defined(DC_EMIT_VERIFY)
+        const int32_t n = bind->vertex_count;
+#endif
+        for (int32_t r = 0; r < runs->count; r++) {
+            const OUTPUT_VERTEX_RANGE *const run = Vector_Get(runs, r);
+            const int32_t end = MIN(
+                run->vertex_start + run->vertex_count, bind->vertex_count);
+            for (int32_t i = run->vertex_start; i < end; i++) {
+                if (bind->vref != nullptr) {
+                    M_FillTexture(
+                        bind, &vertices[bind->vref[i]], bind->uvw[i], i);
+                } else {
+                    M_FillTexture(bind, &vertices[i], vertices[i].uvw_idx, i);
+                }
+            }
+        }
+#if defined(DC_EMIT_VERIFY)
+        static int32_t s_runs = 0;
+        static int32_t s_bad = 0;
+        // The whole fill into the saved copy's place, and the two compared.
+        uint16_t *const part_uv = Memory_Alloc(sizeof(uint16_t) * 2 * n);
+        int8_t *const part_page = Memory_Alloc(n);
+        memcpy(part_uv, bind->uv, sizeof(uint16_t) * 2 * n);
+        memcpy(part_page, bind->page, n);
+        for (int32_t i = 0; i < n; i++) {
+            if (bind->vref != nullptr) {
+                M_FillTexture(bind, &vertices[bind->vref[i]], bind->uvw[i], i);
+            } else {
+                M_FillTexture(bind, &vertices[i], vertices[i].uvw_idx, i);
+            }
+        }
+        s_runs++;
+        if (memcmp(part_uv, bind->uv, sizeof(uint16_t) * 2 * n) != 0
+            || memcmp(part_page, bind->page, n) != 0) {
+            s_bad++;
+        }
+        if (s_runs % 200 == 0) {
+            LOG_INFO("[refill-verify] %d runs, %d bad", s_runs, s_bad);
+        }
+        Memory_Free(part_uv);
+        Memory_Free(part_page);
+#endif
+        bind->tex_dirty = false;
+        bind->bump_sig = 0;
+        return;
+    }
+    bind->filled = true;
     for (int32_t i = 0; i < bind->vertex_count; i++) {
         if (bind->vref != nullptr) {
             M_FillTexture(bind, &vertices[bind->vref[i]], bind->uvw[i], i);
@@ -7966,6 +8020,7 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
         m_InsetUV = inset;
         for (int32_t i = 0; i < batcher->bindings->count; i++) {
             (*(M_BINDING **)Vector_Get(batcher->bindings, i))->tex_dirty = true;
+            (*(M_BINDING **)Vector_Get(batcher->bindings, i))->filled = false;
         }
     }
     DC_PVR_SetFilter(inset);
@@ -8712,6 +8767,7 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
         M_PairQuads((OUTPUT_MESH_INDEX *)face->vertex_indices, face->vertex_count);
     }
     M_BINDING *const bind = Memory_Alloc(sizeof(M_BINDING));
+    bind->filled = false;
     bind->special = nullptr;
     bind->special_count = 0;
     bind->special_mask = 0;
