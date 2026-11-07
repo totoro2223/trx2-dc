@@ -288,14 +288,11 @@ static void M_MoveC(ITEM *const item, const ANIM *const anim)
 // on a copy and compares. TRX_DC_ASMOFF bit 4194304 turns it off.
 extern uint32_t g_DC_AsmOff;
 extern void dc_item_move(ITEM *item, const ANIM *anim);
-int32_t g_DC_ItemOff[13];
+int32_t g_DC_ItemOff[21];
+extern bool dc_item_animate(ITEM *item, const ANIM *anim);
 
-static void M_Move(ITEM *const item, const ANIM *const anim)
+static void M_ItemOffInit(void)
 {
-    if ((g_DC_AsmOff & 4194304) != 0) {
-        M_MoveC(item, anim);
-        return;
-    }
     if (g_DC_ItemOff[0] == 0) {
         g_DC_ItemOff[0] = offsetof(ITEM, gravity);
         g_DC_ItemOff[1] = offsetof(ITEM, fall_speed);
@@ -310,7 +307,24 @@ static void M_Move(ITEM *const item, const ANIM *const anim)
         g_DC_ItemOff[10] = offsetof(ITEM, rot.y);
         g_DC_ItemOff[11] = offsetof(ITEM, pos.x);
         g_DC_ItemOff[12] = offsetof(ITEM, pos.z);
+        g_DC_ItemOff[13] = offsetof(ITEM, hit_status);
+        g_DC_ItemOff[14] = offsetof(ITEM, touch_bits);
+        g_DC_ItemOff[15] = offsetof(ITEM, prev_frame_num);
+        g_DC_ItemOff[16] = offsetof(ITEM, current_anim_state);
+        g_DC_ItemOff[17] = offsetof(ITEM, goal_anim_state);
+        g_DC_ItemOff[18] = offsetof(ANIM, num_changes);
+        g_DC_ItemOff[19] = offsetof(ANIM, num_commands);
+        g_DC_ItemOff[20] = offsetof(ANIM, frame_end);
     }
+}
+
+static void M_Move(ITEM *const item, const ANIM *const anim)
+{
+    if ((g_DC_AsmOff & 4194304) != 0) {
+        M_MoveC(item, anim);
+        return;
+    }
+    M_ItemOffInit();
 #if defined(DC_EMIT_VERIFY)
     static ITEM m_Copy;
     static uint32_t m_Runs;
@@ -341,8 +355,60 @@ static void M_Move(ITEM *const item, const ANIM *const anim)
 }
 #endif
 
+#if defined(__DREAMCAST__)
+static void Item_AnimateC(ITEM *item);
+
+// The whole of it, when the animation has no commands, no change to make and
+// does not end this frame, in assembly (game_sh4.S, dc_item_animate); the rest
+// stays in C. TRX_DC_ASMOFF bit 8388608 turns it off.
 void Item_Animate(ITEM *const item)
 {
+    if ((g_DC_AsmOff & 8388608) == 0) {
+        M_ItemOffInit();
+        const ANIM *const anim = Item_GetAnim(item);
+#if defined(DC_EMIT_VERIFY)
+        static ITEM m_Want;
+        static uint32_t m_Runs;
+        static uint32_t m_Bad;
+        memcpy(&m_Want, item, sizeof(ITEM));
+#endif
+        if (dc_item_animate(item, anim)) {
+#if defined(DC_EMIT_VERIFY)
+            m_Want.hit_status = false;
+            m_Want.touch_bits = 0;
+            m_Want.prev_frame_num = m_Want.frame_num;
+            m_Want.frame_num++;
+            M_MoveC(&m_Want, anim);
+            m_Runs++;
+            if (m_Want.hit_status != item->hit_status
+                || m_Want.touch_bits != item->touch_bits
+                || m_Want.prev_frame_num != item->prev_frame_num
+                || m_Want.frame_num != item->frame_num
+                || m_Want.pos.x != item->pos.x || m_Want.pos.y != item->pos.y
+                || m_Want.pos.z != item->pos.z
+                || m_Want.speed != item->speed
+                || m_Want.fall_speed != item->fall_speed) {
+                m_Bad++;
+                LOG_WARNING("[animate-verify] MISMATCH");
+            }
+            if (m_Runs % 5000 == 0) {
+                LOG_WARNING(
+                    "[animate-verify] %u runs, %u bad", (unsigned)m_Runs,
+                    (unsigned)m_Bad);
+            }
+#endif
+            return;
+        }
+    }
+    Item_AnimateC(item);
+}
+
+static void Item_AnimateC(ITEM *const item)
+{
+#else
+void Item_Animate(ITEM *const item)
+{
+#endif
     item->hit_status = false;
     item->touch_bits = 0;
     item->prev_frame_num = item->frame_num;

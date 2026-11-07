@@ -399,3 +399,82 @@ im_move:
     .long   _Math_Sin
 .Lmcos:
     .long   _Math_Cos
+
+! bool dc_item_animate(ITEM *item, const ANIM *anim);
+!
+! Item_Animate (items/anim.c) for the plain frame: the animation has no
+! commands, nothing to change to (or the item is where it is going), and the
+! frame does not pass its end. Counts the frame, clears the hit and touch bits
+! and moves the item (dc_item_move), returning 1; else changes nothing and
+! returns 0. Layout words of g_DC_ItemOff: 4 frame_num  13 hit_status (byte)
+! 14 touch_bits  15 prev_frame_num  16 current_anim_state  17 goal_anim_state
+! 18 anim num_changes  19 num_commands  20 frame_end.
+    .text
+    .align 2
+    .global _dc_item_animate
+_dc_item_animate:
+    sts.l   pr,@-r15
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov     r4,r8
+    mov     r5,r9
+    mov.l   .Litemoff2,r10
+    mov     r10,r11
+    add     #64,r11                 ! words 16 and on
+    mov.l   @(12,r11),r0
+    mov.w   @(r0,r9),r1
+    tst     r1,r1
+    bf      ia_fail                 ! it has commands
+    mov.l   @(16,r10),r0
+    mov.w   @(r0,r8),r2
+    add     #1,r2
+    exts.w  r2,r2                   ! the next frame
+    mov.l   @(16,r11),r0
+    mov.w   @(r0,r9),r1
+    cmp/gt  r1,r2
+    bt      ia_fail                 ! it passes the end
+    mov.l   @(8,r11),r0
+    mov.w   @(r0,r9),r1
+    cmp/pl  r1
+    bf      ia_go                   ! no changes
+    mov.l   @(0,r11),r0
+    mov.w   @(r0,r8),r1
+    mov.l   @(4,r11),r0
+    mov.w   @(r0,r8),r3
+    cmp/eq  r1,r3
+    bf      ia_fail                 ! a change may be due
+ia_go:
+    mov     #0,r1
+    mov.l   @(52,r10),r0
+    mov.b   r1,@(r0,r8)             ! hit_status
+    mov.l   @(56,r10),r0
+    mov.l   r1,@(r0,r8)             ! touch_bits
+    mov.l   @(16,r10),r0
+    mov.w   @(r0,r8),r3
+    mov.w   r2,@(r0,r8)             ! frame_num
+    mov.l   @(60,r10),r0
+    mov.w   r3,@(r0,r8)             ! prev_frame_num
+    mov     r8,r4
+    mov     r9,r5
+    mov.l   .Limove,r1
+    jsr     @r1
+    nop
+    bra     ia_out
+    mov     #1,r0
+ia_fail:
+    mov     #0,r0
+ia_out:
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    lds.l   @r15+,pr
+    rts
+    nop
+    .align 2
+.Litemoff2:
+    .long   _g_DC_ItemOff
+.Limove:
+    .long   _dc_item_move
