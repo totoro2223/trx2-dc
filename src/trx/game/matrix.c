@@ -821,7 +821,7 @@ static void M_RotYXZ(MATRIX *const m, const XYZ_16 rotation)
 // instead of three fixed point turns that each round down. Entries can differ
 // by 1 in the last bit from M_RotYSC and the others; a bone is only ever
 // turned this way while g_MatrixWorldOnly (the enemies' walk) is set.
-static void M_RotYXZ_Float(
+static void M_RotYXZ_FloatC(
     MATRIX *const *const ms, const int32_t n, const XYZ_16 rotation)
 {
     const float k = 1.0f / (float)(1 << W2V_SHIFT);
@@ -893,6 +893,60 @@ static void M_RotYXZ_Float(
         m->_22 = (int32_t)(z + 32768.0f) - 32768;
     }
 }
+#endif
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_rot_yxz_f); ASMOFF bit 1073741824 turns it off.
+extern void dc_rot_yxz_f(MATRIX *const *ms, int32_t n, const int32_t *p);
+
+static void M_RotYXZ_Float(
+    MATRIX *const *const ms, const int32_t n, const XYZ_16 rotation)
+{
+    if ((g_DC_AsmOff & 1073741824) != 0) {
+        M_RotYXZ_FloatC(ms, n, rotation);
+        return;
+    }
+    int32_t p[7] = {
+        Math_Sin(rotation.y), Math_Cos(rotation.y), Math_Sin(rotation.x),
+        Math_Cos(rotation.x), Math_Sin(rotation.z), Math_Cos(rotation.z),
+        (rotation.y != 0 ? 1 : 0) | (rotation.x != 0 ? 2 : 0)
+            | (rotation.z != 0 ? 4 : 0),
+    };
+    #if defined(DC_EMIT_VERIFY)
+    MATRIX in[4];
+    MATRIX copy[4];
+    MATRIX *cp[4];
+    for (int32_t i = 0; i < n && i < 4; i++) {
+        in[i] = *ms[i];
+        copy[i] = *ms[i];
+        cp[i] = &copy[i];
+    }
+    M_RotYXZ_FloatC(cp, n, rotation);
+    dc_rot_yxz_f(ms, n, p);
+    static uint32_t runs;
+    static uint32_t bad;
+    for (int32_t i = 0; i < n && i < 4; i++) {
+        if (memcmp(&copy[i], ms[i], sizeof(MATRIX)) != 0) {
+            if (bad++ < 4) {
+                LOG_WARNING(
+                    "[rotf-verify] rot %d %d %d e00 %lld/%lld e01 %lld/%lld "
+                    "e02 %lld/%lld",
+                    (int)rotation.x, (int)rotation.y, (int)rotation.z,
+                    (long long)copy[i]._00, (long long)ms[i]->_00,
+                    (long long)copy[i]._01, (long long)ms[i]->_01,
+                    (long long)copy[i]._02, (long long)ms[i]->_02);
+            }
+        }
+    }
+    if (runs++ == 0 || runs % 5000 == 0) {
+        LOG_WARNING(
+            "[rotf-verify] %u runs, %u bad", (unsigned)runs, (unsigned)bad);
+    }
+    #else
+    dc_rot_yxz_f(ms, n, p);
+    #endif
+}
+
 #endif
 
 static void M_RotYXZ_N(

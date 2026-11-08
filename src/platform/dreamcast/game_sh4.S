@@ -840,3 +840,164 @@ bl_fail:
     .long   67108863
 .Lbk27:
     .long   134217726
+
+! void dc_rot_yxz_f(MATRIX *const *ms, int32_t n, const int32_t *p);
+!
+! M_RotYXZ_Float of matrix.c: the Y, X and Z turns of a bone worked out as one
+! float matrix (each pair of entries as the C compiler fuses it: c*a + s*b,
+! c*b - s*a, with fmac) and applied with ftrv to the three rows of each of the
+! n matrices (the floor of the result, kept in the low word, sign-extended).
+! p: 0 sin Y  1 cos Y  2 sin X  3 cos X  4 sin Z  5 cos Z (the table's integers)
+! 6 a mask of the turns that are not zero (1 Y, 2 X, 4 Z).
+    .macro ROTF bit, si, ci, ca, cb, negs
+    mov     r13,r0
+    tst     #\bit,r0
+    bt      2f
+    mov.l   @(\si*4,r6),r1
+    lds     r1,fpul
+    float   fpul,fr4
+    fmul    fr8,fr4
+    .if \negs
+    fneg    fr4
+    .endif
+    mov.l   @(\ci*4,r6),r1
+    lds     r1,fpul
+    float   fpul,fr0
+    fmul    fr8,fr0
+    mov     r14,r2
+    mov     #3,r3
+1:  mov     r2,r1
+    add     #\ca,r1
+    fmov.s  @r1,fr6
+    mov     r2,r1
+    add     #\cb,r1
+    fmov.s  @r1,fr7
+    fmov    fr4,fr2
+    fmul    fr7,fr2
+    fmac    fr0,fr6,fr2
+    fmov    fr4,fr3
+    fmul    fr6,fr3
+    fneg    fr3
+    fmac    fr0,fr7,fr3
+    mov     r2,r1
+    add     #\ca,r1
+    fmov.s  fr2,@r1
+    mov     r2,r1
+    add     #\cb,r1
+    fmov.s  fr3,@r1
+    add     #16,r2
+    dt      r3
+    bf      1b
+2:
+    .endm
+    .global _dc_rot_yxz_f
+    .align 2
+_dc_rot_yxz_f:
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov.l   r14,@-r15
+    add     #-72,r15
+    mov     r15,r14
+    add     #7,r14
+    mov     #-8,r0
+    and     r0,r14                  ! the 4x4 float matrix, 8-aligned
+    mov.l   .Lrf_one,r1
+    mov     #0,r0
+    mov.l   r1,@(0,r14)
+    mov.l   r0,@(4,r14)
+    mov.l   r0,@(8,r14)
+    mov.l   r0,@(12,r14)
+    mov.l   r0,@(16,r14)
+    mov.l   r1,@(20,r14)
+    mov.l   r0,@(24,r14)
+    mov.l   r0,@(28,r14)
+    mov.l   r0,@(32,r14)
+    mov.l   r0,@(36,r14)
+    mov.l   r1,@(40,r14)
+    mov.l   r0,@(44,r14)
+    mov.l   r0,@(48,r14)
+    mov.l   r0,@(52,r14)
+    mov.l   r0,@(56,r14)
+    mov.l   r1,@(60,r14)
+    mov.l   @(24,r6),r13            ! the mask
+    mov.l   .Lrf_k,r1
+    lds     r1,fpul
+    fsts    fpul,fr8                ! 1 / 16384
+    ROTF    1, 0, 1, 0, 8, 1        ! Y
+    ROTF    2, 2, 3, 4, 8, 0        ! X
+    ROTF    4, 4, 5, 0, 4, 0        ! Z
+    mov     r14,r1
+    fschg
+    frchg
+    fmov.d  @r1+,dr0
+    fmov.d  @r1+,dr2
+    fmov.d  @r1+,dr4
+    fmov.d  @r1+,dr6
+    fmov.d  @r1+,dr8
+    fmov.d  @r1+,dr10
+    fmov.d  @r1+,dr12
+    fmov.d  @r1+,dr14
+    frchg
+    fschg
+    mov.l   .Lrf_bias,r1
+    lds     r1,fpul
+    fsts    fpul,fr9                ! 32768.0
+    mov.l   .Lrf_m32768,r12
+rf_next:
+    mov.l   @r4+,r2                 ! the matrix
+    mov     #3,r7
+rf_row:
+    mov.l   @r2,r1
+    lds     r1,fpul
+    float   fpul,fr0
+    mov.l   @(8,r2),r1
+    lds     r1,fpul
+    float   fpul,fr1
+    mov.l   @(16,r2),r1
+    lds     r1,fpul
+    float   fpul,fr2
+    fldi0   fr3
+    ftrv    xmtrx,fv0
+    fadd    fr9,fr0
+    fadd    fr9,fr1
+    fadd    fr9,fr2
+    ftrc    fr0,fpul
+    sts     fpul,r1
+    add     r12,r1
+    mov.l   r1,@r2
+    shll    r1
+    subc    r3,r3
+    mov.l   r3,@(4,r2)
+    ftrc    fr1,fpul
+    sts     fpul,r1
+    add     r12,r1
+    mov.l   r1,@(8,r2)
+    shll    r1
+    subc    r3,r3
+    mov.l   r3,@(12,r2)
+    ftrc    fr2,fpul
+    sts     fpul,r1
+    add     r12,r1
+    mov.l   r1,@(16,r2)
+    shll    r1
+    subc    r3,r3
+    mov.l   r3,@(20,r2)
+    add     #32,r2
+    dt      r7
+    bf      rf_row
+    dt      r5
+    bf      rf_next
+    add     #72,r15
+    mov.l   @r15+,r14
+    mov.l   @r15+,r13
+    rts
+    mov.l   @r15+,r12
+    .align 2
+.Lrf_one:
+    .long   0x3F800000
+.Lrf_k:
+    .long   0x38800000
+.Lrf_bias:
+    .long   0x47000000
+.Lrf_m32768:
+    .long   -32768
