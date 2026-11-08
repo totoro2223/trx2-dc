@@ -9766,7 +9766,10 @@ static int32_t M_BuildVolume(
         for (int32_t j = 0; j < 9; j++) {
             const float a = ((const float *)&out[t])[j];
             const float b = ((const float *)&ref[t])[j];
-            if (fabsf(a - b) > 0.01f + 1.0e-4f * fabsf(b)) {
+            // The depth (the third of each vertex) is about 1e-3 to 1e-2: its
+            // own, tighter tolerance (a depth 20 times too small once passed).
+            const float tol = j % 3 == 2 ? 1.0e-6f : 0.01f;
+            if (fabsf(a - b) > tol + 1.0e-4f * fabsf(b)) {
                 bad = true;
             }
         }

@@ -620,6 +620,8 @@ vb_proj:
     add     #4,r6
     fmov.s  fr7,@r6
     fmul    fr5,fr4
+    ! the C function takes its float in fr5 (little-endian SH-4 ABI), as fr4's twin
+    fmov    fr4,fr5
     mov.l   r5,@-r15
     mov     #64,r0
     mov.l   @(r0,r8),r1
