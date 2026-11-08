@@ -29,6 +29,7 @@
 #include <trx/debug.h>
 #include <trx/game/console.h>
 #include <trx/game/const.h>
+#include <trx/game/items/manager.h>
 #include <trx/game/lara/common.h>
 #include <trx/game/output.h>
 #include <trx/game/output/lights/priv.h>
@@ -277,6 +278,11 @@ typedef struct {
     // is Lara.
     int16_t group;
     bool lara;
+    // What it belongs to from one frame to the next: -1 for Lara, an enemy's
+    // item number otherwise (the groups are numbered afresh every frame); and
+    // for Lara's meshes their place among hers.
+    int16_t key;
+    int16_t lara_idx;
 } M_CASTER;
 
 // Lara's meshes and those of the few objects nearest her that cast volumes
@@ -298,6 +304,17 @@ typedef struct {
 
 // The soft shadows (see shadow.h): one cell of the shadow map per light.
 #define M_SOFT_MAX_LIGHTS 3
+// Enemies' soft shadows (rendering.dc_object_shadows): this many at once, each
+// one light and one cell of the map, M_SOFT_ENEMY_SIZE texels a side. The
+// cells lie in a row of their own under Lara's, with white between them (the
+// PowerVR draws only the left 640 texels of the map, the screen's tiles), so
+// that a face reaching past its cell finds white and not the next shadow.
+#define M_SOFT_MAX_ENEMIES 4
+#define M_SOFT_ENEMY_SIZE 64
+#define M_SOFT_CELLS (M_SOFT_MAX_LIGHTS + M_SOFT_MAX_ENEMIES)
+#define M_SOFT_LARA_LIGHTS 2
+static const int16_t m_EnemyCellX[M_SOFT_MAX_ENEMIES] = { 0, 128, 256, 384 };
+static const int16_t m_EnemyCellY[M_SOFT_MAX_ENEMIES] = { 128, 128, 128, 128 };
 // Self-shadowing, from the nearest light only: the casters are cut into this
 // many slices by how far they lie along the light, and each slice but the
 // nearest takes the silhouette of the slices nearer the light, never its
@@ -682,6 +699,12 @@ static int32_t m_CasterCount = 0;
 static M_CASTER m_Casters[M_MAX_CASTERS];
 static int16_t m_CasterGroup = 0;
 static int32_t m_ObjectCasters = 0;
+// The soft ones among them, and the key of the object that casts now (and of
+// the one DC_Shadow_TakeObjectCaster just took).
+static int32_t m_ObjectSoftCasters = 0;
+static int16_t m_CasterKey = -1;
+static int16_t m_PendingKey = -1;
+static int32_t m_LaraCasterCount = 0;
 
 typedef struct {
     // From the light towards the casters, and two directions across it (the
@@ -694,29 +717,60 @@ typedef struct {
     // shadow does not grow), and how far past it the shadow fades out.
     float dist;
     float fade;
+    // The cell's casters in m_Soft.casters, their middle in the world, and
+    // whose they are (-1 Lara, else an enemy's item number).
+    int32_t first;
+    int32_t count;
+    int32_t key;
+    float center[3];
 } M_SOFT_LIGHT;
 
+// Lara's cells are the first M_SOFT_MAX_LIGHTS, the enemies' follow.
 static struct {
-    // The casters the last frame kept, and their middle, for the map.
+    // The casters the last frame kept (Lara's first), for the map.
     int32_t caster_count;
     M_CASTER casters[M_MAX_CASTERS];
-    float center[3];
-    // The lights the map is (or is to be) drawn for, one per cell.
+    // How many of them are Lara's.
+    int32_t lara_count;
+    // The lights the map is (or is to be) drawn for, one per cell; Lara's
+    // fill the first light_count.
     int32_t light_count;
-    M_SOFT_LIGHT lights[M_SOFT_MAX_LIGHTS];
+    M_SOFT_LIGHT lights[M_SOFT_CELLS];
+    // Which cells the casters kept call for, and which the map drawn this
+    // frame holds.
+    bool kept[M_SOFT_CELLS];
+    bool cell_on[M_SOFT_CELLS];
     // How many cells the map holds this frame.
     int32_t map_count;
-    // The casters' slices, by their index, for the map drawn this frame.
+    // The casters' slices, by their place among Lara's, for the map drawn
+    // this frame.
     bool self;
     int32_t self_count;
     int8_t slice[M_MAX_CASTERS];
-    // This frame's projection, in eye space: the casters' middle, and per
-    // light its three directions, each divided by its squared length so
-    // that a dot product with an eye space offset gives world units.
+    // This frame's projection, in eye space: each cell's casters' middle, and
+    // per light its three directions, each divided by its squared length so
+    // that a dot product with an eye space offset gives world units. A cell
+    // whose casters are not staged this frame takes nothing.
     bool active;
-    float center_eye[3];
-    float axes_eye[M_SOFT_MAX_LIGHTS][3][3];
+    bool cell_active[M_SOFT_CELLS];
+    float center_eye[M_SOFT_CELLS][3];
+    float axes_eye[M_SOFT_CELLS][3][3];
 } m_Soft = {};
+
+// Where cell c lies in the map, in texels.
+static void M_SoftCellRect(
+    const int32_t c, float *const x0, float *const y0, float *const size)
+{
+    if (c < M_SOFT_MAX_LIGHTS) {
+        *x0 = (float)(M_SOFT_LIGHT_SLOT(c) * DC_PVR_SHADOW_MAP_SIZE);
+        *y0 = 0.0f;
+        *size = (float)DC_PVR_SHADOW_MAP_SIZE;
+    } else {
+        *x0 = (float)m_EnemyCellX[c - M_SOFT_MAX_LIGHTS];
+        *y0 = (float)m_EnemyCellY[c - M_SOFT_MAX_LIGHTS];
+        *size = (float)M_SOFT_ENEMY_SIZE;
+    }
+}
 
 static float m_SoftXY[M_SOFT_MAX_VERTICES][2];
 
@@ -728,6 +782,7 @@ static float m_SoftXY[M_SOFT_MAX_VERTICES][2];
 
 // The shadow the player chose (a mode sets it as it starts, see
 // Shell_HandleConfigChange).
+static bool M_VolumesOn(void);
 static SHADOW_TYPE M_ShadowType(void)
 {
     // The soft shadows are drawn under water too (they were swapped for
@@ -735,6 +790,13 @@ static SHADOW_TYPE M_ShadowType(void)
     // water while Lara is above it, the water's own surface (see is_room).
     return g_Config.visuals.shadow_type;
 }
+// Whether shadow volumes may be in the frame: Lara's, or the enemies'.
+static bool M_VolumesOn(void)
+{
+    return M_ShadowType() == SHADOW_TYPE_VOLUME
+        || g_Config.rendering.dc_object_shadows == DC_OBJECT_SHADOWS_VOLUME;
+}
+
 // Faces drawn with a soft shadow, for the debug console.
 static int32_t m_SoftFaces = 0;
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
@@ -5696,9 +5758,10 @@ static void M_SoftProject(M_SOFTRUN *const run)
 
 static void M_EmitShadowFaces(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind,
-    const int32_t l, const int32_t slot, const bool world)
+    const int32_t l, const float cell_x, const float cell_y,
+    const float cell_size, const bool world)
 {
-    const float *const c = m_Soft.center_eye;
+    const float *const c = m_Soft.center_eye[l];
     const float(*const axes)[3] = m_Soft.axes_eye[l];
     // Lara on herself darkens as much whatever the light's distance.
     const float strength =
@@ -5854,11 +5917,10 @@ static void M_EmitShadowFaces(
                     * M_Clamp(1.0f - s[k][2] * inv_fade, 0.0f, 1.0f);
                 M_Project(
                     xv[k],
-                    (slot + s[k][0]) * (DC_PVR_SHADOW_MAP_SIZE
-                                        * (1.0f / DC_PVR_SHADOW_MAP_TEX_W)),
-                    s[k][1]
-                        * (DC_PVR_SHADOW_MAP_SIZE
-                           * (1.0f / DC_PVR_SHADOW_MAP_TEX_H)),
+                    (cell_x + s[k][0] * cell_size)
+                        * (1.0f / DC_PVR_SHADOW_MAP_TEX_W),
+                    (cell_y + s[k][1] * cell_size)
+                        * (1.0f / DC_PVR_SHADOW_MAP_TEX_H),
                     M_PackARGB(1.0f, t, t, t),
                     M_PackARGB(1.0f, 1.0f - t, 1.0f - t, 1.0f - t),
                     k == 2 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX, &out[k]);
@@ -5873,8 +5935,13 @@ static void M_EmitSoftShadows(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind)
 {
     m_DepthBias = M_DEPTH_BIAS_SHADOW;
-    for (int32_t l = 0; l < m_Soft.map_count; l++) {
-        M_EmitShadowFaces(batcher, bind, l, M_SOFT_LIGHT_SLOT(l), true);
+    for (int32_t l = 0; l < M_SOFT_CELLS; l++) {
+        if (!m_Soft.cell_active[l]) {
+            continue;
+        }
+        float x0, y0, size;
+        M_SoftCellRect(l, &x0, &y0, &size);
+        M_EmitShadowFaces(batcher, bind, l, x0, y0, size, true);
     }
     m_DepthBias = 1.0f;
 }
@@ -5885,13 +5952,19 @@ static void M_EmitSelfShadow(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const int32_t caster)
 {
-    if (!m_Soft.self || caster >= m_Soft.self_count
-        || m_Soft.slice[caster] <= 0) {
+    // Only her own meshes, by their place among hers, take her shadow.
+    if (!m_Soft.self || !m_Soft.cell_active[0] || !m_Casters[caster].lara) {
+        return;
+    }
+    const int32_t mine = m_Casters[caster].lara_idx;
+    if (mine < 0 || mine >= m_Soft.self_count || m_Soft.slice[mine] <= 0) {
         return;
     }
     m_DepthBias = M_DEPTH_BIAS_SHADOW;
     M_EmitShadowFaces(
-        batcher, bind, 0, M_SOFT_SELF_SLOT(m_Soft.slice[caster]), false);
+        batcher, bind, 0,
+        (float)(M_SOFT_SELF_SLOT(m_Soft.slice[mine]) * DC_PVR_SHADOW_MAP_SIZE),
+        0.0f, (float)DC_PVR_SHADOW_MAP_SIZE, false);
     m_DepthBias = 1.0f;
 }
 
@@ -7250,8 +7323,7 @@ static void M_DrawInstance(
     const bool is_room = bind->needs_room_lights
         && (inst->room == nullptr || !inst->room->flags.underwater
             || water == LWS_UNDERWATER || water == LWS_SURFACE);
-    DC_PVR_SetShadowReceiver(
-        is_room && M_ShadowType() == SHADOW_TYPE_VOLUME);
+    DC_PVR_SetShadowReceiver(is_room && M_VolumesOn());
     batcher->emitted = false;
     batcher->chunk_emit_us = 0;
     DC_PROBE_STOP(DC_PROBE_D_PRE, probe_pre);
@@ -7273,7 +7345,7 @@ static void M_DrawInstance(
     DC_PROBE_START(probe_post);
     const bool is_caster = caster >= 0;
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
-    m_ShadowReceivers += is_room && M_ShadowType() == SHADOW_TYPE_VOLUME;
+    m_ShadowReceivers += is_room && M_VolumesOn();
     m_ShadowRooms += bind->needs_room_lights;
 #endif
     if (m_Soft.active && pass == SCENE_PASS_OPAQUE) {
@@ -7474,20 +7546,47 @@ static void M_CastersCenter(
 // follows them this way as they move.
 static void M_PrepareSoft(void)
 {
-    m_Soft.active = M_IS_SOFT(M_ShadowType())
-        && !m_Frame.ortho && m_CasterCount > 0 && m_Soft.map_count > 0;
-    if (!m_Soft.active) {
+    m_Soft.active = false;
+    if (m_Frame.ortho || m_CasterCount == 0 || m_Soft.map_count == 0) {
         return;
     }
     const float(*const v)[4] = m_Frame.view;
-    float center[3];
-    M_CastersCenter(m_Casters, m_CasterCount, center);
-    for (int32_t r = 0; r < 3; r++) {
-        m_Soft.center_eye[r] = v[0][r] * center[0] + v[1][r] * center[1]
-            + v[2][r] * center[2] + v[3][r];
-    }
-    for (int32_t l = 0; l < m_Soft.map_count; l++) {
+    for (int32_t l = 0; l < M_SOFT_CELLS; l++) {
+        m_Soft.cell_active[l] = false;
+        if (!m_Soft.cell_on[l]) {
+            continue;
+        }
         const M_SOFT_LIGHT *const light = &m_Soft.lights[l];
+        // The middle of what this cell's casters are doing now: Lara's, or
+        // that enemy's, if they are staged this frame.
+        float center[3] = { 0.0f, 0.0f, 0.0f };
+        int32_t n = 0;
+        for (int32_t i = 0; i < m_CasterCount; i++) {
+            const bool mine = l < M_SOFT_MAX_LIGHTS
+                ? m_Casters[i].lara
+                : (!m_Casters[i].lara && m_Casters[i].key == light->key);
+            if (!mine) {
+                continue;
+            }
+            float c[3];
+            M_CastersCenter(&m_Casters[i], 1, c);
+            for (int32_t k = 0; k < 3; k++) {
+                center[k] += c[k];
+            }
+            n++;
+        }
+        if (n == 0) {
+            continue;
+        }
+        m_Soft.cell_active[l] = true;
+        m_Soft.active = true;
+        for (int32_t k = 0; k < 3; k++) {
+            center[k] /= n;
+        }
+        for (int32_t r = 0; r < 3; r++) {
+            m_Soft.center_eye[l][r] = v[0][r] * center[0] + v[1][r] * center[1]
+                + v[2][r] * center[2] + v[3][r];
+        }
         const float *const axes[3] = { light->dir, light->right, light->up };
         for (int32_t a = 0; a < 3; a++) {
             float *const out = m_Soft.axes_eye[l][a];
@@ -8904,6 +9003,9 @@ void MeshBatcher_Stage(
             caster->room = inst->room;
             caster->group = m_CasterGroup;
             caster->lara = m_StagingLara;
+            caster->key = m_StagingLara ? -1 : m_CasterKey;
+            caster->lara_idx =
+                m_StagingLara ? (int16_t)m_LaraCasterCount++ : (int16_t)-1;
             caster_index = (int16_t)(m_CasterCount - 1);
         }
     }
@@ -8931,6 +9033,9 @@ void DC_MeshBatcher_FinishObject(
             caster->room = inst->room;
             caster->group = m_CasterGroup;
             caster->lara = m_StagingLara;
+            caster->key = m_StagingLara ? -1 : m_CasterKey;
+            caster->lara_idx =
+                m_StagingLara ? (int16_t)m_LaraCasterCount++ : (int16_t)-1;
             caster_index = (int16_t)(m_CasterCount - 1);
         }
     }
@@ -8942,6 +9047,7 @@ void DC_Shadow_SetCasting(const bool casting)
 {
     if (casting && !m_Casting) {
         m_CasterGroup++;
+        m_CasterKey = m_StagingLara ? (int16_t)-1 : m_PendingKey;
     }
     m_Casting = casting;
 }
@@ -8949,10 +9055,14 @@ void DC_Shadow_SetCasting(const bool casting)
 bool DC_Shadow_TakeObjectCaster(const ITEM *const item)
 {
     const ITEM *const lara = Lara_GetItem();
-    if (M_ShadowType() != SHADOW_TYPE_VOLUME
-        || !g_Config.rendering.dc_object_shadows || lara == nullptr
-        || m_ObjectCasters >= M_MAX_OBJECT_CASTERS
+    const DC_OBJECT_SHADOWS mode = g_Config.rendering.dc_object_shadows;
+    if (mode == DC_OBJECT_SHADOWS_ORIGINAL || lara == nullptr
         || m_CasterCount > M_MAX_CASTERS - 16) {
+        return false;
+    }
+    const bool soft = mode == DC_OBJECT_SHADOWS_SOFT;
+    if (soft ? m_ObjectSoftCasters >= M_SOFT_MAX_ENEMIES
+             : m_ObjectCasters >= M_MAX_OBJECT_CASTERS) {
         return false;
     }
     const float dx = (float)(item->pos.x - lara->pos.x);
@@ -8962,7 +9072,12 @@ bool DC_Shadow_TakeObjectCaster(const ITEM *const item)
         > M_OBJECT_CAST_RANGE * M_OBJECT_CAST_RANGE) {
         return false;
     }
-    m_ObjectCasters++;
+    if (soft) {
+        m_ObjectSoftCasters++;
+    } else {
+        m_ObjectCasters++;
+    }
+    m_PendingKey = (int16_t)Item_GetIndex(item);
     return true;
 }
 
@@ -9490,21 +9605,84 @@ static int32_t M_BuildVolume(
     return count;
 }
 
-// Keeps this frame's casters and picks the lights for the next frame's
-// shadow map.
-static void M_KeepSoftCasters(const float center[3])
+// One cell's light, from one M_GatherShadowLights found; prev is what the
+// same cell held the last frame, or null for a light just come: it slides in
+// part of the way (M_SOFT_EASE) rather than jumping.
+static void M_SetupSoftLight(
+    M_SOFT_LIGHT *const out, const M_SHADOW_LIGHT *const light, const bool high,
+    const M_SOFT_LIGHT *const prev_in)
 {
-    memcpy(m_Soft.casters, m_Casters, sizeof(M_CASTER) * m_CasterCount);
-    m_Soft.caster_count = m_CasterCount;
-    memcpy(m_Soft.center, center, sizeof(m_Soft.center));
+    const M_SOFT_LIGHT prev = prev_in != nullptr ? *prev_in : (M_SOFT_LIGHT) {};
+    float strength = M_SOFT_STRENGTH_MIN
+        + (M_SOFT_STRENGTH_MAX - M_SOFT_STRENGTH_MIN) * light->weight;
+    float dist = M_PARALLEL_DIST;
+    float fade = M_SOFT_REACH;
+    if (high && light->reach > 0.0f) {
+        dist = MAX(light->dist, M_PERSP_MIN_DIST);
+        fade = M_Clamp(
+            light->reach - light->dist, M_PERSP_MIN_FADE, M_SOFT_REACH);
+    }
+    if (light->fixed) {
+        // Eased off along the reach, the far end most.
+        fade = M_FIXED_FADE;
+    }
+    float d[3] = { light->dir[0], light->dir[1], light->dir[2] };
+    if (prev_in != nullptr) {
+        // From the last frame's light in this place, part of the way.
+        for (int32_t k = 0; k < 3; k++) {
+            d[k] = prev.dir[k] + (d[k] - prev.dir[k]) * M_SOFT_EASE;
+        }
+        const float len_sq = M_Dot3(d, d);
+        if (len_sq > 1.0e-4f) {
+            const float inv = M_InvSqrt(len_sq);
+            for (int32_t k = 0; k < 3; k++) {
+                d[k] *= inv;
+            }
+        } else {
+            memcpy(d, light->dir, sizeof(d));
+        }
+        strength = prev.strength + (strength - prev.strength) * M_SOFT_EASE;
+        fade = prev.fade + (fade - prev.fade) * M_SOFT_EASE;
+        // Through its inverse: a parallel light is a million away.
+        dist = 1.0f
+            / (1.0f / prev.dist + (1.0f / dist - 1.0f / prev.dist) * M_SOFT_EASE);
+    } else {
+        // A new one comes in faint.
+        strength *= M_SOFT_EASE;
+    }
+    memcpy(out->dir, d, sizeof(out->dir));
+    // Any direction across the light will do, as long as the map and the
+    // projection agree.
+    const float helper[3] = {
+        fabsf(d[1]) < 0.9f ? 0.0f : 1.0f, fabsf(d[1]) < 0.9f ? 1.0f : 0.0f,
+        0.0f,
+    };
+    float right[3] = {
+        d[1] * helper[2] - d[2] * helper[1],
+        d[2] * helper[0] - d[0] * helper[2],
+        d[0] * helper[1] - d[1] * helper[0],
+    };
+    const float inv = 1.0f / sqrtf(M_Dot3(right, right));
+    for (int32_t k = 0; k < 3; k++) {
+        out->right[k] = right[k] * inv;
+    }
+    const float *const r = out->right;
+    out->up[0] = d[1] * r[2] - d[2] * r[1];
+    out->up[1] = d[2] * r[0] - d[0] * r[2];
+    out->up[2] = d[0] * r[1] - d[1] * r[0];
+    out->strength = strength;
+    out->dist = dist;
+    out->fade = fade;
+}
 
-    M_SHADOW_LIGHT lights[M_SOFT_MAX_LIGHTS];
-    const bool high = M_ShadowType() == SHADOW_TYPE_SOFT_HIGH;
-    // As many lights as the mode allows.
-    const int32_t max = MIN(DC_Mode_GetShadowLights(), M_SOFT_MAX_LIGHTS);
-    int32_t count = M_GatherShadowLights(m_Casters, center, lights, max);
+// The lights nearest the casters, or a faint one straight down when none is
+// near (as the shadows have always done).
+static int32_t M_SoftLightsFor(
+    const M_CASTER *const casters, const float center[3],
+    M_SHADOW_LIGHT *const lights, const int32_t max)
+{
+    int32_t count = M_GatherShadowLights(casters, center, lights, max);
     if (count == 0) {
-        // No light near: a faint shadow straight down.
         lights[0] = (M_SHADOW_LIGHT) {
             .dir = { 0.0f, 1.0f, 0.0f },
             .weight = M_SOFT_NO_LIGHT_WEIGHT,
@@ -9512,101 +9690,145 @@ static void M_KeepSoftCasters(const float center[3])
         };
         count = 1;
     }
+    return count;
+}
+
+// Keeps this frame's soft casters (Lara's first, then up to
+// M_SOFT_MAX_ENEMIES enemies', each one's together) and picks the lights for
+// the next frame's shadow map.
+static void M_KeepSoftGroups(const bool lara_soft, const bool enemy_soft)
+{
+    M_SOFT_LIGHT old[M_SOFT_CELLS];
+    memcpy(old, m_Soft.lights, sizeof(old));
+    bool old_kept[M_SOFT_CELLS];
+    memcpy(old_kept, m_Soft.kept, sizeof(old_kept));
     const int32_t last_count = m_Soft.light_count;
-    m_Soft.light_count = count;
-    M_SetCelShade(lights[0].weight);
-    for (int32_t l = 0; l < count; l++) {
-        M_SOFT_LIGHT *const out = &m_Soft.lights[l];
-        float strength = M_SOFT_STRENGTH_MIN
-            + (M_SOFT_STRENGTH_MAX - M_SOFT_STRENGTH_MIN) * lights[l].weight;
-        float dist = M_PARALLEL_DIST;
-        float fade = M_SOFT_REACH;
-        if (high && lights[l].reach > 0.0f) {
-            dist = MAX(lights[l].dist, M_PERSP_MIN_DIST);
-            fade = M_Clamp(
-                lights[l].reach - lights[l].dist, M_PERSP_MIN_FADE,
-                M_SOFT_REACH);
+    memset(m_Soft.kept, 0, sizeof(m_Soft.kept));
+    m_Soft.caster_count = 0;
+    m_Soft.lara_count = 0;
+    m_Soft.light_count = 0;
+
+    // Lara's casters first, then each enemy's.
+    for (int32_t first = 0; first < m_CasterCount;) {
+        int32_t end = first + 1;
+        while (end < m_CasterCount
+               && m_Casters[end].group == m_Casters[first].group) {
+            end++;
         }
-        if (lights[l].fixed) {
-            // Eased off along the reach, the far end most.
-            fade = M_FIXED_FADE;
+        if (m_Casters[first].lara && lara_soft) {
+            memcpy(
+                &m_Soft.casters[m_Soft.caster_count], &m_Casters[first],
+                sizeof(M_CASTER) * (end - first));
+            m_Soft.caster_count += end - first;
         }
-        float d[3] = { lights[l].dir[0], lights[l].dir[1], lights[l].dir[2] };
-        if (l < last_count) {
-            // From the last frame's light in this place, part of the way.
-            for (int32_t k = 0; k < 3; k++) {
-                d[k] = out->dir[k] + (d[k] - out->dir[k]) * M_SOFT_EASE;
-            }
-            const float len_sq = M_Dot3(d, d);
-            if (len_sq > 1.0e-4f) {
-                const float inv = M_InvSqrt(len_sq);
-                for (int32_t k = 0; k < 3; k++) {
-                    d[k] *= inv;
-                }
-            } else {
-                memcpy(d, lights[l].dir, sizeof(d));
-            }
-            strength = out->strength + (strength - out->strength) * M_SOFT_EASE;
-            fade = out->fade + (fade - out->fade) * M_SOFT_EASE;
-            // Through its inverse: a parallel light is a million away.
-            dist = 1.0f
-                / (1.0f / out->dist
-                   + (1.0f / dist - 1.0f / out->dist) * M_SOFT_EASE);
-        } else {
-            // A new one comes in faint.
-            strength *= M_SOFT_EASE;
+        first = end;
+    }
+    m_Soft.lara_count = m_Soft.caster_count;
+    int32_t enemies = 0;
+    int32_t enemy_first[M_SOFT_MAX_ENEMIES];
+    int32_t enemy_count[M_SOFT_MAX_ENEMIES];
+    int32_t enemy_key[M_SOFT_MAX_ENEMIES];
+    for (int32_t first = 0; first < m_CasterCount;) {
+        int32_t end = first + 1;
+        while (end < m_CasterCount
+               && m_Casters[end].group == m_Casters[first].group) {
+            end++;
         }
-        memcpy(out->dir, d, sizeof(out->dir));
-        // Any direction across the light will do, as long as the map and the
-        // projection agree.
-        const float helper[3] = {
-            fabsf(d[1]) < 0.9f ? 0.0f : 1.0f, fabsf(d[1]) < 0.9f ? 1.0f : 0.0f,
-            0.0f,
-        };
-        float right[3] = {
-            d[1] * helper[2] - d[2] * helper[1],
-            d[2] * helper[0] - d[0] * helper[2],
-            d[0] * helper[1] - d[1] * helper[0],
-        };
-        const float inv = 1.0f / sqrtf(M_Dot3(right, right));
-        for (int32_t k = 0; k < 3; k++) {
-            out->right[k] = right[k] * inv;
+        if (!m_Casters[first].lara && enemy_soft && enemies < M_SOFT_MAX_ENEMIES
+            && m_Soft.caster_count + (end - first) <= M_MAX_CASTERS) {
+            enemy_first[enemies] = m_Soft.caster_count;
+            enemy_count[enemies] = end - first;
+            enemy_key[enemies] = m_Casters[first].key;
+            memcpy(
+                &m_Soft.casters[m_Soft.caster_count], &m_Casters[first],
+                sizeof(M_CASTER) * (end - first));
+            m_Soft.caster_count += end - first;
+            enemies++;
         }
-        const float *const r = out->right;
-        out->up[0] = d[1] * r[2] - d[2] * r[1];
-        out->up[1] = d[2] * r[0] - d[0] * r[2];
-        out->up[2] = d[0] * r[1] - d[1] * r[0];
-        out->strength = strength;
-        out->dist = dist;
-        out->fade = fade;
+        first = end;
     }
 
-    // The slices for self-shadowing, by the order of the casters' middles
-    // along the nearest light rather than by equal distances: lit from above,
-    // a third of Lara's height holds her head, shoulders and torso, which
-    // would then never shadow one another. The nearest part alone (the head,
-    // or a hand reaching above it) comes first, so that the torso takes its
-    // shadow; the next two fifths (the torso, the arms) after.
-    float along[M_MAX_CASTERS];
-    for (int32_t i = 0; i < m_CasterCount; i++) {
-        float middle[3];
-        M_CastersCenter(&m_Casters[i], 1, middle);
-        const float d[3] = {
-            middle[0] - center[0], middle[1] - center[1], middle[2] - center[2],
-        };
-        along[i] = M_Dot3(d, m_Soft.lights[0].dir);
-    }
-    for (int32_t i = 0; i < m_CasterCount; i++) {
-        int32_t rank = 0;
-        for (int32_t j = 0; j < m_CasterCount; j++) {
-            rank += along[j] < along[i] || (along[j] == along[i] && j < i);
+    const bool high = M_ShadowType() == SHADOW_TYPE_SOFT_HIGH;
+    if (m_Soft.lara_count > 0) {
+        const M_CASTER *const casters = m_Soft.casters;
+        const int32_t n = m_Soft.lara_count;
+        float center[3];
+        M_CastersCenter(casters, n, center);
+        // As many lights as the mode allows (two when enemies share the map).
+        M_SHADOW_LIGHT lights[M_SOFT_MAX_LIGHTS];
+        const int32_t max = MIN(
+            DC_Mode_GetShadowLights(),
+            enemy_soft ? M_SOFT_LARA_LIGHTS : M_SOFT_MAX_LIGHTS);
+        const int32_t count = M_SoftLightsFor(casters, center, lights, max);
+        m_Soft.light_count = count;
+        M_SetCelShade(lights[0].weight);
+        for (int32_t l = 0; l < count; l++) {
+            M_SOFT_LIGHT *const out = &m_Soft.lights[l];
+            M_SetupSoftLight(
+                out, &lights[l], high, l < last_count ? &old[l] : nullptr);
+            out->first = 0;
+            out->count = n;
+            out->key = -1;
+            memcpy(out->center, center, sizeof(out->center));
+            m_Soft.kept[l] = true;
         }
-        m_Soft.slice[i] = rank == 0 ? 0 : rank * 5 < 2 * m_CasterCount ? 1 : 2;
+
+        // The slices for self-shadowing, by the order of the casters' middles
+        // along the nearest light rather than by equal distances: lit from
+        // above, a third of Lara's height holds her head, shoulders and torso,
+        // which would then never shadow one another. The nearest part alone
+        // (the head, or a hand reaching above it) comes first, so that the
+        // torso takes its shadow; the next two fifths (the torso, the arms)
+        // after.
+        float along[M_MAX_CASTERS];
+        for (int32_t i = 0; i < n; i++) {
+            float middle[3];
+            M_CastersCenter(&casters[i], 1, middle);
+            const float d[3] = {
+                middle[0] - center[0], middle[1] - center[1],
+                middle[2] - center[2],
+            };
+            along[i] = M_Dot3(d, m_Soft.lights[0].dir);
+        }
+        for (int32_t i = 0; i < n; i++) {
+            int32_t rank = 0;
+            for (int32_t j = 0; j < n; j++) {
+                rank += along[j] < along[i] || (along[j] == along[i] && j < i);
+            }
+            m_Soft.slice[i] = rank == 0 ? 0 : rank * 5 < 2 * n ? 1 : 2;
+        }
+    }
+
+    // Each enemy: its nearest light, one cell.
+    for (int32_t e = 0; e < enemies; e++) {
+        const int32_t c = M_SOFT_MAX_LIGHTS + e;
+        const M_CASTER *const casters = &m_Soft.casters[enemy_first[e]];
+        float center[3];
+        M_CastersCenter(casters, enemy_count[e], center);
+        M_SHADOW_LIGHT light;
+        M_SoftLightsFor(casters, center, &light, 1);
+        // The cell the same enemy had the last frame, wherever it was, eases.
+        const M_SOFT_LIGHT *prev = nullptr;
+        for (int32_t o = M_SOFT_MAX_LIGHTS; o < M_SOFT_CELLS; o++) {
+            if (old_kept[o] && old[o].key == enemy_key[e]) {
+                prev = &old[o];
+            }
+        }
+        M_SOFT_LIGHT *const out = &m_Soft.lights[c];
+        M_SetupSoftLight(out, &light, high, prev);
+        out->first = enemy_first[e];
+        out->count = enemy_count[e];
+        out->key = enemy_key[e];
+        memcpy(out->center, center, sizeof(out->center));
+        m_Soft.kept[c] = true;
     }
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     static int32_t frame = 0;
     if (++frame % 120 == 0) {
         m_BumpFaces = 0;
+        LOG_INFO(
+            "[soft] lara lights %d, enemies %d, faces %d",
+            (int)m_Soft.light_count, (int)enemies, (int)m_SoftFaces);
     }
     m_SoftFaces = 0;
 #endif
@@ -9629,11 +9851,11 @@ M_HOT bool M_SilFront(
 
 // A corner of a silhouette in the cell whose left edge is at left.
 M_HOT DC_PVR_VERTEX M_SilVertex(
-    const float left, const OUTPUT_MESH_INDEX i, const float z)
+    const float left, const float top, const OUTPUT_MESH_INDEX i, const float z)
 {
     return (DC_PVR_VERTEX) {
         .x = left + m_SoftXY[i][0],
-        .y = m_SoftXY[i][1],
+        .y = top + m_SoftXY[i][1],
         .z = z,
         .argb = 0xFF000000,
     };
@@ -9643,12 +9865,14 @@ static void M_DrawSilhouettes(const int32_t l)
 {
     const M_SOFT_LIGHT *const light = &m_Soft.lights[l];
     const bool self = M_SelfShadowOn();
-    const float size = DC_PVR_SHADOW_MAP_SIZE;
-    const float *const c = m_Soft.center;
+    float cell_x, cell_y, size;
+    M_SoftCellRect(l, &cell_x, &cell_y, &size);
+    const float top = cell_y;
+    const float *const c = light->center;
     // In front of the white (the PowerVR keeps the nearest, not the last).
     DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_NO_TEXTURE, true);
     const float z_near = DC_PVR_Depth2D(0.9f);
-    for (int32_t i = 0; i < m_Soft.caster_count; i++) {
+    for (int32_t i = light->first; i < light->first + light->count; i++) {
         const M_CASTER *const caster = &m_Soft.casters[i];
         const M_BINDING *const bind = caster->bind;
         if (bind->vertex_count > M_SOFT_MAX_VERTICES) {
@@ -9657,10 +9881,10 @@ static void M_DrawSilhouettes(const int32_t l)
         // The cells this caster shows in, by their left edge.
         float lefts[M_SOFT_SLICES];
         int32_t cells = 0;
-        lefts[cells++] = M_SOFT_LIGHT_SLOT(l) * size;
+        lefts[cells++] = cell_x;
         for (int32_t s = m_Soft.slice[i] + 1;
              self && l == 0 && s < M_SOFT_SLICES; s++) {
-            lefts[cells++] = M_SOFT_SELF_SLOT(s) * size;
+            lefts[cells++] = M_SOFT_SELF_SLOT(s) * DC_PVR_SHADOW_MAP_SIZE;
         }
 
         // From the caster's own space straight to the cell's x and y, as
@@ -9737,10 +9961,10 @@ static void M_DrawSilhouettes(const int32_t l)
             for (int32_t k = 0; k < cells; k++) {
                 if (front0 && front1) {
                     const DC_PVR_VERTEX v[4] = {
-                        M_SilVertex(lefts[k], t[0], z_near),
-                        M_SilVertex(lefts[k], t[1], z_near),
-                        M_SilVertex(lefts[k], t[2], z_near),
-                        M_SilVertex(lefts[k], t[5], z_near),
+                        M_SilVertex(lefts[k], top, t[0], z_near),
+                        M_SilVertex(lefts[k], top, t[1], z_near),
+                        M_SilVertex(lefts[k], top, t[2], z_near),
+                        M_SilVertex(lefts[k], top, t[5], z_near),
                     };
                     DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
                     continue;
@@ -9751,9 +9975,9 @@ static void M_DrawSilhouettes(const int32_t l)
                     }
                     const OUTPUT_MESH_INDEX *const f = &t[h * 3];
                     const DC_PVR_VERTEX v[3] = {
-                        M_SilVertex(lefts[k], f[0], z_near),
-                        M_SilVertex(lefts[k], f[1], z_near),
-                        M_SilVertex(lefts[k], f[2], z_near),
+                        M_SilVertex(lefts[k], top, f[0], z_near),
+                        M_SilVertex(lefts[k], top, f[1], z_near),
+                        M_SilVertex(lefts[k], top, f[2], z_near),
                     };
                     DC_PVR_Triangle(&v[0], &v[1], &v[2]);
                 }
@@ -9815,7 +10039,9 @@ static void M_UpdateBumpLoad(void)
 static struct {
     bool valid;
     int32_t light_count;
-    M_SOFT_LIGHT lights[M_SOFT_MAX_LIGHTS];
+    int32_t lara_count;
+    M_SOFT_LIGHT lights[M_SOFT_CELLS];
+    bool kept[M_SOFT_CELLS];
     int32_t self_count;
     int8_t slice[M_MAX_CASTERS];
 } m_SoftDrawn = {};
@@ -9823,10 +10049,14 @@ static struct {
 void DC_Shadow_RenderMaps(void)
 {
     M_UpdateBumpLoad();
-    const int32_t lights = m_Soft.caster_count > 0 ? m_Soft.light_count : 0;
+    int32_t cells = 0;
+    for (int32_t c = 0; c < M_SOFT_CELLS; c++) {
+        cells += m_Soft.caster_count > 0 && m_Soft.kept[c];
+        m_Soft.cell_on[c] = false;
+    }
     m_Soft.map_count = 0;
     m_Soft.self = false;
-    if (lights == 0) {
+    if (cells == 0) {
         m_Soft.caster_count = 0;
         m_SoftDrawn.valid = false;
         return;
@@ -9835,9 +10065,12 @@ void DC_Shadow_RenderMaps(void)
         && g_DC_FrameCount % M_SOFT_MAP_EVERY != 0) {
         // The last map, with the lights and slices it was drawn for.
         m_Soft.light_count = m_SoftDrawn.light_count;
+        m_Soft.lara_count = m_SoftDrawn.lara_count;
         memcpy(m_Soft.lights, m_SoftDrawn.lights, sizeof(m_Soft.lights));
+        memcpy(m_Soft.kept, m_SoftDrawn.kept, sizeof(m_Soft.kept));
         memcpy(m_Soft.slice, m_SoftDrawn.slice, sizeof(m_Soft.slice));
-        m_Soft.map_count = m_SoftDrawn.light_count;
+        memcpy(m_Soft.cell_on, m_Soft.kept, sizeof(m_Soft.cell_on));
+        m_Soft.map_count = cells;
         m_Soft.self = M_SelfShadowOn();
         m_Soft.self_count = m_SoftDrawn.self_count;
         m_Soft.caster_count = 0;
@@ -9861,18 +10094,23 @@ void DC_Shadow_RenderMaps(void)
     };
     DC_PVR_Quad(&lit[0], &lit[1], &lit[2], &lit[3]);
     DC_PROBE_START(probe_sil); // TEMP
-    for (int32_t l = 0; l < lights; l++) {
-        M_DrawSilhouettes(l);
+    for (int32_t c = 0; c < M_SOFT_CELLS; c++) {
+        if (m_Soft.kept[c]) {
+            M_DrawSilhouettes(c);
+        }
     }
     DC_PROBE_STOP(DC_PROBE_M_SIL, probe_sil); // TEMP
     DC_PROBE(DC_PROBE_M_END, DC_PVR_EndFrame()); // TEMP
-    m_Soft.map_count = lights;
+    memcpy(m_Soft.cell_on, m_Soft.kept, sizeof(m_Soft.cell_on));
+    m_Soft.map_count = cells;
     m_Soft.self = M_SelfShadowOn();
-    m_Soft.self_count = m_Soft.caster_count;
+    m_Soft.self_count = m_Soft.lara_count;
     m_Soft.caster_count = 0;
     m_SoftDrawn.valid = true;
-    m_SoftDrawn.light_count = lights;
+    m_SoftDrawn.light_count = m_Soft.light_count;
+    m_SoftDrawn.lara_count = m_Soft.lara_count;
     memcpy(m_SoftDrawn.lights, m_Soft.lights, sizeof(m_SoftDrawn.lights));
+    memcpy(m_SoftDrawn.kept, m_Soft.kept, sizeof(m_SoftDrawn.kept));
     memcpy(m_SoftDrawn.slice, m_Soft.slice, sizeof(m_SoftDrawn.slice));
     m_SoftDrawn.self_count = m_Soft.self_count;
 }
@@ -10260,15 +10498,18 @@ void DC_Shadow_DrawVolumes(void)
 {
     // What the objects took this frame is spent.
     m_ObjectCasters = 0;
+    m_ObjectSoftCasters = 0;
+    m_LaraCasterCount = 0;
     if (m_CasterCount == 0) {
         return;
     }
-    if (M_IS_SOFT(M_ShadowType())) {
-        float center[3];
-        M_CastersCenter(m_Casters, m_CasterCount, center);
-        M_KeepSoftCasters(center);
-        m_CasterCount = 0;
-        return;
+    // Each object's casters go as soft shadows or as volumes: Lara's by her
+    // shadow type, an enemy's by rendering.dc_object_shadows.
+    const bool lara_soft = M_IS_SOFT(M_ShadowType());
+    const bool enemy_soft =
+        g_Config.rendering.dc_object_shadows == DC_OBJECT_SHADOWS_SOFT;
+    if (lara_soft || enemy_soft) {
+        M_KeepSoftGroups(lara_soft, enemy_soft);
     }
     // Object by object: each one's casters lie together.
     int32_t volumes = 0;
@@ -10280,13 +10521,18 @@ void DC_Shadow_DrawVolumes(void)
                && m_Casters[end].group == m_Casters[first].group) {
             end++;
         }
+        if (m_Casters[first].lara ? lara_soft : enemy_soft) {
+            first = end;
+            continue;
+        }
         float group_dir[3];
         volumes +=
             M_DrawGroupVolumes(
                 &m_Casters[first], end - first, group_dir, &strength);
         if (m_Casters[first].lara) {
             memcpy(dir, group_dir, sizeof(dir));
-            if (g_Config.rendering.dc_object_shadows) {
+            if (g_Config.rendering.dc_object_shadows
+                != DC_OBJECT_SHADOWS_ORIGINAL) {
                 volumes += M_DrawRoomVolumes(&m_Casters[first], end - first);
             }
         }

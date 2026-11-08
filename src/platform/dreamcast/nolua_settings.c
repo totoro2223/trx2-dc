@@ -79,6 +79,12 @@ static const char *M_FpsName(const DC_FPS fps)
     return fps >= 0 && fps < DC_FPS_NUMBER_OF ? names[fps] : "";
 }
 
+static const char *M_ObjectShadowsName(const DC_OBJECT_SHADOWS type)
+{
+    static const char *const names[] = { "Original", "Volume", "Soft" };
+    return type >= 0 && type < DC_OBJECT_SHADOWS_NUMBER_OF ? names[type] : "";
+}
+
 static const char *M_ShadowName(const SHADOW_TYPE type)
 {
     switch (type) {
@@ -161,7 +167,7 @@ static const char *M_Value(const M_ROW row)
     case M_ROW_SHADOW:
         return M_ShadowName(g_Config.visuals.shadow_type);
     case M_ROW_OBJECT_SHADOWS:
-        return M_OnOff(g_Config.rendering.dc_object_shadows);
+        return M_ObjectShadowsName(g_Config.rendering.dc_object_shadows);
     case M_ROW_PICKUPS:
         return M_OnOff(g_Config.visuals.enable_3d_pickups);
     case M_ROW_BUMP:
@@ -234,7 +240,9 @@ static void M_Step(const M_ROW row, const int32_t rate)
         CONFIG_CYCLE(g_Config.visuals.shadow_type, rate, SHADOW_TYPE_NUMBER_OF);
         break;
     case M_ROW_OBJECT_SHADOWS:
-        CONFIG_TOGGLE(g_Config.rendering.dc_object_shadows);
+        CONFIG_CYCLE(
+            g_Config.rendering.dc_object_shadows, rate,
+            DC_OBJECT_SHADOWS_NUMBER_OF);
         break;
     case M_ROW_PICKUPS:
         CONFIG_TOGGLE(g_Config.visuals.enable_3d_pickups);

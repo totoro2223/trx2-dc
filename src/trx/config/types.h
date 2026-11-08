@@ -306,7 +306,7 @@ typedef struct {
         bool dc_cel_shading;
         bool dc_bump_mapping;
         bool dc_room_cel;
-        bool dc_object_shadows;
+        DC_OBJECT_SHADOWS dc_object_shadows;
         bool dc_memory_hud;
         bool dc_load_cache;
         bool dc_original_ai;

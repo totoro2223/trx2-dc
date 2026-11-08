@@ -136,7 +136,11 @@ void DC_Mode_ApplyDefaults(void)
     }
     if (g_DC_TestObjectShadows >= 0) {
         CONFIG_SET(
-            g_Config.rendering.dc_object_shadows, g_DC_TestObjectShadows > 0);
+            g_Config.rendering.dc_object_shadows,
+            (DC_OBJECT_SHADOWS)(g_DC_TestObjectShadows
+                                        < DC_OBJECT_SHADOWS_NUMBER_OF
+                                    ? g_DC_TestObjectShadows
+                                    : 0));
     }
 }
 

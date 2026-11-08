@@ -145,7 +145,12 @@ void DC_Settings_Load(const char *const saves_dir)
     CONFIG_SET(g_Config.rendering.dc_bump_mapping, (bool)(v[8] != 0));
     CONFIG_SET(g_Config.rendering.dc_room_cel, (bool)(v[9] != 0));
     CONFIG_SET(g_Config.visuals.enable_3d_pickups, (bool)(v[10] != 0));
-    CONFIG_SET(g_Config.rendering.dc_object_shadows, (bool)(v[11] != 0));
+    // (Saved as on or off once: 1 is the volume.)
+    CONFIG_SET(
+        g_Config.rendering.dc_object_shadows,
+        (DC_OBJECT_SHADOWS)(v[11] >= 0 && v[11] < DC_OBJECT_SHADOWS_NUMBER_OF
+                                ? v[11]
+                                : 0));
     CONFIG_SET(g_Config.rendering.dc_memory_hud, (bool)(v[12] != 0));
     CONFIG_SET(g_Config.rendering.dc_load_cache, (bool)(v[13] != 0));
     CONFIG_SET(g_Config.rendering.dc_original_ai, (bool)(v[14] != 0));
@@ -153,6 +158,18 @@ void DC_Settings_Load(const char *const saves_dir)
     if (g_DC_TestOriginalAI >= 0) {
         CONFIG_SET(
             g_Config.rendering.dc_original_ai, (bool)(g_DC_TestOriginalAI != 0));
+    }
+    // A test disc's shadows win over what the card holds.
+    if (g_DC_TestShadow >= 0 && g_DC_TestShadow < SHADOW_TYPE_NUMBER_OF) {
+        CONFIG_SET(g_Config.visuals.shadow_type, (SHADOW_TYPE)g_DC_TestShadow);
+    }
+    if (g_DC_TestObjectShadows >= 0) {
+        CONFIG_SET(
+            g_Config.rendering.dc_object_shadows,
+            (DC_OBJECT_SHADOWS)(g_DC_TestObjectShadows
+                                        < DC_OBJECT_SHADOWS_NUMBER_OF
+                                    ? g_DC_TestObjectShadows
+                                    : 0));
     }
     if (g_DC_TestFps >= 0) {
         CONFIG_SET(
@@ -168,7 +185,7 @@ void DC_Settings_Save(void)
     // A test disc that forces the mode or the shadows is not the player
     // choosing: those would stay on the card.
     if (m_Path[0] == '\0' || g_DC_TestMode >= 0 || g_DC_TestShadow >= 0
-        || g_DC_TestCel >= 0 || g_DC_TestOriginalAI >= 0 || g_DC_TestFps >= 0 || g_DC_TestBump >= 0) {
+        || g_DC_TestCel >= 0 || g_DC_TestObjectShadows >= 0 || g_DC_TestOriginalAI >= 0 || g_DC_TestFps >= 0 || g_DC_TestBump >= 0) {
         return;
     }
     char now[256];

@@ -207,6 +207,15 @@ typedef enum {
     DC_FPS_NUMBER_OF,
 } DC_FPS;
 
+// Dreamcast: what an enemy's shadow is. The game's round one, a shadow volume
+// of its body, or a soft shadow of its body (as Lara's, on a smaller map).
+typedef enum {
+    DC_OBJECT_SHADOWS_ORIGINAL,
+    DC_OBJECT_SHADOWS_VOLUME,
+    DC_OBJECT_SHADOWS_SOFT,
+    DC_OBJECT_SHADOWS_NUMBER_OF,
+} DC_OBJECT_SHADOWS;
+
 typedef enum {
     BLOOD_EFFECTS_DISABLED,
     BLOOD_EFFECTS_PINK,

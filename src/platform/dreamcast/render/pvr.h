@@ -67,7 +67,10 @@ typedef struct {
 // The texture holding them: sides are powers of two, the cells fill its
 // lower left.
 #define DC_PVR_SHADOW_MAP_TEX_W 1024
-#define DC_PVR_SHADOW_MAP_TEX_H 128
+#define DC_PVR_SHADOW_MAP_TEX_H 256
+// (The PowerVR renders only the tiles of the screen, 640 x 480, so the cells
+// all lie in the texture's left 640 texels and top 480: Lara's in the first
+// 128 rows, the enemies' below them.)
 // The Lua bytecode of the engine (TRXLUA.BIN on the disc), kept in video
 // memory for good, or in main memory if that has no room. Brings the
 // PowerVR up if it is not. Null if the file cannot be read.
