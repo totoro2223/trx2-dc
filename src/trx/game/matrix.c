@@ -6,8 +6,11 @@
 #include <trx/game/const.h>
 #include <trx/game/pathing/lot.h>
 
+#include <trx/core/log.h>
+
 #include <float.h>
 #include <math.h>
+#include <string.h>
 
 #if defined(__DREAMCAST__)
     #include <dc/matrix.h>
@@ -569,7 +572,12 @@ static void M_ScaleZ(MATRIX *const m, const int32_t angle)
 // multiplies (mul.l) in place of the 64-bit ones the int64 entries invite.
 #define M_MUL32(a_, b_) ((uint32_t)(int32_t)(a_) * (uint32_t)(int32_t)(b_))
 
-static void M_RotXSC(MATRIX *const m, const int32_t sx, const int32_t cx)
+static void M_RotXSC(MATRIX *m, int32_t sx, int32_t cx);
+static void M_RotYSC(MATRIX *m, int32_t sy, int32_t cy);
+static void M_RotZSC(MATRIX *m, int32_t sz, int32_t cz);
+static void M_TranslateRel(MATRIX *m, XYZ_32 offset);
+
+static void M_RotXSC_C(MATRIX *const m, const int32_t sx, const int32_t cx)
 {
 
     int32_t r0, r1;
@@ -596,7 +604,7 @@ static void M_RotX(MATRIX *const m, const int16_t angle)
     }
 }
 
-static void M_RotYSC(MATRIX *const m, const int32_t sy, const int32_t cy)
+static void M_RotYSC_C(MATRIX *const m, const int32_t sy, const int32_t cy)
 {
 
     int32_t r0, r1;
@@ -623,7 +631,7 @@ static void M_RotY(MATRIX *const m, const int16_t angle)
     }
 }
 
-static void M_RotZSC(MATRIX *const m, const int32_t sz, const int32_t cz)
+static void M_RotZSC_C(MATRIX *const m, const int32_t sz, const int32_t cz)
 {
 
     int32_t r0, r1;
@@ -649,6 +657,95 @@ static void M_RotZ(MATRIX *const m, const int16_t angle)
         M_RotZSC(m, Math_Sin(angle), Math_Cos(angle));
     }
 }
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S): the three turns and the translation of a matrix.
+// TRX_DC_ASMOFF bit 67108864 turns them off; a DC_EMIT_VERIFY build runs the C
+// on a copy and compares the twelve entries.
+extern uint32_t g_DC_AsmOff;
+extern void dc_rot_x(MATRIX *m, int32_t s, int32_t c);
+extern void dc_rot_y(MATRIX *m, int32_t s, int32_t c);
+extern void dc_rot_z(MATRIX *m, int32_t s, int32_t c);
+extern void dc_translate_rel(MATRIX *m, int32_t x, int32_t y, int32_t z);
+
+#if defined(DC_EMIT_VERIFY)
+static uint32_t m_MxRuns;
+static uint32_t m_MxBad;
+static void M_MxCheck(
+    const MATRIX *const a, const MATRIX *const b, const MATRIX *const in,
+    const int32_t s, const int32_t c)
+{
+    if (memcmp(a, b, sizeof(MATRIX)) != 0) {
+        if (m_MxBad++ < 6) {
+            const int64_t *const pi = &in->_00;
+            const int64_t *const pa = &a->_00;
+            const int64_t *const pb = &b->_00;
+            for (int32_t k = 0; k < 12; k++) {
+                if (pa[k] != pb[k]) {
+                    LOG_WARNING(
+                        "[matrix-verify] s %d c %d e%d in %lld c %lld asm %lld",
+                        (int)s, (int)c, (int)k, (long long)pi[k],
+                        (long long)pa[k], (long long)pb[k]);
+                }
+            }
+        }
+        LOG_WARNING("[matrix-verify] MISMATCH");
+    }
+    if (++m_MxRuns % 100000 == 0) {
+        LOG_WARNING(
+            "[matrix-verify] %u runs, %u bad", (unsigned)m_MxRuns,
+            (unsigned)m_MxBad);
+    }
+}
+#endif
+
+typedef void (*M_ROT_FN)(MATRIX *, int32_t, int32_t);
+
+static inline void M_RotRun(
+    MATRIX *const m, const int32_t s, const int32_t c, const M_ROT_FN c_fn,
+    const M_ROT_FN asm_fn)
+{
+    if ((g_DC_AsmOff & 67108864) != 0) {
+        c_fn(m, s, c);
+        return;
+    }
+#if defined(DC_EMIT_VERIFY)
+    const MATRIX in = *m;
+    MATRIX copy = *m;
+    c_fn(&copy, s, c);
+    asm_fn(m, s, c);
+    M_MxCheck(&copy, m, &in, s, c);
+#else
+    asm_fn(m, s, c);
+#endif
+}
+
+static void M_RotXSC(MATRIX *const m, const int32_t s, const int32_t c)
+{
+    M_RotRun(m, s, c, M_RotXSC_C, dc_rot_x);
+}
+static void M_RotYSC(MATRIX *const m, const int32_t s, const int32_t c)
+{
+    M_RotRun(m, s, c, M_RotYSC_C, dc_rot_y);
+}
+static void M_RotZSC(MATRIX *const m, const int32_t s, const int32_t c)
+{
+    M_RotRun(m, s, c, M_RotZSC_C, dc_rot_z);
+}
+#else
+static void M_RotXSC(MATRIX *const m, const int32_t s, const int32_t c)
+{
+    M_RotXSC_C(m, s, c);
+}
+static void M_RotYSC(MATRIX *const m, const int32_t s, const int32_t c)
+{
+    M_RotYSC_C(m, s, c);
+}
+static void M_RotZSC(MATRIX *const m, const int32_t s, const int32_t c)
+{
+    M_RotZSC_C(m, s, c);
+}
+#endif
 
 // Swaps a rotation for the one that undoes it. A rotation matrix's inverse is
 // its transpose, and these carry no scale.
@@ -820,7 +917,7 @@ static XYZ_16 M_ToRot16(const MATRIX *const m)
 // -> 64 multiply (dmuls.l on the SH-4), not three 32-bit ones and their carries.
 #define M_MUL64(a_, b_) ((int64_t)(int32_t)(a_) * (int32_t)(b_))
 
-static void M_TranslateRel(MATRIX *const m, const XYZ_32 offset)
+static void M_TranslateRel_C(MATRIX *const m, const XYZ_32 offset)
 {
     m->_03 += M_MUL64(offset.x, m->_00) + M_MUL64(offset.y, m->_01)
         + M_MUL64(offset.z, m->_02);
@@ -828,6 +925,27 @@ static void M_TranslateRel(MATRIX *const m, const XYZ_32 offset)
         + M_MUL64(offset.z, m->_12);
     m->_23 += M_MUL64(offset.x, m->_20) + M_MUL64(offset.y, m->_21)
         + M_MUL64(offset.z, m->_22);
+}
+
+static void M_TranslateRel(MATRIX *const m, const XYZ_32 offset)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff & 67108864) == 0) {
+    #if defined(DC_EMIT_VERIFY)
+        MATRIX copy = *m;
+        M_TranslateRel_C(&copy, offset);
+        dc_translate_rel(m, offset.x, offset.y, offset.z);
+        if (memcmp(&copy, m, sizeof(MATRIX)) != 0) {
+            m_MxBad++;
+            LOG_WARNING("[matrix-verify] MISMATCH translate");
+        }
+    #else
+        dc_translate_rel(m, offset.x, offset.y, offset.z);
+    #endif
+        return;
+    }
+#endif
+    M_TranslateRel_C(m, offset);
 }
 
 static void M_TranslateSet(MATRIX *const m, const XYZ_32 pos)

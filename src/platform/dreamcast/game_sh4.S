@@ -478,3 +478,93 @@ ia_out:
     .long   _g_DC_ItemOff
 .Limove:
     .long   _dc_item_move
+
+! void dc_rot_x/y/z(MATRIX *m, int32_t s, int32_t c);   matrix.c M_RotXSC etc.
+!
+! A turn of the first three columns of a MATRIX (twelve int64, rows of four).
+! For the pair (a, b) of each row: a' = (a*c + b*s) >> 14, b' = (b*c - a*s) >> 14,
+! with 32-bit products and the entries taken as int32, as the C does. Y is the
+! same with s negated. The result goes back sign-extended to int64.
+    .macro ROTDEF name, oa, ob, neg
+    .global _\name
+    .align 2
+_\name:
+    .if \neg
+    neg     r5,r5
+    .endif
+    mov     #3,r3
+1:  mov.l   @(\oa,r4),r0
+    mov.l   @(\ob,r4),r1
+    mul.l   r0,r6
+    sts     macl,r2                 ! a*c
+    mul.l   r1,r5
+    sts     macl,r7                 ! b*s
+    add     r7,r2                   ! a'
+    mul.l   r1,r6
+    sts     macl,r1                 ! b*c
+    mul.l   r0,r5
+    sts     macl,r7                 ! a*s
+    sub     r7,r1                   ! b'
+    mov     #-14,r0
+    shad    r0,r2                   ! >> W2V_SHIFT (14), arithmetic
+    shad    r0,r1
+    mov.l   r2,@(\oa,r4)
+    mov     r2,r0
+    shll    r0
+    subc    r0,r0                   ! the sign, all ones or zero
+    mov.l   r0,@(\oa+4,r4)
+    mov.l   r1,@(\ob,r4)
+    mov     r1,r0
+    shll    r0
+    subc    r0,r0
+    mov.l   r0,@(\ob+4,r4)
+    add     #32,r4
+    dt      r3
+    bf      1b
+    rts
+    nop
+    .endm
+    ROTDEF  dc_rot_x, 8, 16, 0
+    ROTDEF  dc_rot_y, 0, 16, 1
+    ROTDEF  dc_rot_z, 0, 8, 0
+
+! void dc_translate_rel(MATRIX *m, int32_t x, int32_t y, int32_t z);
+!
+! m[r][3] += x*m[r][0] + y*m[r][1] + z*m[r][2] for the three rows, each product
+! 32 x 32 -> 64 (the entries as int32), as M_TranslateRel does.
+    .macro TROW
+    mov.l   @(0,r4),r0
+    dmuls.l r5,r0
+    sts     macl,r1
+    sts     mach,r2
+    mov.l   @(8,r4),r0
+    dmuls.l r6,r0
+    sts     macl,r3
+    clrt
+    addc    r3,r1
+    sts     mach,r3
+    addc    r3,r2
+    mov.l   @(16,r4),r0
+    dmuls.l r7,r0
+    sts     macl,r3
+    clrt
+    addc    r3,r1
+    sts     mach,r3
+    addc    r3,r2
+    mov.l   @(24,r4),r0
+    mov.l   @(28,r4),r3
+    clrt
+    addc    r1,r0
+    addc    r2,r3
+    mov.l   r0,@(24,r4)
+    mov.l   r3,@(28,r4)
+    add     #32,r4
+    .endm
+    .global _dc_translate_rel
+    .align 2
+_dc_translate_rel:
+    TROW
+    TROW
+    TROW
+    rts
+    nop
