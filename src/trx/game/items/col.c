@@ -1,7 +1,10 @@
 #include <trx/game/items/col.h>
 
 #include <trx/config.h>
+#include <trx/core/log.h>
 #include <trx/core/utils.h>
+#include <string.h>
+
 #include <trx/game/objects.h>
 #include <trx/game/rooms.h>
 
@@ -86,6 +89,26 @@ bool Item_TestStatic3DBoundsCollide(
     return Collide_TestBoundsCollide(&src, &dst, radius);
 }
 
+static void M_BoundsLerpC(
+    BOUNDS_16 *const result, const BOUNDS_16 *const b1,
+    const BOUNDS_16 *const b2, const int32_t frac, const int32_t rate)
+{
+#define CALC(target, p1, p2, prop)                                                 target->prop = (p1)->prop + ((((p2)->prop - (p1)->prop) * frac) / rate);
+    CALC(result, b1, b2, min.x);
+    CALC(result, b1, b2, max.x);
+    CALC(result, b1, b2, min.y);
+    CALC(result, b1, b2, max.y);
+    CALC(result, b1, b2, min.z);
+    CALC(result, b1, b2, max.z);
+#undef CALC
+}
+
+#if defined(__DREAMCAST__)
+extern uint32_t g_DC_AsmOff;
+extern void dc_bounds_lerp(
+    int16_t *out, const int16_t *b1, const int16_t *b2, const int32_t *p);
+#endif
+
 const BOUNDS_16 *Item_GetBoundsAccurate(const ITEM *const item)
 {
     int32_t rate;
@@ -99,16 +122,38 @@ const BOUNDS_16 *Item_GetBoundsAccurate(const ITEM *const item)
         return &frames[0]->bounds;
     }
 
-#define CALC(target, b1, b2, prop)                                             \
-    target->prop = (b1)->prop + ((((b2)->prop - (b1)->prop) * frac) / rate);
     BOUNDS_16 *const result = &m_InterpolatedBounds;
-    CALC(result, &frames[0]->bounds, &frames[1]->bounds, min.x);
-    CALC(result, &frames[0]->bounds, &frames[1]->bounds, max.x);
-    CALC(result, &frames[0]->bounds, &frames[1]->bounds, min.y);
-    CALC(result, &frames[0]->bounds, &frames[1]->bounds, max.y);
-    CALC(result, &frames[0]->bounds, &frames[1]->bounds, min.z);
-    CALC(result, &frames[0]->bounds, &frames[1]->bounds, max.z);
-#undef CALC
+#if defined(__DREAMCAST__)
+    // In assembly (game_sh4.S, dc_bounds_lerp): the six divisions by the
+    // reciprocal. ASMOFF bit 2147483648 turns it off.
+    if ((g_DC_AsmOff & 2147483648u) == 0 && rate > 0) {
+        int32_t p[3] = { frac, rate, (int32_t)(0xFFFFFFFFu / (uint32_t)rate) };
+    #if defined(DC_EMIT_VERIFY)
+        BOUNDS_16 ref;
+        M_BoundsLerpC(&ref, &frames[0]->bounds, &frames[1]->bounds, frac, rate);
+        dc_bounds_lerp(
+            (int16_t *)result, (const int16_t *)&frames[0]->bounds,
+            (const int16_t *)&frames[1]->bounds, p);
+        static uint32_t runs;
+        static uint32_t bad;
+        if (memcmp(&ref, result, sizeof(BOUNDS_16)) != 0) {
+            bad++;
+            LOG_WARNING("[bounds-verify] MISMATCH");
+        }
+        if (runs++ == 0 || runs % 5000 == 0) {
+            LOG_WARNING(
+                "[bounds-verify] %u runs, %u bad", (unsigned)runs,
+                (unsigned)bad);
+        }
+    #else
+        dc_bounds_lerp(
+            (int16_t *)result, (const int16_t *)&frames[0]->bounds,
+            (const int16_t *)&frames[1]->bounds, p);
+    #endif
+        return result;
+    }
+#endif
+    M_BoundsLerpC(result, &frames[0]->bounds, &frames[1]->bounds, frac, rate);
 
     return result;
 }

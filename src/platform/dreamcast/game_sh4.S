@@ -1001,3 +1001,59 @@ rf_row:
     .long   0x47000000
 .Lrf_m32768:
     .long   -32768
+
+! void dc_bounds_lerp(int16_t *out, const int16_t *b1, const int16_t *b2, const int32_t *p);
+!
+! Item_GetBoundsAccurate (items/col.c): each of the six int16 of a BOUNDS_16 is
+! b1 + (b2 - b1) * frac / rate, the division truncating toward zero, by the
+! reciprocal (p: frac, rate > 0, 2^32-1 / rate) with the fix-up that makes it exact.
+    .global _dc_bounds_lerp
+    .align 2
+_dc_bounds_lerp:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   @(0,r7),r8              ! frac
+    mov.l   @(4,r7),r9              ! rate
+    mov.l   @(8,r7),r10             ! 2^32-1 / rate
+    mov     #6,r11
+bl2_loop:
+    mov.w   @r5+,r12                ! a
+    mov.w   @r6+,r1
+    sub     r12,r1                  ! d
+    mul.l   r1,r8
+    sts     macl,r2                 ! n = d * frac
+    mov     r2,r1
+    cmp/pz  r1
+    bt      bl2_pos
+    neg     r1,r1                   ! u = |n|
+bl2_pos:
+    dmulu.l r1,r10
+    sts     mach,r3                 ! q
+    mul.l   r3,r9
+    sts     macl,r7
+    sub     r7,r1                   ! r = u - q * rate
+bl2_fix:
+    cmp/hs  r9,r1
+    bf      bl2_done
+    add     #1,r3
+    bra     bl2_fix
+    sub     r9,r1
+bl2_done:
+    cmp/pz  r2
+    bt      bl2_add
+    neg     r3,r3
+bl2_add:
+    add     r3,r12
+    mov.w   r12,@r4
+    add     #2,r4
+    dt      r11
+    bf      bl2_loop
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
