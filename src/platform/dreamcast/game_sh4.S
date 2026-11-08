@@ -3190,3 +3190,61 @@ sf_ret:
     .long   1023
 .Lsf_wall:
     .long   1024
+
+! int32_t dc_distance(const XYZ_32 *a, const XYZ_32 *b);   core/math/geom.c XYZ_32_GetDistance
+!
+! The distance between two points, when each of the three differences is within
+! +-32767 (the sum of the squares then fits 32 bits: floor(sqrt) by dc_sqrt32).
+! Returns -1 when it does not (the C works in 64 bits there).
+    .global _dc_distance
+    .align 2
+_dc_distance:
+    sts.l   pr,@-r15
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   .Ldd_65534,r6
+    mov.l   .Ldd_32767,r7
+    mov     #0,r8                   ! the sum of squares
+    mov     #3,r2                   ! axes left
+dd_axis:
+    mov.l   @r4+,r1                 ! a
+    mov.l   @r5+,r3                 ! b
+    mov     r1,r9                   ! a
+    mov     r1,r0
+    xor     r3,r0                   ! a ^ b
+    sub     r3,r1                   ! d = a - b (32 bits)
+    xor     r1,r9                   ! a ^ d
+    and     r9,r0                   ! (a ^ b) & (a ^ d): the sign says an overflow
+    cmp/pz  r0
+    bf      dd_fail
+    mov     r1,r3
+    add     r7,r3
+    cmp/hi  r6,r3                   ! d + 32767 > 65534
+    bt      dd_fail
+    mul.l   r1,r1
+    sts     macl,r3
+    add     r3,r8
+    add     #-1,r2
+    cmp/pl  r2
+    bt      dd_axis
+    mov     r8,r4
+    mov.l   .Ldd_sqrt,r0
+    jsr     @r0
+    nop
+    bra     dd_out
+    nop
+dd_fail:
+    mov     #-1,r0
+dd_out:
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    lds.l   @r15+,pr
+    rts
+    nop
+    .align 2
+.Ldd_65534:
+    .long   65534
+.Ldd_32767:
+    .long   32767
+.Ldd_sqrt:
+    .long   _dc_sqrt32

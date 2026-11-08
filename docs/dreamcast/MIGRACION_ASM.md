@@ -44,6 +44,7 @@ que las rutinas nuevas se apagan con `TRX_DC_ASMOFF2` (`ASMOFF.TXT` lleva dos n�
 | `dc_rot_yxz_f` | giro float de huesos (enemigos) | ASMOFF 1073741824 | `[rotf-verify]` 2800 llamadas, bit a bit |
 | `dc_bounds_lerp`, `dc_get_frames` | cajas y fotogramas de `Item_GetBoundsAccurate`/`Item_GetFrames` | ASMOFF 2147483648; ASMOFF2 1 | `[bounds-verify]` 5000; `[frames-verify]` 40 000 |
 | `dc_sqrt32`, `dc_sin`, `dc_sin_coarse`, `dc_atan` | `Math_Sqrt`, `Math_Sin` (fina y tosca), `Math_Atan` | ASMOFF2 16, 32, 8192, 64 | autoprueba: 200 000 raíces, 800 000 senos/arcotangentes, 0 distintas |
+| `dc_distance` (`XYZ_32_GetDistance`) | distancia entre puntos | ASMOFF2 1048576 | autoprueba 200 000 pares, 0 distintas |
 | `dc_turn`, `dc_sphere_touch`, `dc_bounds_collide` | `M_Turn` (giro de vectores), pares de esferas, caja de colisión | ASMOFF2 1024, 2048, 4096 | autoprueba 180 000 llamadas (cazó un fallo con la tabla tosca) |
 | `dc_surface_height` | `M_GetSurfaceHeight`: suelos y techos planos, inclinados y partidos | ASMOFF2 524288 | autoprueba 200 000 superficies + 3,4 millones de llamadas reales en Antártida, 0 distintas |
 | `dc_box_search`, `dc_box_target`, `dc_creature_turn`, `dc_ai_angles`, `dc_anim_change` | ruta de criaturas (`Box_SearchLOT`, paseo de `Box_CalculateTarget`), `Creature_Turn`, ángulos de `Creature_AIInfo`, `Item_GetAnimChange` | ASMOFF2 16384, 65536, 32768, 262144, 131072 | demo Vilcabamba TR1: 2000, 3000, 2000, 3000 y 800 llamadas, 0 distintas |

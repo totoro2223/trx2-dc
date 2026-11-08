@@ -2028,6 +2028,30 @@ static void M_SelfTest(void)
     LOG_WARNING(
         "[selftest] turn+spheres+box %u runs %u bad", (unsigned)run_geom,
         (unsigned)bad_geom);
+    uint32_t bad_dist = 0, run_dist = 0;
+    for (uint32_t n = 0; n < 200000; n++) {
+        const int32_t span = n % 4 == 0 ? (1 << 31) - 1 : (n % 4 == 1 ? 40000 : 3000);
+        XYZ_32 a = { (int32_t)(M_StRand() % span) - span / 2,
+                     (int32_t)(M_StRand() % span) - span / 2,
+                     (int32_t)(M_StRand() % span) - span / 2 };
+        XYZ_32 b = { a.x + (int32_t)(M_StRand() % 70000) - 35000,
+                     a.y + (int32_t)(M_StRand() % 70000) - 35000,
+                     a.z + (int32_t)(M_StRand() % 70000) - 35000 };
+        if (n % 4 == 0) {
+            b.x = (int32_t)M_StRand();
+            b.y = (int32_t)M_StRand();
+        }
+        g_DC_AsmOff2 |= 1048576;
+        const int32_t d1 = XYZ_32_GetDistance(a, b);
+        g_DC_AsmOff2 &= ~1048576u;
+        run_dist++;
+        if (XYZ_32_GetDistance(a, b) != d1) {
+            bad_dist++;
+        }
+    }
+    LOG_WARNING(
+        "[selftest] distance %u runs %u bad", (unsigned)run_dist,
+        (unsigned)bad_dist);
     uint32_t bad_trig = 0, run_trig = 0;
     Math_SetCoarseTrig(true);
     for (uint32_t n = 0; n < 200000; n++) {

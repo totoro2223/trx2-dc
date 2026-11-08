@@ -53,8 +53,22 @@ int16_t XYZ_32_GetPitch(XYZ_32 pos)
     return Math_Atan(Math_Sqrt(SQUARE(pos.x) + SQUARE(pos.z)), -pos.y);
 }
 
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_distance) when every difference is within
+// +-32767; TRX_DC_ASMOFF2 bit 1048576 turns it off.
+extern int32_t dc_distance(const XYZ_32 *a, const XYZ_32 *b);
+#endif
+
 int32_t XYZ_32_GetDistance(const XYZ_32 pos1, const XYZ_32 pos2)
 {
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 1048576) == 0) {
+        const int32_t close = dc_distance(&pos1, &pos2);
+        if (close >= 0) {
+            return close;
+        }
+    }
+#endif
     int64_t x = (int64_t)pos1.x - pos2.x;
     int64_t y = (int64_t)pos1.y - pos2.y;
     int64_t z = (int64_t)pos1.z - pos2.z;
