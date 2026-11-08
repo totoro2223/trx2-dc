@@ -1978,3 +1978,756 @@ sc_out:
     .long   0xC00
 .Lsc_1000:
     .long   0x1000
+
+! int dc_box_search(const int32_t *p);   pathing/box.c Box_SearchLOT (Box_SearchLOTC)
+!
+! The creatures' route search: it expands up to p[15] boxes from the head of the
+! queue, marking the boxes it can reach from each with the search number and
+! the way out, and queuing the new ones. Returns 1, or 0 when the queue ran
+! empty; the head and tail go back to the LOT.
+!
+! p (words): 0 lot  1 node  2 zone  3 boxes  4 box count  5 overlaps
+!  6 overlap count  7 fixed fly zone  8 box number mask  9 overlap flags mask
+!  10 step  11 drop  12 block mask  13 can jump  14 can monkey  15 search zone
+!  (from the first head)  16 expansion  17 offset of head in the LOT  18 offset
+!  of tail  19 tail cleared when the queue runs dry (TR2 on)
+! BOX_NODE (8 bytes): 0 exit box  2 search number  4 next expansion  6 box
+! BOX_INFO (24 bytes): 16 height (int16)  20 overlap index
+!
+! r8 head  r9 tail  r10 nodes  r11 boxes  r12 p  r13 expansions left
+! r14 the head's node;  stack: 0 the head's box  4 overlap index  8 done
+    .global _dc_box_search
+    .align 2
+_dc_box_search:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov.l   r14,@-r15
+    add     #-16,r15
+    mov     r4,r12
+    mov.l   @(0,r12),r1             ! lot
+    mov     r12,r0
+    add     #68,r0
+    mov.l   @r0,r0                  ! the head's offset
+    mov.w   @(r0,r1),r8             ! head
+    mov     r12,r0
+    add     #72,r0
+    mov.l   @r0,r0                  ! the tail's offset
+    mov.w   @(r0,r1),r9             ! tail
+    mov.l   @(4,r12),r10
+    mov.l   @(12,r12),r11
+    mov     r12,r0
+    add     #64,r0
+    mov.l   @r0,r13                 ! expansion
+    mov.l   @(8,r12),r1
+    mov     r8,r0
+    shll    r0
+    mov.w   @(r0,r1),r0             ! zone[head], read as the C does
+    mov.l   r0,@(60,r12)
+bs_loop:
+    cmp/pl  r13
+    bf      bs_true
+    mov     #-1,r0
+    cmp/eq  r0,r8
+    bf      bs_have
+    ! the queue ran dry
+    mov     r12,r0
+    add     #76,r0
+    mov.l   @r0,r0
+    tst     r0,r0
+    bt      bs_false
+    mov     #-1,r9
+bs_false:
+    mov     #0,r0
+    bra     bs_store
+    nop
+bs_have:
+    mov     r8,r0
+    shll2   r0
+    shll    r0
+    add     r10,r0
+    mov     r0,r14                  ! node = nodes + head * 8
+    mov     r8,r1
+    shll2   r1
+    shll    r1                      ! head * 8
+    mov     r8,r2
+    shll2   r2
+    shll2   r2                      ! head * 16
+    add     r2,r1
+    add     r11,r1                  ! the head's box
+    mov.l   r1,@r15
+    mov.l   @(20,r1),r0
+    mov.l   .Lbs_3fff,r2
+    and     r2,r0                   ! overlap index
+    mov.l   r0,@(4,r15)
+    mov     #0,r0
+    mov.l   r0,@(8,r15)             ! done = false
+bs_inner:
+    mov.l   @(8,r15),r0
+    tst     r0,r0
+    bf      bs_end                  ! while (!done)
+    mov.l   @(4,r15),r1
+    mov     r1,r2
+    add     #1,r2
+    mov.l   r2,@(4,r15)             ! index++
+    mov.l   @(20,r12),r2            ! overlaps
+    tst     r2,r2
+    bt      bs_end
+    cmp/pz  r1
+    bf      bs_end
+    mov.l   @(24,r12),r3
+    cmp/ge  r3,r1
+    bt      bs_end                  ! M_GetOverlap said NO_BOX
+    mov     r1,r0
+    shll    r0
+    mov.w   @(r0,r2),r7             ! the overlap
+    mov     #-1,r0
+    cmp/eq  r0,r7
+    bt      bs_end                  ! NO_BOX: break
+    cmp/pz  r7
+    bt      bs_notend
+    mov     #1,r0
+    mov.l   r0,@(8,r15)             ! BOX_END_BIT: done after this one
+bs_notend:
+    mov.l   @(36,r12),r0
+    and     r7,r0
+    mov     r0,r6                   ! the flags
+    mov.l   @(32,r12),r0
+    and     r7,r0
+    mov     r0,r5                   ! the box number
+    cmp/pz  r5
+    bf      bs_inner
+    mov.l   @(16,r12),r0
+    cmp/ge  r0,r5
+    bt      bs_inner                ! no such box
+    mov     r5,r1
+    shll2   r1
+    shll    r1
+    mov     r5,r2
+    shll2   r2
+    shll2   r2
+    add     r2,r1
+    add     r11,r1
+    mov     r1,r4                   ! the box
+    mov.l   @(28,r12),r0
+    tst     r0,r0
+    bf      bs_zone_ok              ! the fixed fly zone: no test
+    mov.l   @(8,r12),r1
+    mov     r5,r0
+    shll    r0
+    mov.w   @(r0,r1),r1             ! zone[box]
+    mov.l   @(60,r12),r2
+    cmp/eq  r2,r1
+    bf      bs_inner                ! not the search zone
+bs_zone_ok:
+    mov     r4,r0
+    add     #16,r0
+    mov.w   @r0,r1                  ! the box's height
+    mov.l   @r15,r2
+    mov     r2,r0
+    add     #16,r0
+    mov.w   @r0,r2                  ! the head's height
+    sub     r2,r1                   ! change
+    mov.l   @(40,r12),r2
+    cmp/gt  r2,r1                   ! change > step
+    bt      bs_monkey
+    mov.l   @(44,r12),r2
+    cmp/gt  r1,r2                   ! drop > change
+    bf      bs_height_ok
+bs_monkey:
+    mov.l   @(56,r12),r0
+    tst     r0,r0
+    bt      bs_inner                ! cannot swing: skip
+    mov.l   .Lbs_2000,r1
+    tst     r1,r6
+    bt      bs_inner                ! the overlap is no monkey bar
+bs_height_ok:
+    mov.l   .Lbs_0800,r1
+    tst     r1,r6
+    bt      bs_nojump
+    mov.l   @(52,r12),r0
+    tst     r0,r0
+    bt      bs_inner                ! a jump this one cannot make
+bs_nojump:
+    mov     r5,r0
+    shll2   r0
+    shll    r0
+    add     r10,r0
+    mov     r0,r3                   ! expand
+    mov     r14,r0
+    add     #2,r0
+    mov.w   @r0,r1
+    extu.w  r1,r1                   ! node->search_num
+    mov     r3,r0
+    add     #2,r0
+    mov.w   @r0,r2
+    extu.w  r2,r2                   ! expand->search_num
+    mov.l   .Lbs_7fff,r0
+    mov     r1,r7
+    and     r0,r7                   ! node's number
+    mov     r2,r6
+    and     r0,r6                   ! expand's number
+    cmp/gt  r7,r6
+    bt      bs_inner                ! node < expand: the other is newer
+    mov.l   .Lbs_8000,r0
+    tst     r0,r1
+    bt      bs_free                 ! the node is not blocked
+    cmp/eq  r7,r6
+    bt      bs_inner
+    mov     r3,r0
+    add     #2,r0
+    mov.w   r1,@r0
+    bra     bs_queue
+    nop
+bs_free:
+    cmp/eq  r7,r6
+    bf      bs_free2
+    mov.l   .Lbs_8000,r0
+    tst     r0,r2
+    bt      bs_inner                ! same number and not blocked
+bs_free2:
+    mov.l   @(20,r4),r0
+    mov.l   @(48,r12),r2
+    tst     r2,r0
+    bt      bs_open                 ! (overlap & block mask) == 0
+    mov.l   .Lbs_8000,r0
+    or      r1,r0
+    mov     r3,r2
+    add     #2,r2
+    mov.w   r0,@r2                  ! the box is blocked from here
+    bra     bs_queue
+    nop
+bs_open:
+    mov     r3,r0
+    add     #2,r0
+    mov.w   r1,@r0
+    mov.w   r8,@r3                  ! exit box = the head
+bs_queue:
+    mov     r3,r0
+    add     #4,r0
+    mov.w   @r0,r1
+    mov     #-1,r2
+    cmp/eq  r2,r1
+    bf      bs_inner
+    cmp/eq  r9,r5
+    bt      bs_inner
+    mov     r9,r0
+    shll2   r0
+    shll    r0
+    add     r10,r0
+    add     #4,r0
+    mov.w   r5,@r0                  ! node[tail].next expansion = box
+    mov     r5,r9
+    bra     bs_inner
+    nop
+bs_end:
+    mov     r14,r0
+    add     #4,r0
+    mov.w   @r0,r8                  ! head = node->next expansion
+    mov     #-1,r1
+    mov.w   r1,@r0
+    add     #-1,r13
+    bra     bs_loop
+    nop
+bs_true:
+    mov     #1,r0
+bs_store:
+    mov     r0,r7                   ! the result
+    mov.l   @(0,r12),r1             ! lot
+    mov     r12,r0
+    add     #68,r0
+    mov.l   @r0,r0
+    mov.w   r8,@(r0,r1)
+    mov     r12,r0
+    add     #72,r0
+    mov.l   @r0,r0
+    mov.w   r9,@(r0,r1)
+    mov     r7,r0
+    add     #16,r15
+    mov.l   @r15+,r14
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
+    .align 2
+.Lbs_3fff:
+    .long   0x3FFFFFFF
+.Lbs_2000:
+    .long   0x2000
+.Lbs_0800:
+    .long   0x0800
+.Lbs_7fff:
+    .long   0x7FFF
+.Lbs_8000:
+    .long   0x8000
+
+! int32_t dc_creature_turn(const int32_t *p);   creature/common.c Creature_Turn
+!
+! The turn a creature walking somewhere makes this tick: the angle to its
+! target less the way it faces (cut to 16 bits), the turn eased to half when
+! the target lies behind and is nearer than the speed asks, and the angle kept
+! within +-max_turn. p: 0 dx  1 dz  2 rot.y  3 speed  4 max_turn (not 0).
+! Returns the angle; the caller adds it to rot.y.
+    .global _dc_creature_turn
+    .align 2
+_dc_creature_turn:
+    sts.l   pr,@-r15
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov.l   @(0,r4),r8              ! dx
+    mov.l   @(4,r4),r9              ! dz
+    mov.l   @(8,r4),r10             ! rot.y
+    mov.l   @(12,r4),r11            ! speed
+    mov.l   @(16,r4),r12            ! max_turn
+    mov     r9,r4
+    mov     r8,r5
+    mov.l   .Lct_atan,r0
+    jsr     @r0                     ! Math_Atan(dz, dx)
+    nop
+    sub     r10,r0
+    exts.w  r0,r13                  ! angle
+    mov.l   .Lct_arc,r1             ! FRONT_ARC
+    cmp/gt  r1,r13
+    bt      ct_range
+    neg     r1,r1
+    cmp/gt  r13,r1                  ! angle < -FRONT_ARC
+    bf      ct_clamp
+ct_range:
+    mov     r11,r4
+    shll8   r4
+    shll2   r4
+    shll2   r4
+    shll2   r4                      ! speed << 14
+    mov     r12,r5
+    mov.l   .Lct_div,r0
+    jsr     @r0                     ! / max_turn
+    nop
+    mul.l   r0,r0
+    sts     macl,r0                 ! range^2
+    mul.l   r8,r8
+    sts     macl,r1
+    mul.l   r9,r9
+    sts     macl,r2
+    add     r2,r1                   ! dx^2 + dz^2
+    cmp/gt  r1,r0                   ! d^2 < range^2
+    bf      ct_clamp
+    cmp/pz  r12
+    bt      ct_half
+    add     #1,r12                  ! toward zero
+ct_half:
+    shar    r12
+    exts.w  r12,r12
+ct_clamp:
+    neg     r12,r1                  ! -max_turn
+    cmp/gt  r13,r1                  ! angle < -max_turn
+    bf      ct_hi
+    mov     r1,r13
+    bra     ct_out
+    nop
+ct_hi:
+    cmp/gt  r12,r13                 ! angle > max_turn
+    bf      ct_out
+    mov     r12,r13
+ct_out:
+    mov     r13,r0
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    lds.l   @r15+,pr
+    rts
+    nop
+    .align 2
+.Lct_atan:
+    .long   _Math_Atan
+.Lct_div:
+    .long   ___sdivsi3_i4i
+.Lct_arc:
+    .long   0x4000
+
+! int dc_box_target(int32_t *p);   pathing/box.c Box_CalculateTarget's walk (M_TargetWalkC)
+!
+! The walk along the route from the box the creature stands in towards the
+! box it is to reach, taking its target (x y z) along the sides of the boxes
+! that lie between. Returns 1 when the target box was reached (TARGET_PRIMARY),
+! 2 when a secondary target was set (TARGET_SECONDARY), or 0 when the walk ran
+! out, with the last box and prime_free left in p for the C to finish.
+!
+! p (bytes): 0 pos x  4 pos z  8 pair clip  12 fly  16 block mask  20 target
+! box  24 lot target x  28 y  32 z  36 boxes  40 (box count)  44 nodes
+! 48 target (XYZ_32*)  52 left  56 right  60 top  64 bottom  68 first box
+! 72 out: last box  76 out: prime_free
+! BOX_INFO (24 bytes): 0 left 4 right 8 top 12 bottom 16 height (int16) 20 overlap
+! BOX_NODE (8 bytes): 0 exit box
+!
+! r8 target  r9 box  r10 box number  r11 prime_free  r12 p  r13 p + 64
+    .macro CLAMPL off, base, val
+    mov.l   @(\off,\base),r1
+    cmp/gt  r1,\val
+    bf      9f
+    mov.l   \val,@(\off,\base)
+9:
+    .endm
+    .macro CLAMPG off, base, val
+    mov.l   @(\off,\base),r1
+    cmp/gt  \val,r1
+    bf      9f
+    mov.l   \val,@(\off,\base)
+9:
+    .endm
+    .global _dc_box_target
+    .align 2
+_dc_box_target:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov.l   r14,@-r15
+    mov     r4,r12
+    mov     r12,r13
+    add     #64,r13
+    mov.l   @(48,r12),r8
+    mov.l   @(4,r13),r10
+    mov     #15,r11
+bt_loop:
+    mov.l   @(36,r12),r9
+    mov     r10,r1
+    shll2   r1
+    shll    r1                      ! * 8
+    mov     r10,r0
+    shll2   r0
+    shll2   r0                      ! * 16
+    add     r0,r1
+    add     r1,r9                   ! the box
+    mov     r9,r0
+    add     #16,r0
+    mov.w   @r0,r2                  ! its height
+    mov.l   @(12,r12),r0
+    tst     r0,r0
+    bt      bt_ground
+    mov.l   .Lbt_wall,r1
+    sub     r1,r2
+bt_ground:
+    CLAMPG  4, r8, r2               ! target.y
+    mov.l   @(4,r12),r3             ! pos z
+    mov.l   @(0,r12),r4             ! pos x
+    mov.l   @(0,r9),r5              ! left
+    mov.l   @(4,r9),r6              ! right
+    mov.l   @(8,r9),r7              ! top
+    mov.l   @(12,r9),r2             ! bottom
+    cmp/ge  r5,r3
+    bf      bt_beside
+    cmp/gt  r6,r3
+    bt      bt_beside
+    cmp/ge  r7,r4
+    bf      bt_beside
+    cmp/gt  r2,r4
+    bt      bt_beside
+    mov.l   r5,@(52,r12)
+    mov.l   r6,@(56,r12)
+    mov.l   r7,@(60,r12)
+    mov.l   r2,@(0,r13)
+    bra     bt_check
+    nop
+bt_beside:
+    ! the z side
+    cmp/ge  r5,r3
+    bt      bt_not_left
+    mov     r11,r0
+    tst     #1,r0
+    bt      bt_zl_else
+    cmp/ge  r7,r4
+    bf      bt_zl_else
+    cmp/gt  r2,r4
+    bt      bt_zl_else
+    mov.l   .Lbt_biff,r0
+    add     r5,r0
+    CLAMPL  8, r8, r0               ! target.z at least left + BIFF
+    mov     r11,r0
+    tst     #16,r0
+    bf      bt_secondary
+    CLAMPL  60, r12, r7
+    CLAMPG  0, r13, r2
+    mov     #1,r11
+    bra     bt_xside
+    nop
+bt_zl_else:
+    mov     #1,r0
+    cmp/eq  r0,r11
+    bt      bt_xside
+    mov.l   @(8,r12),r0
+    tst     r0,r0
+    bt      bt_zl_do
+    mov     #2,r0
+    cmp/eq  r0,r11
+    bt      bt_xside
+bt_zl_do:
+    mov.l   @(56,r12),r0
+    mov.l   .Lbt_biff,r1
+    sub     r1,r0
+    mov.l   r0,@(8,r8)              ! target.z = right - BIFF
+    mov     #15,r0
+    cmp/eq  r0,r11
+    bf      bt_secondary
+    mov     r11,r0
+    or      #16,r0
+    mov     r0,r11
+    bra     bt_xside
+    nop
+bt_not_left:
+    cmp/gt  r6,r3
+    bf      bt_xside
+    mov     r11,r0
+    tst     #2,r0
+    bt      bt_zr_else
+    cmp/ge  r7,r4
+    bf      bt_zr_else
+    cmp/gt  r2,r4
+    bt      bt_zr_else
+    mov     r6,r0
+    mov.l   .Lbt_biff,r1
+    sub     r1,r0
+    CLAMPG  8, r8, r0               ! target.z at most right - BIFF
+    mov     r11,r0
+    tst     #16,r0
+    bf      bt_secondary
+    CLAMPL  60, r12, r7
+    CLAMPG  0, r13, r2
+    mov     #2,r11
+    bra     bt_xside
+    nop
+bt_zr_else:
+    mov     #2,r0
+    cmp/eq  r0,r11
+    bt      bt_xside
+    mov.l   @(8,r12),r0
+    tst     r0,r0
+    bt      bt_zr_do
+    mov     #1,r0
+    cmp/eq  r0,r11
+    bt      bt_xside
+bt_zr_do:
+    mov.l   @(52,r12),r0
+    mov.l   .Lbt_biff,r1
+    add     r1,r0
+    mov.l   r0,@(8,r8)              ! target.z = left + BIFF
+    mov     #15,r0
+    cmp/eq  r0,r11
+    bf      bt_secondary
+    mov     r11,r0
+    or      #16,r0
+    mov     r0,r11
+bt_xside:
+    cmp/ge  r7,r4
+    bt      bt_not_top
+    mov     r11,r0
+    tst     #4,r0
+    bt      bt_xt_else
+    cmp/ge  r5,r3
+    bf      bt_xt_else
+    cmp/gt  r6,r3
+    bt      bt_xt_else
+    mov.l   .Lbt_biff,r0
+    add     r7,r0
+    CLAMPL  0, r8, r0               ! target.x at least top + BIFF
+    mov     r11,r0
+    tst     #16,r0
+    bf      bt_secondary
+    CLAMPL  52, r12, r5
+    CLAMPG  56, r12, r6
+    mov     #4,r11
+    bra     bt_check
+    nop
+bt_xt_else:
+    mov     #4,r0
+    cmp/eq  r0,r11
+    bt      bt_check
+    mov.l   @(8,r12),r0
+    tst     r0,r0
+    bt      bt_xt_do
+    mov     #8,r0
+    cmp/eq  r0,r11
+    bt      bt_check
+bt_xt_do:
+    mov.l   @(0,r13),r0
+    mov.l   .Lbt_biff,r1
+    sub     r1,r0
+    mov.l   r0,@(0,r8)              ! target.x = bottom - BIFF
+    mov     #15,r0
+    cmp/eq  r0,r11
+    bf      bt_secondary
+    mov     r11,r0
+    or      #16,r0
+    mov     r0,r11
+    bra     bt_check
+    nop
+bt_not_top:
+    cmp/gt  r2,r4
+    bf      bt_check
+    mov     r11,r0
+    tst     #8,r0
+    bt      bt_xb_else
+    cmp/ge  r5,r3
+    bf      bt_xb_else
+    cmp/gt  r6,r3
+    bt      bt_xb_else
+    mov     r2,r0
+    mov.l   .Lbt_biff,r1
+    sub     r1,r0
+    CLAMPG  0, r8, r0               ! target.x at most bottom - BIFF
+    mov     r11,r0
+    tst     #16,r0
+    bf      bt_secondary
+    CLAMPL  52, r12, r5
+    CLAMPG  56, r12, r6
+    mov     #8,r11
+    bra     bt_check
+    nop
+bt_xb_else:
+    mov     #8,r0
+    cmp/eq  r0,r11
+    bt      bt_check
+    mov.l   @(8,r12),r0
+    tst     r0,r0
+    bt      bt_xb_do
+    mov     #4,r0
+    cmp/eq  r0,r11
+    bt      bt_check
+bt_xb_do:
+    mov.l   @(60,r12),r0
+    mov.l   .Lbt_biff,r1
+    add     r1,r0
+    mov.l   r0,@(0,r8)              ! target.x = top + BIFF
+    mov     #15,r0
+    cmp/eq  r0,r11
+    bf      bt_secondary
+    mov     r11,r0
+    or      #16,r0
+    mov     r0,r11
+bt_check:
+    mov.l   @(20,r12),r0
+    cmp/eq  r0,r10
+    bf      bt_next
+    ! the target box: the target, clamped inside it
+    mov     r11,r0
+    tst     #3,r0
+    bt      bt_pz
+    mov.l   @(32,r12),r0
+    mov.l   r0,@(8,r8)
+    bra     bt_px
+    nop
+bt_pz:
+    mov     r11,r0
+    tst     #16,r0
+    bf      bt_px
+    mov.l   .Lbt_biff,r1
+    mov     r5,r0
+    add     r1,r0                   ! left + BIFF
+    mov.l   @(8,r8),r3
+    cmp/gt  r3,r0
+    bf      bt_pz_hi
+    mov     r0,r3
+    bra     bt_pz_st
+    nop
+bt_pz_hi:
+    mov     r6,r4
+    sub     r1,r4                   ! right - BIFF
+    cmp/gt  r4,r3
+    bf      bt_pz_st
+    mov     r4,r3
+bt_pz_st:
+    mov.l   r3,@(8,r8)
+bt_px:
+    mov     r11,r0
+    tst     #12,r0
+    bt      bt_pxc
+    mov.l   @(24,r12),r0
+    mov.l   r0,@(0,r8)
+    bra     bt_py
+    nop
+bt_pxc:
+    mov     r11,r0
+    tst     #16,r0
+    bf      bt_py
+    mov.l   .Lbt_biff,r1
+    mov     r7,r0
+    add     r1,r0                   ! top + BIFF
+    mov.l   @(0,r8),r3
+    cmp/gt  r3,r0
+    bf      bt_px_hi
+    mov     r0,r3
+    bra     bt_px_st
+    nop
+bt_px_hi:
+    mov     r2,r4
+    sub     r1,r4                   ! bottom - BIFF
+    cmp/gt  r4,r3
+    bf      bt_px_st
+    mov     r4,r3
+bt_px_st:
+    mov.l   r3,@(0,r8)
+bt_py:
+    mov.l   @(28,r12),r0
+    mov.l   r0,@(4,r8)
+    mov     #1,r0
+    bra     bt_out
+    nop
+bt_next:
+    mov.l   @(44,r12),r1
+    mov     r10,r0
+    shll2   r0
+    shll    r0
+    add     r0,r1
+    mov.w   @r1,r10                 ! the exit box
+    mov     #-1,r0
+    cmp/eq  r0,r10
+    bt      bt_ran_out
+    mov.l   @(36,r12),r1
+    mov     r10,r2
+    shll2   r2
+    shll    r2
+    mov     r10,r3
+    shll2   r3
+    shll2   r3
+    add     r3,r2
+    add     r2,r1
+    mov.l   @(20,r1),r0
+    mov.l   @(16,r12),r1
+    tst     r1,r0
+    bt      bt_loop                 ! not blocked: the next box
+bt_ran_out:
+    mov.l   r9,@(8,r13)
+    mov.l   r11,@(12,r13)
+    mov     #0,r0
+    bra     bt_out
+    nop
+bt_secondary:
+    mov     #2,r0
+bt_out:
+    mov.l   @r15+,r14
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
+    .align 2
+.Lbt_wall:
+    .long   1024
+.Lbt_biff:
+    .long   512

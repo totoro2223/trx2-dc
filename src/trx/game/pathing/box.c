@@ -1,4 +1,6 @@
 #include <trx/config.h>
+#include <trx/core/log.h>
+#include <trx/core/memory.h>
 #include <trx/core/utils.h>
 #include <trx/game/creature.h>
 #include <trx/game/game_buf.h>
@@ -8,6 +10,9 @@
 #include <trx/game/random.h>
 #include <trx/game/rooms.h>
 #include <trx/version.h>
+
+#include <stddef.h>
+#include <string.h>
 
 #define BOX_SEARCH_NUMBER 0x7FFF
 #define BOX_END_BIT 0x8000
@@ -179,7 +184,7 @@ int16_t *Box_GetLotZone(const LOT_INFO *const lot)
         : Box_GetGroundZone(flip_status, BOX_ZONE(lot->setup.step));
 }
 
-bool Box_SearchLOT(LOT_INFO *const lot, const int32_t expansion)
+static bool M_SearchLOTC(LOT_INFO *const lot, const int32_t expansion)
 {
     const int16_t *const zone = Box_GetLotZone(lot);
     const bool use_fixed_fly_zone = g_TRVersion == 3 && lot->setup.fly != 0;
@@ -276,6 +281,78 @@ bool Box_SearchLOT(LOT_INFO *const lot, const int32_t expansion)
     }
 
     return true;
+}
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_box_search); a DC_EMIT_VERIFY build runs the C
+// on a copy of the nodes and compares. TRX_DC_ASMOFF2 bit 16384 turns it off.
+extern uint32_t g_DC_AsmOff2;
+extern int dc_box_search(const int32_t *p);
+#endif
+
+bool Box_SearchLOT(LOT_INFO *const lot, const int32_t expansion)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 16384) == 0 && m_Boxes != nullptr
+        && lot->head >= 0) {
+        const int16_t *const zone = Box_GetLotZone(lot);
+        const bool use_fixed_fly_zone =
+            g_TRVersion == 3 && lot->setup.fly != 0;
+        int32_t p[20] = {
+            (int32_t)(intptr_t)lot,
+            (int32_t)(intptr_t)lot->node,
+            (int32_t)(intptr_t)zone,
+            (int32_t)(intptr_t)m_Boxes,
+            m_BoxCount,
+            (int32_t)(intptr_t)m_Overlaps,
+            m_OverlapCount,
+            use_fixed_fly_zone,
+            g_TRVersion >= 4 ? BOX_NUMBER_BITS_TR4 : BOX_NUMBER_BITS,
+            g_TRVersion >= 4 ? (BOX_OVERLAP_JUMP | BOX_OVERLAP_MONKEY) : 0,
+            lot->setup.step,
+            lot->setup.drop,
+            (int32_t)lot->setup.block_mask,
+            lot->setup.can_jump,
+            lot->setup.can_monkey,
+            0,
+            expansion,
+            (int32_t)offsetof(LOT_INFO, head),
+            (int32_t)offsetof(LOT_INFO, tail),
+            g_TRVersion >= 2,
+        };
+        // The words 16 to 19 are read at 64 to 76.
+    #if defined(DC_EMIT_VERIFY)
+        const int32_t count = m_BoxCount;
+        LOT_INFO ref_lot = *lot;
+        BOX_NODE *const ref_nodes = Memory_Alloc(sizeof(BOX_NODE) * count);
+        memcpy(ref_nodes, lot->node, sizeof(BOX_NODE) * count);
+        ref_lot.node = ref_nodes;
+        const bool ref = M_SearchLOTC(&ref_lot, expansion);
+    #endif
+        const bool got = dc_box_search(p) != 0;
+    #if defined(DC_EMIT_VERIFY)
+        static uint32_t runs;
+        static uint32_t bad;
+        runs++;
+        if (got != ref || lot->head != ref_lot.head || lot->tail != ref_lot.tail
+            || memcmp(lot->node, ref_nodes, sizeof(BOX_NODE) * count) != 0) {
+            if (bad++ < 4) {
+                LOG_WARNING(
+                    "[box-verify] MISMATCH got %d/%d head %d/%d tail %d/%d",
+                    (int)got, (int)ref, (int)lot->head, (int)ref_lot.head,
+                    (int)lot->tail, (int)ref_lot.tail);
+            }
+        }
+        if (runs % 2000 == 0) {
+            LOG_WARNING(
+                "[box-verify] %u runs, %u bad", (unsigned)runs, (unsigned)bad);
+        }
+        Memory_Free(ref_nodes);
+    #endif
+        return got;
+    }
+#endif
+    return M_SearchLOTC(lot, expansion);
 }
 
 bool Box_IsMonkeyAhead(const LOT_INFO *const lot, const int16_t box_num)
@@ -409,32 +486,18 @@ bool Box_ValidBox(
         && item->pos.x > box->top && item->pos.x < box->bottom + shift);
 }
 
-TARGET_TYPE Box_CalculateTarget(
-    XYZ_32 *const target, const ITEM *const item, LOT_INFO *const lot)
+// The walk of Box_CalculateTarget along the route, from the box number given
+// towards the box the creature is to reach, taking the target along the sides
+// of the boxes between. TARGET_PRIMARY when it reached it, TARGET_SECONDARY
+// when a secondary target was set, TARGET_NONE when the route ran out (the
+// last box and prime_free go out for the caller to finish). Reference for
+// dc_box_target (game_sh4.S).
+static TARGET_TYPE M_TargetWalkC(
+    XYZ_32 *const target, const ITEM *const item, LOT_INFO *const lot,
+    int32_t box_num, int32_t bottom, int32_t top, int32_t right, int32_t left,
+    const bool pair_clip, const BOX_INFO **const out_box,
+    int32_t *const out_prime_free)
 {
-    M_UpdateLOT(lot, BOX_MAX_EXPANSION, item->ai_bits != 0);
-
-    *target = item->pos;
-
-    int32_t box_num = item->box_num;
-    if (box_num == NO_BOX) {
-        return TARGET_NONE;
-    }
-
-    // TR1 leaves the running clip at zero and takes it that the first box of
-    // the walk sets it, which fails for an item standing outside its own box.
-    // TR3 onwards start it at that box instead.
-    const BOX_INFO *const own_box = Box_GetBox(box_num);
-    const bool seed_clip = g_TRVersion >= 3 && own_box != nullptr;
-    int32_t bottom = seed_clip ? own_box->bottom : 0;
-    int32_t top = seed_clip ? own_box->top : 0;
-    int32_t right = seed_clip ? own_box->right : 0;
-    int32_t left = seed_clip ? own_box->left : 0;
-
-    // TR4 also leaves an axis alone where the running clip is the opposite
-    // side of that axis. TR1 to TR3 test only the near side.
-    const bool pair_clip = g_TRVersion >= 4;
-
     const BOX_INFO *box = nullptr;
     int32_t prime_free = BOX_CLIP_ALL;
     do {
@@ -557,6 +620,124 @@ TARGET_TYPE Box_CalculateTarget(
             break;
         }
     } while (box_num != NO_BOX);
+
+    *out_box = box;
+    *out_prime_free = prime_free;
+    return TARGET_NONE;
+}
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_box_target); a DC_EMIT_VERIFY build runs the C
+// walk on a copy of the target and compares. TRX_DC_ASMOFF2 bit 65536 turns it
+// off.
+extern int dc_box_target(int32_t *p);
+#endif
+
+TARGET_TYPE Box_CalculateTarget(
+    XYZ_32 *const target, const ITEM *const item, LOT_INFO *const lot)
+{
+    M_UpdateLOT(lot, BOX_MAX_EXPANSION, item->ai_bits != 0);
+
+    *target = item->pos;
+
+    int32_t box_num = item->box_num;
+    if (box_num == NO_BOX) {
+        return TARGET_NONE;
+    }
+
+    // TR1 leaves the running clip at zero and takes it that the first box of
+    // the walk sets it, which fails for an item standing outside its own box.
+    // TR3 onwards start it at that box instead.
+    const BOX_INFO *const own_box = Box_GetBox(box_num);
+    const bool seed_clip = g_TRVersion >= 3 && own_box != nullptr;
+    int32_t bottom = seed_clip ? own_box->bottom : 0;
+    int32_t top = seed_clip ? own_box->top : 0;
+    int32_t right = seed_clip ? own_box->right : 0;
+    int32_t left = seed_clip ? own_box->left : 0;
+
+    // TR4 also leaves an axis alone where the running clip is the opposite
+    // side of that axis. TR1 to TR3 test only the near side.
+    const bool pair_clip = g_TRVersion >= 4;
+
+    const BOX_INFO *box = nullptr;
+    int32_t prime_free = BOX_CLIP_ALL;
+    TARGET_TYPE walked;
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 65536) == 0 && m_Boxes != nullptr) {
+        int32_t p[20] = {
+            item->pos.x,
+            item->pos.z,
+            pair_clip,
+            lot->setup.fly != 0,
+            (int32_t)lot->setup.block_mask,
+            lot->target_box,
+            lot->target.x,
+            lot->target.y,
+            lot->target.z,
+            (int32_t)(intptr_t)m_Boxes,
+            m_BoxCount,
+            (int32_t)(intptr_t)lot->node,
+            (int32_t)(intptr_t)target,
+            left,
+            right,
+            top,
+            bottom,
+            box_num,
+            0,
+            0,
+        };
+    #if defined(DC_EMIT_VERIFY)
+        XYZ_32 ref_target = *target;
+        const BOX_INFO *ref_box = nullptr;
+        int32_t ref_pf = 0;
+        const TARGET_TYPE ref = M_TargetWalkC(
+            &ref_target, item, lot, box_num, bottom, top, right, left,
+            pair_clip, &ref_box, &ref_pf);
+    #endif
+        const int code = dc_box_target(p);
+        walked = code == 1 ? TARGET_PRIMARY
+            : code == 2    ? TARGET_SECONDARY
+                           : TARGET_NONE;
+        if (walked == TARGET_NONE) {
+            box = (const BOX_INFO *)(intptr_t)p[18];
+            prime_free = p[19];
+        }
+    #if defined(DC_EMIT_VERIFY)
+        static uint32_t runs;
+        static uint32_t bad;
+        runs++;
+        if (walked != ref || target->x != ref_target.x
+            || target->y != ref_target.y || target->z != ref_target.z
+            || (walked == TARGET_NONE
+                && (box != ref_box || prime_free != ref_pf))) {
+            if (bad++ < 6) {
+                LOG_WARNING(
+                    "[target-verify] MISMATCH %d/%d t %d %d %d / %d %d %d pf "
+                    "%d/%d",
+                    (int)walked, (int)ref, (int)target->x, (int)target->y,
+                    (int)target->z, (int)ref_target.x, (int)ref_target.y,
+                    (int)ref_target.z, (int)prime_free, (int)ref_pf);
+            }
+        }
+        if (runs % 1000 == 0) {
+            LOG_WARNING(
+                "[target-verify] %u runs, %u bad", (unsigned)runs,
+                (unsigned)bad);
+        }
+    #endif
+    } else {
+        walked = M_TargetWalkC(
+            target, item, lot, box_num, bottom, top, right, left, pair_clip,
+            &box, &prime_free);
+    }
+#else
+    walked = M_TargetWalkC(
+        target, item, lot, box_num, bottom, top, right, left, pair_clip, &box,
+        &prime_free);
+#endif
+    if (walked != TARGET_NONE) {
+        return walked;
+    }
 
     // TR4 keeps a steady fallback target where TR1-3 pick a fresh random
     // point in the last box every frame, which would leave its guides pacing

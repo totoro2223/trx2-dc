@@ -800,6 +800,63 @@ void Creature_ApplyMood(
         g_TRVersion >= 4 && Box_IsJumpAhead(lot, item->box_num);
 }
 
+// The turn (see Creature_Turn): the angle to the target less the way the
+// creature faces, eased to half when the target lies behind and is nearer than
+// the speed asks, and kept within +-max_turn.
+static int16_t M_TurnAngleC(
+    const int32_t dx, const int32_t dz, const int16_t rot_y,
+    const int32_t speed, int16_t max_turn)
+{
+    int16_t angle = Math_Atan(dz, dx) - rot_y;
+    if (angle > FRONT_ARC || angle < -FRONT_ARC) {
+        const int32_t range = (speed * (1 << 14)) / max_turn;
+        if (SQUARE(dx) + SQUARE(dz) < SQUARE(range)) {
+            max_turn /= 2;
+        }
+    }
+    CLAMP(angle, -max_turn, max_turn);
+    return angle;
+}
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_creature_turn); a DC_EMIT_VERIFY build compares
+// it with the C. TRX_DC_ASMOFF2 bit 32768 turns it off.
+extern uint32_t g_DC_AsmOff2;
+extern int32_t dc_creature_turn(const int32_t *p);
+#endif
+
+static int16_t M_TurnAngle(
+    const int32_t dx, const int32_t dz, const int16_t rot_y,
+    const int32_t speed, const int16_t max_turn)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 32768) == 0) {
+        const int32_t p[5] = { dx, dz, rot_y, speed, max_turn };
+        const int16_t angle = (int16_t)dc_creature_turn(p);
+    #if defined(DC_EMIT_VERIFY)
+        static uint32_t runs;
+        static uint32_t bad;
+        const int16_t ref = M_TurnAngleC(dx, dz, rot_y, speed, max_turn);
+        runs++;
+        if (ref != angle && bad++ < 6) {
+            LOG_WARNING(
+                "[turn-verify] MISMATCH asm %d | C %d (dx %d dz %d rot %d "
+                "speed %d max %d)",
+                (int)angle, (int)ref, (int)dx, (int)dz, (int)rot_y, (int)speed,
+                (int)max_turn);
+        }
+        if (runs % 1000 == 0) {
+            LOG_WARNING(
+                "[turn-verify] %u runs, %u bad", (unsigned)runs,
+                (unsigned)bad);
+        }
+    #endif
+        return angle;
+    }
+#endif
+    return M_TurnAngleC(dx, dz, rot_y, speed, max_turn);
+}
+
 int16_t Creature_Turn(ITEM *const item, int16_t max_turn)
 {
     CREATURE *const creature = item->creature_data;
@@ -816,16 +873,8 @@ int16_t Creature_Turn(ITEM *const item, int16_t max_turn)
 
     const int32_t dx = creature->target.x - item->pos.x;
     const int32_t dz = creature->target.z - item->pos.z;
-
-    int16_t angle = Math_Atan(dz, dx) - item->rot.y;
-    if (angle > FRONT_ARC || angle < -FRONT_ARC) {
-        const int32_t range = (item->speed * (1 << 14)) / max_turn;
-        if (SQUARE(dx) + SQUARE(dz) < SQUARE(range)) {
-            max_turn /= 2;
-        }
-    }
-
-    CLAMP(angle, -max_turn, max_turn);
+    const int16_t angle =
+        M_TurnAngle(dx, dz, item->rot.y, item->speed, max_turn);
     item->rot.y += angle;
     return angle;
 }
