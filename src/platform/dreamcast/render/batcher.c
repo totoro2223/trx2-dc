@@ -60,6 +60,8 @@
 #include <string.h>
 #include <uthash.h>
 
+extern uint32_t g_DC_AsmOff2;
+
 // The helpers run per vertex and per face must be inlined, whatever GCC
 // makes of them.
 #define M_HOT static inline __attribute__((always_inline))
@@ -5756,6 +5758,165 @@ static void M_SoftProject(M_SOFTRUN *const run)
 #endif
 }
 
+// The faces of an instance a soft shadow falls on (dc_soft_faces in
+// soft_sh4.S, with M_SoftFacesC as the reference): a list at a time, resumed
+// where it stopped when the list is full.
+typedef struct {
+    uint32_t idx[3];
+    float strength;
+} M_SFACE;
+typedef struct {
+    const OUTPUT_MESH_INDEX *indices; // 0
+    const M_RANGE *ranges;            // 4
+    int32_t range_count;              // 8
+    const M_XVERT *xverts;            // 12
+    const float (*soft)[3];           // 16
+    const uint8_t *soft_off;          // 20
+    int32_t cur_r;                    // 24
+    int32_t cur_i;                    // 28
+    M_SFACE *out;                     // 32
+    int32_t out_cap;                  // 36
+    int32_t out_count;                // 40
+    int32_t world;                    // 44
+    float strength;                   // 48
+    float axes0[3];                   // 52
+    float axes_sq;                    // 64
+    float graze_min;                  // 68
+    float inv_graze;                  // 72
+} M_SOFTFACES;
+_Static_assert(sizeof(OUTPUT_MESH_INDEX) == 2, "soft_faces: 16-bit indices");
+_Static_assert(sizeof(M_RANGE) == 16, "soft_faces: 16-byte ranges");
+_Static_assert(sizeof(M_XVERT) == 32, "soft_faces: 32-byte vertices");
+_Static_assert(offsetof(M_XVERT, sx) == 12, "soft_faces layout");
+_Static_assert(offsetof(M_XVERT, clip) == 28, "soft_faces layout");
+_Static_assert(offsetof(M_SOFTFACES, axes0) == 52, "soft_faces layout");
+_Static_assert(offsetof(M_SOFTFACES, inv_graze) == 72, "soft_faces layout");
+extern int dc_soft_faces(M_SOFTFACES *run);
+#define M_SOFT_LIST 64
+static M_SFACE m_SoftList[M_SOFT_LIST];
+
+[[maybe_unused]] static bool M_SoftFacesC(M_SOFTFACES *const run)
+{
+    while (run->cur_r < run->range_count) {
+        const M_RANGE *const range = &run->ranges[run->cur_r];
+        const int32_t end = range->start + range->count;
+        int32_t i = run->cur_i < 0 ? range->start : run->cur_i;
+        for (; i + 2 < end; i += 3) {
+            const OUTPUT_MESH_INDEX idx[3] = {
+                run->indices[i], run->indices[i + 1], run->indices[i + 2]
+            };
+            // Faces are tested as a whole: a big one can lie under the
+            // casters with every corner far off. Off the silhouette's cell,
+            // out of reach, between the light and the casters, or culled:
+            if ((run->soft_off[idx[0]] & run->soft_off[idx[1]]
+                 & run->soft_off[idx[2]])
+                != 0) {
+                continue;
+            }
+            const M_XVERT *const xv[3] = {
+                &run->xverts[idx[0]],
+                &run->xverts[idx[1]],
+                &run->xverts[idx[2]],
+            };
+            const uint8_t clip_and = xv[0]->clip & xv[1]->clip & xv[2]->clip;
+            const uint8_t clip_or = xv[0]->clip | xv[1]->clip | xv[2]->clip;
+            if ((clip_and & M_CLIP_CULL) != 0 || (clip_or & M_CLIP_NEAR) != 0
+                || M_IsBackFacing(xv[0], xv[1], xv[2])) {
+                continue;
+            }
+            // The face's normal, turned towards the camera (at the origin); a
+            // face turned away from the light takes no shadow from it.
+            const float e1[3] = {
+                xv[1]->x - xv[0]->x, xv[1]->y - xv[0]->y, xv[1]->z - xv[0]->z,
+            };
+            const float e2[3] = {
+                xv[2]->x - xv[0]->x, xv[2]->y - xv[0]->y, xv[2]->z - xv[0]->z,
+            };
+            const float n[3] = {
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            };
+            const float p0[3] = { xv[0]->x, xv[0]->y, xv[0]->z };
+            const float n_dot_l = M_Dot3(n, run->axes0);
+            if ((M_Dot3(n, p0) > 0.0f) == (n_dot_l < 0.0f)) {
+                continue;
+            }
+            // A face lying along the light (a wall under a light overhead)
+            // would take the silhouette smeared down all of its height: the
+            // more it turns that way, the less shadow it takes.
+            float face_strength = run->strength;
+            if (run->world) {
+                // The axes carry the view's scale: both lengths go.
+                const float len_sq = M_Dot3(n, n) * run->axes_sq;
+                const float cos_l =
+                    len_sq > 0.0f ? fabsf(n_dot_l) * M_InvSqrt(len_sq) : 0.0f;
+                face_strength *= M_Clamp(
+                    (cos_l - run->graze_min) * run->inv_graze, 0.0f, 1.0f);
+                if (face_strength <= 0.0f) {
+                    continue;
+                }
+            }
+            if (run->out_count >= run->out_cap) {
+                run->cur_i = i;
+                return false;
+            }
+            M_SFACE *const o = &run->out[run->out_count++];
+            o->idx[0] = idx[0];
+            o->idx[1] = idx[1];
+            o->idx[2] = idx[2];
+            o->strength = face_strength;
+        }
+        run->cur_r++;
+        run->cur_i = -1;
+    }
+    return true;
+}
+
+// One list, by the assembly; a verify build runs the C on a copy of the
+// cursor and compares the lists.
+static bool M_SoftFaces(M_SOFTFACES *const run)
+{
+    if ((g_DC_AsmOff2 & 128) != 0) {
+        return M_SoftFacesC(run);
+    }
+#if defined(DC_EMIT_VERIFY)
+    static M_SFACE ref_list[M_SOFT_LIST];
+    M_SOFTFACES ref = *run;
+    ref.out = ref_list;
+    const bool ref_done = M_SoftFacesC(&ref);
+    const bool done = dc_soft_faces(run);
+    static uint32_t runs;
+    static uint32_t faces;
+    static uint32_t bad;
+    bool different = done != ref_done || run->out_count != ref.out_count
+        || run->cur_r != ref.cur_r || run->cur_i != ref.cur_i;
+    for (int32_t n = 0; !different && n < run->out_count; n++) {
+        const M_SFACE *const x = &run->out[n];
+        const M_SFACE *const y = &ref_list[n];
+        different = x->idx[0] != y->idx[0] || x->idx[1] != y->idx[1]
+            || x->idx[2] != y->idx[2]
+            || fabsf(x->strength - y->strength)
+                > 1.0e-5f + 1.0e-5f * fabsf(y->strength);
+    }
+    runs++;
+    faces += run->out_count;
+    if (different && bad++ < 6) {
+        LOG_INFO(
+            "[softfaces-verify] asm %d faces (done %d), C %d (done %d)",
+            (int)run->out_count, (int)done, (int)ref.out_count, (int)ref_done);
+    }
+    if (runs % 2000 == 0) {
+        LOG_INFO(
+            "[softfaces-verify] %u runs, %u faces, %u different",
+            (unsigned)runs, (unsigned)faces, (unsigned)bad);
+    }
+    return done;
+#else
+    return dc_soft_faces(run);
+#endif
+}
+
 static void M_EmitShadowFaces(
     const MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const int32_t l, const float cell_x, const float cell_y,
@@ -5848,72 +6009,46 @@ static void M_EmitShadowFaces(
     // faces crossing the near plane take none; split them out if it shows.
     // Only the faces that go out: a room's chunks off the screen were not
     // transformed.
-    for (int32_t r = 0; r < batcher->range_count; r++) {
-        const M_RANGE *const range = &batcher->ranges[r];
-        const int32_t end = range->start + range->count;
-        for (int32_t i = range->start; i + 2 < end; i += 3) {
-            const OUTPUT_MESH_INDEX idx[3] = { indices[i], indices[i + 1], indices[i + 2] };
-            // Faces are tested as a whole: a big one can lie under the casters
-            // with every corner far off. Off the silhouette's cell, out of
-            // reach, between the light and the casters, or culled:
-            if ((soft_off[idx[0]] & soft_off[idx[1]] & soft_off[idx[2]]) != 0) {
-                continue;
-            }
+    // Which faces take the shadow, and how much, is told by dc_soft_faces (a
+    // list at a time); the C below is the reference.
+    M_SOFTFACES run = {
+        .indices = indices,
+        .ranges = batcher->ranges,
+        .range_count = batcher->range_count,
+        .xverts = batcher->xverts,
+        .soft = soft,
+        .soft_off = soft_off,
+        .out = m_SoftList,
+        .out_cap = M_SOFT_LIST,
+        .world = world,
+        .strength = strength,
+        .axes0 = { axes[0][0], axes[0][1], axes[0][2] },
+        .axes_sq = M_Dot3(axes[0], axes[0]),
+        .graze_min = M_SOFT_GRAZE_MIN,
+        .inv_graze = 1.0f / (M_SOFT_GRAZE_FULL - M_SOFT_GRAZE_MIN),
+        .cur_r = 0,
+        .cur_i = -1,
+    };
+    for (;;) {
+        run.out_count = 0;
+        const bool done = M_SoftFaces(&run);
+        for (int32_t n = 0; n < run.out_count; n++) {
+            const M_SFACE *const face = &m_SoftList[n];
             const M_XVERT *const xv[3] = {
-                &batcher->xverts[idx[0]],
-                &batcher->xverts[idx[1]],
-                &batcher->xverts[idx[2]],
+                &batcher->xverts[face->idx[0]],
+                &batcher->xverts[face->idx[1]],
+                &batcher->xverts[face->idx[2]],
             };
-            const uint8_t clip_and = xv[0]->clip & xv[1]->clip & xv[2]->clip;
-            const uint8_t clip_or = xv[0]->clip | xv[1]->clip | xv[2]->clip;
-            if ((clip_and & M_CLIP_CULL) != 0 || (clip_or & M_CLIP_NEAR) != 0
-                || M_IsBackFacing(xv[0], xv[1], xv[2])) {
-                continue;
-            }
-            const float *const s[3] = { soft[idx[0]], soft[idx[1]], soft[idx[2]] };
-            // The face's normal, turned towards the camera (at the origin); a
-            // face turned away from the light takes no shadow from it.
-            const float e1[3] = {
-                xv[1]->x - xv[0]->x, xv[1]->y - xv[0]->y, xv[1]->z - xv[0]->z,
+            const float *const s[3] = {
+                soft[face->idx[0]], soft[face->idx[1]], soft[face->idx[2]]
             };
-            const float e2[3] = {
-                xv[2]->x - xv[0]->x, xv[2]->y - xv[0]->y, xv[2]->z - xv[0]->z,
-            };
-            const float n[3] = {
-                e1[1] * e2[2] - e1[2] * e2[1],
-                e1[2] * e2[0] - e1[0] * e2[2],
-                e1[0] * e2[1] - e1[1] * e2[0],
-            };
-            const float p0[3] = { xv[0]->x, xv[0]->y, xv[0]->z };
-            const float n_dot_l = M_Dot3(n, axes[0]);
-            if ((M_Dot3(n, p0) > 0.0f) == (n_dot_l < 0.0f)) {
-                continue;
-            }
-            // A face lying along the light (a wall under a light overhead)
-            // would take the silhouette smeared down all of its height: the
-            // more it turns that way, the less shadow it takes.
-            float face_strength = strength;
-            if (world) {
-                // The axes carry the view's scale: both lengths go.
-                const float len_sq = M_Dot3(n, n) * M_Dot3(axes[0], axes[0]);
-                const float cos_l =
-                    len_sq > 0.0f ? fabsf(n_dot_l) * M_InvSqrt(len_sq) : 0.0f;
-                face_strength *= M_Clamp(
-                    (cos_l - M_SOFT_GRAZE_MIN)
-                        * (1.0f / (M_SOFT_GRAZE_FULL - M_SOFT_GRAZE_MIN)),
-                    0.0f, 1.0f);
-                if (face_strength <= 0.0f) {
-                    continue;
-                }
-            }
-
             DC_PVR_SetState(DC_BLEND_MUL, DC_PVR_SHADOW_MAP, true);
             pvr_vertex_t *const out = DC_PVR_ReservePoly(3);
             if (out == nullptr) {
                 return;
             }
             for (int32_t k = 0; k < 3; k++) {
-                const float t = face_strength
+                const float t = face->strength
                     * M_Clamp(1.0f - s[k][2] * inv_fade, 0.0f, 1.0f);
                 M_Project(
                     xv[k],
@@ -5927,6 +6062,9 @@ static void M_EmitShadowFaces(
             }
             DC_PVR_CommitPoly(3);
             m_SoftFaces++;
+        }
+        if (done) {
+            break;
         }
     }
 }
@@ -7524,7 +7662,7 @@ static void M_Transform34(
 }
 
 // The middle of the casters' bounding boxes, in world space.
-static void M_CastersCenter(
+static void M_CastersCenterC(
     const M_CASTER *const casters, const int32_t count, float out[3])
 {
     out[0] = out[1] = out[2] = 0.0f;
@@ -7539,6 +7677,45 @@ static void M_CastersCenter(
             out[k] += world[k] / count;
         }
     }
+}
+
+// In assembly (soft_sh4.S, dc_casters_center); a verify build runs the C and
+// compares. TRX_DC_ASMOFF2 bit 256 turns it off.
+_Static_assert(sizeof(M_CASTER) == 88, "dc_casters_center strides 88 bytes");
+_Static_assert(offsetof(M_CASTER, bounds) == 4, "dc_casters_center layout");
+_Static_assert(offsetof(M_CASTER, world) == 28, "dc_casters_center layout");
+extern void dc_casters_center(
+    const M_CASTER *casters, int32_t count, float out[3]);
+
+static void M_CastersCenter(
+    const M_CASTER *const casters, const int32_t count, float out[3])
+{
+    if ((g_DC_AsmOff2 & 256) != 0) {
+        M_CastersCenterC(casters, count, out);
+        return;
+    }
+    dc_casters_center(casters, count, out);
+#if defined(DC_EMIT_VERIFY)
+    float ref[3];
+    M_CastersCenterC(casters, count, ref);
+    static uint32_t runs;
+    static uint32_t bad;
+    runs++;
+    for (int32_t k = 0; k < 3; k++) {
+        if (fabsf(out[k] - ref[k]) > 1.0e-2f + 1.0e-5f * fabsf(ref[k])) {
+            if (bad++ < 4) {
+                LOG_INFO(
+                    "[center-verify] %d: asm %f C %f", (int)k, out[k], ref[k]);
+            }
+            break;
+        }
+    }
+    if (runs % 4000 == 0) {
+        LOG_INFO(
+            "[center-verify] %u runs, %u different", (unsigned)runs,
+            (unsigned)bad);
+    }
+#endif
 }
 
 // Takes the shadow map's lights into this frame's eye space, about where the
@@ -9861,6 +10038,92 @@ M_HOT DC_PVR_VERTEX M_SilVertex(
     };
 }
 
+// Where a caster's vertices fall on its cell of the map (dc_sil_project in
+// soft_sh4.S; M_SilProjectC is the reference, the loop it always was).
+typedef struct {
+    const OUTPUT_MESH_VERTEX *vertices; // 0
+    const uint16_t *vref;               // 4
+    const uint16_t *twin;               // 8
+    int32_t count;                      // 12
+    float (*xy)[2];                     // 16
+    int32_t persp;                      // 20
+    float row_x[4];                     // 24
+    float row_y[4];                     // 40
+    float row_z[4];                     // 56
+    float dist;                         // 72
+    float size;                         // 76
+    float half;                         // 80
+    float third;                        // 84
+} M_SILRUN;
+_Static_assert(offsetof(M_SILRUN, row_x) == 24, "dc_sil_project layout");
+_Static_assert(offsetof(M_SILRUN, dist) == 72, "dc_sil_project layout");
+_Static_assert(offsetof(M_SILRUN, third) == 84, "dc_sil_project layout");
+extern void dc_sil_project(M_SILRUN *run);
+
+static void M_SilProjectC(const M_SILRUN *const run, const M_BINDING *const bind)
+{
+    for (int32_t j = 0; j < run->count; j++) {
+        if (run->twin != nullptr && run->twin[j] != j) {
+            run->xy[j][0] = run->xy[run->twin[j]][0];
+            run->xy[j][1] = run->xy[run->twin[j]][1];
+            continue;
+        }
+        const OUTPUT_MESH_VERTEX *const v = M_Corner(bind, run->vertices, j);
+        const float px = v->pos.x;
+        const float py = v->pos.y;
+        const float pz = v->pos.z;
+        float x = run->row_x[0] * px + run->row_x[1] * py + run->row_x[2] * pz
+            + run->row_x[3];
+        float y = run->row_y[0] * px + run->row_y[1] * py + run->row_y[2] * pz
+            + run->row_y[3];
+        if (run->persp) {
+            const float z = run->row_z[0] * px + run->row_z[1] * py
+                + run->row_z[2] * pz + run->row_z[3];
+            const float f = M_PerspScale(run->dist, z);
+            x = 0.5f + (x - 0.5f) * f;
+            y = 0.5f + (y - 0.5f) * f;
+        }
+        // Kept inside the cell, so as not to spill into the next.
+        run->xy[j][0] = M_Clamp(x, 0.0f, 1.0f) * run->size;
+        run->xy[j][1] = M_Clamp(y, 0.0f, 1.0f) * run->size;
+    }
+}
+
+// TRX_DC_ASMOFF2 bit 512 turns the assembly off.
+static void M_SilProject(M_SILRUN *const run, const M_BINDING *const bind)
+{
+    if ((g_DC_AsmOff2 & 512) != 0) {
+        M_SilProjectC(run, bind);
+        return;
+    }
+    dc_sil_project(run);
+#if defined(DC_EMIT_VERIFY)
+    static float ref[M_SOFT_MAX_VERTICES][2];
+    M_SILRUN check = *run;
+    check.xy = ref;
+    M_SilProjectC(&check, bind);
+    static uint32_t runs;
+    static uint32_t bad;
+    runs++;
+    for (int32_t j = 0; j < run->count; j++) {
+        if (fabsf(run->xy[j][0] - ref[j][0]) > 1.0e-2f
+            || fabsf(run->xy[j][1] - ref[j][1]) > 1.0e-2f) {
+            if (bad++ < 6) {
+                LOG_INFO(
+                    "[sil-verify] vertex %d: asm %f %f, C %f %f", (int)j,
+                    run->xy[j][0], run->xy[j][1], ref[j][0], ref[j][1]);
+            }
+            break;
+        }
+    }
+    if (runs % 4000 == 0) {
+        LOG_INFO(
+            "[sil-verify] %u runs, %u different", (unsigned)runs,
+            (unsigned)bad);
+    }
+#endif
+}
+
 static void M_DrawSilhouettes(const int32_t l)
 {
     const M_SOFT_LIGHT *const light = &m_Soft.lights[l];
@@ -9917,31 +10180,22 @@ static void M_DrawSilhouettes(const int32_t l)
             + (w[2][3] - c[2]) * light->dir[2];
         const OUTPUT_MESH_VERTEX *const vertices =
             Vector_GetData(bind->mesh->vertices);
-        const uint16_t *const twin = bind->twin;
-        for (int32_t j = 0; j < bind->vertex_count; j++) {
-            if (twin != nullptr && twin[j] != j) {
-                m_SoftXY[j][0] = m_SoftXY[twin[j]][0];
-                m_SoftXY[j][1] = m_SoftXY[twin[j]][1];
-                continue;
-            }
-            const float px = M_Corner(bind, vertices, j)->pos.x;
-            const float py = M_Corner(bind, vertices, j)->pos.y;
-            const float pz = M_Corner(bind, vertices, j)->pos.z;
-            float x = to_cell[0][0] * px + to_cell[0][1] * py
-                + to_cell[0][2] * pz + to_cell[0][3];
-            float y = to_cell[1][0] * px + to_cell[1][1] * py
-                + to_cell[1][2] * pz + to_cell[1][3];
-            if (persp) {
-                const float z = to_depth[0] * px + to_depth[1] * py
-                    + to_depth[2] * pz + to_depth[3];
-                const float f = M_PerspScale(light->dist, z);
-                x = 0.5f + (x - 0.5f) * f;
-                y = 0.5f + (y - 0.5f) * f;
-            }
-            // Kept inside the cell, so as not to spill into the next.
-            m_SoftXY[j][0] = M_Clamp(x, 0.0f, 1.0f) * size;
-            m_SoftXY[j][1] = M_Clamp(y, 0.0f, 1.0f) * size;
-        }
+        M_SILRUN sil = {
+            .vertices = vertices,
+            .vref = bind->vref,
+            .twin = bind->twin,
+            .count = bind->vertex_count,
+            .xy = m_SoftXY,
+            .persp = persp,
+            .dist = light->dist,
+            .size = size,
+            .half = 0.5f,
+            .third = 1.0f / 3.0f,
+        };
+        memcpy(sil.row_x, to_cell[0], sizeof(sil.row_x));
+        memcpy(sil.row_y, to_cell[1], sizeof(sil.row_y));
+        memcpy(sil.row_z, to_depth, sizeof(sil.row_z));
+        M_SilProject(&sil, bind);
         const OUTPUT_MESH *const mesh = bind->mesh;
         const OUTPUT_MESH_INDEX *const indices =
             Vector_GetData(mesh->opaque_vertex_indices);
