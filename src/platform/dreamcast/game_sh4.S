@@ -568,3 +568,139 @@ _dc_translate_rel:
     TROW
     rts
     nop
+
+! void dc_mat_copy(MATRIX *dst, const MATRIX *src);   96 bytes, matrix.c Matrix_Push
+    .global _dc_mat_copy
+    .align 2
+_dc_mat_copy:
+    mov     #6,r7
+1:  mov.l   @r5+,r0
+    mov.l   @r5+,r1
+    mov.l   @r5+,r2
+    mov.l   @r5+,r3
+    mov.l   r0,@r4
+    mov.l   r1,@(4,r4)
+    mov.l   r2,@(8,r4)
+    mov.l   r3,@(12,r4)
+    add     #16,r4
+    dt      r7
+    bf      1b
+    rts
+    nop
+
+! int dc_mul3x3(MATRIX *out, const MATRIX *lhs, const MATRIX *rhs);   matrix.c Matrix_Mul3x3_M
+!
+! out[r][c] = (sum over k of lhs[r][k] * rhs[k][c]) >> 14 for the 3x3 part, in
+! 64 bits. Does it only when all eighteen entries read are int32 (so each product is
+! one dmuls.l); otherwise returns 0 and touches nothing. out may be lhs: the nine
+! results wait on the stack until all are found.
+    .macro CHKENT off
+    mov.l   @(\off,r2),r0
+    mov.l   @(\off+4,r2),r1
+    shad    r7,r0                   ! the sign of the low word, as a high word
+    cmp/eq  r0,r1
+    bf      m3_fail
+    .endm
+    .macro CHKM reg
+    mov     \reg,r2
+    mov     #3,r3
+1:  CHKENT  0
+    CHKENT  8
+    CHKENT  16
+    add     #32,r2
+    dt      r3
+    bf      1b
+    .endm
+    .global _dc_mul3x3
+    .align 2
+_dc_mul3x3:
+    mov     #-31,r7
+    CHKM    r5
+    CHKM    r6
+    bra     m3_ok
+    nop
+m3_fail:
+    rts
+    mov     #0,r0
+m3_ok:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    add     #-72,r15
+    mov     r15,r11
+    mov     r5,r2                   ! the row of lhs
+    mov     #3,r12
+m3_row:
+    mov     r6,r7                   ! the column of rhs
+    mov     #3,r13
+m3_col:
+    mov.l   @(0,r2),r0
+    mov.l   @(0,r7),r1
+    dmuls.l r0,r1
+    sts     macl,r8
+    sts     mach,r9
+    mov.l   @(8,r2),r0
+    mov.l   @(32,r7),r1
+    dmuls.l r0,r1
+    sts     macl,r10
+    clrt
+    addc    r10,r8
+    sts     mach,r10
+    addc    r10,r9
+    mov.l   @(16,r2),r0
+    add     #32,r7
+    mov.l   @(32,r7),r1
+    dmuls.l r0,r1
+    sts     macl,r10
+    clrt
+    addc    r10,r8
+    sts     mach,r10
+    addc    r10,r9
+    add     #-32,r7
+    mov     #-14,r0
+    shld    r0,r8                   ! the 64-bit value >> 14, arithmetic
+    mov     #18,r1
+    mov     r9,r10
+    shld    r1,r10
+    or      r10,r8
+    shad    r0,r9
+    mov.l   r8,@r11
+    mov.l   r9,@(4,r11)
+    add     #8,r11
+    add     #8,r7
+    dt      r13
+    bf      m3_col
+    add     #32,r2
+    dt      r12
+    bf      m3_row
+    mov     r15,r11                 ! the results into out
+    mov     r4,r2
+    mov     #3,r12
+m3_put:
+    mov.l   @r11+,r0
+    mov.l   @r11+,r1
+    mov.l   r0,@r2
+    mov.l   r1,@(4,r2)
+    mov.l   @r11+,r0
+    mov.l   @r11+,r1
+    mov.l   r0,@(8,r2)
+    mov.l   r1,@(12,r2)
+    mov.l   @r11+,r0
+    mov.l   @r11+,r1
+    mov.l   r0,@(16,r2)
+    mov.l   r1,@(20,r2)
+    add     #32,r2
+    dt      r12
+    bf      m3_put
+    add     #72,r15
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    rts
+    mov     #1,r0

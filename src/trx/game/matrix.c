@@ -666,6 +666,7 @@ extern uint32_t g_DC_AsmOff;
 extern void dc_rot_x(MATRIX *m, int32_t s, int32_t c);
 extern void dc_rot_y(MATRIX *m, int32_t s, int32_t c);
 extern void dc_rot_z(MATRIX *m, int32_t s, int32_t c);
+extern int dc_mul3x3(MATRIX *out, const MATRIX *lhs, const MATRIX *rhs);
 extern void dc_translate_rel(MATRIX *m, int32_t x, int32_t y, int32_t z);
 
 #if defined(DC_EMIT_VERIFY)
@@ -999,7 +1000,7 @@ static void M_Interpolate(
     result->_23 = (int32_t)llround(m1->_23 + (m2->_23 - m1->_23) * rate);
 }
 
-void Matrix_Mul3x3_M(
+static void M_Mul3x3_C(
     MATRIX *const out, const MATRIX *const lhs, const MATRIX *const rhs)
 {
 #define L_MUL(r_, c_)                                                          \
@@ -1028,6 +1029,37 @@ void Matrix_Mul3x3_M(
     out->_22 = r22;
 
 #undef L_MUL
+}
+
+// In assembly (game_sh4.S, dc_mul3x3) when every entry is int32, else the C;
+// ASMOFF bit 268435456 turns it off.
+void Matrix_Mul3x3_M(
+    MATRIX *const out, const MATRIX *const lhs, const MATRIX *const rhs)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff & 268435456) == 0) {
+    #if defined(DC_EMIT_VERIFY)
+        MATRIX ref = *out;
+        M_Mul3x3_C(&ref, lhs, rhs);
+        if (dc_mul3x3(out, lhs, rhs)) {
+            static uint32_t m_M3Runs;
+            M_MxCheck(&ref, out, out, 0, 0);
+            if (++m_M3Runs % 1000 == 0) {
+                LOG_WARNING(
+                    "[mul3x3-verify] %u asm runs", (unsigned)m_M3Runs);
+            }
+        } else {
+            *out = ref;
+        }
+        return;
+    #else
+        if (dc_mul3x3(out, lhs, rhs)) {
+            return;
+        }
+    #endif
+    }
+#endif
+    M_Mul3x3_C(out, lhs, rhs);
 }
 
 void Matrix_ResetStack(void)
@@ -1089,6 +1121,29 @@ void Matrix_SquashW2V(void)
     m_MatrixStack[0] = g_ViewMatrix;
 }
 
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_mat_copy); ASMOFF bit 134217728 turns it off.
+extern void dc_mat_copy(MATRIX *dst, const MATRIX *src);
+static void M_MatCopy(MATRIX *const dst, const MATRIX *const src)
+{
+    if ((g_DC_AsmOff & 134217728) != 0) {
+        *dst = *src;
+        return;
+    }
+    dc_mat_copy(dst, src);
+    #if defined(DC_EMIT_VERIFY)
+    if (memcmp(dst, src, sizeof(MATRIX)) != 0) {
+        LOG_WARNING("[matrix-verify] MISMATCH copy");
+    }
+    #endif
+}
+#else
+static void M_MatCopy(MATRIX *const dst, const MATRIX *const src)
+{
+    *dst = *src;
+}
+#endif
+
 bool Matrix_Push(void)
 {
     if (g_MatrixPtr + 1 - m_MatrixStack >= MAX_MATRICES) {
@@ -1099,10 +1154,10 @@ bool Matrix_Push(void)
     }
     g_MatrixPtr++;
     if (!g_MatrixWorldOnly) {
-        g_MatrixPtr[0] = g_MatrixPtr[-1];
+        M_MatCopy(&g_MatrixPtr[0], &g_MatrixPtr[-1]);
     }
     g_WMatrixPtr++;
-    g_WMatrixPtr[0] = g_WMatrixPtr[-1];
+    M_MatCopy(&g_WMatrixPtr[0], &g_WMatrixPtr[-1]);
     return true;
 }
 
