@@ -596,26 +596,81 @@ static void M_InterpolateLinearC(
 }
 #endif
 
-static void M_ScaleX(MATRIX *const m, const int32_t scale)
+static void M_ScaleXC(MATRIX *const m, const int32_t scale)
 {
     m->_00 = ((int64_t)m->_00 * scale) >> W2V_SHIFT;
     m->_10 = ((int64_t)m->_10 * scale) >> W2V_SHIFT;
     m->_20 = ((int64_t)m->_20 * scale) >> W2V_SHIFT;
 }
 
-static void M_ScaleY(MATRIX *const m, const int32_t scale)
+static void M_ScaleYC(MATRIX *const m, const int32_t scale)
 {
     m->_01 = ((int64_t)m->_01 * scale) >> W2V_SHIFT;
     m->_11 = ((int64_t)m->_11 * scale) >> W2V_SHIFT;
     m->_21 = ((int64_t)m->_21 * scale) >> W2V_SHIFT;
 }
 
-static void M_ScaleZ(MATRIX *const m, const int32_t angle)
+static void M_ScaleZC(MATRIX *const m, const int32_t angle)
 {
     m->_02 = ((int64_t)m->_02 * angle) >> W2V_SHIFT;
     m->_12 = ((int64_t)m->_12 * angle) >> W2V_SHIFT;
     m->_22 = ((int64_t)m->_22 * angle) >> W2V_SHIFT;
 }
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_scale_col) when the column fits int32; ASMOFF2
+// bit 2 turns it off.
+extern uint32_t g_DC_AsmOff2;
+extern int dc_scale_col(MATRIX *m, int32_t scale, int32_t coloff);
+static void M_ScaleCol(
+    MATRIX *const m, const int32_t scale, const int32_t coloff,
+    void (*c_fn)(MATRIX *, int32_t))
+{
+    if ((g_DC_AsmOff2 & 2) == 0) {
+    #if defined(DC_EMIT_VERIFY)
+        MATRIX ref = *m;
+        c_fn(&ref, scale);
+        if (dc_scale_col(m, scale, coloff)) {
+            if (memcmp(&ref, m, sizeof(MATRIX)) != 0) {
+                LOG_WARNING("[matrix-verify] MISMATCH scale");
+            }
+            return;
+        }
+    #else
+        if (dc_scale_col(m, scale, coloff)) {
+            return;
+        }
+    #endif
+    }
+    c_fn(m, scale);
+}
+static void M_ScaleX(MATRIX *const m, const int32_t scale)
+{
+    M_ScaleCol(m, scale, 0, M_ScaleXC);
+}
+static void M_ScaleY(MATRIX *const m, const int32_t scale)
+{
+    M_ScaleCol(m, scale, 8, M_ScaleYC);
+}
+static void M_ScaleZ(MATRIX *const m, const int32_t scale)
+{
+    M_ScaleCol(m, scale, 16, M_ScaleZC);
+}
+#else
+static void M_ScaleX(MATRIX *const m, const int32_t scale)
+{
+    M_ScaleXC(m, scale);
+}
+static void M_ScaleY(MATRIX *const m, const int32_t scale)
+{
+    M_ScaleYC(m, scale);
+}
+static void M_ScaleZ(MATRIX *const m, const int32_t scale)
+{
+    M_ScaleZC(m, scale);
+}
+#endif
+
 
 // The low 32 bits of a product, as the rotations keep no more: 32-bit
 // multiplies (mul.l) in place of the 64-bit ones the int64 entries invite.
@@ -1066,7 +1121,7 @@ static void M_TranslateSet(MATRIX *const m, const XYZ_32 pos)
     m->_23 = (int64_t)pos.z * scale;
 }
 
-static void M_InterpolateArm(MATRIX *const m, const MATRIX *const mi)
+static void M_InterpolateArmC(MATRIX *const m, const MATRIX *const mi)
 {
     m->_00 = m[-2]._00;
     m->_01 = m[-2]._01;
@@ -1081,6 +1136,51 @@ static void M_InterpolateArm(MATRIX *const m, const MATRIX *const mi)
     m->_22 = m[-2]._22;
     m->_23 += ((mi->_23 - m->_23) * m_IMFrac) / m_IMRate;
 }
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_arm_interp) for small steps; ASMOFF2 bit 4 turns
+// it off. A verify build runs the C on the same matrix afterwards and compares.
+extern int dc_arm_interp(MATRIX *m, const MATRIX *mi, const int32_t *p);
+static void M_InterpolateArm(MATRIX *const m, const MATRIX *const mi)
+{
+    if ((g_DC_AsmOff2 & 4) == 0 && m_IMRate > 0 && m_IMFrac >= 0
+        && m_IMFrac < 32) {
+        const int32_t p[3] = {
+            m_IMFrac, m_IMRate, (int32_t)(0xFFFFFFFFu / (uint32_t)m_IMRate)
+        };
+    #if defined(DC_EMIT_VERIFY)
+        const MATRIX before = *m;
+        if (dc_arm_interp(m, mi, p)) {
+            const MATRIX got = *m;
+            *m = before;
+            M_InterpolateArmC(m, mi);
+            static uint32_t runs;
+            static uint32_t bad;
+            if (memcmp(&got, m, sizeof(MATRIX)) != 0) {
+                bad++;
+                LOG_WARNING("[arm-verify] MISMATCH");
+            }
+            if (runs++ == 0 || runs % 500 == 0) {
+                LOG_WARNING(
+                    "[arm-verify] %u runs, %u bad", (unsigned)runs,
+                    (unsigned)bad);
+            }
+            return;
+        }
+    #else
+        if (dc_arm_interp(m, mi, p)) {
+            return;
+        }
+    #endif
+    }
+    M_InterpolateArmC(m, mi);
+}
+#else
+static void M_InterpolateArm(MATRIX *const m, const MATRIX *const mi)
+{
+    M_InterpolateArmC(m, mi);
+}
+#endif
 
 static void M_Interpolate(
     const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
@@ -1171,8 +1271,15 @@ void Matrix_Mul3x3_M(
     M_Mul3x3_C(out, lhs, rhs);
 }
 
+#if defined(__DREAMCAST__) && defined(DC_EMIT_VERIFY)
+static void M_SelfTest(void);
+#endif
+
 void Matrix_ResetStack(void)
 {
+#if defined(__DREAMCAST__) && defined(DC_EMIT_VERIFY)
+    M_SelfTest();
+#endif
     g_MatrixPtr = &m_MatrixStack[0];
     g_WMatrixPtr = &m_WMatrixStack[0];
 }
@@ -1200,15 +1307,9 @@ void Matrix_ScaleW2V(const XYZ_32 scale)
     // scale the columns (world axes), matching the original engine's
     // ScaleCurrentMatrix, then rebuild the translation through the scaled
     // rotation so the warp stays centered on the camera
-    g_ViewMatrix._00 = (g_ViewMatrix._00 * scale.x) >> W2V_SHIFT;
-    g_ViewMatrix._10 = (g_ViewMatrix._10 * scale.x) >> W2V_SHIFT;
-    g_ViewMatrix._20 = (g_ViewMatrix._20 * scale.x) >> W2V_SHIFT;
-    g_ViewMatrix._01 = (g_ViewMatrix._01 * scale.y) >> W2V_SHIFT;
-    g_ViewMatrix._11 = (g_ViewMatrix._11 * scale.y) >> W2V_SHIFT;
-    g_ViewMatrix._21 = (g_ViewMatrix._21 * scale.y) >> W2V_SHIFT;
-    g_ViewMatrix._02 = (g_ViewMatrix._02 * scale.z) >> W2V_SHIFT;
-    g_ViewMatrix._12 = (g_ViewMatrix._12 * scale.z) >> W2V_SHIFT;
-    g_ViewMatrix._22 = (g_ViewMatrix._22 * scale.z) >> W2V_SHIFT;
+    M_ScaleX(&g_ViewMatrix, scale.x);
+    M_ScaleY(&g_ViewMatrix, scale.y);
+    M_ScaleZ(&g_ViewMatrix, scale.z);
     g_ViewMatrix._03 = 0;
     g_ViewMatrix._13 = 0;
     g_ViewMatrix._23 = 0;
@@ -1654,3 +1755,146 @@ XYZ_32 Matrix_GetOffset_M(const MATRIX *const m)
         .z = m->_23 >> W2V_SHIFT,
     };
 }
+
+#if defined(__DREAMCAST__) && defined(DC_EMIT_VERIFY)
+// A verify build tries the assembly against the C once, on random matrices, for
+// the routines a level seldom reaches (scale, product, arm, blend), edges
+// included: entries that do not fit 32 bits and steps too big for the
+// reciprocal, which must come back as "not done".
+static uint32_t m_StSeed = 0x2545F491u;
+static uint32_t M_StRand(void)
+{
+    m_StSeed ^= m_StSeed << 13;
+    m_StSeed ^= m_StSeed >> 17;
+    m_StSeed ^= m_StSeed << 5;
+    return m_StSeed;
+}
+
+static int64_t M_StEntry(const int32_t kind)
+{
+    const uint32_t r = M_StRand();
+    switch (kind) {
+    case 0:
+        return (int32_t)(r % 65537) - 32768;
+    case 1:
+        return (int64_t)(int32_t)r;
+    default:
+        return ((int64_t)M_StRand() << 32) | r;
+    }
+}
+
+static void M_StFill(MATRIX *const m, const int32_t kind)
+{
+    int64_t *const e = &m->_00;
+    for (int32_t i = 0; i < 12; i++) {
+        e[i] = M_StEntry(kind);
+    }
+}
+
+static void M_SelfTest(void)
+{
+    static bool done;
+    if (done) {
+        return;
+    }
+    done = true;
+    uint32_t bad_scale = 0, run_scale = 0, bad_mul = 0, run_mul = 0;
+    uint32_t bad_arm = 0, run_arm = 0, bad_blend = 0, run_blend = 0;
+    uint32_t skipped = 0;
+    for (int32_t n = 0; n < 6000; n++) {
+        const int32_t kind = n % 6 == 5 ? 2 : (n % 6 == 4 ? 1 : 0);
+        MATRIX a, ref;
+        M_StFill(&a, kind);
+        const int32_t scale = (int32_t)(M_StRand() % 200001) - 100000;
+        for (int32_t c = 0; c < 3; c++) {
+            ref = a;
+            MATRIX got = a;
+            if (c == 0) {
+                M_ScaleXC(&ref, scale);
+            } else if (c == 1) {
+                M_ScaleYC(&ref, scale);
+            } else {
+                M_ScaleZC(&ref, scale);
+            }
+            if (dc_scale_col(&got, scale, c * 8)) {
+                run_scale++;
+                if (memcmp(&ref, &got, sizeof(MATRIX)) != 0) {
+                    bad_scale++;
+                }
+            } else {
+                skipped++;
+            }
+        }
+        MATRIX l, r;
+        M_StFill(&l, kind);
+        M_StFill(&r, kind == 2 ? 0 : kind);
+        ref = l;
+        M_Mul3x3_C(&ref, &l, &r);
+        MATRIX got = l;
+        if (dc_mul3x3(&got, &got, &r)) {
+            run_mul++;
+            if (memcmp(&ref, &got, sizeof(MATRIX)) != 0) {
+                bad_mul++;
+            }
+        }
+        MATRIX arm[3];
+        M_StFill(&arm[0], 0);
+        M_StFill(&arm[1], 0);
+        M_StFill(&arm[2], 0);
+        MATRIX mi;
+        M_StFill(&mi, 0);
+        const int32_t reach = n % 3 == 0 ? (1 << 28) : (1 << 24);
+        arm[2]._03 = (int64_t)(int32_t)(M_StRand() % (2 * reach)) - reach;
+        arm[2]._13 = (int64_t)(int32_t)(M_StRand() % (2 * reach)) - reach;
+        arm[2]._23 = (int64_t)(int32_t)(M_StRand() % (2 * reach)) - reach;
+        mi._03 = (int64_t)(int32_t)(M_StRand() % (2 * reach)) - reach;
+        mi._13 = (int64_t)(int32_t)(M_StRand() % (2 * reach)) - reach;
+        mi._23 = (int64_t)(int32_t)(M_StRand() % (2 * reach)) - reach;
+        m_IMRate = 1 + (int32_t)(M_StRand() % 40);
+        m_IMFrac = (int32_t)(M_StRand() % 32);
+        MATRIX arm_ref[3] = { arm[0], arm[1], arm[2] };
+        const int32_t p[3] = {
+            m_IMFrac, m_IMRate, (int32_t)(0xFFFFFFFFu / (uint32_t)m_IMRate)
+        };
+        M_InterpolateArmC(&arm_ref[2], &mi);
+        if (dc_arm_interp(&arm[2], &mi, p)) {
+            run_arm++;
+            if (memcmp(&arm_ref[2], &arm[2], sizeof(MATRIX)) != 0) {
+                bad_arm++;
+            }
+        }
+        MATRIX b1, b2;
+        M_StFill(&b1, 1);
+        M_StFill(&b2, 1);
+        if (n % 2 == 0) {
+            for (int32_t i = 0; i < 12; i++) {
+                (&b2._00)[i] = (&b1._00)[i] + (int32_t)(M_StRand() % 2000001)
+                    - 1000000;
+            }
+        }
+        int32_t rate = 1 + (int32_t)(M_StRand() % 40);
+        int32_t frac = (int32_t)(M_StRand() % 32);
+        if (n % 5 == 0) {
+            rate = 2;
+            frac = 1;
+        }
+        const uint32_t inv = 0xFFFFFFFFu / (uint32_t)rate;
+        const int32_t bp[3] = { frac, rate, (int32_t)inv };
+        MATRIX bref;
+        M_InterpolateLinearC(&b1, &b2, &bref, frac, rate, inv);
+        MATRIX bgot;
+        if (dc_blend12(&bgot, &b1, &b2, bp)) {
+            run_blend++;
+            if (memcmp(&bref, &bgot, sizeof(MATRIX)) != 0) {
+                bad_blend++;
+            }
+        }
+    }
+    LOG_WARNING(
+        "[selftest] scale %u runs %u bad | mul3x3 %u runs %u bad | arm %u runs "
+        "%u bad | blend %u runs %u bad | scale skipped %u",
+        (unsigned)run_scale, (unsigned)bad_scale, (unsigned)run_mul,
+        (unsigned)bad_mul, (unsigned)run_arm, (unsigned)bad_arm,
+        (unsigned)run_blend, (unsigned)bad_blend, (unsigned)skipped);
+}
+#endif

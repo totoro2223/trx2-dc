@@ -1217,3 +1217,182 @@ gf_out:
     .long   0x44800000
 .Lgf_h:
     .long   0x3F000000
+
+! int dc_scale_col(MATRIX *m, int32_t scale, int32_t coloff);   matrix.c M_ScaleX/Y/Z
+!
+! The three entries of one column (coloff 0, 8 or 16 bytes) times scale >> 14, in
+! 64 bits: m[r][c] = (int64) m[r][c] * scale >> 14. Only when the three entries
+! are int32 (one dmuls.l each); otherwise returns 0 and writes nothing.
+    .global _dc_scale_col
+    .align 2
+_dc_scale_col:
+    add     r6,r4
+    mov     #-31,r7
+    mov     r4,r2
+    mov     #3,r3
+sc_chk:
+    mov.l   @(0,r2),r0
+    mov.l   @(4,r2),r1
+    shad    r7,r0
+    cmp/eq  r0,r1
+    bf      sc_fail
+    add     #32,r2
+    dt      r3
+    bf      sc_chk
+    mov     #3,r3
+sc_go:
+    mov.l   @(0,r4),r0
+    dmuls.l r0,r5
+    sts     macl,r1
+    sts     mach,r2
+    mov     #-14,r0
+    shld    r0,r1
+    mov     #18,r0
+    mov     r2,r7
+    shld    r0,r7
+    or      r7,r1
+    mov     #-14,r0
+    shad    r0,r2
+    mov.l   r1,@(0,r4)
+    mov.l   r2,@(4,r4)
+    add     #32,r4
+    dt      r3
+    bf      sc_go
+    rts
+    mov     #1,r0
+sc_fail:
+    rts
+    mov     #0,r0
+
+! int dc_arm_interp(MATRIX *m, const MATRIX *mi, const int32_t *p);   matrix.c M_InterpolateArm
+!
+! The arm of a pose: the 3x3 part of m[-2], and each translation moved
+! (mi - m) * frac / rate toward mi's (truncating toward zero, by the reciprocal;
+! p: frac, rate, 2^32-1 / rate). Only when frac < 32 and every step lies within
+! +-(2^26-1); otherwise returns 0 and writes nothing.
+    .global _dc_arm_interp
+    .align 2
+_dc_arm_interp:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov.l   @(0,r6),r8              ! frac
+    mov.l   @(4,r6),r9              ! rate
+    mov.l   @(8,r6),r10             ! inv
+    mov.l   .Lai_k26,r12
+    mov.l   .Lai_k27,r13
+    mov     r4,r2
+    add     #24,r2
+    mov     r5,r3
+    add     #24,r3
+    mov     #3,r11
+ai_chk:
+    mov.l   @r2,r0
+    mov.l   @(4,r2),r1
+    mov.l   @r3,r6
+    mov.l   @(4,r3),r7
+    clrt
+    subc    r0,r6
+    subc    r1,r7                   ! d
+    mov     r6,r1
+    shll    r1
+    subc    r1,r1
+    cmp/eq  r1,r7
+    bf      ai_fail
+    add     r12,r6
+    cmp/hi  r13,r6
+    bt      ai_fail
+    add     #32,r2
+    add     #32,r3
+    dt      r11
+    bf      ai_chk
+    mov     r4,r2
+    add     #24,r2
+    mov     r5,r3
+    add     #24,r3
+    mov     #3,r11
+ai_com:
+    mov.l   @r2,r0                  ! the translation, low
+    mov.l   @(4,r2),r1              ! high
+    mov.l   @r3,r6
+    sub     r0,r6                   ! d (low word is all there is)
+    mul.l   r6,r8
+    sts     macl,r7                 ! n
+    mov     r7,r6
+    cmp/pz  r6
+    bt      ai_pos
+    neg     r6,r6                   ! u
+ai_pos:
+    dmulu.l r6,r10
+    sts     mach,r12                ! q
+    mul.l   r12,r9
+    sts     macl,r13
+    sub     r13,r6                  ! r
+ai_fix:
+    cmp/hs  r9,r6
+    bf      ai_done
+    add     #1,r12
+    bra     ai_fix
+    sub     r9,r6
+ai_done:
+    mov     #0,r13
+    cmp/pz  r7
+    bf      ai_neg
+    clrt
+    addc    r12,r0
+    addc    r13,r1
+    bra     ai_put
+    nop
+ai_neg:
+    clrt
+    subc    r12,r0
+    subc    r13,r1
+ai_put:
+    mov.l   r0,@r2
+    mov.l   r1,@(4,r2)
+    add     #32,r2
+    add     #32,r3
+    dt      r11
+    bf      ai_com
+    mov     r4,r3
+    add     #-96,r3
+    add     #-96,r3                 ! m[-2]
+    mov     #3,r11
+ai_rot:
+    mov.l   @r3+,r0
+    mov.l   @r3+,r1
+    mov.l   @r3+,r2
+    mov.l   @r3+,r6
+    mov.l   @r3+,r7
+    mov.l   @r3+,r12
+    mov.l   r0,@(0,r4)
+    mov.l   r1,@(4,r4)
+    mov.l   r2,@(8,r4)
+    mov.l   r6,@(12,r4)
+    mov.l   r7,@(16,r4)
+    mov.l   r12,@(20,r4)
+    add     #8,r3                   ! past the translation
+    add     #32,r4
+    dt      r11
+    bf      ai_rot
+    mov     #1,r0
+    bra     ai_out
+    nop
+ai_fail:
+    mov     #0,r0
+ai_out:
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
+    .align 2
+.Lai_k26:
+    .long   67108863
+.Lai_k27:
+    .long   134217726
