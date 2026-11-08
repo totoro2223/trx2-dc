@@ -1566,3 +1566,111 @@ sq_done:
     .align 2
 .Lsq_max:
     .long   65535
+
+! int32_t dc_sin(int32_t angle);   core/math/trig.c Math_Sin, the fine table
+! int32_t dc_atan(int32_t x, int32_t y);   Math_Atan
+!
+! g_DC_Trig: 0 the sine table (int16, 0x402)  1 the atan base table (int32, 8)
+! 2 the atan angle table (int16, 0x802).
+    .global _dc_sin
+    .global _dc_atan
+    .align 2
+_dc_sin:
+    extu.w  r4,r1
+    mov.l   .Ltr_7fff,r2
+    and     r1,r2                   ! sector
+    mov.l   .Ltr_4000,r3
+    cmp/gt  r3,r2
+    bf      sn_a
+    mov.l   .Ltr_8000,r5
+    sub     r2,r5
+    mov     r5,r2
+sn_a:
+    shlr2   r2
+    shlr2   r2
+    shll    r2
+    mov.l   .Ltr_tab,r3
+    mov.l   @r3,r3                  ! the sine table
+    mov     r2,r0
+    mov.w   @(r0,r3),r0
+    mov.l   .Ltr_8000,r5
+    cmp/hs  r5,r1                   ! angle >= 180 degrees
+    bf      sn_b
+    neg     r0,r0
+sn_b:
+    rts
+    nop
+_dc_atan:
+    tst     r4,r4
+    bf      at_nz
+    tst     r5,r5
+    bf      at_nz
+    rts
+    mov     #0,r0
+at_nz:
+    mov     #0,r6                   ! base
+    cmp/pz  r4
+    bt      at_xp
+    neg     r4,r4
+    add     #4,r6
+at_xp:
+    cmp/pz  r5
+    bt      at_yp
+    neg     r5,r5
+    add     #2,r6
+at_yp:
+    cmp/gt  r4,r5
+    bf      at_ns
+    add     #1,r6
+    mov     r4,r1
+    mov     r5,r4
+    mov     r1,r5
+at_ns:
+    mov     r5,r2
+    shll8   r2
+    shll2   r2
+    shll    r2                      ! num = 0x800 * y
+    lds     r2,fpul
+    float   fpul,fr0
+    lds     r4,fpul
+    float   fpul,fr1
+    fdiv    fr1,fr0
+    ftrc    fr0,fpul
+    sts     fpul,r3                 ! q
+    mul.l   r3,r4
+    sts     macl,r1
+    sub     r1,r2                   ! rem
+    cmp/pz  r2
+    bt      at_c1
+    bra     at_c3
+    add     #-1,r3
+at_c1:
+    cmp/ge  r4,r2
+    bf      at_c3
+    add     #1,r3
+at_c3:
+    mov.l   .Ltr_tab,r1
+    mov.l   @(4,r1),r7              ! the base table
+    mov.l   @(8,r1),r1              ! the angle table
+    shll2   r6
+    mov     r6,r0
+    mov.l   @(r0,r7),r2
+    mov     r3,r0
+    shll    r0
+    mov.w   @(r0,r1),r0
+    add     r2,r0
+    cmp/pz  r0
+    bt      at_out
+    neg     r0,r0
+at_out:
+    rts
+    nop
+    .align 2
+.Ltr_7fff:
+    .long   0x7FFF
+.Ltr_4000:
+    .long   0x4000
+.Ltr_8000:
+    .long   0x8000
+.Ltr_tab:
+    .long   _g_DC_Trig

@@ -1929,6 +1929,42 @@ static void M_SelfTest(void)
             }
         }
     }
+    uint32_t bad_trig = 0, run_trig = 0;
+    for (uint32_t n = 0; n < 300000; n++) {
+        const int32_t a = n < 70000 ? (int32_t)n - 5000 : (int32_t)M_StRand();
+        g_DC_AsmOff2 |= 32;
+        const int32_t sin_c = Math_Sin(a);
+        g_DC_AsmOff2 &= ~32u;
+        run_trig++;
+        if (Math_Sin(a) != sin_c) {
+            bad_trig++;
+        }
+        int32_t x = (int32_t)M_StRand() >> (M_StRand() % 32);
+        int32_t y = (int32_t)M_StRand() >> (M_StRand() % 32);
+        if (n % 7 == 0) {
+            x = 0;
+        } else if (n % 11 == 0) {
+            y = 0;
+        } else if (n % 13 == 0) {
+            y = x;
+        } else if (n % 17 == 0) {
+            y = -x;
+        }
+        g_DC_AsmOff2 |= 64;
+        const int32_t atan_c = Math_Atan(x, y);
+        g_DC_AsmOff2 &= ~64u;
+        run_trig++;
+        if (Math_Atan(x, y) != atan_c) {
+            if (bad_trig++ < 6) {
+                LOG_WARNING(
+                    "[selftest] atan(%d,%d): asm %d C %d", (int)x, (int)y,
+                    (int)Math_Atan(x, y), (int)atan_c);
+            }
+        }
+    }
+    LOG_WARNING(
+        "[selftest] sin+atan %u runs %u bad", (unsigned)run_trig,
+        (unsigned)bad_trig);
     uint32_t bad_sqrt = 0, run_sqrt = 0;
     for (uint32_t n = 0; n < 200000; n++) {
         uint32_t v;
