@@ -311,11 +311,17 @@ static int M_RunGame(int argc, char *argv[])
     // A test disc that leaves assembly routines out (make_disc.sh's
     // TRX_DC_ASMOFF).
     g_DC_AsmOff = 0;
+    g_DC_AsmOff2 = 0;
     FILE *const asm_off = M_Open("ASMOFF.TXT");
     if (asm_off != nullptr) {
         unsigned mask = 0;
-        if (fscanf(asm_off, "%u", &mask) == 1) {
+        unsigned mask2 = 0;
+        const int got = fscanf(asm_off, "%u %u", &mask, &mask2);
+        if (got >= 1) {
             g_DC_AsmOff = mask;
+        }
+        if (got >= 2) {
+            g_DC_AsmOff2 = mask2;
         }
         fclose(asm_off);
     }

@@ -1057,3 +1057,163 @@ bl2_add:
     mov.l   @r15+,r9
     rts
     mov.l   @r15+,r8
+
+! int32_t dc_get_frames(const int32_t *p, ANIM_FRAME **frames, int32_t *rate);
+!
+! M_GetFrames of items/anim.c without the call-backs: the two keyframes around
+! the frame an item is showing and the blend between them. p: 0 frame_num
+! 1 prev_frame_num 2 frame_base 3 frame_end 4 the keyframe span 5 frame_ptr
+! 6 alpha (float bits) 7 the can_interpolate call-back: 0 none or yes, 2 no,
+! 1 some other one (C does it). frames
+! are 24 bytes apart. The division by the span is a multiply by
+! g_DC_InvTab[span] (2^32-1 / span) with the fix-up. The float steps are the C
+! compiler's: the position with fmac, the result with fmac. Returns the blend
+! (>= 0), or -1 with nothing written when the C has to do it (a call-back to
+! ask, span 0, a frame before the animation).
+    .global _dc_get_frames
+    .align 2
+_dc_get_frames:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov.l   @(8,r4),r3              ! base
+    mov.l   @(0,r4),r8
+    sub     r3,r8                   ! cur
+    mov.l   @(12,r4),r7             ! end
+    mov     r7,r9
+    sub     r3,r9                   ! last
+    mov.l   @(16,r4),r10            ! span
+    tst     r10,r10
+    bt      gf_fail
+    mov     r8,r11                  ! interp
+    fldi0   fr8                     ! sub
+    mov.l   @(24,r4),r1
+    lds     r1,fpul
+    fsts    fpul,fr9                ! alpha
+    fldi0   fr0
+    fcmp/gt fr0,fr9
+    bt      gf_a1
+    fcmp/eq fr0,fr9
+    bf      gf_noint
+gf_a1:
+    fldi1   fr1
+    fcmp/gt fr9,fr1
+    bt      gf_a2
+    fcmp/eq fr9,fr1
+    bf      gf_noint
+gf_a2:
+    mov.l   @(4,r4),r2              ! prev
+    cmp/ge  r3,r2
+    bf      gf_noint
+    cmp/ge  r2,r7
+    bf      gf_noint
+    sub     r3,r2                   ! prev - base
+    mov     r8,r1
+    sub     r2,r1                   ! delta
+    cmp/pl  r1
+    bf      gf_noint
+    mov.l   @(28,r4),r0
+    cmp/eq  #2,r0
+    bt      gf_noint                ! the call-back said no
+    tst     r0,r0
+    bf      gf_fail                 ! a call-back to ask
+    lds     r1,fpul
+    float   fpul,fr0                ! delta
+    lds     r2,fpul
+    float   fpul,fr1                ! prev - base
+    fmac    fr0,fr9,fr1             ! the position
+    lds     r9,fpul
+    float   fpul,fr2
+    fcmp/gt fr1,fr2                 ! last > position
+    bf      gf_noint
+    ftrc    fr1,fpul
+    sts     fpul,r11                ! interp
+    float   fpul,fr2
+    fsub    fr2,fr1
+    fmov    fr1,fr8                 ! the fraction of a frame
+gf_noint:
+    cmp/pz  r11
+    bf      gf_fail
+    mov.l   .Lgf_tab,r1
+    mov     r10,r0
+    shll2   r0
+    mov.l   @(r0,r1),r12            ! 2^32-1 / span
+    dmulu.l r11,r12
+    sts     mach,r2                 ! q
+    mul.l   r2,r10
+    sts     macl,r1
+    mov     r11,r7
+    sub     r1,r7                   ! the shift
+gf_fix:
+    cmp/hs  r10,r7
+    bf      gf_fixed
+    add     #1,r2
+    bra     gf_fix
+    sub     r10,r7
+gf_fixed:
+    mov.l   @(20,r4),r13
+    mov     r2,r1
+    shll2   r1
+    shll    r1                      ! q * 8
+    mov     r2,r3
+    shll2   r3
+    shll2   r3                      ! q * 16
+    add     r3,r1                   ! q * 24
+    add     r1,r13
+    mov.l   r13,@r5
+    add     #24,r13
+    mov.l   r13,@(4,r5)
+    mov     r10,r12                 ! denominator
+    tst     r7,r7
+    bf      gf_cond
+    fldi0   fr0
+    fcmp/gt fr0,fr8
+    bf      gf_nocond
+gf_cond:
+    mov     r2,r1
+    add     #1,r1
+    mul.l   r1,r10
+    sts     macl,r1                 ! second key frame
+    mov.l   @(12,r4),r3
+    cmp/ge  r1,r3
+    bt      gf_nocond
+    sub     r1,r3
+    add     r3,r12
+gf_nocond:
+    lds     r7,fpul
+    float   fpul,fr0
+    fadd    fr8,fr0                 ! numerator
+    mov.l   .Lgf_k,r1
+    lds     r1,fpul
+    fsts    fpul,fr2                ! 1024.0
+    mov.l   .Lgf_h,r1
+    lds     r1,fpul
+    fsts    fpul,fr1                ! 0.5
+    fmac    fr0,fr2,fr1
+    ftrc    fr1,fpul
+    sts     fpul,r0
+    shll8   r12
+    shll2   r12
+    mov.l   r12,@r6
+    bra     gf_out
+    nop
+gf_fail:
+    mov     #-1,r0
+gf_out:
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
+    .align 2
+.Lgf_tab:
+    .long   _g_DC_InvTab
+.Lgf_k:
+    .long   0x44800000
+.Lgf_h:
+    .long   0x3F000000

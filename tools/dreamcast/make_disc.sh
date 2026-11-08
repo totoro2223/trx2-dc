@@ -175,9 +175,9 @@ if [ -n "${TRX_DC_FOG:-}" ]; then
   echo "$TRX_DC_FOG" > "$STAGE/FOG.TXT"
   echo "fog $TRX_DC_FOG"
 fi
-if [ -n "${TRX_DC_ASMOFF:-}" ]; then
+if [ -n "${TRX_DC_ASMOFF:-}${TRX_DC_ASMOFF2:-}" ]; then
   # Assembly routines left out (dc_mode.h, g_DC_AsmOff), a bit each.
-  echo "$TRX_DC_ASMOFF" > "$STAGE/ASMOFF.TXT"
+  echo "${TRX_DC_ASMOFF:-0} ${TRX_DC_ASMOFF2:-0}" > "$STAGE/ASMOFF.TXT"
 fi
 if [ -n "${TRX_DC_SNOW:-}" ]; then
   # A test disc that caps the weather particles (dc_main.c, SNOW.TXT).

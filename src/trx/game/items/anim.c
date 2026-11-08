@@ -149,6 +149,8 @@ ANIM_FRAME *Item_GetBestFrame(const ITEM *const item)
 
 static int32_t M_GetFrames(
     const ITEM *item, ANIM_FRAME *frames[], int32_t *rate);
+static int32_t M_GetFramesC(
+    const ITEM *item, ANIM_FRAME *frames[], int32_t *rate);
 
 #if defined(__DREAMCAST__)
 // Original simulation: the frames of an item are worked out once for a given
@@ -199,7 +201,7 @@ int32_t Item_GetFrames(const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
     return M_GetFrames(item, frames, rate);
 }
 
-static int32_t M_GetFrames(
+static int32_t M_GetFramesC(
     const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
 {
     const ANIM *const anim = Item_GetAnim(item);
@@ -260,6 +262,99 @@ static int32_t M_GetFrames(
     *rate = denominator * M_FRAME_INTERP_SCALE;
     return (int32_t)((numerator * M_FRAME_INTERP_SCALE) + 0.5f);
 }
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_get_frames) unless the object has a call-back to
+// ask or the frame lies outside the animation. The first word of switches is
+// full: TRX_DC_ASMOFF2 bit 1 turns this one off.
+extern uint32_t g_DC_AsmOff2;
+extern int32_t dc_get_frames(
+    const int32_t *p, ANIM_FRAME **frames, int32_t *rate);
+uint32_t g_DC_InvTab[256];
+_Static_assert(sizeof(ANIM_FRAME) == 24, "dc_get_frames strides 24 bytes");
+
+static int32_t M_GetFrames(
+    const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
+{
+    const ANIM *const anim = Item_GetAnim(item);
+    if ((g_DC_AsmOff2 & 1) != 0 || anim->frame_ptr == nullptr
+        || anim->interpolation == 0) {
+        return M_GetFramesC(item, frames, rate);
+    }
+    if (g_DC_InvTab[1] == 0) {
+        for (uint32_t i = 1; i < 256; i++) {
+            g_DC_InvTab[i] = 0xFFFFFFFFu / i;
+        }
+    }
+    const TRX_REAL alpha = Interpolation_GetWorldRate();
+    float alpha_f = alpha;
+    int32_t alpha_bits;
+    memcpy(&alpha_bits, &alpha_f, sizeof(alpha_bits));
+    // Object_CanInterpolate, nearly every object's, is worked out here (it
+    // reads nothing but the item); any other call-back is left to the C.
+    const OBJECT *const obj = Object_Get(item->object_id);
+    int32_t cb = 0;
+    if (obj->can_interpolate_func == Object_CanInterpolate) {
+        cb = (item->enable_interpolation && obj->enable_interpolation
+              && item->prev_frame_num != item->frame_num)
+            ? 0
+            : 2;
+    } else if (obj->can_interpolate_func != nullptr) {
+        cb = 1;
+    }
+    const int32_t p[8] = {
+        item->frame_num,
+        item->prev_frame_num,
+        anim->frame_base,
+        anim->frame_end,
+        anim->interpolation,
+        (int32_t)(intptr_t)anim->frame_ptr,
+        alpha_bits,
+        cb,
+    };
+    #if defined(DC_EMIT_VERIFY)
+    ANIM_FRAME *ref_frames[2] = { nullptr, nullptr };
+    int32_t ref_rate = 0;
+    const int32_t ref = M_GetFramesC(item, ref_frames, &ref_rate);
+    #endif
+    ANIM_FRAME *out[2];
+    int32_t out_rate = 0;
+    const int32_t frac = dc_get_frames(p, out, &out_rate);
+    #if defined(DC_EMIT_VERIFY)
+    static uint32_t runs;
+    static uint32_t bad;
+    static uint32_t fast;
+    if (frac >= 0) {
+        fast++;
+        if (ref != frac || ref_rate != out_rate || ref_frames[0] != out[0]
+            || ref_frames[1] != out[1]) {
+            bad++;
+            LOG_WARNING(
+                "[frames-verify] MISMATCH frac %d/%d rate %d/%d", (int)ref,
+                (int)frac, (int)ref_rate, (int)out_rate);
+        }
+    }
+    if (runs++ == 0 || runs % 20000 == 0) {
+        LOG_WARNING(
+            "[frames-verify] %u runs, %u fast, %u bad", (unsigned)runs,
+            (unsigned)fast, (unsigned)bad);
+    }
+    #endif
+    if (frac < 0) {
+        return M_GetFramesC(item, frames, rate);
+    }
+    frames[0] = out[0];
+    frames[1] = out[1];
+    *rate = out_rate;
+    return frac;
+}
+#else
+static int32_t M_GetFrames(
+    const ITEM *item, ANIM_FRAME *frames[], int32_t *rate)
+{
+    return M_GetFramesC(item, frames, rate);
+}
+#endif
 
 static void M_MoveC(ITEM *const item, const ANIM *const anim)
 {
