@@ -600,7 +600,7 @@ void Item_Animate(ITEM *const item)
     M_Move(item, anim);
 }
 
-bool Item_GetAnimChange(ITEM *const item, const ANIM *const anim)
+static bool M_GetAnimChangeC(ITEM *const item, const ANIM *const anim)
 {
     if (item->current_anim_state == item->goal_anim_state) {
         return false;
@@ -626,6 +626,60 @@ bool Item_GetAnimChange(ITEM *const item, const ANIM *const anim)
     }
 
     return false;
+}
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_anim_change); a DC_EMIT_VERIFY build runs the C
+// on a copy of the item and compares. TRX_DC_ASMOFF2 bit 131072 turns it off.
+extern uint32_t g_DC_AsmOff2;
+extern int dc_anim_change(const int32_t *p);
+#endif
+
+bool Item_GetAnimChange(ITEM *const item, const ANIM *const anim)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 131072) == 0) {
+        if (item->current_anim_state == item->goal_anim_state
+            || anim->num_changes <= 0) {
+            return false;
+        }
+        const int32_t p[8] = {
+            (int32_t)(intptr_t)item,
+            anim->num_changes,
+            (int32_t)(intptr_t)Anim_GetChange(anim->change_idx),
+            (int32_t)(intptr_t)Anim_GetRangeBase(),
+            (int32_t)offsetof(ITEM, current_anim_state),
+            (int32_t)offsetof(ITEM, goal_anim_state),
+            (int32_t)offsetof(ITEM, frame_num),
+            (int32_t)offsetof(ITEM, anim_num),
+        };
+    #if defined(DC_EMIT_VERIFY)
+        ITEM copy = *item;
+        const bool ref = M_GetAnimChangeC(&copy, anim);
+    #endif
+        const bool got = dc_anim_change(p) != 0;
+    #if defined(DC_EMIT_VERIFY)
+        static uint32_t runs;
+        static uint32_t changed;
+        static uint32_t bad;
+        runs++;
+        changed += got;
+        if (got != ref || item->anim_num != copy.anim_num
+            || item->frame_num != copy.frame_num) {
+            if (bad++ < 6) {
+                LOG_WARNING("[animchange-verify] MISMATCH %d/%d", got, ref);
+            }
+        }
+        if (runs % 200 == 0) {
+            LOG_WARNING(
+                "[animchange-verify] %u runs, %u changed, %u bad",
+                (unsigned)runs, (unsigned)changed, (unsigned)bad);
+        }
+    #endif
+        return got;
+    }
+#endif
+    return M_GetAnimChangeC(item, anim);
 }
 
 void Item_PlayAnimSFX(

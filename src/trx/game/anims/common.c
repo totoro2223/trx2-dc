@@ -70,6 +70,12 @@ ANIM_CHANGE *Anim_GetChange(const int32_t change_idx)
     return &m_Changes[change_idx];
 }
 
+// Where the ranges start (for the assembly, items/anim.c).
+ANIM_RANGE *Anim_GetRangeBase(void)
+{
+    return m_Ranges;
+}
+
 ANIM_RANGE *Anim_GetRange(const int32_t range_idx)
 {
     ASSERT(range_idx >= 0 && range_idx < m_RangeCount);

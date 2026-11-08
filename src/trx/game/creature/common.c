@@ -459,6 +459,70 @@ bool Creature_Activate(const int16_t item_num)
     return true;
 }
 
+// The angles of Creature_AIInfo: to the enemy less the way the creature
+// faces, the enemy's facing, and the vertical angle.
+static void M_AIAnglesC(
+    AI_INFO *const info, int32_t x, int32_t z, const int32_t y,
+    const int16_t rot_y, const int16_t enemy_rot_y)
+{
+    const int16_t angle = Math_Atan(z, x);
+    info->angle = angle - rot_y;
+    info->enemy_facing = angle - enemy_rot_y + DEG_180;
+    x = ABS(x);
+    z = ABS(z);
+    if (x > z) {
+        info->x_angle = Math_Atan(x + (z >> 1), y);
+    } else {
+        info->x_angle = Math_Atan(z + (x >> 1), y);
+    }
+}
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_ai_angles); a DC_EMIT_VERIFY build compares it
+// with the C. TRX_DC_ASMOFF2 bit 262144 turns it off.
+extern uint32_t g_DC_AsmOff2;
+extern void dc_ai_angles(int32_t *p);
+#endif
+
+static void M_AIAngles(
+    AI_INFO *const info, const int32_t x, const int32_t z, const int32_t y,
+    const int16_t rot_y, const int16_t enemy_rot_y)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 262144) == 0) {
+        int32_t p[8] = { x, z, y, rot_y, enemy_rot_y, 0, 0, 0 };
+        dc_ai_angles(p);
+        info->angle = (int16_t)p[5];
+        info->enemy_facing = (int16_t)p[6];
+        info->x_angle = (int16_t)p[7];
+    #if defined(DC_EMIT_VERIFY)
+        AI_INFO ref = {};
+        M_AIAnglesC(&ref, x, z, y, rot_y, enemy_rot_y);
+        static uint32_t runs;
+        static uint32_t bad;
+        runs++;
+        if (ref.angle != info->angle || ref.enemy_facing != info->enemy_facing
+            || ref.x_angle != info->x_angle) {
+            if (bad++ < 6) {
+                LOG_WARNING(
+                    "[aiangles-verify] MISMATCH %d %d %d / %d %d %d",
+                    (int)info->angle, (int)info->enemy_facing,
+                    (int)info->x_angle, (int)ref.angle, (int)ref.enemy_facing,
+                    (int)ref.x_angle);
+            }
+        }
+        if (runs % 1000 == 0) {
+            LOG_WARNING(
+                "[aiangles-verify] %u runs, %u bad", (unsigned)runs,
+                (unsigned)bad);
+        }
+    #endif
+        return;
+    }
+#endif
+    M_AIAnglesC(info, x, z, y, rot_y, enemy_rot_y);
+}
+
 void Creature_AIInfo(ITEM *const item, AI_INFO *const info)
 {
     CREATURE *const creature = item->creature_data;
@@ -534,21 +598,11 @@ void Creature_AIInfo(ITEM *const item, AI_INFO *const info)
         info->distance = SQUARE(x) + SQUARE(z);
     }
 
-    const int16_t angle = Math_Atan(z, x);
-    info->angle = angle - item->rot.y;
-    info->enemy_facing = angle - enemy->rot.y + DEG_180;
+    M_AIAngles(info, x, z, y, item->rot.y, enemy->rot.y);
     info->ahead = info->angle > -FRONT_ARC && info->angle < FRONT_ARC;
     info->bite = info->ahead
         && ABS(enemy->pos.y - item->pos.y) <= M_BITE_DISTANCE
         && (g_TRVersion == 1 || enemy->hit_points > 0);
-
-    x = ABS(x);
-    z = ABS(z);
-    if (x > z) {
-        info->x_angle = Math_Atan(x + (z >> 1), y);
-    } else {
-        info->x_angle = Math_Atan(z + (x >> 1), y);
-    }
 
     if (g_TRVersion == 3) {
         if (!creature->hurt_by_lara && creature->enemy == lara_item

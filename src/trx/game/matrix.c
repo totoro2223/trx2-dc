@@ -1931,6 +1931,10 @@ static void M_SelfTest(void)
             }
         }
     }
+    extern uint32_t Room_SelfTestSurfaces(void);
+    LOG_WARNING(
+        "[selftest] surfaces 200000 runs %u bad",
+        (unsigned)Room_SelfTestSurfaces());
     // Turns, sphere pairs and box tests (geom.c, collision/common.c).
     uint32_t bad_geom = 0, run_geom = 0;
     for (uint32_t n = 0; n < 60000; n++) {

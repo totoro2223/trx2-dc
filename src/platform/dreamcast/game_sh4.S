@@ -2731,3 +2731,462 @@ bt_out:
     .long   1024
 .Lbt_biff:
     .long   512
+
+! int dc_anim_change(const int32_t *p);   items/anim.c Item_GetAnimChange
+!
+! Whether the item's animation moves on to another (the goal state differs and
+! a change of the animation lists a range its frame lies in), and then to
+! which animation and frame: written to the item. p: 0 item  4 num_changes
+! 8 the animation's first ANIM_CHANGE (6 bytes: goal state, number of ranges,
+! first range)  12 the ranges (ANIM_RANGE, 8 bytes: start, end, link animation,
+! link frame)  16 offset of current_anim_state in the item  20 of
+! goal_anim_state  24 of frame_num  28 of anim_num (all int16).
+    .global _dc_anim_change
+    .align 2
+_dc_anim_change:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   @(0,r4),r8              ! item
+    mov.l   @(16,r4),r0
+    mov.w   @(r0,r8),r1             ! current state
+    mov.l   @(20,r4),r0
+    mov.w   @(r0,r8),r2             ! goal state
+    cmp/eq  r1,r2
+    bt      ac_no
+    mov.l   @(24,r4),r0
+    mov.w   @(r0,r8),r3             ! frame number
+    mov.l   @(4,r4),r5              ! changes left
+    mov.l   @(8,r4),r6              ! the change
+    mov.l   @(12,r4),r9             ! the ranges
+ac_change:
+    cmp/pl  r5
+    bf      ac_no
+    mov.w   @r6,r0                  ! goal state of the change
+    cmp/eq  r0,r2
+    bf      ac_next
+    mov     r6,r1
+    add     #2,r1
+    mov.w   @r1,r7                  ! number of ranges
+    add     #2,r1
+    mov.w   @r1,r0                  ! first range
+    shll2   r0
+    shll    r0
+    add     r9,r0                   ! the range
+    mov     r0,r1
+ac_range:
+    cmp/pl  r7
+    bf      ac_next
+    mov.w   @r1,r0                  ! start
+    cmp/ge  r0,r3                   ! frame >= start
+    bf      ac_nrange
+    mov     r1,r0
+    add     #2,r0
+    mov.w   @r0,r0                  ! end
+    cmp/gt  r0,r3                   ! frame > end
+    bt      ac_nrange
+    mov     r1,r0
+    add     #4,r0
+    mov.w   @r0,r2                  ! link animation
+    mov     r1,r0
+    add     #6,r0
+    mov.w   @r0,r3                  ! link frame
+    mov.l   @(28,r4),r0
+    mov.w   r2,@(r0,r8)             ! anim_num
+    mov.l   @(24,r4),r0
+    mov.w   r3,@(r0,r8)             ! frame_num
+    mov     #1,r0
+    bra     ac_out
+    nop
+ac_nrange:
+    add     #8,r1
+    add     #-1,r7
+    bra     ac_range
+    nop
+ac_next:
+    add     #6,r6
+    add     #-1,r5
+    bra     ac_change
+    nop
+ac_no:
+    mov     #0,r0
+ac_out:
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
+
+! void dc_ai_angles(const int32_t *p);   creature/common.c Creature_AIInfo
+!
+! The angles a creature works out about its enemy. p in: 0 x  1 z  2 y
+! (as the C has them)  3 item rot.y  4 enemy rot.y. p out: 5 angle (to the
+! enemy, less the way it faces)  6 enemy_facing  7 x_angle (all 16 bits).
+    .global _dc_ai_angles
+    .align 2
+_dc_ai_angles:
+    sts.l   pr,@-r15
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov     r4,r8
+    mov.l   @(0,r8),r9              ! x
+    mov.l   @(4,r8),r10             ! z
+    mov.l   @(8,r8),r11             ! y
+    mov     r10,r4
+    mov     r9,r5
+    mov.l   .Lai_atan,r12
+    jsr     @r12                    ! Math_Atan(z, x)
+    nop
+    exts.w  r0,r1                   ! angle (16 bits)
+    mov.l   @(12,r8),r2
+    mov     r1,r3
+    sub     r2,r3
+    exts.w  r3,r3
+    mov.l   r3,@(20,r8)             ! angle - item rot.y
+    mov.l   @(16,r8),r2
+    mov     r1,r3
+    sub     r2,r3
+    mov.l   .Lai_180,r2
+    add     r2,r3
+    exts.w  r3,r3
+    mov.l   r3,@(24,r8)             ! angle - enemy rot.y + 180 degrees
+    cmp/pz  r9
+    bt      ai_xp
+    neg     r9,r9
+ai_xp:
+    cmp/pz  r10
+    bt      ai_zp
+    neg     r10,r10
+ai_zp:
+    cmp/gt  r10,r9                  ! x > z
+    bf      ai_zx
+    mov     r10,r2
+    shar    r2
+    add     r9,r2                   ! x + (z >> 1)
+    bra     ai_at
+    nop
+ai_zx:
+    mov     r9,r2
+    shar    r2
+    add     r10,r2                  ! z + (x >> 1)
+ai_at:
+    mov     r2,r4
+    mov     r11,r5
+    jsr     @r12                    ! Math_Atan(.., y)
+    nop
+    exts.w  r0,r0
+    mov.l   r0,@(28,r8)
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    lds.l   @r15+,pr
+    rts
+    nop
+    .align 2
+.Lai_atan:
+    .long   _Math_Atan
+.Lai_180:
+    .long   0x8000
+
+! int32_t dc_surface_height(const SURFACE *s, int32_t x, int32_t z, const int32_t *p);
+!   rooms/geometry.c M_GetSurfaceHeight (M_GetSurfaceHeightC)
+!
+! The height of a floor or ceiling at (x, z): flat, tilted, or split in two
+! triangles. The Dreamcast's narrow SURFACE: 0 height  4 tilt x, z (int16) or
+! the split's address  8 type  9 is_split; SPLIT: 0 h1  2 h2 (int16)  4 tilts
+! (int8 x4)  8 type. p: 0 fix_tilts  4 camera is chunky  8 &m_HeightType
+! 12 NO_HEIGHT. Sets the height type as the C does.
+!
+! r8 height  r9 is_split  r10 is a ceiling  r11 shift  r12 split / slope type
+! r13 &height type  r1 tilt x  r2 tilt z  r5 x  r6 z
+    .macro TNEG t, h
+    mov.l   .Lsf_mask,r0
+    and     \h,r0
+    mul.l   \t,r0
+    sts     macl,r0
+    shar    r0
+    shar    r0
+    .endm
+    .macro TPOS t, h
+    mov.l   .Lsf_mask,r3
+    sub     \h,r3
+    mov.l   .Lsf_mask,r0
+    and     r3,r0
+    mul.l   \t,r0
+    sts     macl,r0
+    shar    r0
+    shar    r0
+    .endm
+    .macro LDT n, reg
+    mov     r12,r0
+    add     #4+\n,r0
+    mov.b   @r0,r0
+    mov     r0,\reg
+    .endm
+    .global _dc_surface_height
+    .align 2
+_dc_surface_height:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov.l   @r4,r8                  ! height
+    mov     r4,r0
+    add     #9,r0
+    mov.b   @r0,r9                  ! is_split
+    mov     r4,r0
+    add     #8,r0
+    mov.b   @r0,r10                 ! type (0 floor, 1 ceiling)
+    mov.l   @(8,r7),r13
+    mov.l   @(12,r7),r1
+    cmp/eq  r1,r8
+    bf      sf_have
+    tst     r9,r9
+    bf      sf_ret                  ! NO_HEIGHT stays
+    mov.l   @r7,r1
+    tst     r1,r1
+    bf      sf_ret
+sf_have:
+    mov     #0,r11                  ! the shift
+    tst     r9,r9
+    bf      sf_split
+    ! --- not split
+    mov     r4,r0
+    add     #4,r0
+    mov.w   @r0+,r1                 ! tilt x
+    mov.w   @r0,r2                  ! tilt z
+    mov     r1,r3
+    or      r2,r3
+    tst     r3,r3
+    bt      sf_ret                  ! no tilt: the height as is
+    mov     #1,r12                  ! small slope, unless a tilt is above 2
+    mov     r2,r3
+    cmp/pz  r3
+    bt      sf_a1
+    neg     r3,r3
+sf_a1:
+    mov     #2,r0
+    cmp/gt  r0,r3
+    bt      sf_big
+    mov     r1,r3
+    cmp/pz  r3
+    bt      sf_a2
+    neg     r3,r3
+sf_a2:
+    mov     #2,r0
+    cmp/gt  r0,r3
+    bf      sf_tilt
+sf_big:
+    mov     #2,r12                  ! big slope
+    mov.l   @(4,r7),r0
+    tst     r0,r0
+    bf      sf_ret                  ! chunky camera: the height as is
+    bra     sf_tilt
+    nop
+    ! --- split in two triangles
+sf_split:
+    mov.l   @(4,r4),r12             ! the split
+    mov.l   @(4,r7),r0
+    tst     r0,r0
+    bt      sf_split_go
+    mov.w   @(2,r12),r0             ! chunky: the extreme of the two triangles
+    add     r8,r0                   ! height + h2
+    mov     r0,r1
+    mov.w   @r12,r0
+    add     r8,r0                   ! height + h1
+    tst     r10,r10
+    bf      sf_ch_ceil
+    cmp/gt  r1,r0                   ! floor: MIN
+    bt      sf_ch_r1
+    mov     r0,r8
+    bra     sf_ret
+    nop
+sf_ch_ceil:
+    cmp/gt  r0,r1                   ! ceiling: MAX
+    bt      sf_ch_r1
+    mov     r0,r8
+    bra     sf_ret
+    nop
+sf_ch_r1:
+    mov     r1,r8
+    bra     sf_ret
+    nop
+sf_split_go:
+    tst     r10,r10
+    bf      sf_sg1
+    mov     #4,r0
+    mov.l   r0,@r13                 ! HT_SPLIT_TRI
+sf_sg1:
+    mov.l   .Lsf_mask,r0
+    and     r0,r5                   ! dx
+    and     r0,r6                   ! dz
+    mov     r12,r0
+    add     #8,r0
+    mov.b   @r0,r0
+    extu.b  r0,r4                   ! the split's type
+    LDT     0, r1
+    LDT     1, r2
+    sub     r2,r1                   ! t0 - t1
+    LDT     3, r3
+    LDT     2, r2
+    sub     r2,r3                   ! t3 - t2
+    mov     #1,r0
+    cmp/eq  r0,r4
+    bt      sf_nwse
+    mov     #3,r0
+    cmp/eq  r0,r4
+    bt      sf_nwse
+    mov     #4,r0
+    cmp/eq  r0,r4
+    bt      sf_nwse
+    cmp/gt  r6,r5                   ! dx > dz
+    bt      sf_p1b
+    bra     sf_p2a
+    nop
+sf_nwse:
+    mov.l   .Lsf_wall,r0
+    sub     r6,r0
+    cmp/gt  r0,r5                   ! dx > WALL_L - dz
+    bt      sf_p1a
+    bra     sf_p2b
+    nop
+sf_p1a:                             ! tilt x: ceiling t0 - t1, floor t3 - t2
+    tst     r10,r10
+    bt      sf_p1a_f
+    bra     sf_p1
+    nop
+sf_p1a_f:
+    mov     r3,r1
+    bra     sf_p1
+    nop
+sf_p1b:                             ! tilt x: ceiling t3 - t2, floor t0 - t1
+    tst     r10,r10
+    bt      sf_p1
+    mov     r3,r1
+sf_p1:
+    LDT     3, r2
+    LDT     0, r4
+    sub     r4,r2                   ! tilt z = t3 - t0
+    mov.w   @r12,r0
+    mov     r0,r11                  ! shift = h1
+    bra     sf_stilt
+    nop
+sf_p2a:                             ! tilt x: ceiling t0 - t1, floor t3 - t2
+    tst     r10,r10
+    bf      sf_p2
+    mov     r3,r1
+    bra     sf_p2
+    nop
+sf_p2b:                             ! tilt x: ceiling t3 - t2, floor t0 - t1
+    tst     r10,r10
+    bt      sf_p2
+    mov     r3,r1
+sf_p2:
+    LDT     2, r2
+    LDT     1, r4
+    sub     r4,r2                   ! tilt z = t2 - t1
+    mov.w   @(2,r12),r0
+    mov     r0,r11                  ! shift = h2
+sf_stilt:
+    ! the height type of a floor is told after the shift (r12 not needed)
+    ! --- the tilt's shift (r1 tilt x, r2 tilt z, r5 x, r6 z)
+sf_tilt:
+    tst     r10,r10
+    bf      sf_ceil
+    cmp/pz  r2                      ! floor: tilt z
+    bt      sf_fz_pos
+    TNEG    r2, r6
+    sub     r0,r11
+    bra     sf_fx
+    nop
+sf_fz_pos:
+    TPOS    r2, r6
+    add     r0,r11
+sf_fx:
+    cmp/pz  r1
+    bt      sf_fx_pos
+    TNEG    r1, r5
+    sub     r0,r11
+    bra     sf_shifted
+    nop
+sf_fx_pos:
+    TPOS    r1, r5
+    add     r0,r11
+    bra     sf_shifted
+    nop
+sf_ceil:
+    cmp/pz  r2
+    bt      sf_cz_pos
+    TNEG    r2, r6
+    add     r0,r11
+    bra     sf_cx
+    nop
+sf_cz_pos:
+    TPOS    r2, r6
+    sub     r0,r11
+sf_cx:
+    cmp/pz  r1
+    bt      sf_cx_pos
+    TPOS    r1, r5
+    add     r0,r11
+    bra     sf_shifted
+    nop
+sf_cx_pos:
+    TNEG    r1, r5
+    sub     r0,r11
+sf_shifted:
+    add     r11,r8                  ! height += shift
+    tst     r10,r10
+    bf      sf_ret                  ! a ceiling: no height type
+    tst     r9,r9
+    bt      sf_unsplit_ht
+    ! split floor: HT_DIAGONAL for a steep tilt, else the small slope
+    mov     r1,r3
+    cmp/pz  r3
+    bt      sf_b1
+    neg     r3,r3
+sf_b1:
+    mov     #2,r0
+    cmp/gt  r0,r3
+    bt      sf_diag
+    mov     r2,r3
+    cmp/pz  r3
+    bt      sf_b2
+    neg     r3,r3
+sf_b2:
+    mov     #2,r0
+    cmp/gt  r0,r3
+    bt      sf_diag
+    mov.l   @r13,r0
+    mov     #4,r3
+    cmp/eq  r3,r0
+    bt      sf_ret                  ! still HT_SPLIT_TRI
+    mov     #1,r0
+    mov.l   r0,@r13
+    bra     sf_ret
+    nop
+sf_diag:
+    mov     #3,r0
+    mov.l   r0,@r13
+    bra     sf_ret
+    nop
+sf_unsplit_ht:
+    mov.l   r12,@r13                ! the slope type
+sf_ret:
+    mov     r8,r0
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
+    .align 2
+.Lsf_mask:
+    .long   1023
+.Lsf_wall:
+    .long   1024

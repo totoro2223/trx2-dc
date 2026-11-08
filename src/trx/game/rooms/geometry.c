@@ -149,7 +149,7 @@ static int32_t M_GetSplitSurfaceHeight(
     return height;
 }
 
-static int32_t M_GetSurfaceHeight(
+static int32_t M_GetSurfaceHeightC(
     const SURFACE surface, const int32_t x, const int32_t z,
     const bool fix_tilts)
 {
@@ -160,6 +160,122 @@ static int32_t M_GetSurfaceHeight(
     return surface.is_split ? M_GetSplitSurfaceHeight(surface, x, z)
                             : M_GetUnsplitSurfaceHeight(surface, x, z);
 }
+
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_surface_height); a DC_EMIT_VERIFY build runs the
+// C too (the height type it leaves as well) and compares. TRX_DC_ASMOFF2 bit
+// 524288 turns it off.
+extern uint32_t g_DC_AsmOff2;
+extern int32_t dc_surface_height(
+    const SURFACE *s, int32_t x, int32_t z, const int32_t *p);
+_Static_assert(sizeof(HEIGHT_TYPE) == 4, "dc_surface_height writes a word");
+_Static_assert(offsetof(SURFACE, type) == 8, "dc_surface_height layout");
+_Static_assert(offsetof(SURFACE, is_split) == 9, "dc_surface_height layout");
+_Static_assert(offsetof(SPLIT, tilts) == 4, "dc_surface_height layout");
+_Static_assert(offsetof(SPLIT, type) == 8, "dc_surface_height layout");
+#endif
+
+static int32_t M_GetSurfaceHeight(
+    const SURFACE surface, const int32_t x, const int32_t z,
+    const bool fix_tilts)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 524288) == 0) {
+        const int32_t p[4] = {
+            fix_tilts, Camera_IsChunky(), (int32_t)(intptr_t)&m_HeightType,
+            NO_HEIGHT
+        };
+    #if defined(DC_EMIT_VERIFY)
+        const HEIGHT_TYPE before = m_HeightType;
+        const int32_t ref = M_GetSurfaceHeightC(surface, x, z, fix_tilts);
+        const HEIGHT_TYPE ref_type = m_HeightType;
+        m_HeightType = before;
+        const int32_t got = dc_surface_height(&surface, x, z, p);
+        static uint32_t runs;
+        static uint32_t sloped;
+        static uint32_t bad;
+        runs++;
+        sloped += ref_type != before;
+        if (got != ref || m_HeightType != ref_type) {
+            if (bad++ < 6) {
+                LOG_WARNING(
+                    "[surface-verify] MISMATCH %d/%d type %d/%d", (int)got,
+                    (int)ref, (int)m_HeightType, (int)ref_type);
+            }
+        }
+        if (runs % 20000 == 0) {
+            LOG_WARNING(
+                "[surface-verify] %u runs, %u sloped, %u bad", (unsigned)runs,
+                (unsigned)sloped, (unsigned)bad);
+        }
+        return got;
+    #else
+        return dc_surface_height(&surface, x, z, p);
+    #endif
+    }
+#endif
+    return M_GetSurfaceHeightC(surface, x, z, fix_tilts);
+}
+
+#if defined(__DREAMCAST__) && defined(DC_EMIT_VERIFY)
+// The assembly against the C on random surfaces (flat, tilted, split of every
+// type, floors and ceilings, chunky camera or not): called once from
+// M_SelfTest (matrix.c).
+uint32_t Room_SelfTestSurfaces(void)
+{
+    static uint32_t seed = 0x1234567u;
+    uint32_t bad = 0;
+    for (uint32_t n = 0; n < 200000; n++) {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        const uint32_t r = seed;
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        const uint32_t q = seed;
+        SPLIT split = {
+            .h1 = (int16_t)((int32_t)(q % 31) - 15) * 256,
+            .h2 = (int16_t)((int32_t)((q >> 5) % 31) - 15) * 256,
+            .tilts = { (int8_t)((int32_t)((q >> 10) % 31) - 15),
+                       (int8_t)((int32_t)((q >> 15) % 31) - 15),
+                       (int8_t)((int32_t)((q >> 20) % 31) - 15),
+                       (int8_t)((int32_t)((q >> 25) % 31) - 15) },
+            .type = (uint8_t)(r % 7),
+        };
+        SURFACE surface = {
+            .height = n % 17 == 0 ? NO_HEIGHT : (int32_t)(r % 8192) - 4096,
+            .type = (uint8_t)((r >> 13) & 1),
+            .is_split = ((r >> 14) & 1) != 0,
+        };
+        if (surface.is_split) {
+            surface.split = &split;
+        } else {
+            surface.tilt.x = n % 3 == 0 ? 0 : (int16_t)((int32_t)((r >> 16) % 31) - 15);
+            surface.tilt.z = n % 5 == 0 ? 0 : (int16_t)((int32_t)((r >> 21) % 31) - 15);
+        }
+        const int32_t x = (int32_t)((q >> 3) % 20000);
+        const int32_t z = (int32_t)((r >> 3) % 20000);
+        const bool fix = ((q >> 30) & 1) != 0;
+        const bool chunky = ((r >> 30) & 1) != 0;
+        Camera_SetChunky(chunky);
+        const HEIGHT_TYPE before = (HEIGHT_TYPE)(r % 5);
+        m_HeightType = before;
+        g_DC_AsmOff2 |= 524288;
+        const int32_t c = M_GetSurfaceHeight(surface, x, z, fix);
+        const HEIGHT_TYPE c_type = m_HeightType;
+        g_DC_AsmOff2 &= ~524288u;
+        m_HeightType = before;
+        const int32_t a = M_GetSurfaceHeight(surface, x, z, fix);
+        if (a != c || m_HeightType != c_type) {
+            bad++;
+        }
+    }
+    Camera_SetChunky(false);
+    m_HeightType = HT_WALL;
+    return bad;
+}
+#endif
 
 static bool M_IsPortalSolid(
     const SURFACE surface, const int32_t x, const int32_t z)
