@@ -1396,3 +1396,111 @@ ai_out:
     .long   67108863
 .Lai_k27:
     .long   134217726
+
+! int dc_translate_abs(MATRIX *m, const MATRIX *v, MATRIX *wm, const int32_t *xyz);
+!
+! Matrix_TranslateAbs: m[r][3] = x*v[r][0] + y*v[r][1] + z*v[r][2] + v[r][3] in
+! 64 bits, and wm[r][3] = (r-th of x, y, z) << 14 (M_TranslateSet). Only when
+! the nine entries of v are int32 (a dmuls.l each); otherwise returns 0 and
+! writes nothing.
+    .global _dc_translate_abs
+    .align 2
+_dc_translate_abs:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   @(0,r7),r8
+    mov.l   @(4,r7),r9
+    mov.l   @(8,r7),r10
+    mov     #-31,r7
+    mov     r5,r2
+    mov     #3,r3
+ta_chk:
+    mov.l   @(0,r2),r0
+    mov.l   @(4,r2),r1
+    shad    r7,r0
+    cmp/eq  r0,r1
+    bf      ta_fail
+    mov.l   @(8,r2),r0
+    mov.l   @(12,r2),r1
+    shad    r7,r0
+    cmp/eq  r0,r1
+    bf      ta_fail
+    mov.l   @(16,r2),r0
+    mov.l   @(20,r2),r1
+    shad    r7,r0
+    cmp/eq  r0,r1
+    bf      ta_fail
+    add     #32,r2
+    dt      r3
+    bf      ta_chk
+    mov     #3,r3
+ta_row:
+    mov.l   @(0,r5),r0
+    dmuls.l r8,r0
+    sts     macl,r11
+    sts     mach,r12
+    mov.l   @(8,r5),r0
+    dmuls.l r9,r0
+    sts     macl,r1
+    clrt
+    addc    r1,r11
+    sts     mach,r1
+    addc    r1,r12
+    mov.l   @(16,r5),r0
+    dmuls.l r10,r0
+    sts     macl,r1
+    clrt
+    addc    r1,r11
+    sts     mach,r1
+    addc    r1,r12
+    mov.l   @(24,r5),r0
+    mov.l   @(28,r5),r1
+    clrt
+    addc    r0,r11
+    addc    r1,r12
+    mov.l   r11,@(24,r4)
+    mov.l   r12,@(28,r4)
+    add     #32,r4
+    add     #32,r5
+    dt      r3
+    bf      ta_row
+    mov     r8,r1
+    mov     #14,r0
+    shld    r0,r1
+    mov     r8,r2
+    mov     #-18,r0
+    shad    r0,r2
+    mov.l   r1,@(24,r6)
+    mov.l   r2,@(28,r6)
+    mov     r9,r1
+    mov     #14,r0
+    shld    r0,r1
+    mov     r9,r2
+    mov     #-18,r0
+    shad    r0,r2
+    mov.l   r1,@(56,r6)
+    mov.l   r2,@(60,r6)
+    add     #64,r6
+    mov     r10,r1
+    mov     #14,r0
+    shld    r0,r1
+    mov     r10,r2
+    mov     #-18,r0
+    shad    r0,r2
+    mov.l   r1,@(24,r6)
+    mov.l   r2,@(28,r6)
+    mov     #1,r0
+    bra     ta_out
+    nop
+ta_fail:
+    mov     #0,r0
+ta_out:
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8

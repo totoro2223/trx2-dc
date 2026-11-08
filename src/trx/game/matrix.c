@@ -622,6 +622,8 @@ static void M_ScaleZC(MATRIX *const m, const int32_t angle)
 // bit 2 turns it off.
 extern uint32_t g_DC_AsmOff2;
 extern int dc_scale_col(MATRIX *m, int32_t scale, int32_t coloff);
+extern int dc_translate_abs(
+    MATRIX *m, const MATRIX *v, MATRIX *wm, const int32_t *xyz);
 static void M_ScaleCol(
     MATRIX *const m, const int32_t scale, const int32_t coloff,
     void (*c_fn)(MATRIX *, int32_t))
@@ -1540,16 +1542,52 @@ void Matrix_TranslateRel32(const XYZ_32 offset)
     M_TranslateRel(g_WMatrixPtr, offset);
 }
 
-void Matrix_TranslateAbs(const int32_t x, const int32_t y, const int32_t z)
+static void M_TranslateAbsC(
+    MATRIX *const m, MATRIX *const wm, const int32_t x, const int32_t y,
+    const int32_t z)
 {
-    MATRIX *const m = g_MatrixPtr;
     const MATRIX *const v = &g_ViewMatrix;
     m->_03 = x * v->_00 + y * v->_01 + z * v->_02 + v->_03;
     m->_13 = x * v->_10 + y * v->_11 + z * v->_12 + v->_13;
     m->_23 = x * v->_20 + y * v->_21 + z * v->_22 + v->_23;
-    M_TranslateSet(g_WMatrixPtr, (XYZ_32) { x, y, z });
+    M_TranslateSet(wm, (XYZ_32) { x, y, z });
 }
 
+void Matrix_TranslateAbs(const int32_t x, const int32_t y, const int32_t z)
+{
+#if defined(__DREAMCAST__)
+    // In assembly (game_sh4.S, dc_translate_abs) when the view matrix fits
+    // int32; ASMOFF2 bit 8 turns it off.
+    if ((g_DC_AsmOff2 & 8) == 0) {
+        const int32_t xyz[3] = { x, y, z };
+    #if defined(DC_EMIT_VERIFY)
+        MATRIX rm = *g_MatrixPtr;
+        MATRIX rw = *g_WMatrixPtr;
+        M_TranslateAbsC(&rm, &rw, x, y, z);
+        if (dc_translate_abs(g_MatrixPtr, &g_ViewMatrix, g_WMatrixPtr, xyz)) {
+            static uint32_t runs;
+            static uint32_t bad;
+            if (memcmp(&rm, g_MatrixPtr, sizeof(MATRIX)) != 0
+                || memcmp(&rw, g_WMatrixPtr, sizeof(MATRIX)) != 0) {
+                bad++;
+                LOG_WARNING("[tabs-verify] MISMATCH");
+            }
+            if (runs++ == 0 || runs % 20000 == 0) {
+                LOG_WARNING(
+                    "[tabs-verify] %u runs, %u bad", (unsigned)runs,
+                    (unsigned)bad);
+            }
+            return;
+        }
+    #else
+        if (dc_translate_abs(g_MatrixPtr, &g_ViewMatrix, g_WMatrixPtr, xyz)) {
+            return;
+        }
+    #endif
+    }
+#endif
+    M_TranslateAbsC(g_MatrixPtr, g_WMatrixPtr, x, y, z);
+}
 void Matrix_TranslateAbs16(const XYZ_16 offset)
 {
     Matrix_TranslateAbs(offset.x, offset.y, offset.z);
