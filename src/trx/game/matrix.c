@@ -749,39 +749,34 @@ static void M_MxCheck(
 }
 #endif
 
-typedef void (*M_ROT_FN)(MATRIX *, int32_t, int32_t);
-
-static inline void M_RotRun(
-    MATRIX *const m, const int32_t s, const int32_t c, const M_ROT_FN c_fn,
-    const M_ROT_FN asm_fn)
-{
-    if ((g_DC_AsmOff & 67108864) != 0) {
-        c_fn(m, s, c);
-        return;
-    }
 #if defined(DC_EMIT_VERIFY)
-    const MATRIX in = *m;
-    MATRIX copy = *m;
-    c_fn(&copy, s, c);
-    asm_fn(m, s, c);
-    M_MxCheck(&copy, m, &in, s, c);
+    #define M_ROT_WRAP(name_, c_fn_, asm_fn_)                                  \
+        static void name_(MATRIX *const m, const int32_t s, const int32_t c)   \
+        {                                                                      \
+            if ((g_DC_AsmOff & 67108864) != 0) {                               \
+                c_fn_(m, s, c);                                                \
+                return;                                                        \
+            }                                                                  \
+            const MATRIX in = *m;                                              \
+            MATRIX copy = *m;                                                  \
+            c_fn_(&copy, s, c);                                                \
+            asm_fn_(m, s, c);                                                  \
+            M_MxCheck(&copy, m, &in, s, c);                                    \
+        }
 #else
-    asm_fn(m, s, c);
+    #define M_ROT_WRAP(name_, c_fn_, asm_fn_)                                  \
+        static void name_(MATRIX *const m, const int32_t s, const int32_t c)   \
+        {                                                                      \
+            if ((g_DC_AsmOff & 67108864) != 0) {                               \
+                c_fn_(m, s, c);                                                \
+                return;                                                        \
+            }                                                                  \
+            asm_fn_(m, s, c);                                                  \
+        }
 #endif
-}
-
-static void M_RotXSC(MATRIX *const m, const int32_t s, const int32_t c)
-{
-    M_RotRun(m, s, c, M_RotXSC_C, dc_rot_x);
-}
-static void M_RotYSC(MATRIX *const m, const int32_t s, const int32_t c)
-{
-    M_RotRun(m, s, c, M_RotYSC_C, dc_rot_y);
-}
-static void M_RotZSC(MATRIX *const m, const int32_t s, const int32_t c)
-{
-    M_RotRun(m, s, c, M_RotZSC_C, dc_rot_z);
-}
+M_ROT_WRAP(M_RotXSC, M_RotXSC_C, dc_rot_x)
+M_ROT_WRAP(M_RotYSC, M_RotYSC_C, dc_rot_y)
+M_ROT_WRAP(M_RotZSC, M_RotZSC_C, dc_rot_z)
 #else
 static void M_RotXSC(MATRIX *const m, const int32_t s, const int32_t c)
 {
@@ -906,12 +901,23 @@ static void M_RotYXZ_Float(
         M_RotYXZ_FloatC(ms, n, rotation);
         return;
     }
-    int32_t p[7] = {
-        Math_Sin(rotation.y), Math_Cos(rotation.y), Math_Sin(rotation.x),
-        Math_Cos(rotation.x), Math_Sin(rotation.z), Math_Cos(rotation.z),
-        (rotation.y != 0 ? 1 : 0) | (rotation.x != 0 ? 2 : 0)
-            | (rotation.z != 0 ? 4 : 0),
-    };
+    int32_t p[7];
+    p[6] = 0;
+    if (rotation.y != 0) {
+        p[0] = Math_Sin(rotation.y);
+        p[1] = Math_Cos(rotation.y);
+        p[6] |= 1;
+    }
+    if (rotation.x != 0) {
+        p[2] = Math_Sin(rotation.x);
+        p[3] = Math_Cos(rotation.x);
+        p[6] |= 2;
+    }
+    if (rotation.z != 0) {
+        p[4] = Math_Sin(rotation.z);
+        p[5] = Math_Cos(rotation.z);
+        p[6] |= 4;
+    }
     #if defined(DC_EMIT_VERIFY)
     MATRIX in[4];
     MATRIX copy[4];
