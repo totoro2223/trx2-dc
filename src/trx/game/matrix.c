@@ -518,6 +518,13 @@ static inline int64_t M_BlendLinear(
 // the matrix goes the same fraction of the way from m1 to m2, with no
 // quaternions and no trigonometry. The result stops being a pure rotation by
 // a little between two keyframes far apart, as it did in the originals.
+static void M_InterpolateLinearC(
+    const MATRIX *m1, const MATRIX *m2, MATRIX *result, int32_t frac,
+    int32_t rate, uint32_t inv_rate);
+extern uint32_t g_DC_AsmOff;
+extern int dc_blend12(
+    MATRIX *out, const MATRIX *m1, const MATRIX *m2, const int32_t *p);
+
 static void M_InterpolateLinear(
     const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result)
 {
@@ -532,6 +539,48 @@ static void M_InterpolateLinear(
     CLAMP(frac, 0, rate);
     const uint32_t inv_rate = 0xFFFFFFFFu / (uint32_t)rate;
 
+    // In assembly (game_sh4.S, dc_blend12) where the step is small; ASMOFF
+    // bit 536870912 turns it off.
+    if ((g_DC_AsmOff & 536870912) == 0
+        && (frac < 32 || (rate == 2 && frac == 1))) {
+        static const int32_t *p;
+        static int32_t params[3];
+        params[0] = frac;
+        params[1] = rate;
+        params[2] = (int32_t)inv_rate;
+        p = params;
+    #if defined(DC_EMIT_VERIFY)
+        MATRIX ref;
+        M_InterpolateLinearC(m1, m2, &ref, frac, rate, inv_rate);
+        MATRIX out;
+        if (dc_blend12(&out, m1, m2, p)) {
+            static uint32_t runs;
+            static uint32_t bad;
+            if (memcmp(&ref, &out, sizeof(MATRIX)) != 0) {
+                bad++;
+                LOG_WARNING("[blend-verify] MISMATCH");
+            }
+            if (runs++ == 0 || runs % 2000 == 0) {
+                LOG_WARNING(
+                    "[blend-verify] %u runs, %u bad", (unsigned)runs,
+                    (unsigned)bad);
+            }
+            *result = out;
+            return;
+        }
+    #else
+        if (dc_blend12(result, m1, m2, p)) {
+            return;
+        }
+    #endif
+    }
+    M_InterpolateLinearC(m1, m2, result, frac, rate, inv_rate);
+}
+
+static void M_InterpolateLinearC(
+    const MATRIX *const m1, const MATRIX *const m2, MATRIX *const result,
+    const int32_t frac, const int32_t rate, const uint32_t inv_rate)
+{
     result->_00 = M_BlendLinear(m1->_00, m2->_00, frac, rate, inv_rate);
     result->_01 = M_BlendLinear(m1->_01, m2->_01, frac, rate, inv_rate);
     result->_02 = M_BlendLinear(m1->_02, m2->_02, frac, rate, inv_rate);
@@ -1391,10 +1440,10 @@ void Matrix_Push_I(void)
 {
     Matrix_Push();
     if (!g_MatrixWorldOnly) {
-        m_IMMatrixPtr[1] = m_IMMatrixPtr[0];
+        M_MatCopy(&m_IMMatrixPtr[1], &m_IMMatrixPtr[0]);
     }
     m_IMMatrixPtr++;
-    m_WIMMatrixPtr[1] = m_WIMMatrixPtr[0];
+    M_MatCopy(&m_WIMMatrixPtr[1], &m_WIMMatrixPtr[0]);
     m_WIMMatrixPtr++;
 }
 

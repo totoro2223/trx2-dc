@@ -704,3 +704,139 @@ m3_put:
     mov.l   @r15+,r8
     rts
     mov     #1,r0
+
+! int dc_blend12(MATRIX *out, const MATRIX *m1, const MATRIX *m2, const int32_t *p);
+!
+! The original games' pose blend, M_InterpolateLinear: every one of the twelve
+! entries goes frac/rate of the way from m1 to m2 (p: frac, rate, 2^32-1 / rate).
+! The caller has the rate above 0 and frac < 32 or (rate 2, frac 1). The
+! average case is (a+b)>>1 in 64 bits; the rest is a + (d*frac)/rate by the
+! reciprocal, d = b-a. If some d lies outside +-(2^26-1) nothing is written and
+! the result is 0 (the C divides in 64 bits there). out may be m1.
+    .global _dc_blend12
+    .align 2
+_dc_blend12:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov.l   @(0,r7),r8              ! frac
+    mov.l   @(4,r7),r9              ! rate
+    mov.l   @(8,r7),r10             ! 2^32-1 / rate
+    mov     r9,r0
+    cmp/eq  #2,r0
+    bf      bl_gen
+    mov     r8,r0
+    cmp/eq  #1,r0
+    bf      bl_gen
+    mov     #12,r11
+bl_avg:
+    mov.l   @r5+,r0
+    mov.l   @r5+,r1
+    mov.l   @r6+,r2
+    mov.l   @r6+,r3
+    clrt
+    addc    r2,r0
+    addc    r3,r1
+    shar    r1
+    rotcr   r0
+    mov.l   r0,@r4
+    mov.l   r1,@(4,r4)
+    add     #8,r4
+    dt      r11
+    bf      bl_avg
+    bra     bl_ok
+    nop
+bl_gen:
+    mov.l   .Lbk26,r12
+    mov.l   .Lbk27,r13
+    mov     #12,r11
+bl_chk:
+    mov.l   @r5+,r0
+    mov.l   @r5+,r1
+    mov.l   @r6+,r2
+    mov.l   @r6+,r3
+    clrt
+    subc    r0,r2                   ! d, low word
+    subc    r1,r3                   ! d, high word
+    mov     r2,r1
+    shll    r1
+    subc    r1,r1                   ! the sign of the low word
+    cmp/eq  r1,r3
+    bf      bl_fail
+    add     r12,r2
+    cmp/hi  r13,r2
+    bt      bl_fail
+    dt      r11
+    bf      bl_chk
+    add     #-96,r5
+    add     #-96,r6
+    mov     #12,r11
+bl_com:
+    mov.l   @r5+,r0                 ! a
+    mov.l   @r5+,r1
+    mov.l   @r6+,r2
+    add     #4,r6
+    sub     r0,r2                   ! d
+    mul.l   r2,r8
+    sts     macl,r3                 ! n = d * frac
+    mov     r3,r2
+    cmp/pz  r2
+    bt      bl_pos
+    neg     r2,r2                   ! u = |n|
+bl_pos:
+    dmulu.l r2,r10
+    sts     mach,r7                 ! q
+    mul.l   r7,r9
+    sts     macl,r12
+    sub     r12,r2                  ! r = u - q * rate
+bl_fix:
+    cmp/hs  r9,r2
+    bf      bl_done
+    add     #1,r7
+    bra     bl_fix
+    sub     r9,r2
+bl_done:
+    mov     #0,r12
+    cmp/pz  r3
+    bf      bl_neg
+    clrt
+    addc    r7,r0
+    addc    r12,r1
+    bra     bl_put
+    nop
+bl_neg:
+    clrt
+    subc    r7,r0
+    subc    r12,r1
+bl_put:
+    mov.l   r0,@r4
+    mov.l   r1,@(4,r4)
+    add     #8,r4
+    dt      r11
+    bf      bl_com
+bl_ok:
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    rts
+    mov     #1,r0
+bl_fail:
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    rts
+    mov     #0,r0
+    .align 2
+.Lbk26:
+    .long   67108863
+.Lbk27:
+    .long   134217726
