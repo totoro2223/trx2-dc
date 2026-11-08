@@ -622,6 +622,7 @@ static void M_ScaleZC(MATRIX *const m, const int32_t angle)
 // bit 2 turns it off.
 extern uint32_t g_DC_AsmOff2;
 extern int dc_scale_col(MATRIX *m, int32_t scale, int32_t coloff);
+extern uint32_t dc_sqrt32(uint32_t n);
 extern int dc_translate_abs(
     MATRIX *m, const MATRIX *v, MATRIX *wm, const int32_t *xyz);
 static void M_ScaleCol(
@@ -1928,6 +1929,48 @@ static void M_SelfTest(void)
             }
         }
     }
+    uint32_t bad_sqrt = 0, run_sqrt = 0;
+    for (uint32_t n = 0; n < 200000; n++) {
+        uint32_t v;
+        if (n < 70000) {
+            const uint32_t k = n;
+            v = k * k + (n % 3) - 1; // around perfect squares
+        } else if (n < 70100) {
+            v = 0xFFFFFFFFu - (n - 70000);
+        } else {
+            v = M_StRand() >> (M_StRand() % 32);
+        }
+        if (n % 1000 == 7) {
+            v = (65535u * 65535u) + (n % 5) - 2;
+        }
+        uint32_t result = 0;
+        uint32_t base = 0x40000000;
+        uint32_t t = v;
+        do {
+            do {
+                const uint32_t based_result = base + result;
+                result >>= 1;
+                if (based_result > t) {
+                    break;
+                }
+                t -= based_result;
+                result |= base;
+                base >>= 2;
+            } while (base);
+            base >>= 2;
+        } while (base);
+        run_sqrt++;
+        if (dc_sqrt32(v) != result) {
+            if (bad_sqrt++ < 4) {
+                LOG_WARNING(
+                    "[selftest] sqrt %u: asm %u C %u", (unsigned)v,
+                    (unsigned)dc_sqrt32(v), (unsigned)result);
+            }
+        }
+    }
+    LOG_WARNING(
+        "[selftest] sqrt %u runs %u bad", (unsigned)run_sqrt,
+        (unsigned)bad_sqrt);
     LOG_WARNING(
         "[selftest] scale %u runs %u bad | mul3x3 %u runs %u bad | arm %u runs "
         "%u bad | blend %u runs %u bad | scale skipped %u",

@@ -6,9 +6,19 @@
 
 #include <math.h>
 
+#if defined(__DREAMCAST__)
+extern uint32_t g_DC_AsmOff2;
+extern uint32_t dc_sqrt32(uint32_t n);
+#endif
+
 uint32_t Math_Sqrt(uint32_t n)
 {
 #if defined(__DREAMCAST__)
+    // In assembly (game_sh4.S, dc_sqrt32); ASMOFF2 bit 16 turns it off. The C
+    // below is the reference.
+    if ((g_DC_AsmOff2 & 16) == 0) {
+        return dc_sqrt32(n);
+    }
     // fsqrt gives the root to ~24 bits; the integer fix-up makes it the exact
     // floor the bit loop below returns.
     uint32_t r = (uint32_t)sqrtf((float)n);

@@ -1504,3 +1504,65 @@ ta_out:
     mov.l   @r15+,r9
     rts
     mov.l   @r15+,r8
+
+! uint32_t dc_sqrt32(uint32_t n);   core/math/func.c Math_Sqrt
+!
+! floor(sqrt(n)) exactly, as the C's fsqrt and integer fix-up return: the float
+! root (n taken as unsigned), cut to 65535, then stepped down while r*r > n and
+! up while (r+1)^2 <= n.
+    .global _dc_sqrt32
+    .align 2
+_dc_sqrt32:
+    tst     r4,r4
+    bf      sq_nz
+    rts
+    mov     #0,r0
+sq_nz:
+    cmp/pz  r4
+    bt      sq_small
+    mov     r4,r1                   ! n >= 2^31: (n >> 1 | n & 1) * 2
+    shlr    r1
+    mov     #1,r0
+    and     r4,r0
+    or      r0,r1
+    lds     r1,fpul
+    float   fpul,fr0
+    fadd    fr0,fr0
+    bra     sq_root
+    nop
+sq_small:
+    lds     r4,fpul
+    float   fpul,fr0
+sq_root:
+    fsqrt   fr0
+    ftrc    fr0,fpul
+    sts     fpul,r0
+    mov.l   .Lsq_max,r1             ! 65535
+    cmp/gt  r1,r0
+    bf      sq_dn
+    mov     r1,r0
+sq_dn:
+    mov     r0,r2
+    mul.l   r2,r2
+    sts     macl,r3
+    cmp/hi  r4,r3                   ! r*r > n
+    bf      sq_up
+    bra     sq_dn
+    add     #-1,r0
+sq_up:
+    cmp/ge  r1,r0                   ! r >= 65535 : done
+    bt      sq_done
+    mov     r0,r2
+    add     #1,r2
+    mul.l   r2,r2
+    sts     macl,r3
+    cmp/hi  r4,r3                   ! (r+1)^2 > n : done
+    bt      sq_done
+    bra     sq_up
+    add     #1,r0
+sq_done:
+    rts
+    nop
+    .align 2
+.Lsq_max:
+    .long   65535
