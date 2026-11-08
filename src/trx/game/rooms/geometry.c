@@ -181,6 +181,12 @@ static int32_t M_GetSurfaceHeight(
 {
 #if defined(__DREAMCAST__)
     if ((g_DC_AsmOff2 & 524288) == 0) {
+        // The flat surface, by far the commonest, is answered here: a call
+        // into the assembly costs more than its few tests.
+        if (!surface.is_split && surface.tilt.x == 0 && surface.tilt.z == 0) {
+            return surface.height == NO_HEIGHT && fix_tilts ? NO_HEIGHT
+                                                           : surface.height;
+        }
         const int32_t p[4] = {
             fix_tilts, Camera_IsChunky(), (int32_t)(intptr_t)&m_HeightType,
             NO_HEIGHT

@@ -31,6 +31,33 @@ Los tres usan `fsrra`/`fipr`/`ftrv`, así que difieren del C en el último bit: 
 Otros cambios de esta tanda que no son ASM: caché de nodos de articulación para chispas
 (`Sparks_JointCache`), tabla UV de chispas, ganchos de prueba (ver 4).
 
+### 1b. Hecho el 07-08/11/2026 (pasos 5 y 6 del plan)
+
+Segunda palabra de interruptores: la primera de `TRX_DC_ASMOFF` ya usa sus 32 bits, así
+que las rutinas nuevas se apagan con `TRX_DC_ASMOFF2` (`ASMOFF.TXT` lleva dos números;
+`make_disc.sh` los escribe). Todas con el C como referencia (`…C`).
+
+| Rutina (archivo) | Qué reemplaza | Bit | Verificación contra el C |
+|---|---|---|---|
+| `dc_rot_x/y/z`, `dc_translate_rel`, `dc_mat_copy`, `dc_mul3x3` (`game_sh4.S`) | giros, traslación, copia de `Matrix_Push` y producto 3x3 de `matrix.c` | ASMOFF 67108864, 134217728, 268435456 | `[matrix-verify]` 1,8 millones de llamadas, 0 distintas; autoprueba aleatoria del producto |
+| `dc_blend12`, `dc_arm_interp`, `dc_scale_col`, `dc_translate_abs` | mezcla lineal de poses, brazo de Lara, escalas, `Matrix_TranslateAbs` | ASMOFF 536870912; ASMOFF2 4, 2, 8 | autoprueba aleatoria (`M_SelfTest`, matrix.c) + `[tabs-verify]` 140 000 llamadas |
+| `dc_rot_yxz_f` | giro float de huesos (enemigos) | ASMOFF 1073741824 | `[rotf-verify]` 2800 llamadas, bit a bit |
+| `dc_bounds_lerp`, `dc_get_frames` | cajas y fotogramas de `Item_GetBoundsAccurate`/`Item_GetFrames` | ASMOFF 2147483648; ASMOFF2 1 | `[bounds-verify]` 5000; `[frames-verify]` 40 000 |
+| `dc_sqrt32`, `dc_sin`, `dc_sin_coarse`, `dc_atan` | `Math_Sqrt`, `Math_Sin` (fina y tosca), `Math_Atan` | ASMOFF2 16, 32, 8192, 64 | autoprueba: 200 000 raíces, 800 000 senos/arcotangentes, 0 distintas |
+| `dc_turn`, `dc_sphere_touch`, `dc_bounds_collide` | `M_Turn` (giro de vectores), pares de esferas, caja de colisión | ASMOFF2 1024, 2048, 4096 | autoprueba 180 000 llamadas (cazó un fallo con la tabla tosca) |
+| `dc_surface_height` | `M_GetSurfaceHeight`: suelos y techos planos, inclinados y partidos | ASMOFF2 524288 | autoprueba 200 000 superficies + 3,4 millones de llamadas reales en Antártida, 0 distintas |
+| `dc_box_search`, `dc_box_target`, `dc_creature_turn`, `dc_ai_angles`, `dc_anim_change` | ruta de criaturas (`Box_SearchLOT`, paseo de `Box_CalculateTarget`), `Creature_Turn`, ángulos de `Creature_AIInfo`, `Item_GetAnimChange` | ASMOFF2 16384, 65536, 32768, 262144, 131072 | demo Vilcabamba TR1: 2000, 3000, 2000, 3000 y 800 llamadas, 0 distintas |
+| `dc_soft_faces`, `dc_sil_project`, `dc_casters_center` (`soft_sh4.S`) | recepción y siluetas de las sombras suaves (Lara y enemigos) | ASMOFF2 128, 512, 256 | `[softfaces-verify]`, `[sil-verify]`, `[center-verify]`: 0 distintas |
+
+Medida en Antártida (Flycast, 29 muestras, dos pasadas): todo en ASM 35,9 fps y todo en C 36,2 fps,
+es decir, sin mejora en el emulador (la lógica sube ~1,2 unidades de 0,07 ms; el aislamiento por
+grupos apunta a `dc_surface_height` en los suelos inclinados y a la suma de llamadas pequeñas).
+`iwalk` e `imesh` bajan solo con los giros float y la copia de matrices. Flycast no modela la
+FPU/multiplicación del SH-4: la ganancia, si hay, sería en consola (sin probar).
+
+Pendiente de esta tanda: camino de cámara (`los_camera.c`, `box_camera.c`), `Collide_GetCollisionInfo`,
+control de Lara, `Creature_Animate`/`Creature_Mood`, `post`.
+
 ## 2. Pendiente, por coste medido
 
 Datos de Antártida (TR3 nivel 16, modo Original, Flycast oculto, build normal): 36-37 fps,
