@@ -224,15 +224,21 @@ int32_t Collide_GetSpheres(
     return obj->mesh_count;
 }
 
-int32_t Collide_TestCollision(ITEM *const item, const ITEM *const lara_item)
+#if defined(__DREAMCAST__)
+// In assembly (game_sh4.S, dc_sphere_touch, dc_bounds_collide); TRX_DC_ASMOFF2
+// bits 2048 and 4096 turn them off.
+extern uint32_t g_DC_AsmOff2;
+extern uint32_t dc_sphere_touch(
+    const SPHERE *a, int32_t na, const SPHERE *b, int32_t nb);
+extern int dc_bounds_collide(
+    const COLL_ITEM *src, const COLL_ITEM *dst, int32_t radius);
+#endif
+
+static uint32_t M_TouchBitsC(
+    const SPHERE *const slist_baddie, const int32_t num1,
+    const SPHERE *const slist_lara, const int32_t num2)
 {
-    SPHERE slist_baddie[34];
-    SPHERE slist_lara[34];
-
     uint32_t touch_bits = 0;
-    int32_t num1 = Collide_GetSpheres(item, slist_baddie, true);
-    int32_t num2 = Collide_GetSpheres(lara_item, slist_lara, true);
-
     for (int32_t i = 0; i < num1; i++) {
         const SPHERE *const ptr1 = &slist_baddie[i];
         if (ptr1->r <= 0) {
@@ -257,6 +263,32 @@ int32_t Collide_TestCollision(ITEM *const item, const ITEM *const lara_item)
         }
     }
 
+    return touch_bits;
+}
+
+// The pairs of two spheres lists (a verify build compares the assembly with
+// the C, see M_SelfTest in matrix.c).
+uint32_t Collide_TouchBits(
+    const SPHERE *const a, const int32_t na, const SPHERE *const b,
+    const int32_t nb)
+{
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 2048) == 0) {
+        return dc_sphere_touch(a, na, b, nb);
+    }
+#endif
+    return M_TouchBitsC(a, na, b, nb);
+}
+
+int32_t Collide_TestCollision(ITEM *const item, const ITEM *const lara_item)
+{
+    SPHERE slist_baddie[34];
+    SPHERE slist_lara[34];
+
+    int32_t num1 = Collide_GetSpheres(item, slist_baddie, true);
+    int32_t num2 = Collide_GetSpheres(lara_item, slist_lara, true);
+    const uint32_t touch_bits =
+        Collide_TouchBits(slist_baddie, num1, slist_lara, num2);
     item->touch_bits = touch_bits;
     return touch_bits;
 }
@@ -743,6 +775,11 @@ bool Collide_TestBoundsCollide(
     const COLL_ITEM *const src_item, const COLL_ITEM *const dst_item,
     const int32_t radius)
 {
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 4096) == 0) {
+        return dc_bounds_collide(src_item, dst_item, radius) != 0;
+    }
+#endif
     const BOUNDS_16 *const src_bounds = &src_item->bounds;
     const BOUNDS_16 *const dst_bounds = &dst_item->bounds;
 

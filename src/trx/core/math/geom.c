@@ -7,12 +7,24 @@
 
 #include <math.h>
 
+#if defined(__DREAMCAST__)
+extern uint32_t g_DC_AsmOff2;
+extern void dc_turn(int32_t *a, int32_t *b, int32_t s, int32_t c);
+#endif
+
 // Turns the (a, b) pair by an angle given as its already-taken sine and
 // cosine, so a caller can hand it a negated sine to turn the other way
 // without having to negate the angle itself.
 static void M_Turn(
     int32_t *const a, int32_t *const b, const int32_t s, const int32_t c)
 {
+#if defined(__DREAMCAST__)
+    // In assembly (game_sh4.S, dc_turn); TRX_DC_ASMOFF2 bit 1024 turns it off.
+    if ((g_DC_AsmOff2 & 1024) == 0) {
+        dc_turn(a, b, s, c);
+        return;
+    }
+#endif
     const int32_t a0 = *a;
     const int32_t b0 = *b;
     *a = (int32_t)(((int64_t)a0 * c + (int64_t)b0 * s) >> W2V_SHIFT);

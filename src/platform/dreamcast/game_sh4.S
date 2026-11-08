@@ -1674,3 +1674,307 @@ at_out:
     .long   0x8000
 .Ltr_tab:
     .long   _g_DC_Trig
+
+! void dc_turn(int32_t *a, int32_t *b, int32_t s, int32_t c);   core/math/geom.c M_Turn
+!
+! a' = (a*c + b*s) >> 14, b' = (b*c - a*s) >> 14, the products in 64 bits and
+! the low 32 bits of each result kept, as the C has them.
+    .global _dc_turn
+    .align 2
+_dc_turn:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   @r4,r0                  ! a
+    mov.l   @r5,r1                  ! b
+    dmuls.l r0,r7
+    sts     macl,r2
+    sts     mach,r3
+    dmuls.l r1,r6
+    sts     macl,r8
+    sts     mach,r9
+    clrt
+    addc    r8,r2
+    addc    r9,r3
+    mov     #-14,r8
+    shld    r8,r2
+    mov     #18,r8
+    shld    r8,r3
+    or      r3,r2
+    mov.l   r2,@r4                  ! the new a
+    dmuls.l r1,r7
+    sts     macl,r2
+    sts     mach,r3
+    dmuls.l r0,r6
+    sts     macl,r8
+    sts     mach,r9
+    clrt
+    subc    r8,r2
+    subc    r9,r3
+    mov     #-14,r8
+    shld    r8,r2
+    mov     #18,r8
+    shld    r8,r3
+    or      r3,r2
+    mov.l   r2,@r5                  ! the new b
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
+
+! uint32_t dc_sphere_touch(const SPHERE *a, int32_t na, const SPHERE *b, int32_t nb);
+!
+! Collide_TestCollision's pairs: bit i is set when sphere i of a (radius above
+! 0) touches some sphere of b (radius above 0): d^2 < (r1 + r2)^2, in 32 bits.
+! A SPHERE is x y z r, 16 bytes.
+    .global _dc_sphere_touch
+    .align 2
+_dc_sphere_touch:
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov.l   r12,@-r15
+    mov.l   r13,@-r15
+    mov     #0,r12                  ! the bits
+    mov     #1,r13                  ! this sphere's bit
+st_i:
+    cmp/pl  r5
+    bf      st_done
+    mov.l   @(12,r4),r11
+    cmp/pl  r11
+    bf      st_next_i
+    mov     r6,r9
+    mov     r7,r10
+st_j:
+    cmp/pl  r10
+    bf      st_next_i
+    mov.l   @(12,r9),r1
+    cmp/pl  r1
+    bf      st_next_j
+    add     r11,r1
+    mul.l   r1,r1
+    sts     macl,r1                 ! (r1 + r2)^2
+    mov.l   @r9,r2
+    mov.l   @r4,r3
+    sub     r3,r2
+    mul.l   r2,r2
+    sts     macl,r0                 ! dx^2
+    mov.l   @(4,r9),r2
+    mov.l   @(4,r4),r3
+    sub     r3,r2
+    mul.l   r2,r2
+    sts     macl,r2
+    add     r2,r0
+    mov.l   @(8,r9),r2
+    mov.l   @(8,r4),r3
+    sub     r3,r2
+    mul.l   r2,r2
+    sts     macl,r2
+    add     r2,r0                   ! d^2
+    cmp/gt  r0,r1
+    bf      st_next_j
+    or      r13,r12                 ! it touches: the next sphere
+    bra     st_next_i
+    nop
+st_next_j:
+    add     #16,r9
+    add     #-1,r10
+    bra     st_j
+    nop
+st_next_i:
+    add     #16,r4
+    add     #-1,r5
+    shll    r13
+    bra     st_i
+    nop
+st_done:
+    mov     r12,r0
+    mov.l   @r15+,r13
+    mov.l   @r15+,r12
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    rts
+    mov.l   @r15+,r8
+
+! int dc_bounds_collide(const COLL_ITEM *src, const COLL_ITEM *dst, int32_t radius);
+!
+! Collide_TestBoundsCollide. COLL_ITEM (bytes): 0 min x y z, 6 max x y z (int16)
+! 12 pos x y z (int32) 24 rot x y z (int16).
+    .global _dc_bounds_collide
+    .align 2
+_dc_bounds_collide:
+    sts.l   pr,@-r15
+    mov.l   r8,@-r15
+    mov.l   r9,@-r15
+    mov.l   r10,@-r15
+    mov.l   r11,@-r15
+    mov     r4,r8                   ! src
+    mov     r5,r9                   ! dst
+    mov     r6,r10                  ! radius
+    mov.l   @(16,r8),r1             ! src y
+    mov.w   @(2,r8),r0
+    add     r1,r0                   ! src.y + src.min.y
+    mov.l   @(16,r9),r2             ! dst y
+    mov     r0,r3
+    mov     r9,r0
+    add     #8,r0
+    mov.w   @r0,r0                  ! dst.max.y
+    add     r2,r0
+    cmp/ge  r0,r3                   ! src.y + min.y >= dst.y + max.y
+    bt      bc_no
+    mov     r8,r0
+    add     #8,r0
+    mov.w   @r0,r0                  ! src.max.y
+    add     r1,r0
+    mov     r0,r3
+    mov     r9,r0
+    add     #2,r0
+    mov.w   @r0,r0                  ! dst.min.y
+    add     r2,r0
+    cmp/ge  r3,r0                   ! src.y + max.y <= dst.y + min.y
+    bt      bc_no
+    mov.l   @(12,r9),r1
+    mov.l   @(12,r8),r2
+    sub     r2,r1                   ! dx
+    mov.l   @(20,r9),r11
+    mov.l   @(20,r8),r2
+    sub     r2,r11                  ! dz
+    mov     r8,r0
+    add     #26,r0
+    mov.w   @r0,r4                  ! yaw
+    tst     r4,r4
+    bt      bc_test
+    add     #-16,r15
+    mov.l   r1,@(4,r15)             ! dx
+    mov.l   r11,@r15                ! dz
+    mov.l   .Lbc_sin,r0
+    jsr     @r0
+    nop
+    neg     r0,r0
+    mov.l   r0,@(8,r15)             ! -sin
+    mov     r8,r0
+    add     #26,r0
+    mov.w   @r0,r4
+    mov.l   .Lbc_16384,r1
+    add     r1,r4
+    mov.l   .Lbc_sin,r0
+    jsr     @r0
+    nop
+    mov     r0,r7                   ! cos
+    mov.l   @(8,r15),r6
+    mov     r15,r5
+    mov     r5,r4
+    add     #4,r4                   ! &dx
+    mov.l   .Lbc_turn,r0
+    jsr     @r0
+    nop
+    mov.l   @(4,r15),r1             ! local x
+    mov.l   @r15,r11                ! local z
+    add     #16,r15
+bc_test:
+    mov.w   @(0,r8),r0
+    sub     r10,r0                  ! min.x - radius
+    cmp/ge  r0,r1                   ! local x >= min.x - radius
+    bf      bc_no
+    mov     r8,r0
+    add     #6,r0
+    mov.w   @r0,r0
+    add     r10,r0                  ! max.x + radius
+    cmp/gt  r0,r1                   ! local x > max.x + radius
+    bt      bc_no
+    mov     r8,r0
+    add     #4,r0
+    mov.w   @r0,r0
+    sub     r10,r0                  ! min.z - radius
+    cmp/ge  r0,r11
+    bf      bc_no
+    mov     r8,r0
+    add     #10,r0
+    mov.w   @r0,r0
+    add     r10,r0                  ! max.z + radius
+    cmp/gt  r0,r11
+    bt      bc_no
+    mov     #1,r0
+    bra     bc_out
+    nop
+bc_no:
+    mov     #0,r0
+bc_out:
+    mov.l   @r15+,r11
+    mov.l   @r15+,r10
+    mov.l   @r15+,r9
+    mov.l   @r15+,r8
+    lds.l   @r15+,pr
+    rts
+    nop
+    .align 2
+.Lbc_sin:
+    .long   _Math_Sin               ! (the coarse table too, when the mode has it)
+.Lbc_turn:
+    .long   _dc_turn
+.Lbc_16384:
+    .long   0x4000
+
+! int32_t dc_sin_coarse(int32_t angle);   core/math/trig.c M_CoarseSin
+!
+! The coarse table (int16, 1025 entries, g_DC_Trig word 3): step = (angle >> 4)
+! & 0xFFF; 4 * table[step], [0x800 - step], - [step - 0x800], - [0x1000 - step]
+! by the quarter. (TR3's mode uses it.)
+    .global _dc_sin_coarse
+    .align 2
+_dc_sin_coarse:
+    extu.w  r4,r1
+    shlr2   r1
+    shlr2   r1                      ! step
+    mov.l   .Lsc_tab,r3
+    mov.l   @(12,r3),r3             ! the coarse table
+    mov     #0,r5
+    mov.l   .Lsc_0400,r2
+    cmp/hs  r2,r1
+    bt      sc_q1
+    bra     sc_get
+    nop
+sc_q1:
+    mov.l   .Lsc_0800,r2
+    cmp/hs  r2,r1
+    bt      sc_q2
+    sub     r1,r2
+    mov     r2,r1                   ! 0x800 - step
+    bra     sc_get
+    nop
+sc_q2:
+    mov.l   .Lsc_0c00,r2
+    cmp/hs  r2,r1
+    bt      sc_q3
+    mov.l   .Lsc_0800,r2
+    sub     r2,r1                   ! step - 0x800
+    mov     #1,r5
+    bra     sc_get
+    nop
+sc_q3:
+    mov.l   .Lsc_1000,r2
+    sub     r1,r2
+    mov     r2,r1                   ! 0x1000 - step
+    mov     #1,r5
+sc_get:
+    mov     r1,r0
+    shll    r0
+    mov.w   @(r0,r3),r0
+    shll2   r0
+    tst     r5,r5
+    bt      sc_out
+    neg     r0,r0
+sc_out:
+    rts
+    nop
+    .align 2
+.Lsc_tab:
+    .long   _g_DC_Trig
+.Lsc_0400:
+    .long   0x400
+.Lsc_0800:
+    .long   0x800
+.Lsc_0c00:
+    .long   0xC00
+.Lsc_1000:
+    .long   0x1000

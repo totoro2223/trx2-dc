@@ -4,6 +4,10 @@
 
 int32_t Collide_GetSpheres(const ITEM *item, SPHERE *spheres, bool world_space);
 
+// Bit i is set when sphere i of a touches some sphere of b.
+uint32_t Collide_TouchBits(
+    const SPHERE *a, int32_t na, const SPHERE *b, int32_t nb);
+
 int32_t Collide_TestCollision(ITEM *item, const ITEM *lara_item);
 
 void Collide_GetJointAbsPosition(

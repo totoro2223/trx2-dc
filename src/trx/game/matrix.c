@@ -4,7 +4,9 @@
 #include <trx/core/math.h>
 #include <trx/core/utils.h>
 #include <trx/game/const.h>
+#include <trx/game/collision/common.h>
 #include <trx/game/pathing/lot.h>
+#include <trx/version.h>
 
 #include <trx/core/log.h>
 
@@ -1929,7 +1931,112 @@ static void M_SelfTest(void)
             }
         }
     }
+    // Turns, sphere pairs and box tests (geom.c, collision/common.c).
+    uint32_t bad_geom = 0, run_geom = 0;
+    for (uint32_t n = 0; n < 60000; n++) {
+        const int32_t reach = n % 3 == 0 ? (1 << 28) : (1 << 14);
+        XYZ_32 v = {
+            (int32_t)(M_StRand() % (2 * reach)) - reach,
+            (int32_t)(M_StRand() % (2 * reach)) - reach,
+            (int32_t)(M_StRand() % (2 * reach)) - reach,
+        };
+        const int16_t yaw = n % 5 == 0 ? 0 : (int16_t)M_StRand();
+        g_DC_AsmOff2 |= 1024;
+        const XYZ_32 r1 = XYZ_32_RotateYaw(v, yaw);
+        const XYZ_32 u1 = XYZ_32_UnrotateYaw(v, yaw);
+        g_DC_AsmOff2 &= ~1024u;
+        const XYZ_32 r2 = XYZ_32_RotateYaw(v, yaw);
+        const XYZ_32 u2 = XYZ_32_UnrotateYaw(v, yaw);
+        run_geom++;
+        if (r1.x != r2.x || r1.z != r2.z || u1.x != u2.x || u1.z != u2.z) {
+            if (bad_geom++ < 4) {
+                LOG_WARNING(
+                    "[selftest] turn v %d %d %d yaw %d: C %d %d / %d %d asm "
+                    "%d %d / %d %d",
+                    (int)v.x, (int)v.y, (int)v.z, (int)yaw, (int)r1.x,
+                    (int)r1.z, (int)u1.x, (int)u1.z, (int)r2.x, (int)r2.z,
+                    (int)u2.x, (int)u2.z);
+            }
+        }
+        SPHERE sa[8];
+        SPHERE sb[8];
+        for (int32_t i = 0; i < 8; i++) {
+            sa[i].pos = (XYZ_32) { (int32_t)(M_StRand() % 4096),
+                                   (int32_t)(M_StRand() % 4096),
+                                   (int32_t)(M_StRand() % 4096) };
+            sb[i].pos = (XYZ_32) { (int32_t)(M_StRand() % 4096),
+                                   (int32_t)(M_StRand() % 4096),
+                                   (int32_t)(M_StRand() % 4096) };
+            sa[i].r = (int32_t)(M_StRand() % 1500) - 200;
+            sb[i].r = (int32_t)(M_StRand() % 1500) - 200;
+        }
+        const int32_t na = 1 + (int32_t)(M_StRand() % 8);
+        const int32_t nb = 1 + (int32_t)(M_StRand() % 8);
+        g_DC_AsmOff2 |= 2048;
+        const uint32_t t1 = Collide_TouchBits(sa, na, sb, nb);
+        g_DC_AsmOff2 &= ~2048u;
+        const uint32_t t2 = Collide_TouchBits(sa, na, sb, nb);
+        run_geom++;
+        if (t1 != t2) {
+            if (bad_geom++ < 4) {
+                LOG_WARNING(
+                    "[selftest] spheres na %d nb %d: C %u asm %u", (int)na,
+                    (int)nb, (unsigned)t1, (unsigned)t2);
+            }
+        }
+        COLL_ITEM ci[2];
+        for (int32_t i = 0; i < 2; i++) {
+            ci[i].bounds.min = (XYZ_16) { (int16_t)(-(int32_t)(M_StRand() % 600)),
+                                          (int16_t)(-(int32_t)(M_StRand() % 600)),
+                                          (int16_t)(-(int32_t)(M_StRand() % 600)) };
+            ci[i].bounds.max = (XYZ_16) { (int16_t)(M_StRand() % 600),
+                                          (int16_t)(M_StRand() % 600),
+                                          (int16_t)(M_StRand() % 600) };
+            ci[i].pos = (XYZ_32) { (int32_t)(M_StRand() % 3000),
+                                   (int32_t)(M_StRand() % 800),
+                                   (int32_t)(M_StRand() % 3000) };
+            ci[i].rot = (XYZ_16) { 0, n % 4 == 0 ? (int16_t)0 : (int16_t)M_StRand(), 0 };
+        }
+        const int32_t radius = (int32_t)(M_StRand() % 400);
+        g_DC_AsmOff2 |= 4096;
+        const bool c1 = Collide_TestBoundsCollide(&ci[0], &ci[1], radius);
+        g_DC_AsmOff2 &= ~4096u;
+        const bool c2 = Collide_TestBoundsCollide(&ci[0], &ci[1], radius);
+        run_geom++;
+        if (c1 != c2) {
+            if (bad_geom++ < 4) {
+                LOG_WARNING(
+                    "[selftest] box: C %d asm %d yaw %d radius %d | src b %d %d "
+                    "%d %d %d %d p %d %d %d | dst b %d %d %d %d %d %d p %d %d "
+                    "%d",
+                    (int)c1, (int)c2, (int)ci[0].rot.y, (int)radius,
+                    (int)ci[0].bounds.min.x, (int)ci[0].bounds.min.y,
+                    (int)ci[0].bounds.min.z, (int)ci[0].bounds.max.x,
+                    (int)ci[0].bounds.max.y, (int)ci[0].bounds.max.z,
+                    (int)ci[0].pos.x, (int)ci[0].pos.y, (int)ci[0].pos.z,
+                    (int)ci[1].bounds.min.x, (int)ci[1].bounds.min.y,
+                    (int)ci[1].bounds.min.z, (int)ci[1].bounds.max.x,
+                    (int)ci[1].bounds.max.y, (int)ci[1].bounds.max.z,
+                    (int)ci[1].pos.x, (int)ci[1].pos.y, (int)ci[1].pos.z);
+            }
+        }
+    }
+    LOG_WARNING(
+        "[selftest] turn+spheres+box %u runs %u bad", (unsigned)run_geom,
+        (unsigned)bad_geom);
     uint32_t bad_trig = 0, run_trig = 0;
+    Math_SetCoarseTrig(true);
+    for (uint32_t n = 0; n < 200000; n++) {
+        const int32_t a = n < 70000 ? (int32_t)n - 5000 : (int32_t)M_StRand();
+        g_DC_AsmOff2 |= 8192;
+        const int32_t sin_c = Math_Sin(a);
+        g_DC_AsmOff2 &= ~8192u;
+        run_trig++;
+        if (Math_Sin(a) != sin_c) {
+            bad_trig++;
+        }
+    }
+    Math_SetCoarseTrig(g_TRVersion == 3);
     for (uint32_t n = 0; n < 300000; n++) {
         const int32_t a = n < 70000 ? (int32_t)n - 5000 : (int32_t)M_StRand();
         g_DC_AsmOff2 |= 32;

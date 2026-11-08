@@ -450,8 +450,9 @@ static const int16_t m_AtanAngleTable[0x802] = {
 #if defined(__DREAMCAST__)
 // The tables the assembly (game_sh4.S, dc_sin and dc_atan) reads. TRX_DC_ASMOFF2
 // bit 32 turns off the sine, bit 64 the arc tangent; the C stays below.
-const void *const g_DC_Trig[3] = { m_SinTable, m_AtanBaseTable,
-                                   m_AtanAngleTable };
+const void *const g_DC_Trig[4] = { m_SinTable, m_AtanBaseTable,
+                                   m_AtanAngleTable, m_CoarseSinTable };
+extern int32_t dc_sin_coarse(int32_t angle);
 extern uint32_t g_DC_AsmOff2;
 extern int32_t dc_sin(int32_t angle);
 extern int32_t dc_atan(int32_t x, int32_t y);
@@ -485,6 +486,10 @@ int32_t Math_Sin(int32_t angle)
 #if defined(__DREAMCAST__)
     if (!m_UseCoarseTable && (g_DC_AsmOff2 & 32) == 0) {
         return dc_sin(angle);
+    }
+    // The coarse table (TR3's): TRX_DC_ASMOFF2 bit 8192 turns this off.
+    if (m_UseCoarseTable && (g_DC_AsmOff2 & 8192) == 0) {
+        return dc_sin_coarse(angle);
     }
 #endif
     if (m_UseCoarseTable) {
