@@ -311,7 +311,9 @@ static int M_RunGame(int argc, char *argv[])
     // A test disc that leaves assembly routines out (make_disc.sh's
     // TRX_DC_ASMOFF).
     g_DC_AsmOff = 0;
-    g_DC_AsmOff2 = 0;
+    // dc_turn, dc_sphere_touch and dc_bounds_collide stay in C: on a real console
+    // the box collision in assembly killed Lara's first frame (build 1327).
+    g_DC_AsmOff2 = 1024 | 2048 | 4096;
     FILE *const asm_off = M_Open("ASMOFF.TXT");
     if (asm_off != nullptr) {
         unsigned mask = 0;

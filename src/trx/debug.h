@@ -16,12 +16,17 @@ void DC_Crumb_Fatal(const char *file, int line, const char *message);
 void DC_TrailF(const char *fmt, ...);
 void DC_TraceOn(bool on);
 void DC_TraceF(const char *fmt, ...);
+// TEMP: where the first moments of a level are, and the last asm routine
+// entered, on the memory card (TRXLOG) each time: the first few dozen only.
+void DC_Where(const char *what, int n);
+    #define DC_WHERE(what, n) DC_Where(what, n)
     #define DC_TRAIL(...) DC_TrailF(__VA_ARGS__)
     // The same, for what happens often: only from DC_TraceOn(true) on, and a
     // few dozen at most.
     #define DC_TRACE(...) DC_TraceF(__VA_ARGS__)
 #else
     #define M_DC_FATAL(message)
+    #define DC_WHERE(what, n) ((void)0)
     #define DC_TRAIL(...) ((void)0)
     #define DC_TRACE(...) ((void)0)
 #endif

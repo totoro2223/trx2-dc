@@ -329,6 +329,12 @@ static const int16_t m_EnemyCellY[M_SOFT_MAX_ENEMIES] = { 128, 128, 128, 128 };
 // Lara's own faces stay inside theirs.
 #define M_SOFT_SELF_SLOT(slice) ((slice) - 1)
 #define M_SOFT_LIGHT_SLOT(l) (M_SOFT_SLICES + 2 * (l))
+// The cell's side by the shadow type: Soft's cells are 64 texels, Soft (high)'s
+// 96 (pvr.h's value; with 96 the third light's cell lies past the 640 texels
+// the PowerVR draws).
+static SHADOW_TYPE M_ShadowType(void);
+#undef DC_PVR_SHADOW_MAP_SIZE
+#define DC_PVR_SHADOW_MAP_SIZE (M_ShadowType() == SHADOW_TYPE_SOFT_HIGH ? 96 : 64)
 _Static_assert(
     M_SOFT_LIGHT_SLOT(M_SOFT_MAX_LIGHTS - 1) == DC_PVR_SHADOW_MAP_SLOTS - 1,
     "the last light's cell lies against the map's clamped edge");
@@ -355,7 +361,7 @@ _Static_assert(
 // darkens all as much: they fade with the light's distance by this, and keep
 // their length (see M_BuildVolume).
 #define M_VOLUME_STRENGTH_MIN 0.2f
-#define M_VOLUME_STRENGTH_MAX 0.55f
+#define M_VOLUME_STRENGTH_MAX 0.45f
 // With no light near (the room's own taken from its vertices, or straight
 // down): faint, and as dark all over as any volume.
 #define M_VOLUME_STRENGTH_NO_LIGHT 0.3f
@@ -558,7 +564,7 @@ typedef struct MESH_BATCHER {
     int32_t share_capacity;
     uint32_t share_gen;
     // The model-view matrix of the instance just transformed.
-    matrix_t mv;
+    matrix_t mv __attribute__((aligned(8)));
     // Whether the instance just transformed is cel shaded, and whether the
     // faces going out now keep their shaded side (M_KeepCel).
     bool cel;
@@ -600,11 +606,11 @@ typedef struct MESH_BATCHER {
     int16_t vrange_chunk[M_MAX_CHUNKS + 1];
     bool emitted;
     uint32_t chunk_emit_us;
-} MESH_BATCHER;
+} __attribute__((aligned(8))) MESH_BATCHER;
 
 // What a pass needs that holds for every instance in it.
 typedef struct {
-    float view[4][4];
+    float view[4][4] __attribute__((aligned(8)));
     float proj_x;
     float proj_y;
     float center_x;
@@ -655,7 +661,7 @@ typedef struct {
     // The light mode of the room whose lights are uploaded, or -1: the passing
     // lights are the same for every room, and only that mode differs.
     int32_t lights_mode;
-} M_FRAME;
+} __attribute__((aligned(8))) M_FRAME;
 
 static M_FRAME m_Frame = {};
 
@@ -5663,7 +5669,7 @@ typedef struct {
     float behind;            // 100
     float k05;               // 104
     float k3;                // 108
-} M_SOFTRUN;
+} __attribute__((aligned(8))) M_SOFTRUN;
 _Static_assert(offsetof(M_SOFTRUN, m) == 24, "soft_sh4.S layout");
 _Static_assert(offsetof(M_SOFTRUN, persp) == 88, "soft_sh4.S layout");
 _Static_assert(offsetof(M_SOFTRUN, dist) == 92, "soft_sh4.S layout");
@@ -5935,7 +5941,7 @@ static void M_EmitShadowFaces(
     // columns as XMTRX takes them.
     const float inv_span = 1.0f / M_SOFT_SPAN;
     const float inv_fade = 1.0f / m_Soft.lights[l].fade;
-    matrix_t m = {
+    matrix_t m __attribute__((aligned(8))) = {
         { axes[1][0] * inv_span, axes[2][0] * inv_span, axes[0][0], 0.0f },
         { axes[1][1] * inv_span, axes[2][1] * inv_span, axes[0][1], 0.0f },
         { axes[1][2] * inv_span, axes[2][2] * inv_span, axes[0][2], 0.0f },
@@ -8192,7 +8198,7 @@ static void M_DrawStaged(
         .hi_x = hi_x,
         .lo_y = lo_y,
         .hi_y = hi_y,
-        .sc = m_Frame.screen_scale * DC_PVR_GetScreenScale(),
+        .sc = m_Frame.screen_scale,
         .depth_lo = m_Frame.depth.lo,
         .depth_scale = m_Frame.depth.scale,
     };

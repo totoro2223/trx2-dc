@@ -535,10 +535,87 @@ void DC_Crumb_Exit(const int code)
     if (code == 0 && m_ErrorMessage == NULL && !early) {
         // A way out the player took: nothing for the next boot to report.
         ((volatile M_NOTE *)M_NOTE_ADDRESS)->magic = 0;
+        *(volatile uint32_t *)0xACFF0400u = 0;
         return;
     }
     M_ShowOnScreen(report);
     DC_VMU_WriteLog("TRXLOG", report);
+}
+
+// The last game_sh4.S routine entered (DC_ASM_TRACE), kept in RAM at a fixed
+// word; the order is that of the labels in the file.
+static const char *const m_AsmNames[] = {
+        "dc_clamp_step", "dc_creature_tilt", "dc_creature_turn_to",
+        "dc_room_sector", "dc_flat_floor", "dc_item_move", "dc_item_animate",
+        "dc_translate_rel", "dc_mat_copy", "dc_mul3x3", "dc_blend12",
+        "dc_rot_yxz_f", "dc_bounds_lerp", "dc_get_frames", "dc_scale_col",
+        "dc_arm_interp", "dc_translate_abs", "dc_sqrt32", "dc_sin", "dc_atan",
+        "dc_turn", "dc_sphere_touch", "dc_bounds_collide", "dc_sin_coarse",
+        "dc_box_search", "dc_creature_turn", "dc_box_target",
+    "dc_anim_change", "dc_ai_angles", "dc_surface_height", "dc_distance",
+};
+
+// During a load: the routine last entered goes to TRXLOG when it is not the one
+// already there (a write costs a moment, so only on a change, and never while
+// the PowerVR has a scene open). reset: forget the last run's routine first.
+// shortcut: only the loading steps call it, a crash after the load is not
+// covered, add a call from the first frames if it comes to that.
+static uint32_t m_AsmTick = 0;
+static uint32_t m_WhereBudget = 0;
+
+void DC_Asm_Save(const bool reset)
+{
+    return; // TEMP trail off: it wrote the VMU while loading
+    static uint32_t saved = 0;
+    volatile uint32_t *const last = (volatile uint32_t *)0xACFF0400u;
+    if (reset) {
+        *last = 0;
+        saved = 0;
+        m_AsmTick = 0;
+        m_WhereBudget = 150;
+        return;
+    }
+    const uint32_t id = *last;
+    if (id == saved || id < 1 || id > sizeof(m_AsmNames) / sizeof(m_AsmNames[0])
+        || DC_PVR_IsInFrame()) {
+        return;
+    }
+    saved = id;
+    char line[96];
+    snprintf(line, sizeof(line), "LOAD, last asm: %s\n(ignore if you left)\n", m_AsmNames[id - 1]);
+    DC_VMU_WriteLog("TRXLOG", line);
+}
+
+// Before each step of the first control passes after a load (the budget starts
+// at the load, DC_Asm_Save(true)): "what n" and the last asm routine, written
+// whole to TRXLOG, so a stop inside the step leaves its name there.
+void DC_Where(const char *const what, const int n)
+{
+    return; // TEMP trail off
+    if (m_WhereBudget == 0 || DC_PVR_IsInFrame()) {
+        return;
+    }
+    m_WhereBudget--;
+    const uint32_t id = *(volatile uint32_t *)0xACFF0400u;
+    char line[96];
+    snprintf(
+        line, sizeof(line), "AT %s %d\nlast asm: %s\n(ignore if you left)\n", what, n,
+        id >= 1 && id <= sizeof(m_AsmNames) / sizeof(m_AsmNames[0]) ? m_AsmNames[id - 1]
+                                                                    : "none");
+    DC_VMU_WriteLog("TRXLOG", line);
+}
+
+// After each frame, for the first 1200 after a load: every 20th, the same save.
+// The load itself ended well; the stop comes after it.
+void DC_Asm_Tick(void)
+{
+    return; // TEMP trail off
+    if (++m_AsmTick > 1200) {
+        return;
+    }
+    if (m_AsmTick % 20 == 0) {
+        DC_Asm_Save(false);
+    }
 }
 
 // At the start of the disc: if the run before ended in an exception or an
@@ -547,7 +624,25 @@ void DC_Crumb_ReportLast(void)
 {
     volatile M_NOTE *const note = (volatile M_NOTE *)M_NOTE_ADDRESS;
     printf("[crash] note at boot: magic %08x\n", (unsigned)note->magic);
+    volatile uint32_t *const last = (volatile uint32_t *)0xACFF0400u;
+    const uint32_t id = *last;
+    *last = 0;
+    const char *const asm_name = id >= 1 && id <= sizeof(m_AsmNames) / sizeof(m_AsmNames[0])
+        ? m_AsmNames[id - 1]
+        : NULL;
     if (note->magic != M_NOTE_MAGIC) {
+        if (asm_name != NULL) {
+            // No exception note: the run stopped by itself (a reset, a hang).
+            char line[160];
+            snprintf(
+                line, sizeof(line),
+                "LAST RUN STOPPED, no note\nlast asm: %s\n(ignore if you left)\n",
+                asm_name);
+            printf("[crash] %s", line);
+            snprintf(m_Previous, sizeof(m_Previous), "%s", line);
+            m_HasPrevious = true;
+            DC_VMU_WriteLog("TRXLOG", line);
+        }
         return;
     }
     note->magic = 0;
@@ -569,8 +664,15 @@ void DC_Crumb_ReportLast(void)
             note->kind == 3 ? "TRAIL" : "ERROR", (unsigned)note->frame, text);
     }
     printf("[crash] %s", report);
+    if (asm_name != NULL) {
+        const size_t len = strlen(report);
+        snprintf(report + len, sizeof(report) - len, "last asm: %s\n", asm_name);
+    }
     snprintf(m_Previous, sizeof(m_Previous), "%s", report);
     m_HasPrevious = true;
+    // The RAM note is gone once read: the card keeps the report (TRXLOG) even
+    // if the screen is missed. Not from the handler itself (no maple there).
+    DC_VMU_WriteLog("TRXLOG", report);
 }
 
 // abort() (Lua's panic, an assert of the C library) returns to the loader at

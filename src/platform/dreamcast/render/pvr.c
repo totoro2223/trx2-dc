@@ -571,6 +571,19 @@ void DC_PVR_FreeTexturePages(void)
     }
 }
 
+// The capture is the size of the screen: the tile accelerator only bins the
+// tiles of the video mode, so a 640x480 target at 320x240 kept its top left
+// quarter.
+static int32_t M_CaptureW(void)
+{
+    return m_LowRes ? M_CAPTURE_WIDTH / 2 : M_CAPTURE_WIDTH;
+}
+
+static int32_t M_CaptureH(void)
+{
+    return m_LowRes ? M_CAPTURE_HEIGHT / 2 : M_CAPTURE_HEIGHT;
+}
+
 bool DC_PVR_BeginCaptureFrame(void)
 {
     if (m_InFrame) {
@@ -586,13 +599,13 @@ bool DC_PVR_BeginCaptureFrame(void)
     }
     pvr_wait_ready();
     if (pvr_scene_begin_rtt(
-            m_Capture.texture, M_CAPTURE_WIDTH, M_CAPTURE_HEIGHT,
-            M_CAPTURE_WIDTH)
+            m_Capture.texture, M_CaptureW(), M_CaptureH(), M_CaptureW())
         != 0) {
         return false;
     }
     M_ResetFrame();
-    pvr_txr_set_stride(M_CAPTURE_WIDTH);
+    m_ScreenScale = m_LowRes ? 0.5f : 1.0f;
+    pvr_txr_set_stride(M_CaptureW());
     m_Capture.valid = true;
     return true;
 }
@@ -746,7 +759,9 @@ void DC_PVR_DrawLoadingScreen(
     // in a bevelled grey frame.
     const float bx0 = 120.0f;
     const float bx1 = 520.0f;
-    const float by0 = y0 + text_h + 16.0f;
+    // The bar sits under a text of the 640x480 size at most, or at 320x240 it
+    // would fall off the screen under the picture.
+    const float by0 = y0 + MIN(text_h, (float)M_LOADING_TEXT_HEIGHT) + 16.0f;
     const float by1 = by0 + 20.0f;
     const float fill = bx0 + (bx1 - bx0) * percent / 100.0f;
     const float zf = DC_PVR_Depth2D(0.6f);
@@ -805,8 +820,8 @@ void DC_PVR_DrawScreenCapture(const float brightness)
     const float b = brightness < 0.0f ? 0.0f : (brightness > 1.0f ? 1.0f : brightness);
     const uint32_t c = (uint32_t)(b * 255.0f);
     const uint32_t argb = 0xFF000000 | (c << 16) | (c << 8) | c;
-    const float u1 = (float)M_CAPTURE_WIDTH / M_CAPTURE_TEXTURE_WIDTH;
-    const float v1 = (float)M_CAPTURE_HEIGHT / M_CAPTURE_TEXTURE_HEIGHT;
+    const float u1 = (float)M_CaptureW() / M_CAPTURE_TEXTURE_WIDTH;
+    const float v1 = (float)M_CaptureH() / M_CAPTURE_TEXTURE_HEIGHT;
 
     const bool was_background = m_Depth.background;
     DC_PVR_SetBackgroundMode(true);
@@ -1635,6 +1650,7 @@ void DC_PVR_EndFrame(void)
     }
     pvr_scene_finish();
     m_InFrame = false;
+    DC_Asm_Tick();
     if (m_Dropped > 0) {
         LOG_WARNING(
             "%d polygons did not fit the vertex buffers this frame "

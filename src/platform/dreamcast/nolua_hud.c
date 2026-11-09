@@ -399,13 +399,7 @@ static bool M_OnTick(
         M_Push(M_TOP_RIGHT, -1, 0.0f, m_AmmoText, M_AMMO_SCALE);
     }
 
-    // What she aims at, an ally or an enemy.
-    const ITEM *const target = item != nullptr ? lara->target : nullptr;
-    if (ui_enabled && playing && armed && target != nullptr) {
-        M_PushBar(
-            M_BOTTOM_LEFT, Creature_IsAlly(target) ? M_BAR_ALLY : M_BAR_ENEMY,
-            M_Fraction(target->hit_points, target->max_hit_points));
-    }
+    // No bar for what she aims at, enemy or ally: only her own health shows.
 
     // How full the console's three memories are (render option, off by default),
     // measured once a second.

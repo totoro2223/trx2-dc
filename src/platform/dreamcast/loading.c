@@ -37,8 +37,8 @@ static struct {
     uint64_t last_draw;
 } m_Priv = {};
 
-// How fast the bar may move, in percent per millisecond (40% a second).
-#define M_BAR_RATE 0.04f
+// How far the bar moves each frame, in percent (about 100% a second at 60 Hz).
+#define M_BAR_STEP 1.5f
 
 // Written on the disc by tools/dreamcast/make_disc.sh.
 static const char *M_GetVersion(void)
@@ -84,24 +84,26 @@ static void M_Draw(const bool force)
     // shortcut: the bar moves only as often as the disc is read (at most every
     // M_REDRAW_INTERVAL_MS); to move on every frame it would need a thread that
     // draws while the load computes.
+    // The bar runs to the new value in a few frames, a straight line, rather
+    // than jumping there (one frame at least, to show the step's name).
     const float target = (float)M_GetPercent();
-    const float step = (float)(now - m_Priv.last_draw) * M_BAR_RATE;
-    if (m_Priv.shown + step < target) {
-        m_Priv.shown += step;
-    } else if (target > m_Priv.shown) {
-        m_Priv.shown = target;
-    }
-    const int32_t percent = (int32_t)m_Priv.shown;
-    m_Priv.last_draw = now;
+    int32_t percent = (int32_t)m_Priv.shown;
+    do {
+        m_Priv.shown = m_Priv.shown + M_BAR_STEP < target
+            ? m_Priv.shown + M_BAR_STEP
+            : (target > m_Priv.shown ? target : m_Priv.shown);
+        percent = (int32_t)m_Priv.shown;
+        char line1[96];
+        snprintf(
+            line1, sizeof(line1), "LOADING  %ld%%   %s", (long)percent,
+            M_GetVersion());
+        // Only the bar, unless the debug mode is on.
+        DC_PVR_DrawLoadingScreen(
+            g_Config.rendering.dc_memory_hud ? line1 : "",
+            g_Config.rendering.dc_memory_hud ? m_Priv.name : "", percent);
+    } while (m_Priv.shown < target);
+    m_Priv.last_draw = timer_ms_gettime64();
     m_Priv.shown_percent = percent;
-    char line1[96];
-    snprintf(
-        line1, sizeof(line1), "LOADING  %ld%%   %s", (long)percent,
-        M_GetVersion());
-    // Only the bar, unless the debug mode is on.
-    DC_PVR_DrawLoadingScreen(
-        g_Config.rendering.dc_memory_hud ? line1 : "",
-        g_Config.rendering.dc_memory_hud ? m_Priv.name : "", percent);
     DC_VMU_ShowLoading(percent);
 }
 
@@ -124,6 +126,7 @@ void DC_Loading_Begin(const uint64_t total_bytes, const char *const picture)
 {
     // Read before the disc reads are watched: reading it would draw again.
     DC_Crumb(DC_CRUMB_LOADING, "loading");
+    DC_Asm_Save(true);
     DC_Crumb_ShowPrevious();
     M_GetVersion();
     DC_LoadingFont_Load(g_TRVersion);
@@ -143,6 +146,7 @@ void DC_Loading_SetStep(const char *const step)
     }
     strncpy(m_Priv.name, step, sizeof(m_Priv.name) - 1);
     m_Priv.name[sizeof(m_Priv.name) - 1] = '\0';
+    DC_Asm_Save(false);
     M_Draw(true);
 }
 
@@ -174,6 +178,7 @@ void DC_Loading_End(void)
     }
     trx_iso_read_observer = nullptr;
     DC_Crumb(DC_CRUMB_LOADED, "loaded");
+    DC_Asm_Save(false);
     m_Priv.done = m_Priv.total;
     strncpy(m_Priv.name, "", sizeof(m_Priv.name));
     // The bar runs on to the end instead of jumping there.

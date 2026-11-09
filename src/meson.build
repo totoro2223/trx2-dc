@@ -211,6 +211,7 @@ common_build_opts = [
   '-DPCRE2_STATIC',
   '-DPCRE2_CODE_UNIT_WIDTH=8',
   '-DDEBUG=' + (get_option('buildtype') == 'debug' ? '1' : '0'),
+  '-DTRX_DC_RELEASE=' + (get_option('buildtype') == 'release' ? '1' : '0'),
 ]
 
 # Without this, the mingw headers route printf and scanf to the MSVCRT ones,

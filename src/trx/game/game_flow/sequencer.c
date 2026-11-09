@@ -297,7 +297,7 @@ RESULT GF_InterpretSequence(
     // the Dreamcast the startup sequence (logos, copyright, intro) does not load
     // it: that was a second loading screen between the intro and the menu.
     bool load = seq_ctx != GFSC_STORY || level->type == GFL_CUTSCENE;
-#if defined(__DREAMCAST__) && defined(TRX_DC_SKIP_TITLE_LOAD)
+#if defined(__DREAMCAST__)
     if (level == g_GameFlow.title_level) {
         load = false;
     }

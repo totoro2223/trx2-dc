@@ -75,7 +75,7 @@ static const char *M_ModeName(const DC_MODE mode)
 
 static const char *M_FpsName(const DC_FPS fps)
 {
-    static const char *const names[] = { "30", "60", "60 adaptive" };
+    static const char *const names[] = { "30", "60" };
     return fps >= 0 && fps < DC_FPS_NUMBER_OF ? names[fps] : "";
 }
 
@@ -237,7 +237,12 @@ static void M_Step(const M_ROW row, const int32_t rate)
         CONFIG_TOGGLE(g_Config.rendering.dc_cel_shading);
         break;
     case M_ROW_SHADOW:
-        CONFIG_CYCLE(g_Config.visuals.shadow_type, rate, SHADOW_TYPE_NUMBER_OF);
+        // Circle and Sprite are not offered for Lara: the cycle skips them.
+        do {
+            CONFIG_CYCLE(
+                g_Config.visuals.shadow_type, rate, SHADOW_TYPE_NUMBER_OF);
+        } while (g_Config.visuals.shadow_type == SHADOW_TYPE_CIRCLE
+                 || g_Config.visuals.shadow_type == SHADOW_TYPE_SPRITE);
         break;
     case M_ROW_OBJECT_SHADOWS:
         CONFIG_CYCLE(

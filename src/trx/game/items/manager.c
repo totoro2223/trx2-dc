@@ -785,6 +785,7 @@ void Item_Control(void)
         const OBJECT *obj = Object_Get(item->object_id);
         if (!item->is_destroyed && obj->control_func != nullptr) {
 #if defined(__DREAMCAST__)
+            DC_WHERE("item obj", (int)item->object_id);
             if (obj->intelligent) {
                 DC_PROBE_START(probe_en);
                 obj->control_func(item_num);

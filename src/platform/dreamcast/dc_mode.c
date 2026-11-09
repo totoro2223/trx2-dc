@@ -50,7 +50,7 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
         .shadow_lights = 1,
         .volume_shadows = true,
         .self_shadow = false,
-        .fps = DC_FPS_60_ADAPTIVE,
+        .fps = DC_FPS_60,
         .low_res = true,
         .bilinear = false,
     },
@@ -144,46 +144,17 @@ void DC_Mode_ApplyDefaults(void)
     }
 }
 
-// Below about 30 frames a second there is no frame between two ticks to
-// interpolate, and the interpolation only adds to the cost of each one.
-#define M_SLOW_SECONDS 0.033
-#define M_FAST_SECONDS 0.020
-#define M_HOLD_FRAMES 240
-
-static bool m_Slow = false;
-static double m_Average = 0.0;
-static int32_t m_Hold = 0;
-
-// The rate asked for, whatever the mode.
-static int32_t M_BaseFPS(void)
+// The rate asked for: 30, or 60 (interpolated).
+int32_t DC_Mode_GetFPS(void)
 {
     return g_Config.rendering.dc_fps == DC_FPS_30 ? 30 : 60;
 }
 
-int32_t DC_Mode_GetFPS(void)
-{
-    return M_BaseFPS() == 60 && m_Slow ? 30 : M_BaseFPS();
-}
-
+// The adaptive rate is gone; kept so the frame loop's call stays.
 bool DC_Mode_ReportFrame(const double seconds)
 {
-    if (g_Config.rendering.dc_fps != DC_FPS_60_ADAPTIVE) {
-        m_Slow = false;
-        return false;
-    }
-    m_Average += (seconds - m_Average) * 0.1;
-    if (m_Hold > 0) {
-        m_Hold--;
-        return false;
-    }
-    const bool slow = m_Slow ? m_Average > M_FAST_SECONDS
-                             : m_Average > M_SLOW_SECONDS;
-    if (slow == m_Slow) {
-        return false;
-    }
-    m_Slow = slow;
-    m_Hold = M_HOLD_FRAMES;
-    return true;
+    (void)seconds;
+    return false;
 }
 
 int32_t DC_Mode_GetShadowLights(void)

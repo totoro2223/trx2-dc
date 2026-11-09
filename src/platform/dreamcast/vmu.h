@@ -33,6 +33,10 @@ int DC_VMU_LastResult(void);
 // keeps the statistics from covering it.
 void DC_VMU_ShowSaving(void);
 
+// The game (1 to 3) the options file on the card says was played last; 0 for
+// none. Read straight from the card, before the engine starts.
+int DC_VMU_LastGame(void);
+
 // Removes a saved game's copy from the memory card.
 void DC_VMU_DeleteSave(const char *path);
 

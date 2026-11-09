@@ -114,7 +114,15 @@ void DC_Games_Init(void)
 
     // The disc starts in the first game unless the note names another.
     m_Index = 0;
-    if (noted) {
+    if (!noted) {
+        // A cold start: the game the card says was played last.
+        const int last = DC_VMU_LastGame();
+        for (int i = 0; i < m_Count; i++) {
+            if (m_Ids[i] == last) {
+                m_Index = i;
+            }
+        }
+    } else {
         for (int i = 0; i < m_Count; i++) {
             if ((uint32_t)m_Ids[i] == noted_game) {
                 m_Index = i;

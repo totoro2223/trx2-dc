@@ -11,6 +11,7 @@
 
 #include "dc_settings.h"
 
+#include "dc_games.h"
 #include "dc_mode.h"
 #include "vmu.h"
 
@@ -23,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define M_FILE "dcopts.txt"
+#define M_FILE "trdctriopt"
 
 static char m_Path[160] = "";
 // What the card holds now, as the file's text.
@@ -37,10 +38,11 @@ static char m_Refused[256] = "";
 // room cel shading switches, the 3D pickups switch, the enemy shadows one, the
 // memory readout, the load cache, the original enemy simulation one, and the
 // original (linear) pose blend one.
-static void M_Format(char *const out, const size_t size)
+// A second line holds the game played last (0 on a disc of one game).
+static void M_Format(char *const out, const size_t size, const int game)
 {
     snprintf(
-        out, size, "10 %d %d %d 0 %d %d %d %d %d %d %d %d %d %d %d %d\n",
+        out, size, "10 %d %d %d 0 %d %d %d %d %d %d %d %d %d %d %d %d\n%d\n",
         (int)g_Config.rendering.dc_mode, (int)g_Config.rendering.dc_fps,
         (int)g_Config.rendering.dc_cel_shading,
         (int)g_Config.ui.enable_fps_counter,
@@ -53,7 +55,7 @@ static void M_Format(char *const out, const size_t size)
         (int)g_Config.rendering.dc_memory_hud,
         (int)g_Config.rendering.dc_load_cache,
         (int)g_Config.rendering.dc_original_ai,
-        (int)g_Config.rendering.dc_linear_pose);
+        (int)g_Config.rendering.dc_linear_pose, game);
 }
 
 void DC_Settings_Load(const char *const saves_dir)
@@ -77,6 +79,10 @@ void DC_Settings_Load(const char *const saves_dir)
         fp, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &version,
         &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9],
         &v[10], &v[11], &v[12], &v[13], &v[14], &v[15]);
+    int stored_game = 0;
+    if (fscanf(fp, " %d", &stored_game) != 1) {
+        stored_game = 0;
+    }
     fclose(fp);
     // The first file format had no bump mapping switch, and the first two no
     // room cel shading one.
@@ -110,12 +116,15 @@ void DC_Settings_Load(const char *const saves_dir)
     if (version <= 9) {
         v[15] = 0;
     }
+    // The adaptive rate (2) is gone: it is plain 60 now.
+    if (v[1] == 2) {
+        v[1] = DC_FPS_60;
+    }
     // Before format 4 the 60 fps and adaptive switches were two, and the
     // Original mode came in before Experimental 60's.
     if (version >= 1 && version <= 3) {
         v[1] = v[1] == 0 ? DC_FPS_30
-            : v[3] != 0  ? DC_FPS_60_ADAPTIVE
-                         : DC_FPS_60;
+            : DC_FPS_60;
         if (v[0] == DC_MODE_ORIGINAL) {
             v[0] = DC_MODE_EXPERIMENTAL_60;
         }
@@ -176,7 +185,8 @@ void DC_Settings_Load(const char *const saves_dir)
             g_Config.rendering.dc_fps,
             g_DC_TestFps >= 60 ? DC_FPS_60 : DC_FPS_30);
     }
-    M_Format(m_Stored, sizeof(m_Stored));
+    // As the card holds them, game included: a different game gets written.
+    M_Format(m_Stored, sizeof(m_Stored), stored_game);
     LOG_INFO("render options loaded from the memory card");
 }
 
@@ -189,7 +199,7 @@ void DC_Settings_Save(void)
         return;
     }
     char now[256];
-    M_Format(now, sizeof(now));
+    M_Format(now, sizeof(now), DC_Games_CurrentId());
     if (strcmp(now, m_Stored) == 0 || strcmp(now, m_Refused) == 0) {
         return;
     }

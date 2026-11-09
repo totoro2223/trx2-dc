@@ -32,6 +32,7 @@
 
 #define M_APP_ID "TRX"
 #define M_FILE_PREFIX "TRX_"
+#define M_OPTIONS_FILE "trdctriopt"
 #define M_NAME_SIZE 32
 #define M_ICON_SIZE 32
 // How long the saving notice is on the card's screen before the write starts.
@@ -77,6 +78,11 @@ static const char *M_GetRelativeName(const char *const path)
 static void M_GetCardName(const char *const name, char out[VMU_FILENAME_SIZE + 1])
 {
     const char *src = name;
+    // The render options keep a name of their own on the card.
+    if (strcmp(name, M_OPTIONS_FILE) == 0) {
+        strcpy(out, name);
+        return;
+    }
     if (strncmp(src, "save_", 5) == 0) {
         src += 5;
     }
@@ -253,6 +259,10 @@ void DC_VMU_DrawLogo(void)
 
 void DC_VMU_ShowStep(const int step)
 {
+    // The release disc shows no trail blocks on the card's screen.
+    if (TRX_DC_RELEASE) {
+        return;
+    }
     for (int i = 0;; i++) {
         maple_device_t *const dev = maple_enum_type(i, MAPLE_FUNC_LCD);
         if (dev == nullptr) {
@@ -414,8 +424,12 @@ void DC_VMU_RestoreSaves(const char *const saves_dir)
     }
     for (int i = 0; i < count; i++) {
         if (entries[i].filetype != 0
-            && strncmp(entries[i].filename, M_FILE_PREFIX, strlen(M_FILE_PREFIX))
-                == 0) {
+            && (strncmp(entries[i].filename, M_FILE_PREFIX, strlen(M_FILE_PREFIX))
+                    == 0
+                || strncmp(
+                       entries[i].filename, M_OPTIONS_FILE,
+                       strlen(M_OPTIONS_FILE))
+                    == 0)) {
             M_RestoreFile(card, &entries[i]);
         }
     }
@@ -605,6 +619,19 @@ bool DC_VMU_TakeLog(const char *const card_name, char *const out, const size_t s
         vmufs_delete(card, card_name);
     }
     return ok;
+}
+
+int DC_VMU_LastGame(void)
+{
+    // The options file: its name, then the options' line, then the game.
+    char buf[320];
+    if (!DC_VMU_TakeLog(M_OPTIONS_FILE, buf, sizeof(buf), true)) {
+        return 0;
+    }
+    buf[sizeof(buf) - 1] = '\0';
+    const char *const line = strchr(buf + M_NAME_SIZE, '\n');
+    int game = 0;
+    return line != nullptr && sscanf(line, " %d", &game) == 1 ? game : 0;
 }
 
 bool DC_VMU_WriteLog(const char *const card_name, const char *const text)

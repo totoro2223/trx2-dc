@@ -405,9 +405,13 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
     DC_TRAIL("load: injections cleaned");
 
 #if defined(__DREAMCAST__)
+    DC_WHERE("load end", 0);
     DC_Loading_End();
+    DC_WHERE("load gc", 0);
     LUA_DC_CollectGarbage();
+    DC_WHERE("load trim", 0);
     DC_LevelHeap_Trim();
+    DC_WHERE("load done", 0);
     #if defined(TRX_DC_WATCHDOG)
     GameBuf_DumpSizes();
     #endif

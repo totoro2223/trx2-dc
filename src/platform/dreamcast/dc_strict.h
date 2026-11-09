@@ -79,6 +79,8 @@ void DC_Crumb_Exit(int code);
 // First thing at boot: if the last run ended in an exception or an error,
 // shows why for 15 s and writes it to TRXLOG.
 void DC_Crumb_ReportLast(void);
+void DC_Asm_Save(bool reset);
+void DC_Asm_Tick(void);
 
 // A processor exception: its code, the program counter, return address, stack
 // and faulting address on the screen for 20 s (spinning, as it runs in the

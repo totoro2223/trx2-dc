@@ -1,6 +1,7 @@
 #include <trx/game/phase/phase_game.h>
 
 #include <trx/core/memory.h>
+#include <trx/debug.h>
 #include <trx/game/game.h>
 #include <trx/game/lua/events.h>
 #include <trx/game/output.h>
@@ -24,6 +25,7 @@ typedef struct {
 static PHASE_CONTROL M_Start(PHASE *const phase)
 {
     M_PRIV *const p = phase->priv;
+    DC_WHERE("game start", 0);
     if (!Game_Start(p->level, p->seq_ctx)) {
         return (PHASE_CONTROL) {
             .action = PHASE_ACTION_END,
@@ -31,6 +33,7 @@ static PHASE_CONTROL M_Start(PHASE *const phase)
         };
     }
     Game_SetIsPlaying(true);
+    DC_WHERE("game started", 0);
     return (PHASE_CONTROL) {
         .action = PHASE_ACTION_CONTINUE,
     };
@@ -60,9 +63,11 @@ static void M_Resume(PHASE *const phase)
 
 static PHASE_CONTROL M_Control(PHASE *const phase)
 {
+    DC_WHERE("lua before control", 0);
     LUA_FireEvent(LUA_EVENT_BEFORE_CONTROL);
     GF_COMMAND gf_cmd;
     DC_PROBE(DC_PROBE_CONTROL, gf_cmd = Game_Control(false));
+    DC_WHERE("lua after control", 0);
     LUA_FireEvent(LUA_EVENT_AFTER_CONTROL);
     if (gf_cmd.action != GF_NOOP) {
         return (PHASE_CONTROL) {
@@ -75,6 +80,7 @@ static PHASE_CONTROL M_Control(PHASE *const phase)
 
 static void M_Draw(PHASE *const phase)
 {
+    DC_WHERE("draw", 0);
     Game_Draw(true);
 }
 

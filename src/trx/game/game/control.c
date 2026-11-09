@@ -70,18 +70,24 @@ bool Game_Start(const GF_LEVEL *const level, const GF_SEQUENCE_CONTEXT seq_ctx)
 {
     Game_SetCurrentLevel(level);
 
+    DC_WHERE("start lua", 0);
     LUA_FireEventBool(LUA_EVENT_GAME_START, seq_ctx == GFSC_SAVED);
+    DC_WHERE("start loading camera", 0);
     GF_ShowPendingLoadingCamera();
 
     const bool is_cutscene = level->type == GFL_CUTSCENE;
 
     g_OverlayFlag = 1;
+    DC_WHERE("start camera", 0);
     Camera_Initialise();
+    DC_WHERE("start hair", 0);
     Lara_Hair_Initialise();
     Lara_Hair_Control(is_cutscene);
+    DC_WHERE("start interpolate", 0);
     Interpolation_Remember();
     Interpolation_Interpolate();
 
+    DC_WHERE("start sound", 0);
     Sound_StopAll();
     if (level->music_track != MX_INACTIVE
         && (is_cutscene || Music_GetCurrentLoopedTrack() == MX_INACTIVE)) {
@@ -325,12 +331,15 @@ GF_COMMAND Game_Control(const bool demo_mode)
         }
     }
 
+    DC_WHERE("begin", 0);
     DC_PROBE(DC_PROBE_M_BEGIN, Game_TickBeginFrame(); Sound_ResetAmbient());
+    DC_WHERE("world", 0);
     Game_TickWorld();
 
     // A cutscene poses her and steps her hair itself, so neither runs here
     // while one plays.
     if (!CutSeq_IsPlaying()) {
+        DC_WHERE("lara", 0);
         DC_PROBE(
             DC_PROBE_LARA,
             Lara_Control();
@@ -340,7 +349,9 @@ GF_COMMAND Game_Control(const bool demo_mode)
         }
     }
 
+    DC_WHERE("post", 0);
     DC_PROBE(DC_PROBE_POST, Game_TickPostControl());
+    DC_WHERE("end", 0);
     DC_PROBE(DC_PROBE_END, Game_TickEndFrame());
     return (GF_COMMAND) { .action = GF_NOOP };
 }
@@ -383,11 +394,14 @@ void Game_TickWorld(void)
 
 void Game_TickPostControl(void)
 {
+    DC_WHERE("fx", 0);
     FX_Control();
     FlybyMode_PostControl();
     CutSeq_Control();
     CutSeq_PostControl();
+    DC_WHERE("camera", 0);
     Camera_Update();
+    DC_WHERE("actions", 0);
     ItemAction_RunActive();
     Sound_UpdateEffects();
 }

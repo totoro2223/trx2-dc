@@ -126,7 +126,6 @@ static __attribute__((constructor)) void M_Init(void)
 
     ENUM_MAP(DC_FPS, DC_FPS_30, "off");
     ENUM_MAP(DC_FPS, DC_FPS_60, "interpolated");
-    ENUM_MAP(DC_FPS, DC_FPS_60_ADAPTIVE, "adaptive");
 
     ENUM_MAP(DC_OBJECT_SHADOWS, DC_OBJECT_SHADOWS_ORIGINAL, "original");
     ENUM_MAP(DC_OBJECT_SHADOWS, DC_OBJECT_SHADOWS_VOLUME, "volume");

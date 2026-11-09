@@ -1,6 +1,7 @@
 #include <trx/game/lara/control.h>
 
 #include <trx/config.h>
+#include <trx/debug.h>
 #include <trx/game/camera.h>
 #include <trx/game/console.h>
 #include <trx/game/fx/water.h>
@@ -730,7 +731,9 @@ static void M_HandleAboveWater(COLL_INFO *const coll)
     }
 
     lara_info->is_crouched = false;
+    DC_WHERE("la state", 0);
     Lara_State_Update(item, coll);
+    DC_WHERE("la animate", 0);
 
     M_UndoRot(&item->rot.x, LARA_LEAN_UNDO);
     M_UndoRot(&item->rot.z, LARA_LEAN_UNDO);
@@ -738,18 +741,25 @@ static void M_HandleAboveWater(COLL_INFO *const coll)
     item->rot.y += lara_info->turn_rate;
 
     Lara_Animate(item);
+    DC_WHERE("la sector", 0);
     const SECTOR *const sector = M_GetCurrentSector();
 
     if (!lara_info->extra_anim && lara_info->water_status != LWS_CHEAT) {
+        DC_WHERE("la objcoll", 0);
         M_ObjectCollision(coll);
         if (!Lara_Vehicle_IsMounted() && !lara_info->extra_anim) {
+            DC_WHERE("la col", 0);
             Lara_Col_Update(item, coll);
         }
     }
 
+    DC_WHERE("la room", 0);
     Lara_UpdateRoomToHeight(-LARA_HEIGHT / 2);
+    DC_WHERE("la gun", 0);
     Gun_Control();
+    DC_WHERE("la trigger", 0);
     Room_TestSectorTrigger(item, sector);
+    DC_WHERE("la done", 0);
 }
 
 static void M_HandleUnderwater(COLL_INFO *const coll)
@@ -1148,7 +1158,9 @@ void Lara_Control(void)
         lara_info->gun_status = LGS_ARMLESS;
     }
 
+    DC_WHERE("lc env", 0);
     M_UpdateEnvironment();
+    DC_WHERE("lc env done", 0);
 
     if (item->hit_points <= 0) {
         item->hit_points = -1;
@@ -1173,8 +1185,12 @@ void Lara_Control(void)
         lara_info->death_timer = 9 * LOGIC_FPS;
     }
 
+    DC_WHERE("lc cam", 0);
     Camera_MoveManual();
+    DC_WHERE("lc handle", 0);
     M_HandleEnvironment();
+    DC_WHERE("lc breath", 0);
     Lara_Breath_Control(item);
+    DC_WHERE("lc dist", 0);
     M_CalculateDistanceTravelled(item, lara_info);
 }

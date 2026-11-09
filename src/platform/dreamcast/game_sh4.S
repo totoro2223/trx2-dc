@@ -14,11 +14,24 @@
 
     .text
     .align 2
+! DC_ASM_TRACE n: the routine's number to a fixed RAM word (the soft reset keeps
+! RAM), so the next boot says which routine ran last (DC_Crumb_ReportLast).
+! Clobbers r0, r1 (scratch in the C ABI). 0xACFF0400 is beside the crash note.
+    .set    _g_DC_AsmLast, 0xACFF0400
+    .macro DC_ASM_TRACE n
+    mov.l   1f,r0
+    bra     2f
+    mov     #\n,r1
+    .align 2
+1:  .long   _g_DC_AsmLast
+2:  mov.l   r1,@r0
+    .endm
     .global _dc_clamp_step
     .global _dc_creature_tilt
     .global _dc_creature_turn_to
 
 _dc_clamp_step:
+    DC_ASM_TRACE 1
     mov.w   @r4,r0
     mov     r5,r1
     sub     r0,r1
@@ -48,6 +61,7 @@ _dc_clamp_step:
     nop
 
 _dc_creature_tilt:
+    DC_ASM_TRACE 2
     mov.w   @r4,r0                  ! rot.z
     shll2   r5
     sub     r0,r5
@@ -67,6 +81,7 @@ _dc_creature_tilt:
     nop
 
 _dc_creature_turn_to:
+    DC_ASM_TRACE 3
     mov.w   @r4,r0                  ! rot.y
     cmp/gt  r6,r5                   ! angle > max_turn
     bf      1f
@@ -97,6 +112,7 @@ _dc_creature_turn_to:
     .align 2
     .global _dc_room_sector
 _dc_room_sector:
+    DC_ASM_TRACE 4
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -210,6 +226,7 @@ rs_out:
     .align 2
     .global _dc_flat_floor
 _dc_flat_floor:
+    DC_ASM_TRACE 5
     mov.l   .Lroomoff2,r1
     mov     #-1,r3
     mov.l   @(32,r1),r0
@@ -256,6 +273,7 @@ ff_fail:
     .align 2
     .global _dc_item_move
 _dc_item_move:
+    DC_ASM_TRACE 6
     sts.l   pr,@-r15
     mov.l   r8,@-r15
     mov.l   r9,@-r15
@@ -263,6 +281,7 @@ _dc_item_move:
     mov.l   r11,@-r15
     mov.l   r12,@-r15
     mov.l   r13,@-r15
+    add     #-4,r15                 ! calls C: keep r15 8-byte aligned (real SH4)
     mov     r4,r8                   ! item
     mov     r5,r9                   ! anim
     mov.l   .Litemoff,r10
@@ -383,6 +402,7 @@ im_move:
     mov.l   @(r0,r8),r3
     add     r2,r3
     mov.l   r3,@(r0,r8)
+    add     #4,r15
     mov.l   @r15+,r13
     mov.l   @r15+,r12
     mov.l   @r15+,r11
@@ -413,11 +433,13 @@ im_move:
     .align 2
     .global _dc_item_animate
 _dc_item_animate:
+    DC_ASM_TRACE 7
     sts.l   pr,@-r15
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
     mov.l   r11,@-r15
+    add     #-4,r15                 ! calls C: keep r15 8-byte aligned (real SH4)
     mov     r4,r8
     mov     r5,r9
     mov.l   .Litemoff2,r10
@@ -466,6 +488,7 @@ ia_go:
 ia_fail:
     mov     #0,r0
 ia_out:
+    add     #4,r15
     mov.l   @r15+,r11
     mov.l   @r15+,r10
     mov.l   @r15+,r9
@@ -563,6 +586,7 @@ _\name:
     .global _dc_translate_rel
     .align 2
 _dc_translate_rel:
+    DC_ASM_TRACE 8
     TROW
     TROW
     TROW
@@ -573,6 +597,7 @@ _dc_translate_rel:
     .global _dc_mat_copy
     .align 2
 _dc_mat_copy:
+    DC_ASM_TRACE 9
     mov     #6,r7
 1:  mov.l   @r5+,r0
     mov.l   @r5+,r1
@@ -614,6 +639,7 @@ _dc_mat_copy:
     .global _dc_mul3x3
     .align 2
 _dc_mul3x3:
+    DC_ASM_TRACE 10
     mov     #-31,r7
     CHKM    r5
     CHKM    r6
@@ -716,6 +742,7 @@ m3_put:
     .global _dc_blend12
     .align 2
 _dc_blend12:
+    DC_ASM_TRACE 11
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -893,6 +920,7 @@ bl_fail:
     .global _dc_rot_yxz_f
     .align 2
 _dc_rot_yxz_f:
+    DC_ASM_TRACE 12
     mov.l   r12,@-r15
     mov.l   r13,@-r15
     mov.l   r14,@-r15
@@ -1010,6 +1038,7 @@ rf_row:
     .global _dc_bounds_lerp
     .align 2
 _dc_bounds_lerp:
+    DC_ASM_TRACE 13
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -1073,6 +1102,7 @@ bl2_add:
     .global _dc_get_frames
     .align 2
 _dc_get_frames:
+    DC_ASM_TRACE 14
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -1226,6 +1256,7 @@ gf_out:
     .global _dc_scale_col
     .align 2
 _dc_scale_col:
+    DC_ASM_TRACE 15
     add     r6,r4
     mov     #-31,r7
     mov     r4,r2
@@ -1273,6 +1304,7 @@ sc_fail:
     .global _dc_arm_interp
     .align 2
 _dc_arm_interp:
+    DC_ASM_TRACE 16
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -1406,6 +1438,7 @@ ai_out:
     .global _dc_translate_abs
     .align 2
 _dc_translate_abs:
+    DC_ASM_TRACE 17
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -1513,6 +1546,7 @@ ta_out:
     .global _dc_sqrt32
     .align 2
 _dc_sqrt32:
+    DC_ASM_TRACE 18
     tst     r4,r4
     bf      sq_nz
     rts
@@ -1576,6 +1610,7 @@ sq_done:
     .global _dc_atan
     .align 2
 _dc_sin:
+    DC_ASM_TRACE 19
     extu.w  r4,r1
     mov.l   .Ltr_7fff,r2
     and     r1,r2                   ! sector
@@ -1601,6 +1636,7 @@ sn_b:
     rts
     nop
 _dc_atan:
+    DC_ASM_TRACE 20
     tst     r4,r4
     bf      at_nz
     tst     r5,r5
@@ -1682,6 +1718,7 @@ at_out:
     .global _dc_turn
     .align 2
 _dc_turn:
+    DC_ASM_TRACE 21
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   @r4,r0                  ! a
@@ -1728,6 +1765,7 @@ _dc_turn:
     .global _dc_sphere_touch
     .align 2
 _dc_sphere_touch:
+    DC_ASM_TRACE 22
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -1803,6 +1841,7 @@ st_done:
     .global _dc_bounds_collide
     .align 2
 _dc_bounds_collide:
+    DC_ASM_TRACE 23
     sts.l   pr,@-r15
     mov.l   r8,@-r15
     mov.l   r9,@-r15
@@ -1844,7 +1883,7 @@ _dc_bounds_collide:
     mov.w   @r0,r4                  ! yaw
     tst     r4,r4
     bt      bc_test
-    add     #-16,r15
+    add     #-12,r15
     mov.l   r1,@(4,r15)             ! dx
     mov.l   r11,@r15                ! dz
     mov.l   .Lbc_sin,r0
@@ -1870,7 +1909,7 @@ _dc_bounds_collide:
     nop
     mov.l   @(4,r15),r1             ! local x
     mov.l   @r15,r11                ! local z
-    add     #16,r15
+    add     #12,r15
 bc_test:
     mov.w   @(0,r8),r0
     sub     r10,r0                  ! min.x - radius
@@ -1923,6 +1962,7 @@ bc_out:
     .global _dc_sin_coarse
     .align 2
 _dc_sin_coarse:
+    DC_ASM_TRACE 24
     extu.w  r4,r1
     shlr2   r1
     shlr2   r1                      ! step
@@ -1999,6 +2039,7 @@ sc_out:
     .global _dc_box_search
     .align 2
 _dc_box_search:
+    DC_ASM_TRACE 25
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -2277,6 +2318,7 @@ bs_store:
     .global _dc_creature_turn
     .align 2
 _dc_creature_turn:
+    DC_ASM_TRACE 26
     sts.l   pr,@-r15
     mov.l   r8,@-r15
     mov.l   r9,@-r15
@@ -2284,6 +2326,7 @@ _dc_creature_turn:
     mov.l   r11,@-r15
     mov.l   r12,@-r15
     mov.l   r13,@-r15
+    add     #-4,r15                 ! calls C: keep r15 8-byte aligned (real SH4)
     mov.l   @(0,r4),r8              ! dx
     mov.l   @(4,r4),r9              ! dz
     mov.l   @(8,r4),r10             ! rot.y
@@ -2340,6 +2383,7 @@ ct_hi:
     mov     r12,r13
 ct_out:
     mov     r13,r0
+    add     #4,r15
     mov.l   @r15+,r13
     mov.l   @r15+,r12
     mov.l   @r15+,r11
@@ -2390,6 +2434,7 @@ ct_out:
     .global _dc_box_target
     .align 2
 _dc_box_target:
+    DC_ASM_TRACE 27
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -2744,6 +2789,7 @@ bt_out:
     .global _dc_anim_change
     .align 2
 _dc_anim_change:
+    DC_ASM_TRACE 28
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   @(0,r4),r8              ! item
@@ -2822,6 +2868,7 @@ ac_out:
     .global _dc_ai_angles
     .align 2
 _dc_ai_angles:
+    DC_ASM_TRACE 29
     sts.l   pr,@-r15
     mov.l   r8,@-r15
     mov.l   r9,@-r15
@@ -2928,6 +2975,7 @@ ai_at:
     .global _dc_surface_height
     .align 2
 _dc_surface_height:
+    DC_ASM_TRACE 30
     mov.l   r8,@-r15
     mov.l   r9,@-r15
     mov.l   r10,@-r15
@@ -3199,9 +3247,11 @@ sf_ret:
     .global _dc_distance
     .align 2
 _dc_distance:
+    DC_ASM_TRACE 31
     sts.l   pr,@-r15
     mov.l   r8,@-r15
     mov.l   r9,@-r15
+    add     #-4,r15                 ! calls C: keep r15 8-byte aligned (real SH4)
     mov.l   .Ldd_65534,r6
     mov.l   .Ldd_32767,r7
     mov     #0,r8                   ! the sum of squares
@@ -3236,6 +3286,7 @@ dd_axis:
 dd_fail:
     mov     #-1,r0
 dd_out:
+    add     #4,r15                  ! stack back to 8 bytes (see the prologue)
     mov.l   @r15+,r9
     mov.l   @r15+,r8
     lds.l   @r15+,pr

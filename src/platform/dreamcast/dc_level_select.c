@@ -13,6 +13,7 @@
 #include "dc_bench.h"
 #include "dc_games.h"
 #include "dc_strict.h"
+#include "vmu.h"
 
 #include <dc/biosfont.h>
 #include <dc/maple.h>
@@ -177,6 +178,8 @@ static const int32_t m_BenchDemo[] = { 0 };
 #define M_LEN(a) ((int32_t)(sizeof(a) / sizeof(a[0])))
 
 typedef enum {
+    // The crash log the card holds (TRXLOG), left of the levels.
+    M_PAGE_LOG,
     M_PAGE_LEVELS,
     M_PAGE_CUTSCENES,
     M_PAGE_DEMOS,
@@ -196,6 +199,38 @@ static bool m_LTrigHeld = false;
 static bool m_RTrigHeld = false;
 static M_PAGE m_Pages[M_PAGE_MAX] = {};
 static int32_t m_PageCount = M_PAGE_EXPANSION;
+
+#define M_LOG_LINES 64
+#define M_LOG_WIDTH 44
+static char m_LogText[1100];
+static char m_LogRows[M_LOG_LINES][M_LOG_WIDTH + 1];
+static const char *m_LogNames[M_LOG_LINES];
+
+// TRXLOG from the card, cut into rows the page can show.
+static int32_t M_LoadLog(void)
+{
+    int32_t rows = 0;
+    if (DC_VMU_TakeLog("TRXLOG", m_LogText, sizeof(m_LogText), true)) {
+        for (const char *p = m_LogText; *p != '\0' && rows < M_LOG_LINES;) {
+            int32_t n = 0;
+            while (p[n] != '\0' && p[n] != '\n' && n < M_LOG_WIDTH) {
+                n++;
+            }
+            memcpy(m_LogRows[rows], p, (size_t)n);
+            m_LogRows[rows][n] = '\0';
+            m_LogNames[rows] = m_LogRows[rows];
+            rows++;
+            p += n;
+            if (*p == '\n') {
+                p++;
+            }
+        }
+    }
+    if (rows == 0) {
+        m_LogNames[rows++] = "(no log on the card)";
+    }
+    return rows;
+}
 
 // Rows of entries on screen at once at most; the list scrolls past them.
 #define M_ROWS 15
@@ -324,6 +359,11 @@ int32_t DC_LevelSelect_Run(const int32_t engine, const char *const mod)
     const bool tr3 = engine == 3;
     const bool tr1 = engine == 1;
     const int32_t demo_count = tr1 ? M_DEMO_COUNT_TR1 : M_DEMO_COUNT_TR23;
+    m_Pages[M_PAGE_LOG] = (M_PAGE) {
+        .title = "Crash log (TRXLOG)",
+        .names = m_LogNames,
+        .count = M_LoadLog(),
+    };
     m_Pages[M_PAGE_LEVELS] = (M_PAGE) {
         .title = "Levels",
         .names = tr1 ? m_LevelsTR1 : tr3 ? m_LevelsTR3 : m_LevelsTR2,
@@ -383,7 +423,7 @@ int32_t DC_LevelSelect_Run(const int32_t engine, const char *const mod)
         if (pick != nullptr) {
             int page = 0;
             int entry = 0;
-            if (fscanf(pick, "%d %d", &page, &entry) == 2 && page >= 0
+            if (fscanf(pick, "%d %d", &page, &entry) == 2 && ++page >= 1
                 && page < m_PageCount && entry >= 0
                 && entry < m_Pages[page].count) {
                 page_id = (M_PAGE_ID)page;
@@ -405,7 +445,7 @@ int32_t DC_LevelSelect_Run(const int32_t engine, const char *const mod)
         const uint32_t buttons = M_Buttons();
         const uint32_t pressed = buttons & ~held;
         held = buttons;
-        if (pressed & (CONT_A | CONT_START)) {
+        if ((pressed & (CONT_A | CONT_START)) && page_id != M_PAGE_LOG) {
             break;
         }
         // The triggers go to the game before and after on a disc of several
