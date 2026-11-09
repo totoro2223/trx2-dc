@@ -2,7 +2,7 @@
 
 Preparado el 30/10/2026. Antes de empezar lee [TRASPASO.md](TRASPASO.md) y
 **`PROBADO.md`**. **Hecho el mismo día (P1 a P5, DC builds 861-862) sin P0 y
-sin medir**; en Flycast la imagen sale bien pero a 5-7 fps (tarea 73 de `TAREAS.md`, con lo que falta). Detalle en
+sin medir**. **Estado (09/11/2026):** en uso (`TRX_DC_FMV_CODEC` vale `mpeg1` por defecto en `make_disc.sh`). Reproductor reescrito con libmpeg 2.0.0, solo MPEG-1 (DC builds 948-956): Flycast OK a 15 fps; consola sincronizada, con tirones los primeros 30 s (PROBADO; tarea 73 de `TAREAS.md`). P0 nunca se hizo; P5 a medias (`ancient` 93,4 → 37,9 MB; faltan los tamaños de los tres juegos y la CPU en GDEMU). Detalle en
 `REGISTRO.md`.
 
 ## Qué usa TR4 en Dreamcast (visto en su disco)

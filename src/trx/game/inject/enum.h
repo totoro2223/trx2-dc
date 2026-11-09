@@ -106,7 +106,13 @@ typedef enum {
     IDT_ANIM_TEXTURE_ADDS  = 42,
     IDT_DEMO_DATA          = 43,
     IDT_OVERLAP_INDICES    = 44,
-    IDT_NUMBER_OF          = 45,
+    // The Dreamcast disc's own: a texture page held as the hash of its
+    // texels (tools/dreamcast/texvq.c -s), which textures.vq answers.
+    IDT_DC_PAGE_HASHES     = 45,
+    // Likewise, a page the VQ does not hold, as its 16-bit texels with its
+    // format (u32), page after page.
+    IDT_DC_PAGES_16        = 46,
+    IDT_NUMBER_OF          = 47,
 } INJECTION_DATA_TYPE;
 
 typedef enum {

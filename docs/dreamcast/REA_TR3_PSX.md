@@ -81,6 +81,15 @@ ciclos a 33 MHz (~0,23 µs/vértice); el port gasta ~1 µs por vértice en
 
 ## Candidatos (por orden de valor esperado; ninguno medido)
 
+**Estado (09/11/2026):**
+1. A medias. La build normal ya muestra fps, polígonos, instancias y vértices (vista 2 de las teclas de demo) y CPU %/RAM/VRAM/AICA (fila "Debug mode"); el reparto por fases sigue solo en la build de sondas. Ya hay cifras de consola (Jungle 17-19 fps, PROBADO).
+2. Sin hacer; solo los enemigos lejanos dejan sus mallas pequeñas (`objects/draw.c`).
+3. Sin hacer; solo se salta la niebla de una instancia entera antes del inicio (`M_CULL_FOG_OFF`).
+4. No hace falta: el batcher ya descarta toda cara de espaldas (32 %, PROBADO), las de dos caras vienen duplicadas, y el descarte previo por conos/lados falló (PROBADO, builds 263-266).
+5. **FALLIDO (05/11/2026)**: caja de 8 esquinas contra la ventana en Antártida, vértices −2 %, xform 11,5 → 13,1 ms (PROBADO).
+6. `dc_xform_pref` y `dc_sq_vertices` **FALLIDOS en consola** (Jungle 17-19 fps igual, DC build 1219/1221). El empaquetado en sí, sin hacer.
+7. Sin hacer (solo hay 320×240 y 640×480).
+
 1. **Medir en consola, no en Flycast.** Flycast da ~28 fps donde la consola
    da 15-20; sin cifras de la SH-4 real, cualquier micro-optimización es a
    ciegas. Propuesta: un contador en pantalla (con `bfont_small`, ya

@@ -1,0 +1,328 @@
+--- a/src/platform/dreamcast/dc_settings.c
++++ b/src/platform/dreamcast/dc_settings.c
+@@ -37,7 +37,7 @@
+ // the fps counter, the two filters, the shadow type, the bump mapping and
+ // room cel shading switches, the 3D pickups switch, the enemy shadows one, the
+ // memory readout, the load cache, the original enemy simulation one, and the
+-// original (linear) pose blend one, and the 16:9 screen one.
++// original (linear) pose blend one, the 16:9 screen one, and the Tomb Raider Suite soundtrack one.
+ // A second line holds the game played last (0 on a disc of one game).
+ static void M_Format(char *const out, const size_t size, const int game)
+ {
+@@ -56,7 +56,7 @@
+         (int)g_Config.rendering.dc_load_cache,
+         (int)g_Config.rendering.dc_original_ai,
+         (int)g_Config.rendering.dc_linear_pose,
+-        (int)g_DC_WidePending, game);
++        (int)g_DC_WidePending, (int)g_Config.audio.dc_suite_music, game);
+ }
+ 
+ bool g_DC_WidePending = false;
+@@ -78,11 +78,11 @@
+         return;
+     }
+     int version = 0;
+-    int v[17] = {};
++    int v[18] = {};
+     const int read = fscanf(
+-        fp, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &version,
++        fp, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &version,
+         &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9],
+-        &v[10], &v[11], &v[12], &v[13], &v[14], &v[15], &v[16]);
++        &v[10], &v[11], &v[12], &v[13], &v[14], &v[15], &v[16], &v[17]);
+     int stored_game = 0;
+     if (fscanf(fp, " %d", &stored_game) != 1) {
+         stored_game = 0;
+@@ -124,6 +124,10 @@
+     if (version <= 10) {
+         v[16] = 0;
+     }
++    // Before format 12 the soundtrack was the original.
++    if (version <= 11) {
++        v[17] = 0;
++    }
+     // The adaptive rate (2) is gone: it is plain 60 now.
+     if (v[1] == 2) {
+         v[1] = DC_FPS_60;
+@@ -137,8 +141,8 @@
+             v[0] = DC_MODE_EXPERIMENTAL_60;
+         }
+     }
+-    if (version < 1 || version > 11
+-        || read != (version >= 11 ? 18 : version >= 10 ? 17 : version >= 9 ? 16 : version >= 8 ? 15 : version >= 7 ? 14 : version >= 6 ? 13 : version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
++    if (version < 1 || version > 12
++        || read != (version >= 12 ? 19 : version >= 11 ? 18 : version >= 10 ? 17 : version >= 9 ? 16 : version >= 8 ? 15 : version >= 7 ? 14 : version >= 6 ? 13 : version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
+         || v[0] < 0
+         || v[0] >= DC_MODE_NUMBER_OF || v[1] < 0 || v[1] >= DC_FPS_NUMBER_OF
+         || v[5] < 0 || v[5] >= TEXTURE_FILTER_NUMBER_OF || v[6] < 0
+@@ -180,6 +184,7 @@
+             g_Config.rendering.aspect_mode,
+             g_DC_WidePending ? ASPECT_MODE_16_9 : ASPECT_MODE_4_3);
+     }
++    CONFIG_SET(g_Config.audio.dc_suite_music, (bool)(v[17] != 0));
+     if (g_DC_TestOriginalAI >= 0) {
+         CONFIG_SET(
+             g_Config.rendering.dc_original_ai, (bool)(g_DC_TestOriginalAI != 0));
+--- a/src/platform/dreamcast/nolua_ring.c
++++ b/src/platform/dreamcast/nolua_ring.c
+@@ -230,6 +230,7 @@
+     if (ring == M_RING_OPTION) {
+         M_Add(list, &count, ring, O_PASSPORT_CLOSED, 1);
+         M_Add(list, &count, ring, O_GRAPHICS_OPTION, 1);
++        M_Add(list, &count, ring, O_SOUND_OPTION, 1);
+     } else {
+         INVENTORY_ENTRY entries[INV_MAX_ENTRIES];
+         const int32_t n = Inv_GetDrawnEntries(entries, INV_MAX_ENTRIES);
+--- a/src/platform/dreamcast/nolua_settings.c
++++ b/src/platform/dreamcast/nolua_settings.c
+@@ -15,6 +15,7 @@
+ #include <trx/game/game_flow/common.h>
+ #include <trx/game/game_strings/entries.h>
+ #include <trx/game/input.h>
++#include <trx/game/music.h>
+ #include <trx/game/lua/events/ui.h>
+ #include <trx/game/objects/ids.h>
+ 
+@@ -39,11 +40,14 @@
+     M_ROW_LOAD_CACHE,
+     M_ROW_ORIGINAL_AI,
+     M_ROW_LINEAR_POSE,
++    M_ROW_SOUNDTRACK,
+     M_ROW_NUMBER_OF,
+ } M_ROW;
+ 
+ static struct {
+     bool open;
++    // The Sound page (the soundtrack row alone) instead of the Graphics one.
++    bool sound;
+     DC_REQ req;
+     int32_t rows[M_ROW_NUMBER_OF];
+     int32_t count;
+@@ -148,6 +152,8 @@
+         return M_GS("settings/rendering.dc_room_cel/title", "Room cel shading");
+     case M_ROW_SCREEN:
+         return M_GS("settings/rendering.aspect_mode/title", "Screen");
++    case M_ROW_SOUNDTRACK:
++        return "Soundtrack";
+     case M_ROW_FPS_COUNTER:
+         return M_GS("settings/ui.enable_fps_counter/title", "FPS counter");
+     case M_ROW_TEXTURE_FILTER:
+@@ -189,6 +195,8 @@
+         return M_OnOff(g_Config.rendering.dc_room_cel);
+     case M_ROW_SCREEN:
+         return M_ScreenName();
++    case M_ROW_SOUNDTRACK:
++        return g_Config.audio.dc_suite_music ? "TR Suite" : "Original";
+     case M_ROW_FPS_COUNTER:
+         return M_OnOff(g_Config.ui.enable_fps_counter);
+     case M_ROW_TEXTURE_FILTER:
+@@ -212,10 +220,15 @@
+     const int32_t selected = m_Page.req.selected;
+     DC_Req_Init(
+         &m_Page.req,
+-        M_GS("general/settings/graphic_settings/title", "Graphics"), 290.0f,
++        m_Page.sound ? "Sound"
++                     : M_GS("general/settings/graphic_settings/title", "Graphics"),
++        290.0f,
+         0.5f);
+     m_Page.count = 0;
+     for (int32_t i = 0; i < M_ROW_NUMBER_OF; i++) {
++        if ((i == M_ROW_SOUNDTRACK) != m_Page.sound) {
++            continue;
++        }
+         if (i == M_ROW_RESTART && !M_CanRestart()) {
+             continue;
+         }
+@@ -273,6 +286,11 @@
+     case M_ROW_ROOM_CEL:
+         CONFIG_TOGGLE(g_Config.rendering.dc_room_cel);
+         break;
++    case M_ROW_SOUNDTRACK:
++        CONFIG_TOGGLE(g_Config.audio.dc_suite_music);
++        // Nothing reports the change on this menu: the music takes it now.
++        Music_ReloadSoundtrack();
++        break;
+     case M_ROW_SCREEN:
+         // 16:9 is anamorphic: the television is set to stretch 4:3 to 16:9.
+         // Applied on the next level load: changing it live distorts the image.
+@@ -356,9 +374,11 @@
+ bool DC_NoLua_OpenSettingsEntry(
+     const UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *const args)
+ {
+-    if (args->object_id != O_GRAPHICS_OPTION) {
++    if (args->object_id != O_GRAPHICS_OPTION
++        && args->object_id != O_SOUND_OPTION) {
+         return false;
+     }
++    m_Page.sound = args->object_id == O_SOUND_OPTION;
+     static bool listening = false;
+     if (!listening) {
+         listening = true;
+--- a/src/trx/config/map.def
++++ b/src/trx/config/map.def
+@@ -230,6 +230,9 @@
+ X_CFG_FLOAT_PERCENT(audio.inventory_music_volume,        1.0f)
+ X_CFG_FLOAT_PERCENT(audio.master_volume,                 0.8f)
+ X_CFG_FLOAT_PERCENT(audio.music_volume,                  1.0f)
++#if defined(__DREAMCAST__)
++X_CFG_BOOL(audio.dc_suite_music,                         false)
++#endif
+ X_CFG_FLOAT_PERCENT(audio.sound_volume,                  1.0f)
+ X_CFG_FLOAT_PERCENT(audio.underwater_ambient_volume,     1.0f)
+ X_CFG_FLOAT_PERCENT(audio.underwater_music_volume,       1.0f)
+--- a/src/trx/config/types.h
++++ b/src/trx/config/types.h
+@@ -138,6 +138,9 @@
+         float master_volume;
+         float sound_volume;
+         float music_volume;
++#if defined(__DREAMCAST__)
++        bool dc_suite_music;
++#endif
+         float inventory_music_volume;
+         float underwater_music_volume;
+         float ambient_volume;
+--- a/src/trx/game/music/common.c
++++ b/src/trx/game/music/common.c
+@@ -3,6 +3,7 @@
+ #include <trx/av/audio.h>
+ #include <trx/av/audio_decoder.h>
+ #include <trx/config.h>
++#include <trx/core/filesystem.h>
+ #include <trx/core/log.h>
+ #include <trx/core/memory.h>
+ #include <trx/core/subsystem.h>
+@@ -23,6 +24,7 @@
+ #include <trx/game/shell/common.h>
+ #include <trx/version.h>
+ 
++#include <stdio.h>
+ #include <string.h>
+ 
+ #define M_CROSSFADE_TIME 2.0
+@@ -69,8 +71,18 @@
+ static MUSIC_BACKEND *M_FindBackend(void)
+ {
+     VECTOR *all_backends = Vector_Create(sizeof(MUSIC_BACKEND *));
+-    const char *const music_dir =
++    const char *music_dir =
+         GamePath_PeekResolve(GAME_DYNAMIC_PATH_MUSIC_DIR, nullptr);
++#if defined(__DREAMCAST__)
++    // The Tomb Raider Suite soundtrack, when chosen and on the disc.
++    static char suite_dir[256];
++    if (g_Config.audio.dc_suite_music && music_dir != nullptr) {
++        snprintf(suite_dir, sizeof(suite_dir), "%s_suite", music_dir);
++        if (FS_DirExists(suite_dir)) {
++            music_dir = suite_dir;
++        }
++    }
++#endif
+     const char *const music_catalog_path = GamePath_PeekResolve(
+         GAME_DYNAMIC_PATH_CATALOG, "catalog_music_files.csv");
+     if (music_dir != nullptr || music_catalog_path != nullptr) {
+@@ -521,6 +533,26 @@
+     return played ? 0 : -1;
+ }
+ 
++#if defined(__DREAMCAST__)
++void Music_ReloadSoundtrack(void)
++{
++    // The tracks playing (the ambient one, if any, and a regular one over it)
++    // are taken over by the same ones of the other soundtrack.
++    const MUSIC_SLOT playing = m_TrackCurrent;
++    const MUSIC_SLOT looped = m_TrackLooped;
++    // Init only forgets the streams; this closes them.
++    Music_Stop();
++    SHOULD(Music_Init());
++    Music_SetVolume(g_Config.audio.music_volume);
++    if (looped >= 0) {
++        Music_PlayBySlot(looped, MPM_LOOP);
++    }
++    if (playing >= 0) {
++        Music_PlayBySlot(playing, MPM_ONCE);
++    }
++}
++#endif
++
+ RESULT Music_Init(void)
+ {
+     m_Initialised = true;
+--- a/src/trx/game/music/common.h
++++ b/src/trx/game/music/common.h
+@@ -138,6 +138,11 @@
+ // Sets the game volume.
+ void Music_SetVolume(float volume);
+ 
++#if defined(__DREAMCAST__)
++// Plays the track now playing again from the soundtrack the settings chose.
++void Music_ReloadSoundtrack(void);
++#endif
++
+ // Muffles the ambience alone or all music, as if heard through water. Overlay
+ // tracks stay clear.
+ void Music_SetMuffle(UNDERWATER_MUFFLE_MODE mode);
+--- a/tools/dreamcast/make_disc.sh
++++ b/tools/dreamcast/make_disc.sh
+@@ -524,8 +524,62 @@
+   fi
+   [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music/"
+ done
++# TR1's CD audio, when the game's CD image is beside the repository (or
++# TRX_DC_TR1_CD names its folder): "Track NN.bin" are raw 44.1 kHz stereo audio
++# tracks, track NN being the game's track NN. They carry the ambient tracks
++# (57 and on) the classic Steam music folder lacks. Only tracks missing are added.
++if [ "$GAME" = tr1 ] && [ "$SOURCE" = classic ] && [ "${TRX_DC_MUSIC:-1}" != 0 ] && command -v ffmpeg > /dev/null; then
++  TR1_CD="${TRX_DC_TR1_CD:-$ROOT/../Tomb Raider (v1.6)}"
++  for n in $(seq 2 60); do
++    f="$(printf '%s/Tomb Raider (v1.6) (Track %02d).bin' "$TR1_CD" "$n")"
++    [ -f "$f" ] || continue
++    if [ -n "${TRX_DC_MUSIC_KEEP:-}" ] && [[ " $TRX_DC_MUSIC_KEEP " != *" $n "* ]]; then
++      continue
++    fi
++    [ -f "$STAGE/games/$GAME/music/$n.wav" ] && continue
++    out="$MUSIC_CACHE/$n.wav"
++    if [ ! -f "$out" ]; then
++      ffmpeg -hide_banner -loglevel error -y -f s16le -ar 44100 -ac 2 \
++        -i "$f" -c:a adpcm_yamaha "$out"
++    fi
++    [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music/"
++  done
++fi
+ echo "$(ls "$STAGE/games/$GAME/music" | wc -l) tracks"
+ 
++# The Tomb Raider Suite mod's soundtrack, as a second set of tracks the Sound
++# page of the ring chooses (music_suite beside music). TRX_DC_SUITE=0 leaves
++# it out; the mod's TRACKS folder is found beside the repository, or is the one
++# TRX_DC_SUITE_DIR names. A track the mod lacks is the original's.
++SUITE_DIR="${TRX_DC_SUITE_DIR:-}"
++if [ -z "$SUITE_DIR" ]; then
++  for d in "$ROOT/.."/"The Tomb Raider Suite Mod (TR${GAME#tr}) "*/*/*/TRACKS; do
++    [ -d "$d" ] && SUITE_DIR="$d"
++  done
++fi
++if [ "${TRX_DC_SUITE:-1}" != 0 ] && [ "${TRX_DC_MUSIC:-1}" != 0 ] && [ -d "$SUITE_DIR" ] && command -v ffmpeg > /dev/null; then
++  echo "== soundtrack (Tomb Raider Suite)"
++  SUITE_CACHE="$BUILD_DIR/music-suite-$GAME"
++  mkdir -p "$SUITE_CACHE" "$STAGE/games/$GAME/music_suite"
++  for f in "$SUITE_DIR"/*.ogg "$SUITE_DIR"/"${TRX_DC_LANG:-EN}"/*.ogg; do
++    [ -f "$f" ] || continue
++    name="$(basename "$f")"
++    [[ "${name%.*}" =~ ^[0-9]+$ ]] || continue
++    out="$SUITE_CACHE/$((10#${name%.*})).wav"
++    if [ ! -f "$out" ]; then
++      ffmpeg -hide_banner -loglevel error -y -i "$f" -ac 2 -ar 44100 \
++        -c:a adpcm_yamaha "$out"
++    fi
++    [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music_suite/"
++  done
++  for f in "$STAGE/games/$GAME/music"/*; do
++    [ -f "$f" ] || continue
++    [ -f "$STAGE/games/$GAME/music_suite/$(basename "$f")" ] \
++      || cp "$f" "$STAGE/games/$GAME/music_suite/"
++  done
++  echo "$(ls "$STAGE/games/$GAME/music_suite" | wc -l) tracks"
++fi
++
+ echo "== films"
+ # The game's films in the Dreamcast's own format (tools/dreamcast/fmvconv.c):
+ # each frame a VQ texture of 256x256 the PowerVR decodes itself, and the sound

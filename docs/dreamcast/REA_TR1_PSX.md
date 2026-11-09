@@ -80,6 +80,10 @@ fotograma), 3-4× lo medido aquí.
 3. El descarte por pantalla del PSX son 4 máscaras (`and` de restas) sin
    ramas; mismo criterio que `dc_xform_room`.
 
+Estado (09/11/2026): 1 hecho (queda la copia de compartidos en `xform`,
+tarea 83); 2: store queues y `pref` sin ganancia en consola (Jungle, DC build
+1219/1221), el formato compacto sin hacer; 3 ya es el criterio del port.
+
 ## Enemigos (PSX frente al port)
 
 PSX: el bucle por tick (0x8001ec30) recorre la lista de ítems **activos**

@@ -37,12 +37,12 @@ static char m_Refused[256] = "";
 // the fps counter, the two filters, the shadow type, the bump mapping and
 // room cel shading switches, the 3D pickups switch, the enemy shadows one, the
 // memory readout, the load cache, the original enemy simulation one, and the
-// original (linear) pose blend one.
+// original (linear) pose blend one, and the 16:9 screen one.
 // A second line holds the game played last (0 on a disc of one game).
 static void M_Format(char *const out, const size_t size, const int game)
 {
     snprintf(
-        out, size, "10 %d %d %d 0 %d %d %d %d %d %d %d %d %d %d %d %d\n%d\n",
+        out, size, "11 %d %d %d 0 %d %d %d %d %d %d %d %d %d %d %d %d %d\n%d\n",
         (int)g_Config.rendering.dc_mode, (int)g_Config.rendering.dc_fps,
         (int)g_Config.rendering.dc_cel_shading,
         (int)g_Config.ui.enable_fps_counter,
@@ -55,8 +55,12 @@ static void M_Format(char *const out, const size_t size, const int game)
         (int)g_Config.rendering.dc_memory_hud,
         (int)g_Config.rendering.dc_load_cache,
         (int)g_Config.rendering.dc_original_ai,
-        (int)g_Config.rendering.dc_linear_pose, game);
+        (int)g_Config.rendering.dc_linear_pose,
+        (int)g_DC_WidePending, game);
 }
+
+bool g_DC_WidePending = false;
+static bool m_WideApplied = false;
 
 void DC_Settings_Load(const char *const saves_dir)
 {
@@ -74,11 +78,11 @@ void DC_Settings_Load(const char *const saves_dir)
         return;
     }
     int version = 0;
-    int v[16] = {};
+    int v[17] = {};
     const int read = fscanf(
-        fp, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &version,
+        fp, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &version,
         &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9],
-        &v[10], &v[11], &v[12], &v[13], &v[14], &v[15]);
+        &v[10], &v[11], &v[12], &v[13], &v[14], &v[15], &v[16]);
     int stored_game = 0;
     if (fscanf(fp, " %d", &stored_game) != 1) {
         stored_game = 0;
@@ -116,6 +120,10 @@ void DC_Settings_Load(const char *const saves_dir)
     if (version <= 9) {
         v[15] = 0;
     }
+    // Before format 11 the screen was 4:3.
+    if (version <= 10) {
+        v[16] = 0;
+    }
     // The adaptive rate (2) is gone: it is plain 60 now.
     if (v[1] == 2) {
         v[1] = DC_FPS_60;
@@ -129,8 +137,8 @@ void DC_Settings_Load(const char *const saves_dir)
             v[0] = DC_MODE_EXPERIMENTAL_60;
         }
     }
-    if (version < 1 || version > 10
-        || read != (version >= 10 ? 17 : version >= 9 ? 16 : version >= 8 ? 15 : version >= 7 ? 14 : version >= 6 ? 13 : version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
+    if (version < 1 || version > 11
+        || read != (version >= 11 ? 18 : version >= 10 ? 17 : version >= 9 ? 16 : version >= 8 ? 15 : version >= 7 ? 14 : version >= 6 ? 13 : version >= 5 ? 12 : version >= 3 ? 11 : 8 + version)
         || v[0] < 0
         || v[0] >= DC_MODE_NUMBER_OF || v[1] < 0 || v[1] >= DC_FPS_NUMBER_OF
         || v[5] < 0 || v[5] >= TEXTURE_FILTER_NUMBER_OF || v[6] < 0
@@ -164,6 +172,14 @@ void DC_Settings_Load(const char *const saves_dir)
     CONFIG_SET(g_Config.rendering.dc_load_cache, (bool)(v[13] != 0));
     CONFIG_SET(g_Config.rendering.dc_original_ai, (bool)(v[14] != 0));
     CONFIG_SET(g_Config.rendering.dc_linear_pose, (bool)(v[15] != 0));
+    // The screen shape is only applied at the next level load: changing it live distorts.
+    g_DC_WidePending = v[16] != 0;
+    if (!m_WideApplied) {
+        m_WideApplied = true;
+        CONFIG_SET(
+            g_Config.rendering.aspect_mode,
+            g_DC_WidePending ? ASPECT_MODE_16_9 : ASPECT_MODE_4_3);
+    }
     if (g_DC_TestOriginalAI >= 0) {
         CONFIG_SET(
             g_Config.rendering.dc_original_ai, (bool)(g_DC_TestOriginalAI != 0));
@@ -185,6 +201,11 @@ void DC_Settings_Load(const char *const saves_dir)
             g_Config.rendering.dc_fps,
             g_DC_TestFps >= 60 ? DC_FPS_60 : DC_FPS_30);
     }
+    if (g_DC_TestWide >= 0) {
+        CONFIG_SET(
+            g_Config.rendering.aspect_mode,
+            g_DC_TestWide != 0 ? ASPECT_MODE_16_9 : ASPECT_MODE_4_3);
+    }
     // As the card holds them, game included: a different game gets written.
     M_Format(m_Stored, sizeof(m_Stored), stored_game);
     LOG_INFO("render options loaded from the memory card");
@@ -195,7 +216,8 @@ void DC_Settings_Save(void)
     // A test disc that forces the mode or the shadows is not the player
     // choosing: those would stay on the card.
     if (m_Path[0] == '\0' || g_DC_TestMode >= 0 || g_DC_TestShadow >= 0
-        || g_DC_TestCel >= 0 || g_DC_TestObjectShadows >= 0 || g_DC_TestOriginalAI >= 0 || g_DC_TestFps >= 0 || g_DC_TestBump >= 0) {
+        || g_DC_TestCel >= 0 || g_DC_TestObjectShadows >= 0 || g_DC_TestOriginalAI >= 0 || g_DC_TestFps >= 0 || g_DC_TestBump >= 0
+        || g_DC_TestWide >= 0) {
         return;
     }
     char now[256];

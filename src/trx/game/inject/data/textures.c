@@ -171,6 +171,46 @@ static void M_HandleTextureData(
         case IDT_TEXTURE_PAGES:
             M_HandleTexturePages(chunk.injection, data_count);
             break;
+#if defined(__DREAMCAST__)
+        case IDT_DC_PAGE_HASHES: {
+            // Pages the disc's textures.vq holds, named by their hash.
+            LEVEL_CONTEXT_INFO *const info = Level_Context_GetInfo();
+            for (int32_t j = 0; j < data_count; j++) {
+                const uint32_t hash = File_ReadU32(chunk.injection->fp);
+                const uint32_t format = File_ReadU32(chunk.injection->fp);
+                const int32_t page = info->textures.page_count + j;
+                if (DC_Renderer_GetTexturePageCount() == 0) {
+                    continue;
+                }
+                info->textures.page_formats[page] = (TEXTURE_PAGE_FORMAT)format;
+                (void)DC_Renderer_StoreTexturePageHashed(
+                    page, hash, (uint8_t)format);
+            }
+            info->textures.page_count += data_count;
+            break;
+        }
+        case IDT_DC_PAGES_16: {
+            // The rest, as the load would have made them: format and texels.
+            LEVEL_CONTEXT_INFO *const info = Level_Context_GetInfo();
+            uint16_t *const page_16 =
+                Memory_Alloc(TEXTURE_PAGE_SIZE * sizeof(uint16_t));
+            for (int32_t j = 0; j < data_count; j++) {
+                const uint32_t format = File_ReadU32(chunk.injection->fp);
+                File_ReadData(
+                    chunk.injection->fp, page_16,
+                    TEXTURE_PAGE_SIZE * sizeof(uint16_t));
+                const int32_t page = info->textures.page_count + j;
+                if (DC_Renderer_GetTexturePageCount() == 0) {
+                    continue;
+                }
+                info->textures.page_formats[page] = (TEXTURE_PAGE_FORMAT)format;
+                DC_Renderer_StoreTexturePage(page, page_16, (uint8_t)format);
+            }
+            Memory_FreePointer(&page_16);
+            info->textures.page_count += data_count;
+            break;
+        }
+#endif
         default:
             LOG_WARNING("Unknown data type: %d", data_type);
             File_Skip(chunk.injection->fp, data_size);

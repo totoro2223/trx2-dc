@@ -87,3 +87,5 @@ Con el mayor número de huecos de los tres originales, valorar bajar
 1000 cajas, 32 huecos son 256 K frente a 64 K con 8). No figura en
 PROBADO.md. Medir con `gbuf_summary.py` y probar que ningún nivel de TR1–TR3
 se queda sin enemigos.
+
+**Estado (09/11/2026):** probado como "Enemy AI: Original" (8/5 huecos) y retirado el 04/11 porque las demos no acababan en su sitio; hoy `LOT_SLOT_COUNT` es 32 siempre, también en Original (`lot.c`). Ver INFORME_REA_TR123.md y TAREAS 79.

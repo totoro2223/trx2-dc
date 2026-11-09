@@ -4,8 +4,11 @@
 // the file being read, at most so often that loading is not held back.
 
 #include "loading.h"
+#include "dc_mode.h"
+#include "dc_settings.h"
 
 #include <trx/config.h>
+#include <trx/config/common.h>
 #include "dc_games.h"
 #include "dc_strict.h"
 
@@ -124,6 +127,12 @@ static void M_OnRead(const char *const name, const size_t bytes)
 
 void DC_Loading_Begin(const uint64_t total_bytes, const char *const picture)
 {
+    // The screen shape chosen in the settings applies from this load on.
+    if (g_DC_TestWide < 0) {
+        CONFIG_SET(
+            g_Config.rendering.aspect_mode,
+            g_DC_WidePending ? ASPECT_MODE_16_9 : ASPECT_MODE_4_3);
+    }
     // Read before the disc reads are watched: reading it would draw again.
     DC_Crumb(DC_CRUMB_LOADING, "loading");
     DC_Asm_Save(true);

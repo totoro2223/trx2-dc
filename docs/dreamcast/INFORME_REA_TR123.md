@@ -83,6 +83,17 @@ Detalle por juego en el scratchpad de la sesión (`hallazgos_TR1.md`,
 
 ## Sugerencias para el port
 
+**Estado (09/11/2026):**
+1. Probado y descartado (04/11/2026): con 8/5 huecos las demos no acaban en su sitio; DC usa 32 siempre (`lot.c`). Sin el ahorro de RAM.
+2. Sin hacer.
+3. Se cumple (`Box_SearchLOT` en asm con el mismo tope).
+4. Hecho en lo esencial (región por nivel limitada; sonido en el AICA).
+5. En DC la lista de salas es un vector que crece y no desborda; el tope de 128 solo se aplica con Enemy AI: Original (`Room_MarkToBeDrawn`).
+6. No aplica a TRX: las tablas se reservan según el nivel y los blancos tienen tope comprobado.
+7. Comprobado: la tabla de texturas se reserva al tamaño del nivel; no hay tope de 2048.
+8. Sin hacer; `MAX_EFFECTS` sigue en 1000.
+"Qué no está confirmado" (tarea 80): sin hacer.
+
 1. **Bajar `LOT_SLOT_COUNT` de 32 a 8** en DC (el máximo de los tres
    originales). Con 1000 cajas son 64 K frente a 256 K de ahora. Mejor aún,
    usarlo por versión (8 en TR1, 5 en TR2/TR3), usando `g_TRVersion`. En TR2/3

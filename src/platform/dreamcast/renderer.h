@@ -16,6 +16,16 @@
 bool DC_Renderer_ReserveTexturePages(int32_t count);
 void DC_Renderer_StoreTexturePage(
     int32_t page, const uint16_t *texels, uint8_t format);
+// A page the disc's textures.vq holds, named by the hash of its texels (an
+// injection that has them so, see tools/dreamcast/texvq.c -s); nothing is
+// drawn, and false is returned, if the file does not have it.
+bool DC_Renderer_StoreTexturePageHashed(
+    int32_t page, uint32_t hash, uint8_t format);
+// The hashes of a level's pages as the disc's levelpages.bin holds them (made
+// by texvq -l), for a level of that name, size and page count; false if it has
+// none, and the pages are read.
+bool DC_Renderer_FindLevelPages(
+    const char *path, size_t size, int32_t pages, uint32_t *hashes);
 uint16_t DC_Renderer_GetTexel(int32_t page, int32_t x, int32_t y);
 // Whether any texel from (x0, y0) to (x1, y1) inclusive is not wholly solid.
 bool DC_Renderer_HasTransparency(

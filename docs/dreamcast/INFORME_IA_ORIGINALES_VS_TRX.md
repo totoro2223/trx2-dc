@@ -73,8 +73,11 @@ original tenía el mismo diseño que TRX. TR1 y TR2 no tienen nada de esto.
 
 ## Recortes, de más a menos efecto esperado
 
-Ninguno está aplicado salvo el primero. Medir antes y después con sondas
-`DC_PROBE` en consola.
+Estado (09/11/2026): aplicados 2 (mezcla lineal, por defecto), 3 (`draw_rooms`,
+`items/manager.c`), 4 en parte (división de 32 bits en `M_GetSlope` y filtro de
+caja de los blancos; falta la caché del rayo y el mapa de bits) y 6 (frames en
+asm y en caché); 5 y 7 sin hacer. Nada medido en consola. Medir antes y
+después con sondas `DC_PROBE` en consola.
 
 1. **Modo "Enemy AI: Original"** (hecho, sin probar): 8 huecos en TR1 y 5 en
    TR2/TR3, sin los atajos de IA de DC. Recorta a la vez IA, suelo, ruta,
@@ -116,15 +119,18 @@ No tocar: el tope de 5 de `UpdateLOT` (igual que los tres originales).
 
 Fila nueva en Gráficos: `TRX` (por defecto) u `Original`. Se guarda en la
 VMU (formato 9) y se aplica **al cargar el nivel** (usar "Restart level").
-`Original` = `LOT_SLOT_COUNT` efectivo de 8 (TR1) o 5 (TR2/TR3), sin los dos
-atajos de IA de DC (pensar cada 2 ticks a más de 6 casillas; marcadores a
+(Desde el 04/11/2026: `Original` = mezcla lineal, una pose a más de 14
+casillas, tope de 128 salas y frames cacheados; la IA es la de TRX, 32 huecos,
+para que las demos acaben en su sitio. En Flycast, TR3 Londres 31,3 frente a
+30,7 fps.) Antes: `LOT_SLOT_COUNT` efectivo de 8 (TR1) o 5 (TR2/TR3), sin los
+dos atajos de IA de DC (pensar cada 2 ticks a más de 6 casillas; marcadores a
 1/16 ticks) y nodos de ruta solo para los huecos usados. No reproduce los 12
 huecos ligeros de TR3. Código: `pathing/lot.c` (`LOT_IsOriginalSim`),
 `creature/common.c`, `dc_settings.c`, `nolua_settings.c`.
 
 ## Interruptor "Pose blend" (sin probar)
 
-Fila nueva en Gráficos: `Slerp` (por defecto, como hasta ahora) o `Linear`. `Linear` mezcla los 12 valores de cada matriz como los originales (`M_InterpolateLinear` en `matrix.c`), sin cuaterniones ni trigonometría. Se aplica al instante, a todo lo que pase por `Matrix_Interpolate` (enemigos, Lara, armas). Se guarda en la VMU (formato 10). Los originales hacían lo mismo, pero una mezcla lineal de rotaciones encoge un poco la matriz si los dos keyframes están muy separados: mirar a ojo los giros grandes de Lara.
+Fila en Gráficos: `Linear` (por defecto desde el 05/11/2026, `dc_linear_pose`; una VMU guardada antes del formato 10 lo deja en `Slerp`) o `Slerp`. `Linear` mezcla los 12 valores de cada matriz como los originales (`M_InterpolateLinear` en `matrix.c`), sin cuaterniones ni trigonometría. Se aplica al instante, a todo lo que pase por `Matrix_Interpolate` (enemigos, Lara, armas). Se guarda en la VMU (formato 10). Los originales hacían lo mismo, pero una mezcla lineal de rotaciones encoge un poco la matriz si los dos keyframes están muy separados: mirar a ojo los giros grandes de Lara.
 
 ## Recortes 3 a 10 aplicados (sin probar en consola)
 

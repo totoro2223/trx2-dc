@@ -14,6 +14,7 @@
 #include "dc_settings.h"
 #include "dc_strict.h"
 #include "dc_level_select.h"
+#include "dc_splash.h"
 #include "dc_mode.h"
 #include "dc_watchdog.h"
 #include "vmu.h"
@@ -164,6 +165,7 @@ static int M_RunGame(int argc, char *argv[])
     g_DC_TestCel = -1;
     g_DC_TestOriginalAI = -1;
     g_DC_TestFps = -1;
+    g_DC_TestWide = -1;
     g_DC_TestSnow = -1;
     g_DC_TestFogStart = -1;
     g_DC_TestFogEnd = -1;
@@ -288,6 +290,25 @@ static int M_RunGame(int argc, char *argv[])
             g_DC_TestFps = n;
         }
         fclose(fps);
+    }
+    // A test disc that starts in one of the game's cutscenes (make_disc.sh's
+    // TRX_DC_CUTSCENE): the cutscene's number.
+    FILE *const cine = M_Open("CUTSCENE.TXT");
+    if (cine != nullptr) {
+        int number = -1;
+        if (fscanf(cine, "%d", &number) == 1 && number >= 0) {
+            g_DC_StartCutscene = number;
+        }
+        fclose(cine);
+    }
+    // A test disc that fixes the screen (make_disc.sh's TRX_DC_WIDE).
+    FILE *const wide = M_Open("WIDE.TXT");
+    if (wide != nullptr) {
+        int on = -1;
+        if (fscanf(wide, "%d", &on) == 1) {
+            g_DC_TestWide = on;
+        }
+        fclose(wide);
     }
     // A test disc that fixes the enemy simulation (make_disc.sh's TRX_DC_AI).
     FILE *const ai = M_Open("AI.TXT");
@@ -470,9 +491,12 @@ static int M_RunGame(int argc, char *argv[])
         // The player left a level: the game's own title, not the list (a disc
         // made with make_disc.sh's TRX_DC_TITLELIST goes back to the list).
         m_ToTitle = false;
-    } else if (g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0) {
+    } else if (
+        g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0
+        && g_DC_StartCutscene < 0) {
         // The expansion's level that the list of the game before picked.
         const int picked = DC_Games_TakeStartLevel();
+        DC_Splash_Show(engine);
         level = picked >= -1 ? picked : DC_LevelSelect_Run(engine, mod_id);
         if (level == DC_LEVEL_SELECT_RESTART) {
             // Another game or the expansion: the main loop starts it (the

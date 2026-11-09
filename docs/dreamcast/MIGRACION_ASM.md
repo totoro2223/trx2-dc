@@ -1,6 +1,6 @@
 # Migraciones a ASM (SH-4): hecho y pendiente
 
-Estado al 06/11/2026 (rama `dreamcast`). Orden del usuario: todo lo que corra por
+Estado al 09/11/2026 (rama `dreamcast`, HEAD `5c6e7f989`; desde el 08/11 no se pasó nada más a ASM). Hechas también, sin fila propia abajo: `dc_light_slow` (`[light-verify]` 0 distintos), `dc_env_vertex` (ASMOFF 128, sin verify), `dc_soft_project` (ASMOFF 64, sin verify), `dc_world_matrix`/`dc_model_view`/`dc_inst_cull`/`dc_light_dir`/`dc_room_sphere`/`dc_scan_vertices` (ASMOFF 8192-131072, 0 distintas en 8 niveles), `dc_xform_own` por tramos (4096), `dc_portal_faces` (262144), criaturas (524288), `dc_room_sector` (1048576), `dc_flat_floor` (2097152), `dc_item_move` (4194304), `dc_item_animate` (8388608); ver PROBADO. `dc_chunk_hidden` y toda la oclusión por rayos van compilados fuera (`TRX_DC_OCCLUDE 0`): hoy no cuestan nada. La lista completa de bits de `TRX_DC_ASMOFF` (32) y `TRX_DC_ASMOFF2` está en el código (`grep -rn "g_DC_AsmOff" src`). Orden del usuario: todo lo que corra por
 fotograma y tenga un camino rápido en ASM que dé el mismo resultado pasa a ASM, sin
 descartar una pieza por "ganar poco". El C de cada rutina queda como referencia: en una
 build con `dc_emit_verify=true` (`DC_EMIT_VERIFY`) se corren los dos y se comparan; en la
@@ -21,7 +21,7 @@ build normal solo corre el ASM. En las otras plataformas queda el C.
 | `dc_fog_colours` (`room_sh4.S`) | `M_FogColours`: parte de la niebla de color por vértice | `[fog-verify]`: sin diferencias, pocas corridas (< 600) | no medida aparte |
 | `dc_sight_blocked` (`room_sh4.S`) | `M_SightBlocked`: rayo de visión entre un ojo y un punto (núcleo de la oclusión) | `[sight-verify]`: sin diferencias, pocas corridas (< 20 000) | no medida aparte |
 
-| `dc_build_volume` (`vol_sh4.S`) | `M_BuildVolume`: volumen de sombra de una caja (esquinas, empuje, longitud, proyección, caras a la luz, tapas y contorno) | `[vol-verify]` en build de verify. **Sin correr aún** | — |
+| `dc_build_volume` (`vol_sh4.S`) | `M_BuildVolume`: volumen de sombra de una caja (esquinas, empuje, longitud, proyección, caras a la luz, tapas y contorno) | `[vol-verify]` corrido (08/11): la profundidad salía ~20 veces menor (argumento en `fr4` en vez de `fr5`), corregido en `a1cd8bb13` con tolerancia propia; visto en Flycast (demo Vilcabamba TR1) | — |
 | `dc_bump_vertex` (`bump_sh4.S`) | `M_BumpVertex` entera: reunir luces, `M_BumpAt`, `M_BumpShade`, `M_Atan2` (constantes en `m_BumpK`) | `[bump-verify]` en build de verify. **Sin correr aún** | — |
 | `dc_xform_generic` (`xform_gen_sh4.S`) | `M_XformGeneric`: bucle por vértice con cualquier bandera. Luz en línea (propia, de objeto, de sala sin luces que pasen ni parpadeo); TR3, cáusticas, luces que pasan y reflejos llaman a C (`M_LightVertex`, `M_EnvVertex`) | `[xgen-verify]` en build de verify. **Sin correr aún** | — |
 

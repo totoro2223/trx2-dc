@@ -228,6 +228,13 @@ static void M_InitialiseBlock(
         return;
     }
 
+    if (data_type == IDT_DC_PAGE_HASHES || data_type == IDT_DC_PAGES_16) {
+        // Pages all the same (the level's page count is sized from these).
+        m_DataCounts[IDT_TEXTURE_PAGES] += data_count;
+        File_Skip(file, data_size);
+        return;
+    }
+
     if (data_type >= 0 && data_type < IDT_NUMBER_OF) {
         m_DataCounts[data_type] += data_count;
     }

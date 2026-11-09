@@ -19,6 +19,7 @@
 #include <trx/game/stats.h>
 #include <trx/version.h>
 
+#include <SDL2/SDL_timer.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -218,6 +219,28 @@ static void M_MarkWaterEdgeVertices(void)
     Benchmark_End(&benchmark, nullptr);
 }
 
+#if defined(__DREAMCAST__)
+// The time of each phase of a load, on the serial log ("[loadtime]"): the
+// load's cost is in the disc, so what each phase reads matters as much.
+static uint64_t m_PhaseStart;
+static uint64_t m_PhaseLast;
+static void M_Phase(const char *const name)
+{
+    const uint64_t now = SDL_GetPerformanceCounter();
+    if (name == nullptr) {
+        m_PhaseStart = m_PhaseLast = now;
+        return;
+    }
+    const double f = 1000.0 / (double)SDL_GetPerformanceFrequency();
+    LOG_INFO(
+        "[loadtime] %-22s +%7.0f ms  at %7.0f ms", name,
+        (double)(now - m_PhaseLast) * f, (double)(now - m_PhaseStart) * f);
+    m_PhaseLast = now;
+}
+#else
+    #define M_Phase(name) ((void)0)
+#endif
+
 static void M_CompleteSetup(
     const LEVEL_FORMAT_LOADER *const loader, const GF_LEVEL *const level)
 {
@@ -232,7 +255,9 @@ static void M_CompleteSetup(
 #if defined(__DREAMCAST__)
     DC_Loading_SetStep("Applying injections");
 #endif
+    M_Phase("setup start");
     Inject_AllInjections();
+    M_Phase("injections applied");
     // Every injection has been applied; their data need not wait for the
     // rest of the level to be set up to be let go.
     Inject_ReleasePayloads();
@@ -241,11 +266,13 @@ static void M_CompleteSetup(
     DC_Loading_SetStep("Preparing the level");
 #endif
     Level_Finalize_LoadAnimFrames(ctx);
+    M_Phase("anim frames");
     Level_Finalize_LoadAnimCommands(ctx);
     if (g_TRVersion == 1) {
         M_MarkWaterEdgeVertices();
     }
     Level_Finalize_LoadObjectsAndItems(ctx);
+    M_Phase("objects and items");
 
     // Configure enemies who carry and drop items
     Carrier_InitialiseLevel(level);
@@ -270,10 +297,13 @@ static void M_CompleteSetup(
     }
 #endif
 
+    M_Phase("carriers and stats");
     Level_Finalize_LoadRooms(ctx);
+    M_Phase("rooms");
     Level_Finalize_LoadTextures(ctx);
     Level_Finalize_LoadTexturePages(ctx);
     Level_Finalize_LoadPalettes(ctx);
+    M_Phase("textures");
     Camera_SetupSequences();
 
     if (loader->game_version == 1 || loader->game_version >= 4) {
@@ -281,6 +311,7 @@ static void M_CompleteSetup(
     } else {
         M_InitialiseSamplesFromFile(ctx, level->settings.sfx_path);
     }
+    M_Phase("samples");
     SHOULD(Sound_CheckSamples(), "those sounds stay silent");
 
     Benchmark_End(&benchmark, nullptr);
@@ -375,12 +406,15 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
         // Back to the menu: its own picture.
         picture = g_GameFlow.main_menu_background_path;
     }
+    M_Phase(nullptr);
     DC_Loading_Begin(M_GetLoadSize(level), picture);
+    M_Phase("loading screen");
 #endif
 
     DC_TRAIL("load: injections...");
     Inject_InitLevel(level, INJECTION_MODE_FULL);
     DC_TRAIL("load: injections read");
+    M_Phase("injections read");
 #if defined(__DREAMCAST__) && defined(TRX_DC_WATCHDOG)
     {
         // What the injections take while the level reads beside them: the
@@ -397,9 +431,11 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
     DC_TRAIL("load: level file...");
     const RESULT result = Level_Format_LoadFromFile(level, &loader);
     DC_TRAIL("load: level file read");
+    M_Phase("level file read");
     if (IS_OK(result)) {
         M_CompleteSetup(loader, level);
         DC_TRAIL("load: setup done");
+    M_Phase("setup done");
     }
     Inject_Cleanup();
     DC_TRAIL("load: injections cleaned");
@@ -412,6 +448,7 @@ RESULT Level_Pipeline_Load(const GF_LEVEL *const level)
     DC_WHERE("load trim", 0);
     DC_LevelHeap_Trim();
     DC_WHERE("load done", 0);
+    M_Phase("trim and gc");
     #if defined(TRX_DC_WATCHDOG)
     GameBuf_DumpSizes();
     #endif

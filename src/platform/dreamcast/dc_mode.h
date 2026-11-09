@@ -46,6 +46,8 @@ extern int32_t g_DC_TestFogEnd;
 extern int32_t g_DC_TestCel;
 // A test disc that fixes the frame rate (TRX_DC_FPS: 30 or 60).
 extern int32_t g_DC_TestFps;
+// 16:9 anamorphic forced on (1) or off (0) by a test disc; -1 leaves it.
+extern int32_t g_DC_TestWide;
 // A test disc that fixes the enemy simulation (TRX_DC_AI: 0 TRX, 1 original).
 extern int32_t g_DC_TestOriginalAI;
 extern int32_t g_DC_TestRoomCel;

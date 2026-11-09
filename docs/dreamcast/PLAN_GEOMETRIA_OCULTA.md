@@ -3,7 +3,7 @@
 Preparado el 30/10/2026 a partir de las pruebas de oclusión de salas (DC builds
 841-855, `PROBADO.md` y `REGISTRO.md` del 30/10/2026). Antes de empezar lee
 [TRASPASO.md](TRASPASO.md) y **`PROBADO.md`**: lo FALLIDO no se repite sin un
-dato nuevo. Nada de esto está empezado ni medido.
+dato nuevo. **Estado (09/11/2026):** G1 y G2 (tope 128 → 256) hechos el 30/10 (commit `f8e6ce1f7`) sin medir su ganancia; toda la oclusión por rayos, G1 incluido, apagada en compilación desde el 03/11 (`TRX_DC_OCCLUDE 0`, `batcher.c`, commit `946bc4aa8`) tras ver bloques de terreno que desaparecían en TR2 (Gran Muralla). Trozos más finos (celda 1024, tope 512): FALLIDO el 05/11 (PROBADO). G3 y G4 sin empezar. Las sondas TEMP de oclusión siguen en el código.
 
 ## Qué se sabe (medido en Flycast, TR3 y TR2)
 

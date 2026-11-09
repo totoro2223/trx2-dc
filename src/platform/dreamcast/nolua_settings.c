@@ -7,6 +7,7 @@
 #include "nolua.h"
 
 #include "dc_mode.h"
+#include "dc_settings.h"
 
 #include <trx/config.h>
 #include <trx/game/game.h>
@@ -30,6 +31,7 @@ typedef enum {
     M_ROW_PICKUPS,
     M_ROW_BUMP,
     M_ROW_ROOM_CEL,
+    M_ROW_SCREEN,
     M_ROW_FPS_COUNTER,
     M_ROW_TEXTURE_FILTER,
     M_ROW_UI_FILTER,
@@ -51,6 +53,15 @@ static const char *M_GS(const char *const key, const char *const fallback)
 {
     const char *const text = GameString_Get(key);
     return text != nullptr && strcmp(text, key) != 0 ? text : fallback;
+}
+
+static const char *M_ScreenName(void)
+{
+    const bool live = g_Config.rendering.aspect_mode == ASPECT_MODE_16_9;
+    if (live != g_DC_WidePending) {
+        return g_DC_WidePending ? "16:9 (next)" : "4:3 (next)";
+    }
+    return live ? "16:9" : "4:3";
 }
 
 static const char *M_OnOff(const bool on)
@@ -135,6 +146,8 @@ static const char *M_Name(const M_ROW row)
         return M_GS("settings/rendering.dc_bump_mapping/title", "Bump mapping");
     case M_ROW_ROOM_CEL:
         return M_GS("settings/rendering.dc_room_cel/title", "Room cel shading");
+    case M_ROW_SCREEN:
+        return M_GS("settings/rendering.aspect_mode/title", "Screen");
     case M_ROW_FPS_COUNTER:
         return M_GS("settings/ui.enable_fps_counter/title", "FPS counter");
     case M_ROW_TEXTURE_FILTER:
@@ -174,6 +187,8 @@ static const char *M_Value(const M_ROW row)
         return M_OnOff(g_Config.rendering.dc_bump_mapping);
     case M_ROW_ROOM_CEL:
         return M_OnOff(g_Config.rendering.dc_room_cel);
+    case M_ROW_SCREEN:
+        return M_ScreenName();
     case M_ROW_FPS_COUNTER:
         return M_OnOff(g_Config.ui.enable_fps_counter);
     case M_ROW_TEXTURE_FILTER:
@@ -257,6 +272,11 @@ static void M_Step(const M_ROW row, const int32_t rate)
         break;
     case M_ROW_ROOM_CEL:
         CONFIG_TOGGLE(g_Config.rendering.dc_room_cel);
+        break;
+    case M_ROW_SCREEN:
+        // 16:9 is anamorphic: the television is set to stretch 4:3 to 16:9.
+        // Applied on the next level load: changing it live distorts the image.
+        g_DC_WidePending = !g_DC_WidePending;
         break;
     case M_ROW_FPS_COUNTER:
         CONFIG_TOGGLE(g_Config.ui.enable_fps_counter);

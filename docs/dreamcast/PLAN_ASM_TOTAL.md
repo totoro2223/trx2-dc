@@ -4,6 +4,8 @@ Pasar a ASM (SH-4) todo el camino de dibujado, geometría y lógica de juego que
 sigue en C. 9 fases, 36 pasos. Orden de ejecución: 1, 2, 3, 5, 6, 7, 8, 9 y,
 por último, la parte de colisión de la fase 4.
 
+**Estado (09/11/2026):** hechos en ASM los pasos 1, 3, 9, 13, 20, 21 y 22; hechos sin verify corrido 2, 18 y 19; a medias 4, 5, 6 (la emisión por store queue no: los vértices por SQ fallaron en consola), 7, 8, 11, 12, 14, 17, 24, 26-29 y 35; sin empezar 10, 15, 16, 23, 25, 30-34 y 36. Fuera del plan: `dc_sqrt32`, `dc_sin`, `dc_atan`, `dc_distance`, `dc_chunk_hidden` (compilado fuera con `TRX_DC_OCCLUDE 0`). Todo con el C de referencia (`TRX_DC_ASMOFF`/`ASMOFF2`, `DC_EMIT_VERIFY`); nada probado en consola. Antártida en Flycast: 35,9 fps todo en ASM frente a 36,2 en C (PROBADO). Detalle por rutina en MIGRACION_ASM.md.
+
 Reglas:
 
 - Cada paso lleva su bit en `TRX_DC_ASMOFF` para apagarlo si algo falla en

@@ -1,5 +1,7 @@
 # Plan: memoria en sesiones largas (niveles seguidos, cargas, guardados, cambio de juego)
 
+**Estado (09/11/2026):** 0.1-0.3, P1, P2 y P5 OK (builds 784-805; resultados en [REPORTE_MEMORIA.md](REPORTE_MEMORIA.md), que sustituye a la tabla "Registro de avance" del final). P4 cumplido de hecho sin la prueba propia; P6 y P8 a medias (siete cambios de juego con memoria plana en Flycast; el cambio de modo a 320×240 arreglado). Hechos M3, M7 (`66aa9f940`, sin probar) y M2 (piscina 384 K y C4, sin probar); M6 obsoleto (era el BSON); M10 a medias (`TRX_DC_ALL_SWITCH`). Sin hacer: P3, P7, P9-P13, M8, M11, M12, M13. Sin Lua, P9 pierde parte de su objeto.
+
 Preparado el 26/10/2026 para otro agente. Brief autocontenido: objetivo, estado
 de partida, herramientas, batería de pruebas (P1–P13) con criterio de éxito, y
 tareas de corrección (M1–M13) según lo que falle. Antes de empezar lee

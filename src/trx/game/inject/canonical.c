@@ -89,24 +89,9 @@ static void M_TranscodeMeshFaces(
     }
 }
 
-// Packs one rotation the way M_ParseMeshRotation unpacks it: the two-word
-// form for every game, with TR1 storing the pair the other way round.
-static void M_PackRotation(
-    M_BUFFER *const buf, const int32_t game_version, const int16_t x,
-    const int16_t y, const int16_t z)
-{
-    const uint16_t v1 =
-        (((uint16_t)x >> 2) & 0x3FF0) | (((uint16_t)y >> 12) & 0xF);
-    const uint16_t v2 =
-        ((((uint16_t)y >> 6) & 0x3F) << 10) | (((uint16_t)z >> 6) & 0x3FF);
-    if (game_version == 1) {
-        M_Put16(buf, v2);
-        M_Put16(buf, v1);
-    } else {
-        M_Put16(buf, v1);
-        M_Put16(buf, v2);
-    }
-}
+// Rotations are packed the way M_ParseMeshRotation unpacks them: the two-word
+// form for every game, with TR1 storing the pair the other way round (see
+// InjectCanonical_TranscodeAnimFrames).
 
 int32_t InjectCanonical_TranscodeObjectTextures(
     TRX_FILE *const src, const int32_t data_count, const int32_t game_version,
@@ -157,11 +142,29 @@ int32_t InjectCanonical_TranscodeAnimFrames(
         if (game_version == 1) {
             M_Put16(&buf, rot_count);
         }
-        for (int32_t r = 0; r < rot_count; r++) {
-            const int16_t x = File_ReadS16(src);
-            const int16_t y = File_ReadS16(src);
-            const int16_t z = File_ReadS16(src);
-            M_PackRotation(&buf, game_version, x, y, z);
+        // The rotations in one read and written in place: a read and three
+        // puts each, as this was, cost seconds on the Dreamcast.
+        M_BufferReserve(&buf, (size_t)rot_count * 4);
+        for (int32_t r = 0; r < rot_count;) {
+            int16_t raw[3 * 32];
+            const int32_t n = rot_count - r < 32 ? rot_count - r : 32;
+            File_ReadData(src, raw, (size_t)n * 3 * sizeof(int16_t));
+            for (int32_t k = 0; k < n; k++) {
+                const uint16_t x = (uint16_t)raw[k * 3];
+                const uint16_t y = (uint16_t)raw[k * 3 + 1];
+                const uint16_t z = (uint16_t)raw[k * 3 + 2];
+                const uint16_t v1 = ((x >> 2) & 0x3FF0) | ((y >> 12) & 0xF);
+                const uint16_t v2 = (((y >> 6) & 0x3F) << 10) | ((z >> 6) & 0x3FF);
+                const uint16_t first = game_version == 1 ? v2 : v1;
+                const uint16_t second = game_version == 1 ? v1 : v2;
+                uint8_t *const out = (uint8_t *)buf.data + buf.size;
+                out[0] = (uint8_t)(first & 0xFF);
+                out[1] = (uint8_t)(first >> 8);
+                out[2] = (uint8_t)(second & 0xFF);
+                out[3] = (uint8_t)(second >> 8);
+                buf.size += 4;
+            }
+            r += n;
         }
     }
 

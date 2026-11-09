@@ -183,6 +183,15 @@ Los originales corrían en Pentium a 30 fps con 5–8 criaturas simuladas
 5. **Fila 9**: lista de marcadores por nivel.
 6. Límite de huecos de IA por defecto más bajo en DC como palanca global.
 
+Estado (09/11/2026): 1 hecho; 2 hecho (mezcla lineal por defecto, pila de
+mundo, huesos en asm; pose única lejana solo en Original); 3 a medias (caja de
+blancos y `M_GetSlope` de 32 bits; falta la caché del rayo y el `double` de
+`LOS_CheckItemIntersectSegment`); 4 a medias (frames en asm y en caché;
+`Interpolation_*` y `M_ControlFades` siguen recorriendo todo); 5 a medias
+(escaneo cada 16 ticks); 6 descartado (desincroniza las demos). Las filas 7-8
+pasaron a asm. Medido en Flycast (demo 1 de TR1: el coste está en dibujar);
+nada medido en consola.
+
 Antes de aplicar nada, medir en consola con sondas por fila (`DC_PROBE`)
 sobre un nivel de TR3 con 8–10 enemigos activos: ninguna de las cifras
 estimadas de este documento está comprobada.

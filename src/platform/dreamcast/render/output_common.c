@@ -931,6 +931,19 @@ void DC_Renderer_StoreTexturePage(
     DC_PVR_StoreTexturePage(page, texels, format);
 }
 
+bool DC_Renderer_StoreTexturePageHashed(
+    const int32_t page, const uint32_t hash, const uint8_t format)
+{
+    return DC_PVR_StoreTexturePageHashed(page, hash, format);
+}
+
+bool DC_Renderer_FindLevelPages(
+    const char *const path, const size_t size, const int32_t pages,
+    uint32_t *const hashes)
+{
+    return DC_PVR_FindLevelPages(path, size, pages, hashes);
+}
+
 uint16_t DC_Renderer_GetTexel(const int32_t page, const int32_t x, const int32_t y)
 {
     return DC_PVR_GetTexel(page, x, y);

@@ -1,5 +1,17 @@
 # Test bug fondo (imágenes de copyright y menú matan la consola)
 
+**Estado (09/11/2026): resuelto** en DC build 1201 (`al.iso`, consola real),
+commit `0660cdef5`. Causa: `Memory_ArenaAlloc` no alineaba; la ruta de la
+imagen en el disco multijuego (`/cd/g1/…`, 3 letras más) dejaba desalineado
+el puntero de la orden de dibujo siguiente y la SH-4 fallaba (Flycast tolera
+el acceso desalineado). En DC los bloques se redondean a 8 (`core/memory.c`).
+Las herramientas PICMODE, NOPICS y STEPS se retiraron en ese commit; quedan
+`DC_Trail` (rastro del informe de cuelgue, `dc_strict.c`), `TRX_DC_NOBG` en
+`make_disc.sh` y `dc_lua_stubs.c`. La tabla de ISOs de abajo ya no hace falta.
+`arch_reboot`: el cambio de juego sigue sin reiniciar la memoria
+(`dc_main.c`); en Flycast, 7 cambios seguidos con la memoria retenida plana
+(PROBADO); sin sesión larga en consola. Lo de abajo queda como historia.
+
 Estado a DC build 1184 (4/11/2026). ISOs para DreamShell, con DMA. Flycast no
 reproduce el fallo.
 

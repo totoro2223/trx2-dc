@@ -1,6 +1,6 @@
 # Traspaso: cómo continuar el port de TRX a Dreamcast
 
-Estado a 23 de octubre de 2026. Este documento es para la persona (o el
+Estado a 9 de noviembre de 2026 (commit `5c6e7f989`). Este documento es para la persona (o el
 Claude) que retome el trabajo: entorno, ciclo, arquitectura y lecciones.
 Los demás documentos tienen un papel cada uno:
 
@@ -12,8 +12,9 @@ Los demás documentos tienen un papel cada uno:
 ## 1. Qué es esto
 
 Port de [TRX](https://github.com/LostArtefacts/TRX) (motor de TR1–TR3 de
-LostArtefacts) a Sega Dreamcast con KallistiOS. Primero Tomb Raider II,
-después Tomb Raider III. Debe correr en Flycast y en consola real con GDEMU
+LostArtefacts) a Sega Dreamcast con KallistiOS: TR1, TR2 y TR3 con sus
+expansiones (Unfinished Business, Golden Mask, Lost Artefact), también en un
+disco de tres juegos. Debe correr en Flycast y en consola real con GDEMU
 (imagen CDI).
 
 - Rama de trabajo: `dreamcast`, sobre `develop` de upstream.
@@ -31,15 +32,18 @@ después Tomb Raider III. Debe correr en Flycast y en consola real con GDEMU
 
 | Cosa | Dónde (PC del usuario) |
 |---|---|
-| Repo | `G:\Tomb Raider dreamcast\TRX` |
-| Dependencias de terceros | `G:\Tomb Raider dreamcast\deps` (hermano del repo, **no** está en git) |
-| DreamSDK R4 (KOS 2.3.0, GCC 13.2) | `G:\DreamSDK` |
-| Flycast | `G:\Flycast\flycast.exe` (con `Debug.SerialConsoleEnabled = yes`) |
-| Datos TR2 (GOG) | `H:\GOG\Tomb Raider I-III Remastered\2\DATA` |
-| Datos TR3 (Steam) | `G:\SteamLibrary\steamapps\common\TombRaider (III)\data` |
+| Repo | `D:\trx\trx2-dc` |
+| Dependencias de terceros | `D:\trx\deps` (hermano del repo, **no** está en git) |
+| DreamSDK R4 | `D:\DreamSDK` (variable `DREAMSDK_HOME`; `dcsh.ps1` cae en `G:\DreamSDK` si falta) |
+| Flycast | `D:\Flycast\flycast.exe` (variable `TRX_FLYCAST`; BIOS real desde el 27/10; `Debug.SerialConsoleEnabled` y `rend.FloatVMUs` en `emu.cfg`) |
+| Datos clásicos (Steam) | `D:\Program Files (x86)\Steam\steamapps\common\Tomb Raider (I)`, `Tomb Raider (II)`, `TombRaider (III)` |
+| Remaster I–III | no está en este PC (`make_disc_all.sh` lo busca en `/h/GOG/…`; `TRX_DC_REMASTER`) |
+
+(Hasta el 23/10/2026 el entorno estaba en `G:` y `H:`, que ya no existen.)
 
 - Git está en `C:\Program Files\Git\cmd\git.exe`. No hay Python en Git Bash
-  (los scripts `.py` se usan desde el Python de Windows, si hace falta).
+  (los scripts `.py` se usan desde el Python de Windows, si hace falta). Usar
+  `python`, no `python3` (cae en el alias de la Microsoft Store).
 - El usuario habla en **español**. Quiere las preguntas **de una en una**.
 
 ### Preparar `deps/` en una máquina nueva
@@ -50,7 +54,9 @@ después Tomb Raider III. Debe correr en Flycast y en consola real con GDEMU
 - `deps/pcre2-10.49/` (fuentes de PCRE2 10.49)
 - `deps/dl/lua-5.5.0.tar.gz` (mismo tar que usa kos-ports; se compila un
   `luac` de PC con `LUA_32BITS`)
-- En DreamSDK: kos-ports `lua` y `zlib` instalados.
+- `deps/dl/libmpeg-2.0.0.tar.gz` (decodificador de las películas MPEG-1)
+- En DreamSDK: kos-ports `zlib` y `sh4zam` instalados (`lua` solo para
+  `DC_LUA=1`).
 
 Después, desde el shell de DreamSDK en la raíz del repo:
 
@@ -58,7 +64,7 @@ Después, desde el shell de DreamSDK en la raíz del repo:
 tools/dreamcast/build_deps.sh ../deps
 ```
 
-Genera `deps/dc/{include,lib}` (pcre2, uthash) y `deps/host/luac.exe`.
+Genera `deps/dc/{include,lib}` (pcre2, uthash, pl_mpeg) y `deps/host/luac.exe`.
 
 ## 3. Ciclo de trabajo
 
@@ -66,26 +72,24 @@ Desde PowerShell, en la raíz del repo:
 
 ```
 .\tools\dreamcast\dcsh.ps1 "bash tools/dreamcast/build.sh minsize"
-.\tools\dreamcast\dcsh.ps1 "bash tools/dreamcast/make_disc.sh build/dc-minsize '/h/GOG/Tomb Raider I-III Remastered/2/DATA' build/dc-minsize/TRX-prof.cdi 1"
+.\tools\dreamcast\dcsh.ps1 "bash tools/dreamcast/make_disc.sh build/dc-minsize '/d/Program Files (x86)/Steam/steamapps/common/Tomb Raider (II)/data' build/dc-minsize/TRX-prof.cdi 1"
 .\tools\dreamcast\run_flycast.ps1 -Cdi build\dc-minsize\TRX-prof.cdi -Seconds 60
 ```
 
 - `build.sh [debug|debugoptimized|minsize|release]`: la build que se usa es
-  **`minsize`** (`build/dc-minsize`).
+  **`minsize`** (`build/dc-minsize`). Variables de `build.sh`, cada una en su
+  carpeta (`build/dc-minsize-<sufijo>`): `DC_PROBES=1` (-probes),
+  `DC_PROFILE=1` (-prof), `DC_CENSUS=1` (-census), `DC_LUA=1` (-lua, el juego
+  con scripts), `DC_ISO_DMA=1` (-dma), `DC_BOXES=1` (-boxes), `DC_MAGENTA=1`
+  (-magenta), `DC_STRICT=1` (-strict, con `DC_TEST_HANG=N`).
 - **Discos para GDEMU**: `build.sh release` (`build/dc-release`, sin
   watchdog ni las líneas `[frame]`/`[probe]`/`[bins]` por el puerto serie, que
   en consola paran el juego) y `make_disc.sh build/dc-release …` sin variables
   `TRX_DC_*`. En TR1 hay que pasar `TRX_DC_LEGAL` con el `EIDOSPC.PCX` del
   original: ffmpeg no lee el `LEGAL_1.DDS` del remaster.
-  - Dos optimizaciones vistas en TR4, solo medibles en consola (tarea 71),
-    apagadas por defecto: `dc_sq_vertices` (la emisión en ensamblador escribe
-    los vértices en las listas por las store queues: `ocbi` de la línea real
-    y `pref` de la cola; no en las tandas con copia de cel shading) y
-    `dc_xform_pref` (`pref` dos vértices por delante en los tres bucles de
-    transformación). Encenderlas: `.\tools\dreamcast\dcsh.ps1 "meson configure
-    build/dc-release -Ddc_sq_vertices=true -Ddc_xform_pref=true && bash
-    tools/dreamcast/build.sh release"`; `=false` para volver. Se quedan puestas
-    en `build/dc-release` hasta cambiarlas.
+  - `dc_sq_vertices` y `dc_xform_pref` (emisión por store queues y `pref` en
+    la transformación, vistos en TR4): probados en consola, sin ganancia
+    (FALLIDO, builds 1219/1221). Quedan apagados; no se repiten sin otro dato.
 - `make_disc.sh <build> <DATA TR2> [salida.cdi] [nivel]`:
   - Sin 4º argumento: disco del usuario (`TRX.cdi`) con selector de nivel al
     arrancar.
@@ -99,9 +103,12 @@ Desde PowerShell, en la raíz del repo:
   - Genera también `textures.vq` con `tools/dreamcast/texvq.c` (compresión
     VQ de las páginas de textura; solo se rehace si cambian las entradas).
 - **No hacer un CDI tras cada cambio.** Tras un cambio, solo compilar. CDI
-  solo si el usuario lo pide o si hace falta probar en Flycast (~115 MB y
+  solo si el usuario lo pide o si hace falta probar en Flycast (cientos de MB y
   sube el número de build).
-- `run_flycast.ps1` guarda el log serie en `build/dc-serial.txt`.
+- `run_flycast.ps1` guarda el log serie en `build/dc-serial.txt`. `-Hidden`
+  (escritorio oculto y sonido a un dispositivo mudo: **las pruebas se hacen
+  así**, sin sonido audible), `-StopOn '<regex>'`, `-Flycast` (por defecto
+  `TRX_FLYCAST`).
   `-KeepRunning` si el usuario va a jugar a mano. `play_latest.ps1` arranca
   el CDI más reciente.
 - `flycast_keys.ps1` (`-Action Down/Up` para mantener teclas) y
@@ -143,7 +150,8 @@ Desde PowerShell, en la raíz del repo:
   de KOS es de 64 KiB). Selector de nivel en framebuffer
   (`dc_level_select.c`).
 - `kos/fs_iso9660.c`: copia de KOS con lectura por PIO (el DMA del GD-ROM se
-  atasca bajo Flycast).
+  atasca bajo Flycast); `dc_iso_dma` (`DC_ISO_DMA=1`) lee por DMA, que va en
+  consola y se cuelga en Flycast.
 - `render/`: renderer PowerVR propio en lugar de OpenGL 3.
   - `batcher.c`: transformación (`ftrv`, `fipr`, `fsrra`), iluminación,
     niebla por vértice, recorte, emisión. Lazos rápidos para salas bajo niebla
@@ -151,27 +159,32 @@ Desde PowerShell, en la raíz del repo:
   - `pvr.c`: listas (opaca, punch-through, translúcida, volúmenes), envío por
     store queues al final del frame, caché de cabeceras PVR, texturas
     (twiddled o VQ), mapa de entorno, páginas de relieve.
-  - Sombras: `soft` (render-to-texture 512×64, una por frame) y `volume`
-    (volúmenes modificadores).
+  - Sombras: `soft` (render-to-texture a un mapa de 1024×256: celdas de 64
+    texels, 96 en Soft (high), y hasta 4 enemigos) y `volume` (volúmenes
+    modificadores, también para enemigos con "Enemy shadows").
   - Cel shading (punch-through con alpha test), reflejos en las pistolas
     (env map), bump mapping en caras cercanas.
 - `dc_mode.c`: modos Gráficos (por defecto) / Rendimiento / Original /
   Experimental 60 (320×240). Al elegir uno, `DC_Mode_ApplyDefaults` pone
-  "Frame rate" (`rendering.dc_fps`: 30 / 60 interpolado / 60 adaptativo), cel
-  shading, relieve, filtro de texturas y sombra; el jugador puede cambiarlos
-  después (el render solo lee las opciones). Menú: Opciones > Gráficos >
-  pestaña Rendering, fila "Mode" y luego "Restart level"
-  (`data/trx/ship/modules/ui/dc_restart.lua`).
-- `dc_lua_alloc.c`: Lua en su propia región (2,5 MB) para no fragmentar el
-  heap. Scripts embebidos como bytecode `luac -s` (`tools/embed_trx_lua.py`,
-  opción `lua_compiler`).
-- `vmu.c`: guardado en VMU (refleja los ficheros de partida del RAM disk),
+  "Frame rate" (`rendering.dc_fps`: 30 / 60 interpolado; el adaptativo se quitó
+  en `5c6e7f989`), cel shading, relieve, filtro de texturas y sombra; el
+  jugador puede cambiarlos después (el render solo lee las opciones). Menú:
+  anillo de opciones > Gráficos (`nolua_settings.c`), filas "Mode" y
+  "Restart level".
+- Sin Lua por defecto (`dc_lua=false`, [PLAN_SIN_LUA.md](PLAN_SIN_LUA.md)):
+  HUD, anillo, pasaporte, ajustes y pantallas están en C (`nolua_*.c`) y
+  `nolua.c` responde al motor. Con `DC_LUA=1` vuelve el juego con scripts: Lua
+  en su propia región (`dc_lua_alloc.c`) y bytecode `luac -s`
+  (`tools/embed_trx_lua.py`).
+- `vmu.c`: guardado en VMU (refleja los ficheros de partida del RAM disk) y
+  el archivo de opciones `trdctriopt` (con el último juego jugado,
+  `dc_settings.c`),
   logo en la pantalla de la VMU y aviso + beep al guardar. `vmu_hud.c`: la
   pantalla de la VMU en juego (L + R + B: logo / estadísticas / buscador de
   secretos). Flycast la muestra con `rend.FloatVMUs = yes` en `emu.cfg`.
-- En DC el anillo de opciones solo tiene pasaporte + Gráficos, y Gráficos
-  solo la pestaña Rendering (recorte de memoria; Sonido/Controles/Juego se
-  reimplementarán más adelante).
+- En DC el anillo de opciones tiene pasaporte y Gráficos (una sola página);
+  Controles/Juego se reimplementarán más adelante. (Sin commit el 09/11: página
+  Sonido con la fila "Soundtrack", Original / TR Suite.)
 
 ## 5. Memoria (el límite principal)
 
@@ -184,8 +197,9 @@ duplicar, región Lua, scripts Lua compilados y sin depuración, pantallas Lua
 cargadas bajo demanda, texturas en VRAM (VQ libera ~2,6 MB de VRAM, no RAM
 principal).
 
-El menú Gráficos sube Lua de ~1,16 MB a ~1,59 MB por el framework de
-diálogos Lua (ver pendientes).
+Sin Lua, la región del nivel queda acotada a 7424 K (`M_REGION_MAX`,
+`dc_level_heap.c`) y deja ~2,3 MB al montón de newlib (PROBADO, 02/11/2026).
+Las cifras de Venecia de arriba son de la build 158, con Lua.
 
 ## 6. Rendimiento
 
@@ -208,7 +222,7 @@ Ver [TAREAS.md](TAREAS.md).
 - Flycast solo usa mipmaps con filtrado activado.
 - El mutex de `malloc` de newlib es caro en KOS (`mutex_unlock` siempre llama
   a `genwait_wake_one`): de ahí la arena sin bloqueos para Lua.
-- `signatures.lua` en DC: `--lean-signatures` conserva los miembros
+- `signatures.lua` en DC (solo builds con `DC_LUA=1`): `--lean-signatures` conserva los miembros
   (`helpers.lua` los necesita); quitarlos rompe el arranque.
 
 ## 9. Cómo trabajar con el usuario
@@ -222,21 +236,23 @@ Ver [TAREAS.md](TAREAS.md).
 ## Ganchos de prueba y disco de tres juegos (24/10/2026)
 
 Variables de `make_disc.sh` para discos de prueba (cada una escribe un `.TXT`
-en la raíz del juego y `dc_main.c` lo lee): `TRX_DC_FIRE=<n>` (humo de pistolas
-cada n fotogramas; negativo, se crea pero no se dibuja), `TRX_DC_GIVE=<tipo>`
-(da un arma a Lara a los 60 fotogramas), `TRX_DC_EXIT=<n>` (sale del juego a
-los n fotogramas: el disco se reinicia), `TRX_DC_SAVE=<n>` (guarda cada n
-fotogramas en un hueco distinto y carga el primero tras cada quinto) y
-`TRX_DC_SWITCH="<código> <fotograma>"` (la lista de `executor.c`: 6 carga el
-pasaporte, 7 cambia al juego siguiente, 8 a la expansión).
+que lee `dc_main.c`; la lista completa está en la cabecera de `make_disc.sh`):
+`TRX_DC_FIRE`, `TRX_DC_GIVE`, `TRX_DC_EXIT`, `TRX_DC_COMPLETE`,
+`TRX_DC_LEVELS="<último> <fotogramas>"`, `TRX_DC_BENCH`/`DEMO`, `TRX_DC_MODE`,
+`TRX_DC_FPS`, `TRX_DC_AI`, `TRX_DC_SNOW`, `TRX_DC_FOG`,
+`TRX_DC_ASMOFF`/`ASMOFF2`, `TRX_DC_TITLELIST`, `TRX_DC_LOG`. **Sin Lua (build
+por defecto):** `TRX_DC_SAVE` no guarda (llama a `trx.savegame.save` por
+`LUA_Eval`, que falla) y `TRX_DC_SWITCH` solo admite 100 (Abajo en el título)
+y 101 (expansión); los códigos 0–14 necesitan `DC_LUA=1`.
 
-`tools/dreamcast/make_disc_all.sh <build> [salida.cdi]` hace el disco de los
-tres juegos con sus expansiones (datos del remaster, sin películas). Cada juego
-va en `g1`, `g2` o `g3` (`TRX_DC_SUBDIR` en `make_disc.sh`) y la raíz lleva
-`GAMES.TXT`. `src/platform/dreamcast/dc_games.c` elige el juego al arrancar y
-deja la elección, en RAM alta (`0xACFF0100`), para el siguiente arranque; la
-misma nota cuenta las caídas seguidas (`M_Recover`, `dc_main.c`). Todo lo que
-se abría en `/cd/...` pasa por `g_DC_Root`.
+`tools/dreamcast/make_disc_all.sh <build> [salida.cdi|.iso]` hace el disco de
+los tres juegos con sus expansiones (datos del remaster; con películas ~1,8 GB,
+`TRX_DC_FMV=0` 1 GB; `TRX_DC_ALL_GAMES` elige cuáles). Cada juego va en `g1`,
+`g2` o `g3` (`TRX_DC_SUBDIR`) y la raíz lleva `GAMES.TXT`. `dc_games.c` elige
+el juego: en frío, el último jugado según `trdctriopt` de la tarjeta; tras una
+caída, la nota en RAM alta (`0xACFF0100`), que también cuenta las caídas
+seguidas (`M_Recover`). Cambiar de juego no reinicia la consola (el motor
+termina su hilo). Todo lo que se abría en `/cd/...` pasa por `g_DC_Root`.
 
 ## Memoria entre niveles: cómo se vigila
 
@@ -246,18 +262,20 @@ que un nivel, fuera, en el montón de newlib**. En cada carga el registro dice
 `game heap: <tamaño>K, <usado>K in <n> blocks, largest free <x>K`: el usado
 debe quedar plano de un nivel a otro; si crece, hay una fuga.
 
-Para ver quién tiene lo que queda: `meson configure build/dc-minsize
--Ddc_heap_census=true` (define `TRX_DC_HEAP_CENSUS`; hace falta también
-`TRX_DC_WATCHDOG`, que llevan todas las compilaciones que no son `release`;
-`false` para volver; la región anota quién pidió cada bloque y vuelca la lista y
+Para ver quién tiene lo que queda: `DC_CENSUS=1 bash tools/dreamcast/build.sh
+minsize` (carpeta `build/dc-minsize-census`, define `TRX_DC_HEAP_CENSUS`;
+necesita `TRX_DC_WATCHDOG`, que llevan todas las compilaciones salvo
+`release`; un `meson configure` a mano lo deshace el siguiente `build.sh`; la región anota quién pidió cada bloque y vuelca la lista y
 su disposición en cada carga) y pasar el registro de un disco de prueba con
 `TRX_DC_LEVELS="<último> 200"` por
 `tools/dreamcast/live_census.py <registro> TRX.elf sh-elf-addr2line.exe`.
 `GameBuf_Check` compara los trozos de una arena con los hechos.
 
-Pruebas de guardado (`TRX_DC_SAVE`): **mover antes el archivo de la VMU del
-emulador** (`G:\Flycast\data\T-TRX00_vmu_save_A1.bin`) porque es la tarjeta
-de las partidas del usuario.
+Pruebas de guardado (`TRX_DC_SAVE`, solo con `DC_LUA=1`): **mover antes el
+archivo de la VMU del emulador** (`D:\Flycast\data\T-TRX00_vmu_save_A1.bin`)
+porque es la tarjeta de las partidas del usuario (todos los discos comparten
+`T-TRX00`). Las pruebas del 24/10/2026 ya escribieron en sus ranuras 0-4; la
+copia de antes está junto a ella (`…user-backup-20261024`).
 
 ## Log serie
 

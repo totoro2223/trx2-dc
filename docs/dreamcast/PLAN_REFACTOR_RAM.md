@@ -1,5 +1,7 @@
 # Plan: refactor de código y datos para bajar la RAM
 
+**Estado (09/11/2026):** la rama `refactorizacion-masiva` ya está en `dreamcast`. Hechos A1 (sin uso sin Lua), A2, A3, A4, A5, C1/C2, C4, D4 y D5 (por PLAN_SIN_LUA); pasaron los recorridos de niveles sin Lua (TR1 16, TR2 18, TR3 20) y P2 de TR2 (PROBADO, `brk` mínimo 2684 K), sin medida propia de cada cambio. A medias: B (caché de transparencia en memoria; páginas por hash y `levelpages.bin` del 09/11 sin commit; `.DCL` sin empezar), D2 (`SECTOR` a 48 B; decodificar al consultar descartado), D3 (`MAX_ITEMS` 512 fijo), D7 (solo el catálogo). Sin hacer: C3, D1, D6.
+
 Preparado el 02/11/2026. Objetivo: que la consola deje de quedarse sin memoria
 en partida, con margen (`brk` ≥ 1 MB del final en el peor nivel, hoy 76–124 K
 en Barkhang con guardados). Antes de tocar nada lee

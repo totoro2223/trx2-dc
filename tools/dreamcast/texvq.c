@@ -18,6 +18,15 @@
 // level's pages one after another, so that loading it reads ahead, not back
 // and forth); position counts those.
 //
+// texvq -l <levelpages.bin> <level.tr2>... writes the hashes of each level's
+// pages, so that the game skips reading them (sections/textures.c).
+//
+// texvq -s <textures.vq> <outdir> <file.bin>... rewrites the injections whose
+// pages are all in that file: each ARGB1555 page's 256 KiB of RGBA and 64 KiB
+// of indices become its hash (the game's key into the file), so that the load
+// neither inflates, reads nor encodes the page (IDT_DC_PAGE_HASHES). The new
+// files go to <outdir>; one with nothing to change is not written.
+//
 // The relief (pvr.c's M_LoadDiscBumps): "TBP1" and the same index, then
 // count x 32768 bytes, each page's relief as the PowerVR takes it (bump
 // texels, twiddled), made by bump_page.h as the game makes it, only for the
@@ -834,8 +843,301 @@ static int WriteBumps(void)
     return 0;
 }
 
+// ---- -s: injections with their pages replaced by hashes ----
+
+#define IDT_TEXTURE_PAGES 1
+#define IDT_DC_PAGE_HASHES 45
+#define IDT_DC_PAGES_16 46
+
+static uint32_t (*m_VqIndex)[2] = NULL;
+static uint32_t m_VqCount = 0;
+
+static int LoadVqIndex(const char *const path)
+{
+    size_t size;
+    uint8_t *const data = ReadFile(path, &size);
+    if (data == NULL || size < 8 || memcmp(data, "TVQ", 3) != 0) {
+        free(data);
+        return 0;
+    }
+    memcpy(&m_VqCount, data + 4, 4);
+    if (8 + (size_t)m_VqCount * 8 > size) {
+        free(data);
+        return 0;
+    }
+    m_VqIndex = malloc((size_t)m_VqCount * 8);
+    memcpy(m_VqIndex, data + 8, (size_t)m_VqCount * 8);
+    free(data);
+    return 1;
+}
+
+static int InVq(const uint32_t hash)
+{
+    for (uint32_t i = 0; i < m_VqCount; i++) {
+        if (m_VqIndex[i][0] == hash) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// The hash of a page as the game holds it; *ok is 0 when it is not an
+// ARGB1555 page that the VQ file has.
+static uint32_t PageHash(const uint8_t *const rgba, int *const ok)
+{
+    for (int i = 0; i < PAGE_SIZE; i++) {
+        if (rgba[i * 4 + 3] != 0 && rgba[i * 4 + 3] != 255) {
+            *ok = 0;
+            return 0;
+        }
+    }
+    static uint16_t texels[PAGE_SIZE];
+    for (int i = 0; i < PAGE_SIZE; i++) {
+        texels[i] = ToARGB1555(&rgba[i * 4]);
+    }
+    const uint32_t hash = Hash(texels, PAGE_SIZE * 2);
+    *ok = InVq(hash);
+    return hash;
+}
+
+static void PutS32(uint8_t *const p, const int32_t v)
+{
+    memcpy(p, &v, 4);
+}
+
+// Returns 1 and writes <outdir>/<name> when a block was replaced.
+static int StripInjection(
+    const char *const name, const uint8_t *const data, const size_t size,
+    const char *const outdir)
+{
+    const uLongf unpacked_size = (uint32_t)S32(data + 12);
+    const uLong packed_size = (uint32_t)S32(data + 16);
+    if (20 + packed_size > size) {
+        return 0;
+    }
+    uint8_t *const payload = malloc(unpacked_size);
+    uLongf out_size = unpacked_size;
+    if (uncompress(payload, &out_size, data + 20, packed_size) != Z_OK) {
+        free(payload);
+        return 0;
+    }
+    uint8_t *const out = malloc(unpacked_size + 4096);
+    uint8_t *o = out;
+    const uint8_t *p = payload;
+    int changed = 0;
+
+    const uint8_t *const head = p;
+    const int32_t tests = S32(p);
+    p += 4;
+    for (int32_t i = 0; i < tests; i++) {
+        p += 8;
+        p += 4 + S32(p);
+    }
+    memcpy(o, head, (size_t)(p - head));
+    o += p - head;
+    const int32_t chunks = S32(p);
+    memcpy(o, p, 4);
+    o += 4;
+    p += 4;
+    for (int32_t i = 0; i < chunks; i++) {
+        const int32_t type = S32(p);
+        const int32_t blocks = S32(p + 8);
+        const int32_t chunk_size = S32(p + 12);
+        memcpy(o, p, 16);
+        uint8_t *const out_chunk_size = o + 12;
+        o += 16;
+        p += 16;
+        const uint8_t *const end = p + chunk_size;
+        uint8_t *const body = o;
+        for (int32_t j = 0; j < blocks; j++) {
+            const int32_t data_type = S32(p);
+            const int32_t count = S32(p + 4);
+            const int32_t block_size = S32(p + 8);
+            int strip = type == 0 && data_type == IDT_TEXTURE_PAGES && count > 0
+                && count <= 64 && block_size >= count * PAGE_SIZE * 5;
+            uint32_t hashes[64];
+            for (int32_t k = 0; strip && k < count; k++) {
+                int ok;
+                hashes[k] = PageHash(p + 12 + (size_t)k * PAGE_SIZE * 4, &ok);
+                strip = ok;
+            }
+            if (!strip && type == 0 && data_type == IDT_TEXTURE_PAGES
+                && count > 0 && block_size >= count * PAGE_SIZE * 5) {
+                // Some page is not in the VQ: all as the 16-bit texels and
+                // their format, 128 KiB a page, not the 320 the file holds.
+                PutS32(o, IDT_DC_PAGES_16);
+                PutS32(o + 4, count);
+                PutS32(o + 8, count * (4 + PAGE_SIZE * 2));
+                o += 12;
+                for (int32_t k = 0; k < count; k++) {
+                    const uint8_t *const rgba =
+                        p + 12 + (size_t)k * PAGE_SIZE * 4;
+                    uint32_t format = 0;
+                    for (int i2 = 0; i2 < PAGE_SIZE; i2++) {
+                        if (rgba[i2 * 4 + 3] != 0 && rgba[i2 * 4 + 3] != 255) {
+                            format = 1;
+                            break;
+                        }
+                    }
+                    PutS32(o, (int32_t)format);
+                    o += 4;
+                    for (int i2 = 0; i2 < PAGE_SIZE; i2++) {
+                        const uint16_t t = format ? ToARGB4444(&rgba[i2 * 4])
+                                                  : ToARGB1555(&rgba[i2 * 4]);
+                        memcpy(o, &t, 2);
+                        o += 2;
+                    }
+                }
+                changed = 1;
+            } else if (strip) {
+                PutS32(o, IDT_DC_PAGE_HASHES);
+                PutS32(o + 4, count);
+                PutS32(o + 8, count * 8);
+                o += 12;
+                for (int32_t k = 0; k < count; k++) {
+                    PutS32(o, (int32_t)hashes[k]);
+                    PutS32(o + 4, 0);
+                    o += 8;
+                }
+                changed = 1;
+            } else {
+                memcpy(o, p, 12 + (size_t)block_size);
+                o += 12 + block_size;
+            }
+            p += 12 + block_size;
+        }
+        PutS32(out_chunk_size, (int32_t)(o - body));
+        p = end;
+    }
+    free(payload);
+    if (!changed) {
+        free(out);
+        return 0;
+    }
+    const uLong new_unpacked = (uLong)(o - out);
+    uLongf new_packed = compressBound(new_unpacked);
+    uint8_t *const packed = malloc(new_packed);
+    if (compress2(packed, &new_packed, out, new_unpacked, 9) != Z_OK) {
+        free(out);
+        free(packed);
+        return 0;
+    }
+    free(out);
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", outdir, name);
+    FILE *const fp = fopen(path, "wb");
+    if (fp == NULL) {
+        free(packed);
+        return 0;
+    }
+    uint8_t header[20];
+    memcpy(header, data, 20);
+    PutS32(header + 12, (int32_t)new_unpacked);
+    PutS32(header + 16, (int32_t)new_packed);
+    fwrite(header, 1, 20, fp);
+    fwrite(packed, 1, new_packed, fp);
+    fwrite(data + 20 + packed_size, 1, size - 20 - packed_size, fp);
+    fclose(fp);
+    free(packed);
+    return 1;
+}
+
+// argv: <textures.vq> <outdir> <file.bin>...
+static int StripMain(const int argc, char **const argv)
+{
+    if (argc < 3 || !LoadVqIndex(argv[0])) {
+        fprintf(
+            stderr, "usage: texvq -s <textures.vq> <outdir> <file.bin>...\n");
+        return 1;
+    }
+    int stripped = 0;
+    for (int i = 2; i < argc; i++) {
+        size_t size;
+        uint8_t *const data = ReadFile(argv[i], &size);
+        if (data == NULL || size < 20 || memcmp(data, "TRXI", 4) != 0) {
+            free(data);
+            continue;
+        }
+        const char *name = strrchr(argv[i], '/');
+        name = name != NULL ? name + 1 : argv[i];
+        stripped += StripInjection(name, data, size, argv[1]);
+        free(data);
+    }
+    printf("texvq: %d injections with their pages as hashes\n", stripped);
+    return 0;
+}
+
+// ---- -l: the hashes of each level's pages, so that the game need not read them ----
+
+// Writes "LPG1", u32 count, then per level {char name[32] (lowercase file
+// name), u32 file size, u32 pages, u32 hash x pages}. Only TR2 and TR3 levels,
+// whose 16-bit pages the game keys as they lie (level/sections/textures.c).
+static int LevelPagesMain(const int argc, char **const argv)
+{
+    // argv: <output> <level.tr2>...
+    if (argc < 2) {
+        fprintf(stderr, "usage: texvq -l <levelpages.bin> <level.tr2>...\n");
+        return 1;
+    }
+    FILE *const fp = fopen(argv[0], "wb");
+    if (fp == NULL) {
+        return 1;
+    }
+    uint32_t written = 0;
+    fwrite("LPG1", 1, 4, fp);
+    fwrite(&written, 4, 1, fp);
+    for (int i = 1; i < argc; i++) {
+        size_t size;
+        uint8_t *const data = ReadFile(argv[i], &size);
+        const size_t at = 4 + 768 + 1024;
+        if (data == NULL || size < at + 4
+            || !(S32(data) == 0x2D || (uint32_t)S32(data) == 0xFF080038u
+                 || (uint32_t)S32(data) == 0xFF180038u)) {
+            free(data);
+            continue;
+        }
+        const int32_t count = S32(data + at);
+        const size_t pages_16 = at + 4 + (size_t)count * PAGE_SIZE;
+        if (count <= 0 || count > 4096
+            || size < pages_16 + (size_t)count * PAGE_SIZE * 2) {
+            free(data);
+            continue;
+        }
+        char name[32] = { 0 };
+        const char *base = strrchr(argv[i], '/');
+        base = base != NULL ? base + 1 : argv[i];
+        for (int k = 0; k < 31 && base[k] != '\0'; k++) {
+            name[k] = (char)((base[k] >= 'A' && base[k] <= 'Z') ? base[k] + 32
+                                                                : base[k]);
+        }
+        const uint32_t size32 = (uint32_t)size;
+        const uint32_t pages = (uint32_t)count;
+        fwrite(name, 1, 32, fp);
+        fwrite(&size32, 4, 1, fp);
+        fwrite(&pages, 4, 1, fp);
+        for (int32_t k = 0; k < count; k++) {
+            const uint32_t hash =
+                Hash(data + pages_16 + (size_t)k * PAGE_SIZE * 2, PAGE_SIZE * 2);
+            fwrite(&hash, 4, 1, fp);
+        }
+        written++;
+        free(data);
+    }
+    fseek(fp, 4, SEEK_SET);
+    fwrite(&written, 4, 1, fp);
+    fclose(fp);
+    printf("texvq: %u levels with their page hashes\n", written);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "-l") == 0) {
+        return LevelPagesMain(argc - 2, argv + 2);
+    }
+    if (argc >= 2 && strcmp(argv[1], "-s") == 0) {
+        return StripMain(argc - 2, argv + 2);
+    }
     if (argc >= 3 && strcmp(argv[1], "-b") == 0) {
         m_BumpPath = argv[2];
         argc -= 2;

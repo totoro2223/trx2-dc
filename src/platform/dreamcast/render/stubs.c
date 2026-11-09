@@ -333,7 +333,9 @@ void Output_Quad_Render(OUTPUT_QUAD *renderer)
             x1 = x0 + w;
         }
     }
-    DC_PVR_DrawVideo(x0, y0, x1, y1);
+    // 16:9: the film stays in the 4:3 middle.
+    const float pad = DC_PVR_GetScreenPad();
+    DC_PVR_DrawVideo(pad + x0, y0, pad + x1, y1);
 }
 
 RESULT TRX_GL_Context_Attach(void *window_handle)

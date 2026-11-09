@@ -185,6 +185,15 @@ static pvr_ptr_t m_EnvMap = nullptr;
 // 320x240: everything drawn to the screen is given in 640x480 and halved.
 static bool m_LowRes = false;
 static float m_ScreenScale = 1.0f;
+// The same for x: 16:9 anamorphic lays the screen out 853 wide and squeezes it
+// into the 640 pixels the television stretches back (DC_PVR_WIDE_X).
+static float m_ScreenScaleX = 1.0f;
+
+static float M_WideX(void)
+{
+    return g_Config.rendering.aspect_mode == ASPECT_MODE_16_9 ? DC_PVR_WIDE_X
+                                                              : 1.0f;
+}
 static int32_t m_Submitted = 0;
 static int32_t m_Dropped = 0;
 static uint32_t m_WaitUs = 0;
@@ -605,6 +614,7 @@ bool DC_PVR_BeginCaptureFrame(void)
     }
     M_ResetFrame();
     m_ScreenScale = m_LowRes ? 0.5f : 1.0f;
+    m_ScreenScaleX = m_ScreenScale * M_WideX();
     pvr_txr_set_stride(M_CaptureW());
     m_Capture.valid = true;
     return true;
@@ -698,6 +708,8 @@ void DC_PVR_DrawLoadingScreen(
 
     DC_PVR_SetBackgroundColor(0.0f, 0.0f, 0.0f);
     DC_PVR_BeginFrame();
+    // 16:9: the loading screen stays 4:3, in the middle.
+    const float pad = DC_PVR_GetScreenPad();
     const bool picture = m_Picture != nullptr;
     // Without words (the loading bar alone) there is no band behind them.
     const bool has_text = line1[0] != '\0' || line2[0] != '\0';
@@ -707,8 +719,9 @@ void DC_PVR_DrawLoadingScreen(
     const float text_h = m_LowRes ? low_height * 2.0f : M_LOADING_TEXT_HEIGHT;
     const float u1 = m_LowRes ? (float)low_width / M_LOADING_TEXT_WIDTH : 1.0f;
     const float v1 = m_LowRes ? (float)low_height / M_LOADING_TEXT_HEIGHT : 1.0f;
-    const float x0 = m_LowRes ? 320.0f - low_width
-                              : (640 - M_LOADING_TEXT_WIDTH) / 2.0f + 32.0f;
+    const float x0 = pad
+        + (m_LowRes ? 320.0f - low_width
+                    : (640 - M_LOADING_TEXT_WIDTH) / 2.0f + 32.0f);
     // Under the picture, the text and bar sit at its foot on a dark band.
     const float y0 = picture ? 368.0f : 190.0f;
     const float z = DC_PVR_Depth2D(0.5f);
@@ -717,20 +730,21 @@ void DC_PVR_DrawLoadingScreen(
         const float zp = DC_PVR_Depth2D(0.1f);
         DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_PICTURE, false);
         const DC_PVR_VERTEX p[4] = {
-            { .x = 0, .y = 0, .z = zp, .u = 0, .v = 0, .argb = white },
-            { .x = 640, .y = 0, .z = zp, .u = 1, .v = 0, .argb = white },
-            { .x = 0, .y = 480, .z = zp, .u = 0, .v = 1, .argb = white },
-            { .x = 640, .y = 480, .z = zp, .u = 1, .v = 1, .argb = white },
+            { .x = pad, .y = 0, .z = zp, .u = 0, .v = 0, .argb = white },
+            { .x = pad + 640, .y = 0, .z = zp, .u = 1, .v = 0, .argb = white },
+            { .x = pad, .y = 480, .z = zp, .u = 0, .v = 1, .argb = white },
+            { .x = pad + 640, .y = 480, .z = zp, .u = 1, .v = 1,
+              .argb = white },
         };
         DC_PVR_Quad(&p[0], &p[1], &p[2], &p[3]);
         const uint32_t shade = 0xA0000000;
         const float zs = DC_PVR_Depth2D(0.3f);
         DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_NO_TEXTURE, false);
         const DC_PVR_VERTEX s[4] = {
-            { .x = 0, .y = y0 - 8, .z = zs, .argb = shade },
-            { .x = 640, .y = y0 - 8, .z = zs, .argb = shade },
-            { .x = 0, .y = 472, .z = zs, .argb = shade },
-            { .x = 640, .y = 472, .z = zs, .argb = shade },
+            { .x = pad, .y = y0 - 8, .z = zs, .argb = shade },
+            { .x = pad + 640, .y = y0 - 8, .z = zs, .argb = shade },
+            { .x = pad, .y = 472, .z = zs, .argb = shade },
+            { .x = pad + 640, .y = 472, .z = zs, .argb = shade },
         };
         if (has_text) {
             DC_PVR_Quad(&s[0], &s[1], &s[2], &s[3]);
@@ -757,8 +771,8 @@ void DC_PVR_DrawLoadingScreen(
     // The bar, in the look of the running game: TR1's flat maroon in a dark
     // frame; TR2's and TR3's PS1 bar, five bands shaded from purple to teal
     // in a bevelled grey frame.
-    const float bx0 = 120.0f;
-    const float bx1 = 520.0f;
+    const float bx0 = pad + 120.0f;
+    const float bx1 = pad + 520.0f;
     // The bar sits under a text of the 640x480 size at most, or at 320x240 it
     // would fall off the screen under the picture.
     const float by0 = y0 + MIN(text_h, (float)M_LOADING_TEXT_HEIGHT) + 16.0f;
@@ -827,11 +841,13 @@ void DC_PVR_DrawScreenCapture(const float brightness)
     DC_PVR_SetBackgroundMode(true);
     DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_SCREEN_CAPTURE, true);
     const float z = DC_PVR_Depth2D(0.0f);
+    // The capture is the squeezed screen as it was: back over all of it.
+    const float sw = DC_PVR_GetScreenWidth();
     const DC_PVR_VERTEX v[4] = {
         { .x = 0, .y = 0, .z = z, .u = 0, .v = 0, .argb = argb },
-        { .x = 640, .y = 0, .z = z, .u = u1, .v = 0, .argb = argb },
+        { .x = sw, .y = 0, .z = z, .u = u1, .v = 0, .argb = argb },
         { .x = 0, .y = 480, .z = z, .u = 0, .v = v1, .argb = argb },
-        { .x = 640, .y = 480, .z = z, .u = u1, .v = v1, .argb = argb },
+        { .x = sw, .y = 480, .z = z, .u = u1, .v = v1, .argb = argb },
     };
     DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
     DC_PVR_SetBackgroundMode(was_background);
@@ -1070,11 +1086,13 @@ void DC_PVR_DrawPicture(const float brightness)
     DC_PVR_SetBackgroundMode(true);
     DC_PVR_SetState(DC_BLEND_OPAQUE, DC_PVR_PICTURE, true);
     const float z = DC_PVR_Depth2D(0.0f);
+    // 16:9: a picture stays 4:3, in the middle.
+    const float pad = DC_PVR_GetScreenPad();
     const DC_PVR_VERTEX v[4] = {
-        { .x = 0, .y = 0, .z = z, .u = 0, .v = 0, .argb = argb },
-        { .x = 640, .y = 0, .z = z, .u = 1, .v = 0, .argb = argb },
-        { .x = 0, .y = 480, .z = z, .u = 0, .v = 1, .argb = argb },
-        { .x = 640, .y = 480, .z = z, .u = 1, .v = 1, .argb = argb },
+        { .x = pad, .y = 0, .z = z, .u = 0, .v = 0, .argb = argb },
+        { .x = pad + 640, .y = 0, .z = z, .u = 1, .v = 0, .argb = argb },
+        { .x = pad, .y = 480, .z = z, .u = 0, .v = 1, .argb = argb },
+        { .x = pad + 640, .y = 480, .z = z, .u = 1, .v = 1, .argb = argb },
     };
     DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
     DC_PVR_SetBackgroundMode(was_background);
@@ -1225,11 +1243,16 @@ void DC_PVR_DrawPictureBox(
     const uint32_t argb = ((uint32_t)(a * 255.0f) << 24) | 0x00FFFFFF;
     DC_PVR_SetState(DC_BLEND_ALPHA, DC_PVR_PICTURE, false);
     const float z = DC_PVR_Depth2D(0.5f);
+    const float pad = DC_PVR_GetScreenPad();
     const DC_PVR_VERTEX v[4] = {
-        { .x = x0 * 640, .y = y0 * 480, .z = z, .u = 0, .v = 0, .argb = argb },
-        { .x = x1 * 640, .y = y0 * 480, .z = z, .u = 1, .v = 0, .argb = argb },
-        { .x = x0 * 640, .y = y1 * 480, .z = z, .u = 0, .v = 1, .argb = argb },
-        { .x = x1 * 640, .y = y1 * 480, .z = z, .u = 1, .v = 1, .argb = argb },
+        { .x = pad + x0 * 640, .y = y0 * 480, .z = z, .u = 0, .v = 0,
+          .argb = argb },
+        { .x = pad + x1 * 640, .y = y0 * 480, .z = z, .u = 1, .v = 0,
+          .argb = argb },
+        { .x = pad + x0 * 640, .y = y1 * 480, .z = z, .u = 0, .v = 1,
+          .argb = argb },
+        { .x = pad + x1 * 640, .y = y1 * 480, .z = z, .u = 1, .v = 1,
+          .argb = argb },
     };
     DC_PVR_Quad(&v[0], &v[1], &v[2], &v[3]);
 }
@@ -1332,6 +1355,101 @@ void DC_PVR_StoreTexturePage(
     pvr_txr_load_ex(
         (void *)texels, m_Pages.ptr[page], TEXTURE_PAGE_WIDTH,
         TEXTURE_PAGE_HEIGHT, PVR_TXRLOAD_16BPP);
+}
+
+// The disc's levelpages.bin (texvq -l): "LPG1", u32 count, then per level
+// {char name[32], u32 size, u32 pages, u32 hash x pages}. Read whole, the first
+// time a level asks.
+static uint8_t *m_LevelPages = nullptr;
+static size_t m_LevelPagesSize = 0;
+static bool m_LevelPagesTried = false;
+
+bool DC_PVR_FindLevelPages(
+    const char *const path, const size_t size, const int32_t pages,
+    uint32_t *const hashes)
+{
+    if (!m_LevelPagesTried) {
+        m_LevelPagesTried = true;
+        char file[256];
+        DC_Games_Path(file, sizeof(file), "levelpages.bin");
+        FILE *const fp = fopen(file, "rb");
+        if (fp != nullptr) {
+            fseek(fp, 0, SEEK_END);
+            const long length = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            m_LevelPages = length >= 8 ? malloc((size_t)length) : nullptr;
+            if (m_LevelPages != nullptr
+                && fread(m_LevelPages, 1, (size_t)length, fp)
+                    == (size_t)length
+                && memcmp(m_LevelPages, "LPG1", 4) == 0) {
+                m_LevelPagesSize = (size_t)length;
+            } else {
+                free(m_LevelPages);
+                m_LevelPages = nullptr;
+            }
+            fclose(fp);
+        }
+    }
+    if (m_LevelPages == nullptr || path == nullptr) {
+        return false;
+    }
+    const char *base = strrchr(path, '/');
+    base = base != nullptr ? base + 1 : path;
+    char name[32] = { 0 };
+    for (int32_t k = 0; k < 31 && base[k] != '\0'; k++) {
+        name[k] = (char)((base[k] >= 'A' && base[k] <= 'Z') ? base[k] + 32
+                                                            : base[k]);
+    }
+    uint32_t count;
+    memcpy(&count, m_LevelPages + 4, 4);
+    size_t at = 8;
+    for (uint32_t i = 0; i < count && at + 40 <= m_LevelPagesSize; i++) {
+        uint32_t entry_size;
+        uint32_t entry_pages;
+        memcpy(&entry_size, m_LevelPages + at + 32, 4);
+        memcpy(&entry_pages, m_LevelPages + at + 36, 4);
+        const size_t next = at + 40 + (size_t)entry_pages * 4;
+        if (next > m_LevelPagesSize) {
+            break;
+        }
+        if (memcmp(m_LevelPages + at, name, 32) == 0 && entry_size == size
+            && (int32_t)entry_pages == pages) {
+            memcpy(hashes, m_LevelPages + at + 40, (size_t)pages * 4);
+            return true;
+        }
+        at = next;
+    }
+    return false;
+}
+
+// A page the disc's textures.vq holds, told by its hash alone: the injection
+// carries no texels (tools/dreamcast/texvq.c -s), so none is read, encoded or
+// hashed.
+bool DC_PVR_StoreTexturePageHashed(
+    const int32_t page, const uint32_t hash, const uint8_t format)
+{
+    if (page < 0 || page >= m_Pages.count) {
+        return true;
+    }
+    if (m_Pages.ptr[page] != nullptr) {
+        pvr_mem_free(m_Pages.ptr[page]);
+    }
+    if (m_Bump.ptr[page] != nullptr) {
+        pvr_mem_free(m_Bump.ptr[page]);
+        m_Bump.ptr[page] = nullptr;
+    }
+    m_Bump.failed[page] = false;
+    m_HeaderGen++;
+    m_Pages.format[page] = format;
+    m_Pages.hashed[page] = true;
+    m_Pages.hash[page] = hash;
+    m_Pages.mip[page] = false;
+    m_Pages.ptr[page] = M_LoadVQ(hash, &m_Pages.mip[page]);
+    m_Pages.vq[page] = m_Pages.ptr[page] != nullptr;
+    if (!m_Pages.vq[page]) {
+        LOG_WARNING("texture page %d (%08x) is not in textures.vq", page, hash);
+    }
+    return m_Pages.vq[page];
 }
 
 // The disc's reliefs (textures.bump, made by tools/dreamcast/texvq.c) of the
@@ -1475,6 +1593,7 @@ static void M_ResetFrame(void)
     m_StateDirty = true;
     // Frames rendered into a texture keep their size; the screen's set it.
     m_ScreenScale = 1.0f;
+    m_ScreenScaleX = 1.0f;
 }
 
 void DC_PVR_BeginFrame(void)
@@ -1488,6 +1607,7 @@ void DC_PVR_BeginFrame(void)
     m_ScreenPending = true;
     M_ResetFrame();
     m_ScreenScale = m_LowRes ? 0.5f : 1.0f;
+    m_ScreenScaleX = m_ScreenScale * M_WideX();
 }
 
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
@@ -2370,13 +2490,13 @@ void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *const tris, const int32_t count)
         pvr_modifier_vol_t *const vol = M_Tail(list);
         const DC_PVR_TRIANGLE *const t = &tris[i];
         vol->flags = PVR_CMD_VERTEX_EOL;
-        vol->ax = t->v[0][0] * m_ScreenScale;
+        vol->ax = t->v[0][0] * m_ScreenScaleX;
         vol->ay = t->v[0][1] * m_ScreenScale;
         vol->az = t->v[0][2];
-        vol->bx = t->v[1][0] * m_ScreenScale;
+        vol->bx = t->v[1][0] * m_ScreenScaleX;
         vol->by = t->v[1][1] * m_ScreenScale;
         vol->bz = t->v[1][2];
-        vol->cx = t->v[2][0] * m_ScreenScale;
+        vol->cx = t->v[2][0] * m_ScreenScaleX;
         vol->cy = t->v[2][1] * m_ScreenScale;
         vol->cz = t->v[2][2];
         vol->d1 = vol->d2 = vol->d3 = vol->d4 = vol->d5 = vol->d6 = 0;
@@ -2395,7 +2515,7 @@ static inline void M_Fill(
     const uint32_t flags)
 {
     out->flags = flags;
-    out->x = in->x * m_ScreenScale;
+    out->x = in->x * m_ScreenScaleX;
     out->y = in->y * m_ScreenScale;
     out->z = in->z;
     out->u = in->u;
@@ -2417,6 +2537,21 @@ void DC_PVR_CommitPoly(const int32_t count)
 float DC_PVR_GetScreenScale(void)
 {
     return m_ScreenScale;
+}
+
+float DC_PVR_GetScreenScaleX(void)
+{
+    return m_ScreenScaleX;
+}
+
+float DC_PVR_GetScreenWidth(void)
+{
+    return M_WideX() < 1.0f ? (float)DC_PVR_WIDE_WIDTH : 640.0f;
+}
+
+float DC_PVR_GetScreenPad(void)
+{
+    return (DC_PVR_GetScreenWidth() - 640.0f) * 0.5f;
 }
 
 void DC_PVR_Triangle(

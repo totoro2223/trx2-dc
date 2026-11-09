@@ -96,6 +96,8 @@ void DC_PVR_Shutdown(void);
 // Texture pages live in video memory only (see renderer.h).
 bool DC_PVR_ReserveTexturePages(int32_t count);
 void DC_PVR_StoreTexturePage(int32_t page, const uint16_t *texels, uint8_t format);
+bool DC_PVR_StoreTexturePageHashed(int32_t page, uint32_t hash, uint8_t format);
+bool DC_PVR_FindLevelPages(const char *path, size_t size, int32_t pages, uint32_t *hashes);
 uint16_t DC_PVR_GetTexel(int32_t page, int32_t x, int32_t y);
 // The same texel as ARGB4444, whatever the page's format.
 uint16_t DC_PVR_GetTexel4444(int32_t page, int32_t x, int32_t y);
@@ -224,6 +226,18 @@ void DC_PVR_CommitPoly(int32_t count);
 uint8_t *DC_PVR_BeginRun(size_t *space, bool *header);
 void DC_PVR_EndRun(size_t bytes, int32_t polys, bool header);
 float DC_PVR_GetScreenScale(void);
+// The scale of x: DC_PVR_GetScreenScale, times DC_PVR_WIDE_X in 16:9.
+float DC_PVR_GetScreenScaleX(void);
+// The screen's width in the engine's pixels (640, or DC_PVR_WIDE_WIDTH in 16:9),
+// and how far a 640 wide picture has to move right to sit 4:3 in the middle
+// of it (0 in 4:3).
+float DC_PVR_GetScreenWidth(void);
+float DC_PVR_GetScreenPad(void);
+// 16:9 anamorphic: the engine lays the screen out DC_PVR_WIDE_WIDTH wide by
+// 480, and x is squeezed into the 640 pixels of the video mode, which the
+// television stretches to 16:9 again.
+#define DC_PVR_WIDE_WIDTH 853
+#define DC_PVR_WIDE_X (640.0f / DC_PVR_WIDE_WIDTH)
 void DC_PVR_Triangle(
     const DC_PVR_VERTEX *a, const DC_PVR_VERTEX *b, const DC_PVR_VERTEX *c);
 // a, b, c, d in strip order: a-b on one side, c-d on the other.

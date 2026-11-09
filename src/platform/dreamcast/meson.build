@@ -75,6 +75,7 @@ dc_sources = files(
   'dc_level_heap.c',
   'dc_games.c',
   'dc_level_select.c',
+  'dc_splash.c',
   'dc_main.c',
   'dc_settings.c',
   'dc_mode.c',

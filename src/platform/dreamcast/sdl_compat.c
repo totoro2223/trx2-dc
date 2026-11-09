@@ -9,10 +9,12 @@
 // fixed 640x480 screen.
 
 #include "dc_games.h"
+#include "render/pvr.h"
 #include "vmu_screen.h"
 
 #include <SDL2/SDL.h>
 
+#include <trx/config.h>
 #include <trx/version.h>
 
 #include <dc/maple.h>
@@ -903,8 +905,12 @@ void SDL_GetWindowPosition(SDL_Window *const window, int *const x, int *const y)
 
 void SDL_GetWindowSize(SDL_Window *const window, int *const w, int *const h)
 {
+    // 16:9 anamorphic: the engine lays the screen out 16:9 at the 480 lines
+    // there are; the renderer squeezes x into the 640 pixels (pvr.h).
     if (w != nullptr) {
-        *w = DC_SCREEN_WIDTH;
+        *w = g_Config.rendering.aspect_mode == ASPECT_MODE_16_9
+            ? DC_PVR_WIDE_WIDTH
+            : DC_SCREEN_WIDTH;
     }
     if (h != nullptr) {
         *h = DC_SCREEN_HEIGHT;

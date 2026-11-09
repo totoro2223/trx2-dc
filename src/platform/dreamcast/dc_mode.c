@@ -60,6 +60,7 @@ int32_t g_DC_TestMode = -1;
 int32_t g_DC_TestShadow = -1;
 int32_t g_DC_TestCel = -1;
 int32_t g_DC_TestFps = -1;
+int32_t g_DC_TestWide = -1;
 int32_t g_DC_TestOriginalAI = -1;
 int32_t g_DC_TestSnow = -1;
 uint32_t g_DC_AsmOff = 0;
@@ -127,6 +128,11 @@ void DC_Mode_ApplyDefaults(void)
     if (g_DC_TestOriginalAI >= 0) {
         CONFIG_SET(
             g_Config.rendering.dc_original_ai, (bool)(g_DC_TestOriginalAI != 0));
+    }
+    if (g_DC_TestWide >= 0) {
+        CONFIG_SET(
+            g_Config.rendering.aspect_mode,
+            g_DC_TestWide != 0 ? ASPECT_MODE_16_9 : ASPECT_MODE_4_3);
     }
     if (g_DC_TestBump >= 0) {
         CONFIG_SET(g_Config.rendering.dc_bump_mapping, (bool)(g_DC_TestBump != 0));

@@ -633,6 +633,9 @@ typedef struct {
     bool lighting;
     // What pvr.c scales screen positions by (DC_PVR_GetScreenScale).
     float screen_scale;
+    // 16:9 anamorphic: how much narrower x is than the engine's pixels (1 in
+    // 4:3). center_x, half_w and proj_x are already in the squeezed pixels.
+    float wide_x;
     // How pvr.c lays depth out this pass (DC_PVR_GetDepth3D).
     DC_PVR_DEPTH3D depth;
     bool fog;
@@ -4559,9 +4562,12 @@ static bool M_TransformInstance(
     c.bottom = m_Frame.half_h;
     if (bind->needs_room_lights && inst->scissor.width > 0) {
         const VIEWPORT_RECT *const s = &inst->scissor;
-        c.left = MAX(c.left, s->x - m_Frame.center_x - M_CLIP_MARGIN);
-        c.right =
-            MIN(c.right, s->x + s->width - m_Frame.center_x + M_CLIP_MARGIN);
+        c.left = MAX(
+            c.left, s->x * m_Frame.wide_x - m_Frame.center_x - M_CLIP_MARGIN);
+        c.right = MIN(
+            c.right,
+            (s->x + s->width) * m_Frame.wide_x - m_Frame.center_x
+                + M_CLIP_MARGIN);
         c.top = MAX(c.top, s->y - s->height - m_Frame.center_y - M_CLIP_MARGIN);
         c.bottom = MIN(c.bottom, s->y - m_Frame.center_y + M_CLIP_MARGIN);
     }
@@ -7570,6 +7576,7 @@ static void M_PrepareFrame(void)
         M_InitWhite();
     }
     m_Frame.screen_scale = DC_PVR_GetScreenScale();
+    m_Frame.wide_x = DC_PVR_GetScreenScaleX() / m_Frame.screen_scale;
     const DC_UNIFORM_MATRICES *const matrices =
         DC_GL_GetUniformBlock(DC_GL_BINDING_MATRICES, nullptr);
     const DC_UNIFORM_GENERAL *const general =
@@ -7580,9 +7587,12 @@ static void M_PrepareFrame(void)
     memcpy(m_Frame.view, matrices->mat_view, sizeof(m_Frame.view));
 
     const VIEWPORT_RECT rect = Viewport_GetRect(VIEWPORT_GAME);
-    const float half_w = rect.width * 0.5f;
+    // The engine lays the screen out in its own pixels; x goes to the video
+    // mode's narrower ones here, once, so that everything after (the
+    // transforms, the clips, the emitters) works in them.
+    const float half_w = rect.width * 0.5f * m_Frame.wide_x;
     const float half_h = rect.height * 0.5f;
-    m_Frame.center_x = rect.x + half_w;
+    m_Frame.center_x = rect.x * m_Frame.wide_x + half_w;
     m_Frame.center_y = rect.y + half_h;
     m_Frame.proj_x = matrices->mat_proj[0][0] * half_w;
     m_Frame.proj_y = -matrices->mat_proj[1][1] * half_h;

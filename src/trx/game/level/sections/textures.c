@@ -180,6 +180,34 @@ RESULT Level_Section_ReadTexturePages(
         Memory_Alloc(TEXTURE_PAGE_SIZE * sizeof(uint16_t));
     if (loader->game_version != 1) {
         File_Skip(file, num_pages * TEXTURE_PAGE_SIZE);
+        // The disc knows each page's hash (texvq -l): the pages are then not
+        // read, only keyed, and the level file is read about 1.7 MB less.
+        uint32_t hashes[256];
+        if (num_pages <= 256
+            && DC_Renderer_FindLevelPages(
+                File_GetPath(file), File_Size(file), num_pages, hashes)) {
+            const size_t pages_pos = File_Pos(file);
+            for (int32_t i = 0; i < num_pages; i++) {
+                if (!DC_Renderer_StoreTexturePageHashed(
+                        i, hashes[i], TEXTURE_PAGE_ARGB1555)) {
+                    // Not in textures.vq after all: read it as it lies.
+                    File_Seek(
+                        file,
+                        pages_pos + (size_t)i * TEXTURE_PAGE_SIZE * 2,
+                        FILE_SEEK_SET);
+                    File_ReadData(
+                        file, page_16, TEXTURE_PAGE_SIZE * sizeof(uint16_t));
+                    DC_Renderer_StoreTexturePage(
+                        i, page_16, TEXTURE_PAGE_ARGB1555);
+                }
+            }
+            File_Seek(
+                file, pages_pos + (size_t)num_pages * TEXTURE_PAGE_SIZE * 2,
+                FILE_SEEK_SET);
+            Memory_FreePointer(&page_16);
+            Benchmark_End(&benchmark, nullptr);
+            return OK;
+        }
     }
     for (int32_t i = 0; i < num_pages; i++) {
         if (loader->game_version != 1) {

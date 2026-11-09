@@ -1,5 +1,7 @@
 # Plan: bytecode de Lua a VRAM, mipmaps del mundo y mapa de sombra mayor
 
+**Estado (09/11/2026):** V1 hecho y OK en Flycast, pero la build por defecto no lleva Lua (`dc_lua=false`): solo sirve con `DC_LUA=1`. V2 FALLIDO, apagado (`TRX_MIP=1`, TAREAS J74). V3 a 128 FALLIDO; hoy el mapa es de **96** (`DC_PVR_SHADOW_MAP_SIZE`, `pvr.h`, celdas en una textura de 1024×256, commit `946bc4aa8`; desde `5c6e7f989` 96 en Soft (high) y 64 en Soft), sin ver en pantalla. La nota de abajo de que 96 "no vale" por no ser potencia de 2 ya no aplica.
+
 Preparado el 29/10/2026. Tres tareas independientes que usan la VRAM libre
 (~3 MB tras las páginas VQ). Antes de empezar, lee [TRASPASO.md](TRASPASO.md)
 y [PROBADO.md](PROBADO.md). Cada tarea se compila, se mide y se anota por

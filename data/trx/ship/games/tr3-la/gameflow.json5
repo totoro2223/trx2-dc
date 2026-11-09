@@ -20,10 +20,16 @@
             {"type": "play_fmv", "fmv_id": 0},
             {"type": "exit_to_title"},
         ],
+        // The title needs its own few injections: the level's (Lara, her guns,
+        // the pickups) are loaded by the levels, and cost the menu seconds.
+        "inherit_injections": false,
         "injections": [
-            "common_pickup_meshes.bin",
+            "font.bin",
             "inv_background.bin",
+            "pda_model.bin",
             "title_textures.bin",
+            "misc_sprites.bin",
+            "common_pickup_meshes.bin",
         ]
     },
 

@@ -21,9 +21,9 @@ otra cosa son de esos builds. Los logs serie de toda la tanda están en
 | P1 Niveles seguidos | **OK** | los tres juegos (detalle abajo) |
 | P2 Niveles + guardados | **OK** | los tres juegos (TR3 completo 0-18) |
 | P3 Cargas repetidas | pendiente | — |
-| P4 Pico de Barkhang | pendiente | la carga de Barkhang ya se midió (6240 K de 6591 K); falta el pico con guardados |
+| P4 Pico de Barkhang | a medias | guardado en Barkhang con región 6020/6591 K, hueco 556 K (build 794); sin Lua, `brk` mínimo 2684 K en P2 de TR2 (PROBADO) |
 | P5 TR3 entero | **OK** | 19 niveles con guardados/cargas, `[levels] done` |
-| P8 Reiniciar / cambiar modo | pendiente | — |
+| P8 Reiniciar / cambiar modo | a medias | siete cambios TR1↔TR2↔TR3 en Flycast con la memoria retenida plana (PROBADO); ya no hay reinicio entre juegos |
 | P11 Sesión larga | pendiente | — |
 | P6/P7/P13 | no ejecutable aún | necesitan ganchos M10/M13 o teclas |
 | P9/P10/P12 | no ejecutable | necesitan teclas, hardware o tarjeta llena |
@@ -258,7 +258,8 @@ Hecho en esta tanda (sin hardware, sin teclas):
 - **P5** OK en TR3 entero.
 - Tres arreglos en el camino: región antes que newlib + `realloc` a la región + reintento con desalojo (P1 TR3); guardado por trozos y por secciones (P2 TR2); árbol BSON leído en trozos con la arena (P2 TR3).
 
-Pendiente, en este orden:
+Pendiente, en este orden (estado 09/11/2026: P4 y P8 a medias, ver tabla; P3
+y P11 sin pasar; las sondas `[save]` y `[arena]` siguen en el código):
 
 1. **P3** cargas repetidas, **P4** pico de Barkhang con guardados, **P8**
    reiniciar/cambiar de juego, **P11** sesión larga (todo en Flycast).

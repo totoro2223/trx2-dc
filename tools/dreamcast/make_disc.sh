@@ -194,6 +194,16 @@ if [ -n "${TRX_DC_FPS:-}" ]; then
   echo "$TRX_DC_FPS" > "$STAGE/FPS.TXT"
   echo "frame rate $TRX_DC_FPS"
 fi
+if [ -n "${TRX_DC_CUTSCENE:-}" ]; then
+  # A test disc that starts in a cutscene: its number in the gameflow.
+  echo "$TRX_DC_CUTSCENE" > "$STAGE/CUTSCENE.TXT"
+  echo "starts in cutscene $TRX_DC_CUTSCENE"
+fi
+if [ -n "${TRX_DC_WIDE:-}" ]; then
+  # A test disc with the screen fixed: 0 4:3, 1 16:9 anamorphic.
+  echo "$TRX_DC_WIDE" > "$STAGE/WIDE.TXT"
+  echo "screen wide $TRX_DC_WIDE"
+fi
 if [ -n "${TRX_DC_AI:-}" ]; then
   # A test disc with the enemy simulation fixed: 0 TRX, 1 original.
   echo "$TRX_DC_AI" > "$STAGE/AI.TXT"
@@ -221,7 +231,7 @@ fi
 # load prints ~50 KB, 4 s on the console, cable or not), so only a test disc
 # (any test hook, or TRX_DC_LOG=1) keeps it (dc_main.c, LOG.TXT).
 rm -f "$STAGE/LOG.TXT"
-for hook in DEMO BENCH SAVE EXIT COMPLETE GIVE FIRE START LEVELS SWITCH RESETOPT AI FPS SNOW FOG; do
+for hook in DEMO BENCH SAVE EXIT COMPLETE GIVE FIRE START LEVELS SWITCH RESETOPT AI FPS WIDE CUTSCENE SNOW FOG; do
   [ -f "$STAGE/$hook.TXT" ] && echo 1 > "$STAGE/LOG.TXT"
 done
 [ -n "${TRX_DC_LOG:-}" ] && echo 1 > "$STAGE/LOG.TXT"
@@ -327,6 +337,20 @@ if [ ! -f "$VQ" ] || [ ! -f "$BUMP" ] || [ "$VQ_TOOL" -nt "$VQ" ] \
   "$VQ_TOOL" -b "$BUMP" "$VQ" "${VQ_INPUTS[@]}"
 fi
 cp "$VQ" "$STAGE/textures.vq"
+# The hashes of each level's pages, so that the load does not read them to
+# key them (texvq -l, DC_PVR_FindLevelPages).
+shopt -s nullglob
+"$VQ_TOOL" -l "$STAGE/levelpages.bin" "$STAGE"/games/$GAME/levels/*.tr2   "$STAGE"/games/$GAME/levels/*.phd   ${MOD:+"$STAGE"/games/$MOD/levels/*.tr2 "$STAGE"/games/$MOD/levels/*.phd}
+shopt -u nullglob
+# The injections' pages as hashes of the pages textures.vq holds: the load then
+# neither inflates, reads nor encodes them (texvq -s). A file with a page the
+# VQ lacks (soft edges) stays as it is.
+for INJ_DIR in "$STAGE/games/$GAME/injections" ${MOD:+"$STAGE/games/$MOD/injections"}; do
+  [ -d "$INJ_DIR" ] || continue
+  rm -rf "$TMP/injstrip" && mkdir -p "$TMP/injstrip"
+  "$VQ_TOOL" -s "$VQ" "$TMP/injstrip" "$INJ_DIR"/*.bin
+  cp -f "$TMP/injstrip"/* "$INJ_DIR"/ 2>/dev/null || true
+done
 # The loading screen's font, made once by lfont.py from a log (see loading_font.c).
 [ -f "$BUILD_DIR/lfont-$GAME.bin" ] && cp "$BUILD_DIR/lfont-$GAME.bin" "$STAGE/lfont.bin"
 cp "$BUMP" "$STAGE/textures.bump"
@@ -500,6 +524,27 @@ for f in "${MUSIC_FILES[@]}"; do
   fi
   [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music/"
 done
+# TR1's CD audio, when the game's CD image is beside the repository (or
+# TRX_DC_TR1_CD names its folder): "Track NN.bin" are raw 44.1 kHz stereo audio
+# tracks, track NN being the game's track NN. They carry the ambient tracks
+# (57 and on) the classic Steam music folder lacks. Only tracks missing are added.
+if [ "$GAME" = tr1 ] && [ "$SOURCE" = classic ] && [ "${TRX_DC_MUSIC:-1}" != 0 ] && command -v ffmpeg > /dev/null; then
+  TR1_CD="${TRX_DC_TR1_CD:-$ROOT/../Tomb Raider (v1.6)}"
+  for n in $(seq 2 60); do
+    f="$(printf '%s/Tomb Raider (v1.6) (Track %02d).bin' "$TR1_CD" "$n")"
+    [ -f "$f" ] || continue
+    if [ -n "${TRX_DC_MUSIC_KEEP:-}" ] && [[ " $TRX_DC_MUSIC_KEEP " != *" $n "* ]]; then
+      continue
+    fi
+    [ -f "$STAGE/games/$GAME/music/$n.wav" ] && continue
+    out="$MUSIC_CACHE/$n.wav"
+    if [ ! -f "$out" ]; then
+      ffmpeg -hide_banner -loglevel error -y -f s16le -ar 44100 -ac 2 \
+        -i "$f" -c:a adpcm_yamaha "$out"
+    fi
+    [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music/"
+  done
+fi
 echo "$(ls "$STAGE/games/$GAME/music" | wc -l) tracks"
 
 echo "== films"

@@ -404,12 +404,15 @@ static uint32_t M_Pack8(const RGBA_8888 c)
         | ((uint32_t)c.g << 8) | c.b;
 }
 
-// UI coordinates are in the UI viewport; the screen is 640x480.
+// UI coordinates are in the UI viewport, which is the screen's size in the
+// engine's pixels (640x480, or 16:9 at 480 lines; pvr.c squeezes the x of the
+// latter).
 static void M_ToScreen(
     const float x, const float y, const float z, DC_PVR_VERTEX *const out)
 {
     const VIEWPORT_RECT ui = Viewport_GetRect(VIEWPORT_UI);
-    const float sx = ui.width > 0 ? 640.0f / ui.width : 1.0f;
+    const float sx =
+        ui.width > 0 ? DC_PVR_GetScreenWidth() / ui.width : 1.0f;
     const float sy = ui.height > 0 ? 480.0f / ui.height : 1.0f;
     out->x = x * sx;
     out->y = y * sy;
