@@ -4887,6 +4887,42 @@ static void M_NatToScreen(const M_XVERT *const v, float out[3])
     out[2] = z * m_Frame.depth.scale;
 }
 
+// Whether a dynamic light of the instance reaches a chunk of the room (its
+// sphere, in the world): the chunks none reaches are lit, and baked, as if
+// there were no light. A vertex two chunks share lies in both spheres, so a
+// light that reaches it reaches both. TRX_DC_ASMOFF2 bit 2147483648 turns this
+// off.
+static bool M_ChunkLit(
+    const M_CHUNK *const chunk, const M_INSTANCE_LIGHT *const il)
+{
+    const float(*const w)[4] = il->world;
+    const float *const q = chunk->center;
+    const float cx = w[0][0] * q[0] + w[0][1] * q[1] + w[0][2] * q[2] + w[0][3];
+    const float cy = w[1][0] * q[0] + w[1][1] * q[1] + w[1][2] * q[2] + w[1][3];
+    const float cz = w[2][0] * q[0] + w[2][1] * q[1] + w[2][2] * q[2] + w[2][3];
+    for (int32_t i = 0; i < il->num_lights; i++) {
+        const M_POINT_LIGHT *const l = &il->lights[i];
+        const float dx = l->pos[0] - cx;
+        const float dy = l->pos[1] - cy;
+        const float dz = l->pos[2] - cz;
+        const float reach = sqrtf(l->radius_sq) + chunk->radius;
+        if (dx * dx + dy * dy + dz * dz <= reach * reach) {
+            return true;
+        }
+    }
+    for (int32_t i = 0; i < il->num_rgb; i++) {
+        const M_RGB_LIGHT *const l = &il->rgb[i];
+        const float dx = l->pos[0] - cx;
+        const float dy = l->pos[1] - cy;
+        const float dz = l->pos[2] - cz;
+        const float reach = l->radius + chunk->radius;
+        if (dx * dx + dy * dy + dz * dz <= reach * reach) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // The light a room instance's colours come out of, as one number (never 0),
 // or 0 when they depend on more than it (a dynamic light, the water's
 // movement, the caustics, fog per vertex), and the batches are lit afresh.
@@ -6172,14 +6208,66 @@ static bool M_TransformInstance(
             const bool native = g_DC_NativeRooms && bind->nat != nullptr
                 && !bind->deforms && !batcher->cel && !batcher->cel_dark;
             m_NatRooms[native ? 0 : bind->nat == nullptr ? 1 : 2]++;
+            // The instance's light with its dynamic lights taken out, for the
+            // chunks none of them reaches.
+            const bool dyn_lit = il.num_lights > 0 || (il.tr3 && il.num_rgb > 0);
+            const bool split = dyn_lit && (g_DC_AsmOff2 & 0x80000000u) == 0;
+            M_INSTANCE_LIGHT il_dark;
+            if (split) {
+                il_dark = il;
+                il_dark.num_lights = 0;
+                il_dark.num_rgb = 0;
+            }
             for (int32_t r = 0; r < nvr; r++) {
                 const int32_t k = batcher->vrange_chunk[r];
                 if (m_BlendPass && k >= 0) {
                     continue;
                 }
+                const M_INSTANCE_LIGHT *const ilk =
+                    split && k >= 0 && !M_ChunkLit(&bind->chunks[k], &il)
+                    ? &il_dark
+                    : &il;
+#if defined(TRX_DC_DYN_CHECK)
+                if (ilk == &il_dark) {
+                    // TEMP: the chunk lit with and without the lights it was
+                    // left out of, every vertex compared.
+                    static uint32_t checked = 0;
+                    static uint32_t bad = 0;
+                    static uint32_t calls = 0;
+                    static uint32_t *keep = nullptr;
+                    static int32_t keep_cap = 0;
+                    const int32_t first = batcher->vranges[r][0];
+                    const int32_t count = batcher->vranges[r][1];
+                    if (count > keep_cap) {
+                        free(keep);
+                        keep_cap = count;
+                        keep = malloc(sizeof(uint32_t) * (size_t)keep_cap);
+                    }
+                    if (keep != nullptr) {
+                        M_XformRoom(
+                            batcher, bind, inst, &il, &c, &batcher->vranges[r],
+                            1, scale, nullptr, nullptr);
+                        for (int32_t i = 0; i < count; i++) {
+                            keep[i] = batcher->xverts[first + i].argb;
+                        }
+                        M_XformRoom(
+                            batcher, bind, inst, ilk, &c, &batcher->vranges[r],
+                            1, scale, nullptr, nullptr);
+                        for (int32_t i = 0; i < count; i++) {
+                            checked++;
+                            bad += keep[i] != batcher->xverts[first + i].argb;
+                        }
+                        if (++calls % 200 == 0) {
+                            LOG_INFO(
+                                "[dyn-check] %u vertices checked, %u different",
+                                (unsigned)checked, (unsigned)bad);
+                        }
+                    }
+                }
+#endif
                 if (native && k >= 0
                     && M_DrawNative(
-                        batcher, bind, inst, &il, &c, &bind->chunks[k], scale,
+                        batcher, bind, inst, ilk, &c, &bind->chunks[k], scale,
                         faded, black_fog)) {
                     transformed += batcher->vranges[r][1];
                     continue;
@@ -6193,7 +6281,7 @@ static bool M_TransformInstance(
                     DC_PROBE(
                         DC_PROBE_XT_ROOM,
                         M_XformRoom(
-                            batcher, bind, inst, &il, &c,
+                            batcher, bind, inst, ilk, &c,
                             &batcher->vranges[r], 1, scale, nullptr, nullptr));
                 }
                 m_RoomPartUs[3] += M_PT_NOW() - slow_start;
@@ -9250,7 +9338,9 @@ static void M_PrepareFrame(void)
     m_Frame.sunset_duration = general->sunset_duration;
     const float fog_start = general->fog_distance[0];
     const float fog_end = general->fog_distance[1];
-    m_Frame.fog = m_Frame.lighting && fog_end > fog_start;
+    // TEST (TRX_DC_ASMOFF2 bit 1073741824): no fog at all, to bound its cost.
+    m_Frame.fog = m_Frame.lighting && fog_end > fog_start
+        && (g_DC_AsmOff2 & 1073741824) == 0;
     m_Frame.fog_start = fog_start;
     m_Frame.fog_end = fog_end;
     m_Frame.fog_scale = m_Frame.fog ? 1.0f / (fog_end - fog_start) : 0.0f;
@@ -9432,6 +9522,9 @@ void DC_MeshBatcher_StageParticle(
     MESH_BATCHER *const batcher, const DC_PARTICLE *const particle)
 {
     (void)batcher;
+    if ((g_DC_AsmOff2 & 134217728) != 0) {
+        return;
+    }
     if (m_ParticleCount < M_MAX_PARTICLES) {
         m_Particles[m_ParticleCount++] = *particle;
         m_ParticleBlendCount[particle->blend]++;
@@ -9640,6 +9733,9 @@ void DC_MeshBatcher_StageStreak(
     MESH_BATCHER *const batcher, const DC_STREAK *const streak)
 {
     (void)batcher;
+    if ((g_DC_AsmOff2 & 134217728) != 0) {
+        return;
+    }
     if (m_StreakCount < M_MAX_STREAKS) {
         m_Streaks[m_StreakCount++] = *streak;
     }

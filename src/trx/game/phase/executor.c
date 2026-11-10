@@ -442,7 +442,50 @@ static GF_COMMAND M_ChangeScreen(const PHASE *const phase)
     return (GF_COMMAND) { .action = GF_NOOP };
 }
 
+#if defined(TRX_DC_PROBES)
+// TEMP: a tick of the logic that takes long says which probes took the time.
+extern const char *DC_ProbeName(int32_t i);
+static PHASE_CONTROL M_ControlInner(PHASE *phase);
 static PHASE_CONTROL M_Control(PHASE *const phase)
+{
+    uint32_t before[DC_PROBE_COUNT];
+    memcpy(before, g_DC_ProbeUs, sizeof(before));
+    const uint64_t t0 = timer_us_gettime64();
+    const PHASE_CONTROL result = M_ControlInner(phase);
+    const uint32_t total = (uint32_t)(timer_us_gettime64() - t0);
+    if (total > 6000) {
+        int32_t top[3] = { -1, -1, -1 };
+        uint32_t d[DC_PROBE_COUNT];
+        for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
+            d[i] = i <= DC_PROBE_MCONTROL || i == DC_PROBE_M_PHASE
+                    || i == DC_PROBE_M_LUATICK
+                ? g_DC_ProbeUs[i] - before[i]
+                : 0;
+        }
+        for (int32_t k = 0; k < 3; k++) {
+            for (int32_t i = 0; i < DC_PROBE_COUNT; i++) {
+                if (d[i] > 0 && (top[k] < 0 || d[i] > d[top[k]])
+                    && (k < 1 || i != top[0]) && (k < 2 || i != top[1])) {
+                    top[k] = i;
+                }
+            }
+        }
+        LOG_INFO(
+            "[slow-tick] %u us: %s %u, %s %u, %s %u", (unsigned)total,
+            top[0] >= 0 ? DC_ProbeName(top[0]) : "-",
+            top[0] >= 0 ? (unsigned)d[top[0]] : 0,
+            top[1] >= 0 ? DC_ProbeName(top[1]) : "-",
+            top[1] >= 0 ? (unsigned)d[top[1]] : 0,
+            top[2] >= 0 ? DC_ProbeName(top[2]) : "-",
+            top[2] >= 0 ? (unsigned)d[top[2]] : 0);
+    }
+    return result;
+}
+#else
+#define M_ControlInner M_Control
+#endif
+
+static PHASE_CONTROL M_ControlInner(PHASE *const phase)
 {
     m_CurrentFrame++;
     DC_PROBE(DC_PROBE_EVENTS, Shell_ProcessEvents());
@@ -524,7 +567,9 @@ static void M_Draw(PHASE *const phase)
     DC_PROBE_START(probe_ui);
 #if defined(__DREAMCAST__)
     // A phase that began a scene of its own while drawing threw them away.
-    if (!reuse || !UI_AreScriptDrawsKept()) {
+    // TEST (bit 536870912): the scripts' interface is not run.
+    if ((!reuse || !UI_AreScriptDrawsKept())
+        && (g_DC_AsmOff2 & 536870912) == 0) {
         UI_SetScriptCapture(true);
         LUA_UI_ReserveRegions();
         TouchOverlay_Draw();
@@ -541,6 +586,10 @@ static void M_Draw(PHASE *const phase)
     DC_TRACE("draw: script ui ended");
     DC_PROBE(DC_PROBE_S_SCENE, Output_SwitchViewport(VIEWPORT_UI));
     DC_TRACE("draw: viewport switched");
+#if defined(__DREAMCAST__)
+    // TEST (TRX_DC_ASMOFF2 bit 268435456): the interface is not drawn.
+    if ((g_DC_AsmOff2 & 268435456) == 0)
+#endif
     DC_PROBE(DC_PROBE_S_UI, DC_PROBE(DC_PROBE_U_DRAW, UI_Draw()));
     DC_TRACE("draw: ui drawn");
 

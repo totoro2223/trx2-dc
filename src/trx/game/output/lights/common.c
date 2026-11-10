@@ -28,6 +28,10 @@ typedef struct {
     int32_t cam_dist;
 } M_PENDING_FOG;
 
+#if defined(__DREAMCAST__)
+extern uint32_t g_DC_AsmOff2;
+#endif
+
 static bool m_IsSunsetEnabled = false;
 static int32_t m_RoomLightShades[RLM_NUMBER_OF] = {};
 static M_ROOM_LIGHT_TABLE m_RoomLightTables[OUTPUT_LIGHT_CYCLE] = {};
@@ -373,6 +377,12 @@ void Output_ResetDynamicLights(void)
 void Output_AddDynamicLight(
     const XYZ_32 pos, const int32_t intensity, const int32_t falloff)
 {
+#if defined(__DREAMCAST__)
+    // TEST (TRX_DC_ASMOFF2 bit 67108864): no dynamic lights.
+    if ((g_DC_AsmOff2 & 67108864) != 0) {
+        return;
+    }
+#endif
     M_AddDynamicLight(pos, intensity, falloff);
     M_CommitLight(pos);
 }
@@ -380,6 +390,11 @@ void Output_AddDynamicLight(
 void Output_AddDynamicLightRGB(
     const XYZ_32 pos, const int32_t falloff, const RGB_888 color)
 {
+#if defined(__DREAMCAST__)
+    if ((g_DC_AsmOff2 & 67108864) != 0) {
+        return;
+    }
+#endif
     M_AddDynamicLightRGB(pos, falloff, color);
     M_CommitLight(pos);
 }

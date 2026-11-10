@@ -1298,6 +1298,10 @@ void Room_DrawAllRooms(const int16_t current_room, const int16_t target_room)
     Output_Water_SetupAboveWater(false);
     if (!M_IsSceneryOnly()) {
         DC_PROBE(DC_PROBE_S_FXM, FX_Draw());
+#if defined(__DREAMCAST__)
+        // TEST (TRX_DC_ASMOFF2 bit 134217728): no particles.
+        if ((g_DC_AsmOff2 & 134217728) == 0)
+#endif
         DC_PROBE(DC_PROBE_S_SPK, Sparks_Draw());
     }
     DC_PROBE(DC_PROBE_S_ROPE, Rope_DrawAll());

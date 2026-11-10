@@ -236,6 +236,10 @@ for hook in DEMO BENCH SAVE EXIT COMPLETE GIVE FIRE START LEVELS SWITCH RESETOPT
   [ -f "$STAGE/$hook.TXT" ] && echo 1 > "$STAGE/LOG.TXT"
 done
 [ -n "${TRX_DC_LOG:-}" ] && echo 1 > "$STAGE/LOG.TXT"
+# TRX_DC_NOLOG=1: the log stays off (the serial port stalls the game) until
+# the benchmark ends, which turns it on to print its report (dc_main.c).
+rm -f "$STAGE/NOLOG.TXT"
+[ -n "${TRX_DC_NOLOG:-}" ] && echo 1 > "$STAGE/NOLOG.TXT"
 # Injections too large for 16 MiB of RAM. The engine holds every injection of
 # a level decompressed while the level loads, and leaves out with a warning
 # any it cannot find.

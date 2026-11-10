@@ -61,15 +61,65 @@ bool DC_World_IsRendering(void)
     return m_Thread != nullptr && !atomic_load(&m_Paused);
 }
 
+// TEMP: the longest spans the logic ran without a call to DC_World_Yield (the
+// render thread waits for the lock meanwhile), by where they began and ended.
+#define M_HOLDS 6
+static struct {
+    uint32_t us;
+    const void *from;
+    const void *to;
+    int32_t tag;
+} m_Holds[M_HOLDS];
+static int32_t m_Tag = -1;
+
+void DC_World_Tag(const int32_t tag)
+{
+    m_Tag = tag;
+}
+static uint64_t m_MarkUs = 0;
+static const void *m_MarkSite = nullptr;
+
+static void M_Mark(const void *const site)
+{
+    const uint64_t now = timer_us_gettime64();
+    const uint32_t span = (uint32_t)(now - m_MarkUs);
+    if (m_MarkUs != 0 && span > 4000) {
+        int32_t at = 0;
+        for (int32_t i = 1; i < M_HOLDS; i++) {
+            if (m_Holds[i].us < m_Holds[at].us) {
+                at = i;
+            }
+        }
+        if (span > m_Holds[at].us) {
+            m_Holds[at].us = span;
+            m_Holds[at].from = m_MarkSite;
+            m_Holds[at].to = site;
+            m_Holds[at].tag = m_Tag;
+        }
+    }
+}
+
+static void M_MarkDone(const void *const site)
+{
+    m_MarkUs = timer_us_gettime64();
+    m_MarkSite = site;
+}
+
 void DC_World_Yield(void)
 {
-    if (m_Thread == nullptr || atomic_load(&m_Paused)
-        || !atomic_load(&m_Waiting)) {
+    if (m_Thread == nullptr || atomic_load(&m_Paused)) {
+        return;
+    }
+    const void *const site = __builtin_return_address(0);
+    M_Mark(site);
+    if (!atomic_load(&m_Waiting)) {
+        M_MarkDone(site);
         return;
     }
     mutex_unlock(&m_Lock);
     thd_pass();
     mutex_lock(&m_Lock);
+    M_MarkDone(site);
 }
 
 // What the log tells every 600 frames: how long the render thread waited for
@@ -92,10 +142,12 @@ static struct {
 void DC_World_TickBegin(void)
 {
     m_Stats.tick_start = timer_us_gettime64();
+    M_MarkDone((const void *)1);
 }
 
 void DC_World_TickDone(void)
 {
+    M_Mark((const void *)2);
     const uint32_t took = (uint32_t)(timer_us_gettime64() - m_Stats.tick_start);
     m_Stats.ticks++;
     m_Stats.tick_sum += took;
@@ -169,6 +221,15 @@ static void *M_RenderThread(void *const unused)
                 (unsigned)(m_Stats.draw_sum / 600), (unsigned)m_Stats.draw_max,
                 (unsigned)(m_Stats.ticks ? m_Stats.tick_sum / m_Stats.ticks : 0),
                 (unsigned)m_Stats.tick_max);
+            for (int32_t i = 0; i < M_HOLDS; i++) {
+                if (m_Holds[i].us > 0) {
+                    LOG_INFO(
+                        "[hold] %u us without a yield: %p to %p (item %d)",
+                        (unsigned)m_Holds[i].us, m_Holds[i].from, m_Holds[i].to,
+                        (int)m_Holds[i].tag);
+                }
+            }
+            memset(m_Holds, 0, sizeof(m_Holds));
             m_Stats = (typeof(m_Stats)) { .tick_start = m_Stats.tick_start };
         }
     }

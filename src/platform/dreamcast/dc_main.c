@@ -42,6 +42,8 @@ KOS_INIT_FLAGS(INIT_DEFAULT);
 int __real_main(int argc, char *argv[]);
 
 // A file of the running game's folder.
+bool g_DC_QuietLog = false;
+
 static FILE *M_Open(const char *const name)
 {
     char path[96];
@@ -375,7 +377,16 @@ static int M_RunGame(int argc, char *argv[])
     // load at 115200 baud, with or without a cable): only a test disc keeps it
     // (make_disc.sh, LOG.TXT).
     FILE *const log = M_Open("LOG.TXT");
-    if (log != nullptr) {
+    FILE *const quiet = M_Open("NOLOG.TXT");
+    if (quiet != nullptr) {
+        // Off until the benchmark ends (DC_Bench_End).
+        fclose(quiet);
+        g_DC_QuietLog = true;
+        dbgio_disable();
+        if (log != nullptr) {
+            fclose(log);
+        }
+    } else if (log != nullptr) {
         fclose(log);
     } else {
         dbgio_disable();

@@ -47,6 +47,7 @@
 
 #include <arch/timer.h>
 #include <kos/thread.h>
+#include <kos/dbgio.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -262,6 +263,11 @@ static const char *const m_ProbeNames[DC_PROBE_COUNT] = {
     "ownf", "owns", "groom", "gobj", "gfogc", "genvc", "gother", "iwalk", "imesh", "eclipc", "ebackc", "dpre", "dpost", "dtail", "sefr", "sfxm", "sspk", "srope", "sflare", "mphase", "mlua", "mbegin", "mevict", "ltarget", "lsmash", "lhairc",
 };
 
+const char *DC_ProbeName(const int32_t i)
+{
+    return i >= 0 && i < DC_PROBE_COUNT ? m_ProbeNames[i] : "?";
+}
+
 static void M_StatsBeginScene(void)
 {
     m_Stats.begin_us = timer_us_gettime64();
@@ -404,8 +410,15 @@ static void M_BenchPrint(const char *const fmt, ...)
     DC_Watchdog_Print(line);
 }
 
+extern bool g_DC_QuietLog;
+
 void DC_Bench_End(void)
 {
+    if (g_DC_QuietLog) {
+        // The log was held back for the run: on for the report.
+        g_DC_QuietLog = false;
+        dbgio_enable();
+    }
     if (m_Bench == nullptr) {
         return;
     }

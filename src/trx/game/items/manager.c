@@ -798,6 +798,7 @@ void Item_Control(void)
         const OBJECT *obj = Object_Get(item->object_id);
         if (!item->is_destroyed && obj->control_func != nullptr) {
 #if defined(__DREAMCAST__)
+            DC_World_Tag(item->object_id);
             DC_WHERE("item obj", (int)item->object_id);
             // A creature past 16 blocks from Lara with nothing to track is
             // worked every other tick (half as fast, out of sight and mind).

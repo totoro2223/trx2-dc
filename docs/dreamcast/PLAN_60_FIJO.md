@@ -292,6 +292,72 @@ La Jungla y TR2 Great Wall siguen a 60. Verificación: 0 distintas (Antártida 1
 - Del lado del `stage`, el recorrido del esqueleto (`iwalk`, con la mezcla de dos poses por hueso) es la mitad de `sitem`. Del lado de la lógica, el control de las criaturas (`items`) suma otros ~2,6 ms en la build de sondas; la consola tiene un solo procesador y el hilo de la lógica le quita tiempo al de dibujo.
 - Flycast no reproduce una caída fuerte de fps con enemigos en Native 60 (57,2 frente a 57,9). La caída que se ve en consola no está en estos números: hace falta medir allí.
 
+**Luces dinámicas y partículas, TR3 Londres (10/11/2026, DC builds 938-940)**: benchmark 0 de TR3, Native 60, mismo binario, con los interruptores de prueba de `TRX_DC_ASMOFF2` (bit 67108864: sin luces dinámicas; bit 134217728: sin partículas, chispas y rayas).
+
+| | todo | sin luces dinámicas | sin partículas |
+|---|---|---|---|
+| fps | 56,3 | 57,5 | 56,5 |
+| `pass` (ms) | 7,9 | 6,5 | 7,9 |
+| `xform` (ms) | 6,4 | 4,9 | 6,4 |
+| polígonos | 906 | 919 | 861 |
+
+- Las luces dinámicas (fuego, fogonazos, bengalas) cuestan ~1,4 ms de `pass` por fotograma, todo en la transformación (cada vértice de sala y objeto mira las luces que le alcanzan). Las partículas cuestan ~45 polígonos y nada medible de tiempo.
+
+**Picos de la lógica y frames tardíos, TR3 Londres, Native 60 (10/11/2026, DC builds 941-944)**: instrumentos nuevos y solo de medida: `[hold]` en `dc_world.c` (los 6 tramos más largos de la lógica sin llamar a `DC_World_Yield`, con dónde empiezan, dónde acaban y qué ítem se ejecutaba; las direcciones se leen con `sh-elf-addr2line`), `[slow-tick]` en `executor.c` (solo con sondas) y `DC_World_Tag`.
+
+- **Los frames tardíos vienen del tiempo de dibujo, no de la lógica.** Por ventanas de 600 frames: con `draw` medio de 6,8 a 10 ms hay 9 a 21 frames tardíos; con 14 a 15 ms, 34 a 93. La espera del dibujo por el cerrojo de la lógica es de unos µs de media y de 0,2 a 0,8 ms como máximo, salvo en las ventanas pesadas (hasta 20 ms).
+- **Los tramos largos de la lógica, por dónde:** (1) ~29 ms, dos veces en una pasada: el final de `Lara_Control` (`Room_TestSectorTrigger` y `M_HandleExposure`, un disparador de suelo que se ejecuta una vez); (2) una meseta de **10,0 ms exactos** en muchos sitios al azar (colisión, `Gun_Control`, un ítem, `Camera_Update`...): es una rebanada del planificador de KOS de 10 ms que se lleva otro hilo, probablemente el hilo del log por serie (`trx-log` escribe el puerto serie a ~0,1 ms por carácter) con `TRX_DC_LOG=1`; (3) `Game_TickPostControl` y `Game_TickEndFrame` hasta 6 a 12 ms.
+- **Cosas que no cuentan:** los frames de ~250 ms cada 600 frames son del log; restan ~1,3 fps a la media del informe (56,3 frente a ~57,6 sin ellos).
+- **Repartir el `stage`:** no se hizo. Con `draw` de 15 ms de media el cuello es el dibujo (`pass`), no cómo se reparte el `stage`; pasar el `stage` al hilo de la lógica obliga a partir `Game_Draw` en preparar y volcar y a doblar el búfer de segmentos del batcher, y el margen (30,8 ms de trabajo por cada 33,3 ms) no deja holgura. Se probó ceder el procesador dentro de `Lara_Control` y de `Game_TickPostControl`: sin efecto en los frames tardíos (9/18/19/93/46/21/34/49/45 frente a 9/17/17/92/40/19/36/51/36) y con el riesgo de dibujar a Lara a medio actualizar; se quitó.
+
+**Benchmark sin log (10/11/2026, DC builds 945-946)**: `TRX_DC_NOLOG=1` en `make_disc.sh` (`NOLOG.TXT`) deja el puerto serie apagado durante todo el benchmark y lo enciende en `DC_Bench_End` para imprimir el informe. TR3 Londres, Native 60, mismo binario:
+
+| | con log | sin log |
+|---|---|---|
+| fps | 56,3 | 58,3 |
+| frame peor | 271,7 ms | 40,2 ms |
+| frames de más de 35 ms | 49 | 1 |
+| `stage` peor | 256,5 ms | 16,7 ms |
+| `pass` peor | 25,5 ms | 19,0 ms |
+| polígonos | 906 | 908 |
+
+- El log del puerto serie costaba ~2 fps y todos los frames de más de 40 ms. Sin él, el 99 % de los frames está por debajo de 30 ms. Para medir fps hay que usar `TRX_DC_NOLOG=1` y no `TRX_DC_LOG=1`.
+- Quedan los frames de 19 a 25 ms de los ticks (`stage` + `pass`) frente a los de 11 a 13 ms de las repeticiones.
+
+**Interfaz, TR3 Londres, sin log (10/11/2026, DC builds 947-949)**: interruptores de prueba de `TRX_DC_ASMOFF2` bit 268435456 (no se dibuja la interfaz, `UI_Draw`) y bit 536870912 (no corren los scripts de la interfaz).
+
+| | todo | sin `UI_Draw` | sin scripts de la interfaz |
+|---|---|---|---|
+| fps | 58,3 | 58,4 | 58,4 |
+| `stage` / `pass` (ms) | 2,1 / 7,9 | 2,0 / 7,8 | 2,0 / 7,8 |
+
+- La interfaz no es un coste en esta escena: las sondas la mostraban en ~2,7 ms por frame (`sui`) por el propio coste de las sondas, y sin ellas no se nota. No hay nada que repartir ni que cachear ahí.
+- Con el log apagado Londres está a 58,3 fps en Flycast (97 % de 60). Lo que queda (frames tardíos de ticks, 1 a 3 %) no se puede afinar con Flycast: hace falta medir en la consola.
+
+**Dónde se va el `pass` en la Antártida de TR3 (10/11/2026, DC builds 950-952)**: nivel 16, Native 60, vista inicial, con log. Build de sondas (más lenta: valen las proporciones) y un interruptor de prueba, `TRX_DC_ASMOFF2` bit 1073741824, que apaga la niebla.
+
+- **Proporciones del `pass` (sondas, por frame):** transformación de salas (`troom`) 56 %, emisión (`emit`) 24 %, objetos (`tplain` y `vobj`) 7 %, el resto (portales, cielo...) 13 %. Unos 8250 vértices de sala por frame, de los que 7440 pasan por la niebla por vértice (el color de la niebla de la Antártida no es negro y la niebla de tabla del PowerVR solo se usa con negro: `pvr_fog_table_color(1, 0, 0, 0)` en `DC_PVR_SetupFogTable`).
+- **Niebla apagada:** 57,2 fps / `pass` 11,5 ms / 1520 polígonos con niebla; 51,4 fps / 12,8 ms / 1796 sin ella. Sin niebla se ven más polígonos (la niebla recorta lo lejano), y el costo por polígono baja de 7,6 a 7,1 µs: la matemática de la niebla pesa ~6 % del `pass`, ~0,7 ms. Pasar la niebla de color a la tabla del PowerVR ahorraría como mucho eso, con el riesgo de los polígonos aditivos (que no deben blanquear).
+- **Lo que queda:** el costo es casi proporcional a los polígonos (~7,6 µs cada uno en Flycast). Las palancas son pintar menos polígonos (oclusión y recorte) o abaratar la transformación y la emisión por polígono.
+
+**Tiras de triángulos en las salas, medido (10/11/2026)**: al cerrar el nivel se recorrieron los triángulos opacos de todas las salas de la Antártida de TR3, buscando tiras con un voraz (cada triángulo siguiente comparte la última arista; el sentido de giro se ignoró, así que es un techo). Código temporal, ya retirado.
+
+| | solo posición | posición, uv y página |
+|---|---|---|
+| triángulos | 26448 | 26448 |
+| con algún vecino | 23719 | 22838 |
+| tiras | 13921 | 13147 |
+| vértices como tiras | 54290 | 52742 |
+| vértices que se escriben hoy | 56330 | 56822 |
+
+- Las tiras salen de ~2 triángulos de media (la otra mitad del mismo cuadrilátero): los cuadriláteros vecinos no comparten uv en la arista, porque cada cara lleva su baldosa de textura. El ahorro es de un 4 % (solo posición) a un 7 % (con uv) de los vértices escritos, es decir ~2 % del `pass`. No compensa el cambio del emisor: descartado.
+
+**Luces dinámicas por trozo de sala (10/11/2026, DC builds 956-959)**: un trozo de sala (`M_CHUNK`) al que no llega ninguna luz dinámica de la instancia se ilumina, y se hornea (`M_DrawNative`), como si la sala no tuviera luces (`M_ChunkLit`, `il_dark`); antes bastaba una luz que tocara la esfera de la sala entera para que todos sus trozos se iluminaran vértice a vértice y perdieran la clave del hornado. Un vértice compartido por dos trozos está en las dos esferas, así que una luz que lo alcanza alcanza a ambos. `TRX_DC_ASMOFF2` bit 2147483648 lo apaga.
+
+- **Comprobación** (`-DTRX_DC_DYN_CHECK`, apagada por defecto): cada trozo oscuro se iluminó con y sin las luces y se comparó cada vértice: 5 436 618 vértices, 0 distintos.
+- **Medida** (TR3 Londres, Native 60, sin log, mismo binario): `pass` 7,4 ms con el cambio frente a 7,9 sin él, `xform` 5,9 frente a 6,3, 58,7 frente a 58,4 fps, polígonos 912 frente a 907. Recupera ~0,5 ms de los ~1,4 que costaban las luces. Sin probar en consola.
+- **Recorte de polígonos:** no se hizo. La oclusión y los portales ya existen, y sin un perfil de polígonos por tamaño y distancia no hay un recorte que se pueda decir que no se nota (la niebla y la distancia no se tocan). Para el perfil hace falta contar en la emisión, que está en ensamblador.
+
 Sin probar:
 - La consola.
 - La imagen (en modo oculto no hay capturas).

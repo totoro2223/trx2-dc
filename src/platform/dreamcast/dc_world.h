@@ -20,6 +20,9 @@ void DC_World_Unlock(void);
 
 // From the logic, between items: lets a frame due be drawn.
 void DC_World_Yield(void);
+// TEMP: what the logic is about to run (an object number), to say what a long
+// stretch without a yield was.
+void DC_World_Tag(int32_t tag);
 
 // The render thread draws from now on (the caller holds the lock), until
 // stopped; a stop waits for the frame being drawn.
