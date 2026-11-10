@@ -5849,12 +5849,20 @@ static bool M_TransformRig(
         memcpy(pmv, mv, sizeof(pmv));
         mat_load(&pmv);
         m_VertexOverride = pose;
-        if (kept != nullptr) {
-            M_ObjPlace(batcher, bind, kept, 0, bind->vertex_count, c);
-        } else {
-            M_XformObject(
-                batcher, bind, obj_inst, &il, c, pmv, 0.0f, 0,
-                bind->vertex_count);
+        // Bone by bone even with one matrix: a rig's twins count from the
+        // start of their bone (M_FindTwins).
+        for (int32_t b = 0; b < inst->rig_bones; b++) {
+            const int32_t start = starts[b];
+            const int32_t count = starts[b + 1] - start;
+            if (count <= 0) {
+                continue;
+            }
+            if (kept != nullptr) {
+                M_ObjPlace(batcher, bind, kept, start, count, c);
+            } else {
+                M_XformObject(
+                    batcher, bind, obj_inst, &il, c, pmv, 0.0f, start, count);
+            }
         }
         m_VertexOverride = nullptr;
         for (int32_t b = 0; b < inst->rig_bones; b++) {

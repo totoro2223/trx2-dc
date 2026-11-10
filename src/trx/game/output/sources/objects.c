@@ -1064,8 +1064,9 @@ MESH_INSTANCE *OutputSource_Objects_BeginRig(
         || M_HasPolicy(obj->mesh_idx, obj->mesh_count)) {
         return nullptr;
     }
-    OUTPUT_MESH *const mesh = M_GetRig(
-        obj, (g_DC_AsmOff2 & 4194304) != 0 ? 0 : lod); // bit 4194304: no LOD
+    // LOD off: enemies looked deformed as they came into view (10/11/2026).
+    (void)lod;
+    OUTPUT_MESH *const mesh = M_GetRig(obj, 0);
     if (mesh == nullptr) {
         return nullptr;
     }
