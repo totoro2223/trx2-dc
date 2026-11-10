@@ -22,6 +22,7 @@ OUTPUT_MESH *Output_Mesh_Create(void)
 #if defined(__DREAMCAST__)
     mesh->bone_count = 0;
     mesh->bone_start = nullptr;
+    mesh->bone_idx = nullptr;
 #endif
     return mesh;
 }
@@ -47,6 +48,7 @@ void Output_Mesh_Destroy(OUTPUT_MESH *const mesh)
     Memory_ArenaFree(&mesh->allocator);
 #if defined(__DREAMCAST__)
     Memory_Free(mesh->bone_start);
+    Memory_Free(mesh->bone_idx);
 #endif
     Memory_Free(mesh);
 }

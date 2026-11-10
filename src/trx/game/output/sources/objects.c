@@ -258,7 +258,38 @@ static void M_AddObjectFace(
 
 // Build one mesh and store the result.
 // Adds a mesh's faces to the builder; false for a mesh with a bad face.
-static bool M_AddMeshFaces(MESH_BUILDER *const builder, const int32_t mesh_idx)
+#if defined(__DREAMCAST__)
+// A face's area in the mesh's own units (a quad as two triangles).
+static float M_FaceArea(const OBJECT_MESH *const m, const FACE *const f)
+{
+    float area = 0.0f;
+    for (int32_t k = 1; k + 1 < f->vertex_count; k++) {
+        const XYZ_16 a = m->vertices[f->vertices[0]];
+        const XYZ_16 b = m->vertices[f->vertices[k]];
+        const XYZ_16 c = m->vertices[f->vertices[k + 1]];
+        const float ux = (float)(b.x - a.x), uy = (float)(b.y - a.y),
+                    uz = (float)(b.z - a.z);
+        const float vx = (float)(c.x - a.x), vy = (float)(c.y - a.y),
+                    vz = (float)(c.z - a.z);
+        const float cx = uy * vz - uz * vy, cy = uz * vx - ux * vz,
+                    cz = ux * vy - uy * vx;
+        area += 0.5f * sqrtf(cx * cx + cy * cy + cz * cz);
+    }
+    return area;
+}
+
+// Largest first.
+static int M_CompareAreas(const void *const a, const void *const b)
+{
+    const float x = *(const float *)a;
+    const float y = *(const float *)b;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+#endif
+
+static bool M_AddMeshFaces(
+    MESH_BUILDER *const builder, const int32_t mesh_idx, const int32_t lod,
+    const float min_area)
 {
     const OBJECT_MESH *const obj_mesh = Object_GetMesh(mesh_idx);
 
@@ -311,15 +342,41 @@ static bool M_AddMeshFaces(MESH_BUILDER *const builder, const int32_t mesh_idx)
     M_POLICY_SET policies;
     M_GatherMeshPolicies(mesh_idx, &policies);
     flags |= M_GetPolicyVertexFlags(&policies);
+#if defined(__DREAMCAST__)
+    // A level of detail (a rig's lod 1 and 2): the faces smaller than
+    // min_area are left out, their vertices with them. Level 1 keeps each
+    // mesh's largest, so that no bone goes; level 2 lets small ones go.
+    float biggest = 0.0f;
+    if (lod == 1 && min_area > 0.0f) {
+        for (int32_t pass = 0; pass < 2; pass++) {
+            const int32_t count = pass == 0 ? obj_mesh->tex_faces.count
+                                            : obj_mesh->flat_faces.count;
+            const FACE *const faces = pass == 0 ? obj_mesh->tex_faces.data
+                                                : obj_mesh->flat_faces.data;
+            for (int32_t j = 0; j < count; j++) {
+                biggest = MAX(biggest, M_FaceArea(obj_mesh, &faces[j]));
+            }
+        }
+    }
+    #define M_KEEP(face)         (min_area <= 0.0f || M_FaceArea(obj_mesh, face) >= min_area          || M_FaceArea(obj_mesh, face) >= biggest)
+#else
+    #define M_KEEP(face) true
+#endif
     for (int32_t j = 0; j < obj_mesh->tex_faces.count; j++) {
-        M_AddObjectFace(
-            builder, obj_mesh, &obj_mesh->tex_faces.data[j], flags, &policies);
+        if (M_KEEP(&obj_mesh->tex_faces.data[j])) {
+            M_AddObjectFace(
+                builder, obj_mesh, &obj_mesh->tex_faces.data[j], flags,
+                &policies);
+        }
     }
     for (int32_t j = 0; j < obj_mesh->flat_faces.count; j++) {
-        M_AddObjectFace(
-            builder, obj_mesh, &obj_mesh->flat_faces.data[j],
-            flags | VERT_FLAT_SHADED, &policies);
+        if (M_KEEP(&obj_mesh->flat_faces.data[j])) {
+            M_AddObjectFace(
+                builder, obj_mesh, &obj_mesh->flat_faces.data[j],
+                flags | VERT_FLAT_SHADED, &policies);
+        }
     }
+    #undef M_KEEP
     return true;
 }
 
@@ -327,7 +384,7 @@ static void M_BuildMesh(
     MESH_BUILDER *const builder, const int32_t mesh_idx,
     OUTPUT_MESH **const out)
 {
-    if (!M_AddMeshFaces(builder, mesh_idx)) {
+    if (!M_AddMeshFaces(builder, mesh_idx, 0, 0.0f)) {
         *out = nullptr;
         return;
     }
@@ -778,12 +835,15 @@ static void M_Stage(const OBJECT_MESH *const mesh)
 #if defined(__DREAMCAST__)
 // The objects drawn as rigs, found by their first mesh; a null mesh is one
 // that cannot be (tried once a level). 32 bones at most: the mesh mask's bits.
-    #define M_MAX_RIGS 64
+    #define M_MAX_RIGS 192
     #define M_RIG_MAX_BONES 32
     #define M_RIG_MAX_VERTICES 60000
+    // Objects of fewer vertices than this keep one level of detail.
+    #define M_LOD_MIN_VERTICES 120
 typedef struct {
     int32_t mesh_idx;
     int32_t mesh_count;
+    int32_t lod; // 0 the whole object; 1 and 2 with the small faces left out
     OUTPUT_MESH *mesh;
 } M_RIG;
 static M_RIG m_Rigs[M_MAX_RIGS];
@@ -806,7 +866,60 @@ static bool M_HasPolicy(const int32_t first, const int32_t count)
     return false;
 }
 
-static OUTPUT_MESH *M_BuildRig(const OBJECT *const obj)
+// Where each bone's faces start in the opaque indices, if they lie bone by
+// bone (the builder adds a mesh's faces in turn, so they do): rig->bone_idx.
+static void M_FindBoneIndices(OUTPUT_MESH *const rig)
+{
+    const int32_t n = rig->bone_count;
+    const int32_t nv = rig->vertices->count;
+    const int32_t total = rig->opaque_vertex_indices->count;
+    const OUTPUT_MESH_INDEX *const idx = Vector_GetData(rig->opaque_vertex_indices);
+    if (nv > 0xFFFF || total > 0xFFFF || n > 32) {
+        return;
+    }
+    uint8_t *const bone_of = Memory_Alloc((size_t)nv);
+    for (int32_t b = 0; b < n; b++) {
+        for (int32_t v = rig->bone_start[b]; v < rig->bone_start[b + 1]; v++) {
+            bone_of[v] = (uint8_t)b;
+        }
+    }
+    uint16_t *const out = Memory_Alloc(sizeof(uint16_t) * 2 * (n + 1));
+    const int32_t class_end[2] = { rig->opaque_nodiscard_count, total };
+    bool ok = true;
+    for (int32_t cls = 0; ok && cls < 2; cls++) {
+        const int32_t first = cls == 0 ? 0 : class_end[0];
+        uint16_t *const o = &out[cls * (n + 1)];
+        int32_t b = 0;
+        o[0] = (uint16_t)first;
+        for (int32_t i = first; ok && i < class_end[cls]; i++) {
+            const int32_t at = bone_of[idx[i]];
+            if (at < b) {
+                ok = false; // out of order
+                break;
+            }
+            // A face's three corners lie in one bone: the list moves on only
+            // at a face's start.
+            if (at > b && (i - first) % 3 != 0) {
+                ok = false;
+                break;
+            }
+            for (; b < at;) {
+                o[++b] = (uint16_t)i;
+            }
+        }
+        for (; ok && b < n;) {
+            o[++b] = (uint16_t)class_end[cls];
+        }
+    }
+    Memory_Free(bone_of);
+    if (ok) {
+        rig->bone_idx = out;
+    } else {
+        Memory_Free(out);
+    }
+}
+
+static OUTPUT_MESH *M_BuildRig(const OBJECT *const obj, const int32_t lod)
 {
     M_PRIV *const p = &m_Priv;
     const int32_t n = obj->mesh_count;
@@ -814,9 +927,38 @@ static OUTPUT_MESH *M_BuildRig(const OBJECT *const obj)
     MESH_BUILDER *const builder = MeshBuilder_Create();
     uint16_t *const starts = Memory_Alloc(sizeof(uint16_t) * (n + 1));
     bool ok = true;
+    float min_area = 0.0f;
+#if defined(__DREAMCAST__)
+    // The smallest face a level of detail keeps: of all the object's faces,
+    // the largest seven in ten (level 1) or under half (level 2).
+    if (lod > 0) {
+        int32_t total = 0;
+        for (int32_t i = 0; i < n; i++) {
+            const OBJECT_MESH *const m = Object_GetMesh(obj->mesh_idx + i);
+            total += m->tex_faces.count + m->flat_faces.count;
+        }
+        float *const areas = Memory_Alloc(sizeof(float) * (size_t)(total + 1));
+        int32_t k = 0;
+        for (int32_t i = 0; i < n; i++) {
+            const OBJECT_MESH *const m = Object_GetMesh(obj->mesh_idx + i);
+            for (int32_t j = 0; j < m->tex_faces.count; j++) {
+                areas[k++] = M_FaceArea(m, &m->tex_faces.data[j]);
+            }
+            for (int32_t j = 0; j < m->flat_faces.count; j++) {
+                areas[k++] = M_FaceArea(m, &m->flat_faces.data[j]);
+            }
+        }
+        if (k > 12) {
+            qsort(areas, (size_t)k, sizeof(float), M_CompareAreas);
+            const int32_t keep = (int32_t)((float)k * (lod == 1 ? 0.7f : 0.45f));
+            min_area = areas[MAX(keep, 6) - 1];
+        }
+        Memory_Free(areas);
+    }
+#endif
     for (int32_t i = 0; ok && i < n; i++) {
         starts[i] = (uint16_t)MeshBuilder_GetVertexCount(builder);
-        ok = M_AddMeshFaces(builder, obj->mesh_idx + i)
+        ok = M_AddMeshFaces(builder, obj->mesh_idx + i, lod, min_area)
             && MeshBuilder_GetVertexCount(builder) <= M_RIG_MAX_VERTICES;
         MeshBuilder_AdjustDepthFrom(
             builder, starts[i],
@@ -830,6 +972,11 @@ static OUTPUT_MESH *M_BuildRig(const OBJECT *const obj)
         starts[n] = (uint16_t)rig->vertices->count;
         rig->bone_count = n;
         rig->bone_start = starts;
+        M_FindBoneIndices(rig);
+        LOG_INFO(
+            "[rig] mesh %d x%d lod %d: %d vertices, %d indices, by bone %d",
+            (int)obj->mesh_idx, (int)n, (int)lod, (int)rig->vertices->count,
+            (int)rig->opaque_vertex_indices->count, rig->bone_idx != nullptr);
         MeshBatcher_AddMesh(p->batcher, rig);
         if (!DC_MeshBatcher_CanRig(p->batcher, rig)) {
             MeshBatcher_RemoveMesh(p->batcher, rig);
@@ -873,11 +1020,22 @@ static void M_DropRigsOf(const int32_t mesh_idx)
     }
 }
 
-static OUTPUT_MESH *M_GetRig(const OBJECT *const obj)
+static OUTPUT_MESH *M_GetRig(const OBJECT *const obj, int32_t lod)
 {
+    // A small object has nothing to spare: one level only.
+    if (lod > 0) {
+        int32_t vertices = 0;
+        for (int32_t i = 0; i < obj->mesh_count; i++) {
+            vertices += Object_GetMesh(obj->mesh_idx + i)->num_vertices;
+        }
+        if (vertices < M_LOD_MIN_VERTICES) {
+            lod = 0;
+        }
+    }
     for (int32_t i = 0; i < m_RigCount; i++) {
         if (m_Rigs[i].mesh_idx == obj->mesh_idx
-            && m_Rigs[i].mesh_count == obj->mesh_count) {
+            && m_Rigs[i].mesh_count == obj->mesh_count
+            && m_Rigs[i].lod == lod) {
             return m_Rigs[i].mesh;
         }
     }
@@ -887,11 +1045,17 @@ static OUTPUT_MESH *M_GetRig(const OBJECT *const obj)
     M_RIG *const rig = &m_Rigs[m_RigCount++];
     rig->mesh_idx = obj->mesh_idx;
     rig->mesh_count = obj->mesh_count;
-    rig->mesh = M_BuildRig(obj);
+    rig->lod = lod;
+    rig->mesh = M_BuildRig(obj, lod);
+    // A level of detail that cannot be built: the whole object instead.
+    if (rig->mesh == nullptr && lod > 0) {
+        return M_GetRig(obj, 0);
+    }
     return rig->mesh;
 }
 
-MESH_INSTANCE *OutputSource_Objects_BeginRig(const OBJECT *const obj)
+MESH_INSTANCE *OutputSource_Objects_BeginRig(
+    const OBJECT *const obj, const int32_t lod)
 {
     M_PRIV *const p = &m_Priv;
     // TRX_DC_ASMOFF2 bit 2097152 draws every object mesh by mesh.
@@ -900,7 +1064,8 @@ MESH_INSTANCE *OutputSource_Objects_BeginRig(const OBJECT *const obj)
         || M_HasPolicy(obj->mesh_idx, obj->mesh_count)) {
         return nullptr;
     }
-    OUTPUT_MESH *const mesh = M_GetRig(obj);
+    OUTPUT_MESH *const mesh = M_GetRig(
+        obj, (g_DC_AsmOff2 & 4194304) != 0 ? 0 : lod); // bit 4194304: no LOD
     if (mesh == nullptr) {
         return nullptr;
     }

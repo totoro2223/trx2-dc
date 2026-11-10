@@ -121,6 +121,8 @@ static CLIP M_GetClip(const OBJECT *const obj, const BOUNDS_16 *const bounds)
 // Past this depth (the fog starts at 12 blocks) an enemy loses the meshes of
 // no more than so many vertices and so small a radius.
     #define M_FAR_ENEMY_DEPTH (14 * WALL_L)
+    // Past this, a rig leaves out its smallest faces (level 1; far, level 2).
+    #define M_LOD1_DEPTH (8 * WALL_L)
     #define M_FAR_ENEMY_MESH_VERTICES 8
     #define M_FAR_ENEMY_MESH_RADIUS 300
 #endif
@@ -192,7 +194,11 @@ static bool M_DrawInterpolatedObject(
     MESH_INSTANCE *const rig = m_RigItem && g_Config.rendering.enable_lighting
             && mesh_swap == nullptr
             && (mesh_mask & all_meshes) == all_meshes && !DC_Shadow_IsCasting()
-        ? OutputSource_Objects_BeginRig(obj)
+        ? OutputSource_Objects_BeginRig(
+            obj,
+            far_item ? 2
+                     : ((int32_t)g_MatrixPtr->_23 >> W2V_SHIFT) > M_LOD1_DEPTH ? 1
+                                                                                : 0)
         : nullptr;
 #endif
     ANIM_WALK walk;
@@ -324,6 +330,13 @@ bool Object_DrawAnimatingItemWithSwap(
     const int32_t frac = Item_GetFrames(item, frames, &rate);
     const OBJECT *const obj = Object_Get(item->object_id);
     const BOUNDS_16 *const bounds = Item_GetBoundsAccurate(item);
+#if defined(__DREAMCAST__)
+    // TEST (TRX_DC_ASMOFF2 bit 33554432): the enemies are not drawn, to tell
+    // what they cost from what drawing them does.
+    if (obj->intelligent && (g_DC_AsmOff2 & 33554432) != 0) {
+        return false;
+    }
+#endif
 
     const OBJECT *swap_obj = mesh_swap;
     if (swap_obj != nullptr && !swap_obj->loaded) {

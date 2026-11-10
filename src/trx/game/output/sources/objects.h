@@ -73,7 +73,8 @@ int32_t OutputSource_Objects_EvictToBudget(int32_t max_vertices);
 // mesh, a range of vertices per bone, one setup, light and emission. Begin
 // with the object's matrix on the stack (nullptr: draw it mesh by mesh), give
 // each joint's matrix in turn as the walk reaches it, then end.
-MESH_INSTANCE *OutputSource_Objects_BeginRig(const OBJECT *obj);
+// lod 0 draws all of the object, 1 and 2 leave out its smaller faces.
+MESH_INSTANCE *OutputSource_Objects_BeginRig(const OBJECT *obj, int32_t lod);
 void OutputSource_Objects_RigBone(
     MESH_INSTANCE *rig, int32_t joint, bool interpolated, bool skip);
 void OutputSource_Objects_EndRig(MESH_INSTANCE *rig);

@@ -101,6 +101,12 @@ typedef struct {
     // one past the last. 0 bones for any other mesh.
     int32_t bone_count;
     uint16_t *bone_start;
+    // Where each bone's faces start in the opaque indices (both classes: the
+    // clean ones, then those with discard; bone_idx[class * (n + 1) + bone],
+    // the last of a class its end), when the faces go bone by bone: a bone's
+    // vertices are then emitted while they are still in the cache. nullptr
+    // when they do not.
+    uint16_t *bone_idx;
 #endif
 } OUTPUT_MESH;
 

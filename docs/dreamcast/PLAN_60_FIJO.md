@@ -262,6 +262,36 @@ La Jungla y TR2 Great Wall siguen a 60. Verificación: 0 distintas (Antártida 1
 - Queda fuera: Lara, objetos con `mesh_swap` o mallas ocultas, con política de malla, que proyectan volumen, del inventario o la interfaz, o sin luz; esos van malla a malla como antes.
 - Lo que falta: mirar la imagen (enemigos, puertas, trampas animadas) y medir en consola, donde el coste fijo por malla debería pesar más que en Flycast.
 
+**Cuarta tanda de objetos (10/11/2026, DC builds 920-927), en todos los modos**: pedida la lista de alternativas drásticas, se aplicaron la pose cacheada (1), el LOD (2) y la transformación y emisión por hueso (4).
+
+| Qué | Estado |
+|---|---|
+| 1. Pose cacheada | Hecho solo para objetos con luz plana (`M_PoseKey`, `M_PoseGet`, `m_VertexOverride`): la pose son las matrices de los huesos relativas a la del objeto, cuantizadas (rotación 1/32 y traslación 16 u pasadas 8 casillas, 1/256 y 0,5 u antes); a la segunda vez que se ve se hornean los vértices en el espacio del objeto (96 KiB en total, 12 poses, el más viejo se va) y el objeto se coloca con una sola matriz. `TRX_DC_ASMOFF2` bit 16777216 lo apaga. |
+| 2. LOD | Hecho: el rig se construye en tres niveles (`M_GetRig(obj, lod)`): 0 entero, 1 pasadas 8 casillas con el 70 % de las caras más grandes (cada malla conserva la suya mayor, ningún hueso desaparece), 2 pasadas 14 casillas con el 45 %. Objetos de menos de 120 vértices solo tienen el nivel 0. El umbral es global al objeto. Bit 4194304 lo apaga. |
+| 4. Transformar y emitir por hueso | Hecho: `OUTPUT_MESH.bone_idx` guarda dónde empiezan las caras de cada hueso en las listas de índices (se comprueba que van hueso por hueso); `M_TransformRig` emite las caras de cada hueso en cuanto coloca sus vértices, con sus vértices aún en la caché de datos. Solo caras opacas normales, sin sombras suaves, sin niebla de color, sin desvanecer. Bit 8388608 lo apaga. |
+
+- Compila y corre sin fallos; `[obj-check]` 0 distintas.
+- Benchmark de TR2 (Flycast oculto, demo 0, Native 60) con todo encendido frente a todo apagado con el mismo binario: 57,7 / 57,7 fps, `pass` 5,7 / 5,6 ms, polígonos 546 / 544. TR3 Londres: 56,3 / 56,6 fps, `pass` 7,9 / 7,8 ms. Sin diferencia medible en Flycast.
+- Cuántas veces entra cada uno (TR2, 600 fotogramas): 315 rigs emitidos por hueso; poses 120 aciertos, 17 horneadas, 332 vistas. En Londres, 357 rigs, 166 aciertos.
+- El LOD no se ejerce en esos demos: no hay enemigos de más de 120 vértices a más de 8 casillas. Con el nivel 1 forzado a 1 casilla, el objeto de 16 huesos pasó de 408 a 298 vértices y de 606 a 444 índices, y los polígonos del demo no se movieron (543 frente a 546), porque ese objeto casi no sale.
+- Lo que no se hizo ni se miró: la imagen (en modo oculto no hay capturas; un hueco en un enemigo lejano sería visible solo mirando) y la consola, que es donde la emisión por hueso y la caché de datos importan.
+- Por análisis, la pose cacheada ahorra solo las matrices y las luces por hueso (el trabajo por vértice es el mismo), así que no se espera mucha ganancia.
+
+**Enemigos a la vista, con datos de TR1 (10/11/2026, DC builds 928-931)**: benchmark 0 de TR1 (`build	r1-classic\DATA`), Native 60, con el dibujo de los enemigos encendido y apagado con el mismo binario (`TRX_DC_ASMOFF2` bit 33554432, solo para pruebas: no dibuja a los `intelligent`).
+
+| | con enemigos | sin dibujarlos |
+|---|---|---|
+| Build normal: fps | 57,2 | 57,9 |
+| `stage` / `pass` (ms) | 2,6 / 7,1 | 1,6 / 4,5 |
+| polígonos / instancias | 733 / 23 | 499 / 20 |
+| Build de sondas (lento): fps | 21,4 | 32,1 |
+| `sitem` / `iwalk` / `edraw` (µs) | 2225 / 1013 / 1955 | 261 / 8 / 40 |
+| `items` (control de objetos, µs) | 5073 | 2443 |
+
+- Tres enemigos a la vista cuestan ~2,6 ms de `pass` y ~1,0 ms de `stage` (más del lado de la lógica): ~0,9 ms de `pass` por enemigo para ~78 polígonos, unos 11 µs por polígono, lo mismo que cuestan los de las salas (~9 µs). No hay un coste extra por enemigo más allá de sus polígonos.
+- Del lado del `stage`, el recorrido del esqueleto (`iwalk`, con la mezcla de dos poses por hueso) es la mitad de `sitem`. Del lado de la lógica, el control de las criaturas (`items`) suma otros ~2,6 ms en la build de sondas; la consola tiene un solo procesador y el hilo de la lógica le quita tiempo al de dibujo.
+- Flycast no reproduce una caída fuerte de fps con enemigos en Native 60 (57,2 frente a 57,9). La caída que se ve en consola no está en estos números: hace falta medir allí.
+
 Sin probar:
 - La consola.
 - La imagen (en modo oculto no hay capturas).

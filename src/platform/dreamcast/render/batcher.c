@@ -2602,6 +2602,10 @@ static bool M_XformRoom(
     return true;
 }
 
+// A pose's vertices in the object's own space (M_PoseGet), read in place of
+// the mesh's by M_XformObject and M_ObjPlace while set.
+static const OUTPUT_MESH_VERTEX *m_VertexOverride = nullptr;
+
 // What xform_obj_sh4.S takes: the plain object (see dc_xform_object).
 typedef struct {
     M_XFORM *c;
@@ -2645,7 +2649,10 @@ static void M_XformObject(
     // A rig's bone is a range of the mesh (start, count), its twins counted
     // from the range's start; anything else is the whole mesh.
     const OUTPUT_MESH_VERTEX *const vertices =
-        (const OUTPUT_MESH_VERTEX *)Vector_GetData(bind->mesh->vertices) + start;
+        (m_VertexOverride != nullptr
+             ? m_VertexOverride
+             : (const OUTPUT_MESH_VERTEX *)Vector_GetData(bind->mesh->vertices))
+        + start;
     M_XVERT *const xverts = batcher->xverts + start;
     const int32_t min_shade = M_ShadeLow();
     const bool env = batcher->env;
@@ -4575,6 +4582,8 @@ static uint32_t m_NatAlwaysN = 0;
 static uint32_t m_ObjCache[3];
 // TEMP: rigs drawn (M_TransformRig).
 static uint32_t m_RigDraws = 0;
+static uint32_t m_RigFused = 0; // TEMP: rigs emitted bone by bone
+static uint32_t m_PoseStat[3]; // TEMP: poses kept hit, made, seen
 static uint32_t m_ObjCheckN = 0;
 static uint32_t m_ObjCheckBad = 0;
 // TEMP: the pass by what it draws: rooms, other instances, particles quads
@@ -4716,6 +4725,11 @@ void DC_Batcher_SetNative(bool on)
         memset(m_ObjCache, 0, sizeof(m_ObjCache));
         LOG_INFO("[pass] rigs drawn: %u in 600 frames", (unsigned)m_RigDraws);
         m_RigDraws = 0;
+        LOG_INFO("[pass] rigs emitted by bone: %u; poses: %u hit, %u made, %u seen",
+                 (unsigned)m_RigFused, (unsigned)m_PoseStat[0],
+                 (unsigned)m_PoseStat[1], (unsigned)m_PoseStat[2]);
+        m_RigFused = 0;
+        memset(m_PoseStat, 0, sizeof(m_PoseStat));
 #if defined(TRX_DC_WATCHDOG)
         LOG_INFO("[obj-check] %u corners checked, %u mismatched",
                  (unsigned)m_ObjCheckN, (unsigned)m_ObjCheckBad);
@@ -5473,7 +5487,10 @@ static void M_ObjPlace(
     M_XFORM *const c)
 {
     const OUTPUT_MESH_VERTEX *const vs =
-        (const OUTPUT_MESH_VERTEX *)Vector_GetData(bind->mesh->vertices) + start;
+        (m_VertexOverride != nullptr
+             ? m_VertexOverride
+             : (const OUTPUT_MESH_VERTEX *)Vector_GetData(bind->mesh->vertices))
+        + start;
     if (bind->twin != nullptr) {
         M_OBJPLACE run = {
             .vertices = vs,
@@ -5539,6 +5556,161 @@ static void M_ObjKeep(
 // sides. Lit as the plain path lights an object, bone by bone.
 static MATRIX m_RigBones[M_RIG_POOL];
 static int32_t m_RigBoneCount = 0;
+// What M_DrawInstance is drawing, for the rig that emits as it transforms.
+static SCENE_PASS m_DrawPass = SCENE_PASS_OPAQUE;
+static int16_t m_DrawCaster = -1;
+
+// A far object's pose kept (PLAN_60_FIJO.md, objects): its bones' matrices,
+// taken from the object's own, say the pose; the vertices of every bone are
+// placed in the object's space once (a pose is posed to a keyframe, which a far
+// object holds for several ticks), and then the whole object is placed by one
+// matrix instead of one per bone. A pose is kept on its second sighting: most
+// are seen once. TRX_DC_ASMOFF2 bit 16777216 turns it off.
+#define M_POSE_SLOTS 12
+#define M_POSE_BYTES (96 * 1024)
+#define M_POSE_SEEN 128
+#define M_POSE_FAR_SQ (8192.0f * 8192.0f)
+typedef struct {
+    const M_BINDING *bind;
+    uint32_t key;
+    OUTPUT_MESH_VERTEX *vertices;
+    int32_t count;
+    uint32_t used;
+} M_POSE;
+static M_POSE m_Poses[M_POSE_SLOTS];
+static size_t m_PoseBytes = 0;
+static uint32_t m_PoseSeen[M_POSE_SEEN];
+static uint32_t m_PoseClock = 0;
+
+static void M_PoseFree(M_POSE *const pose)
+{
+    if (pose->vertices != nullptr) {
+        m_PoseBytes -= sizeof(OUTPUT_MESH_VERTEX) * (size_t)pose->count;
+        free(pose->vertices);
+    }
+    memset(pose, 0, sizeof(*pose));
+}
+
+static void M_PoseForget(const M_BINDING *const bind)
+{
+    for (int32_t i = 0; i < M_POSE_SLOTS; i++) {
+        if (m_Poses[i].bind == bind) {
+            M_PoseFree(&m_Poses[i]);
+        }
+    }
+    memset(m_PoseSeen, 0, sizeof(m_PoseSeen));
+}
+
+// The pose of the rig's bones (their matrices relative to the object's own),
+// as a key; the relative matrices go to rel (column by column, 12 floats a
+// bone).
+static uint32_t M_PoseKey(
+    const M_BINDING *const bind, const MESH_INSTANCE *const inst,
+    const MATRIX *const bones, const bool far, float (*const rel)[12])
+{
+    float w[4][4];
+    Output_FillMatrix(w, &inst->wmatrix);
+    const float qr = far ? 32.0f : 256.0f;
+    const float qt = far ? 1.0f / 16.0f : 0.5f;
+    uint32_t h = 2166136261u ^ (uint32_t)(uintptr_t)bind ^ inst->rig_skip;
+    for (int32_t b = 0; b < inst->rig_bones; b++) {
+        float m[4][4];
+        Output_FillMatrix(m, &bones[b]);
+        float *const r = rel[b];
+        for (int32_t k = 0; k < 3; k++) {
+            for (int32_t i = 0; i < 3; i++) {
+                r[k * 3 + i] = w[i][0] * m[k][0] + w[i][1] * m[k][1]
+                    + w[i][2] * m[k][2];
+            }
+        }
+        const float d[3] = { m[3][0] - w[3][0], m[3][1] - w[3][1],
+                             m[3][2] - w[3][2] };
+        for (int32_t i = 0; i < 3; i++) {
+            r[9 + i] = w[i][0] * d[0] + w[i][1] * d[1] + w[i][2] * d[2];
+        }
+        for (int32_t i = 0; i < 9; i++) {
+            h = (h ^ (uint32_t)(int32_t)lrintf(r[i] * qr)) * 16777619u;
+        }
+        for (int32_t i = 9; i < 12; i++) {
+            h = (h ^ (uint32_t)(int32_t)lrintf(r[i] * qt)) * 16777619u;
+        }
+    }
+    return h | 1u;
+}
+
+// The vertices of the pose with this key, or nullptr: found, or (on the
+// second sighting) made from rel.
+static const OUTPUT_MESH_VERTEX *M_PoseGet(
+    const M_BINDING *const bind, const uint32_t key,
+    const float (*const rel)[12])
+{
+    m_PoseClock++;
+    for (int32_t i = 0; i < M_POSE_SLOTS; i++) {
+        if (m_Poses[i].bind == bind && m_Poses[i].key == key) {
+            m_Poses[i].used = m_PoseClock;
+            m_PoseStat[0]++;
+            return m_Poses[i].vertices;
+        }
+    }
+    uint32_t *const seen = &m_PoseSeen[(key >> 4) % M_POSE_SEEN];
+    m_PoseStat[2]++;
+    if (*seen != key) {
+        *seen = key;
+        return nullptr;
+    }
+    const size_t bytes = sizeof(OUTPUT_MESH_VERTEX) * (size_t)bind->vertex_count;
+    if (bytes > M_POSE_BYTES / 2) {
+        return nullptr;
+    }
+    // The oldest go until it fits.
+    for (;;) {
+        int32_t free_slot = -1;
+        int32_t oldest = -1;
+        for (int32_t i = 0; i < M_POSE_SLOTS; i++) {
+            if (m_Poses[i].vertices == nullptr) {
+                free_slot = i;
+            } else if (oldest < 0 || m_Poses[i].used < m_Poses[oldest].used) {
+                oldest = i;
+            }
+        }
+        if (free_slot >= 0 && m_PoseBytes + bytes <= M_POSE_BYTES) {
+            M_POSE *const pose = &m_Poses[free_slot];
+            pose->vertices = malloc(bytes);
+            if (pose->vertices == nullptr) {
+                return nullptr;
+            }
+            const OUTPUT_MESH_VERTEX *const src =
+                Vector_GetData(bind->mesh->vertices);
+            memcpy(pose->vertices, src, bytes);
+            const uint16_t *const starts = bind->mesh->bone_start;
+            for (int32_t b = 0; b < bind->mesh->bone_count; b++) {
+                const float *const r = rel[b];
+                for (int32_t v = starts[b]; v < starts[b + 1]; v++) {
+                    const float x = src[v].pos.x;
+                    const float y = src[v].pos.y;
+                    const float z = src[v].pos.z;
+                    pose->vertices[v].pos.x = (int16_t)lrintf(
+                        r[0] * x + r[3] * y + r[6] * z + r[9]);
+                    pose->vertices[v].pos.y = (int16_t)lrintf(
+                        r[1] * x + r[4] * y + r[7] * z + r[10]);
+                    pose->vertices[v].pos.z = (int16_t)lrintf(
+                        r[2] * x + r[5] * y + r[8] * z + r[11]);
+                }
+            }
+            pose->bind = bind;
+            pose->key = key;
+            pose->count = bind->vertex_count;
+            pose->used = m_PoseClock;
+            m_PoseBytes += bytes;
+            m_PoseStat[1]++;
+            return pose->vertices;
+        }
+        if (oldest < 0) {
+            return nullptr;
+        }
+        M_PoseFree(&m_Poses[oldest]);
+    }
+}
 
 static bool M_TransformRig(
     MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
@@ -5598,11 +5770,78 @@ static bool M_TransformRig(
     const bool flat = eye_sq > M_LIGHT_LOD_SQ && (g_DC_AsmOff2 & 8192) == 0;
     const MATRIX *const bones = &m_RigBones[inst->rig_first];
     const uint16_t *const starts = bind->mesh->bone_start;
+    // Each bone's faces go out as soon as its vertices are placed, while they
+    // are still in the cache (a bone is a kilobyte or two; the whole object's
+    // are most of the 16 KiB the SH-4 has). Only the plain opaque faces of an
+    // object with nothing drawn before or after them by another path.
+    const uint16_t *const fuse_idx = bind->mesh->bone_idx;
+    const bool fuse = fuse_idx != nullptr && (g_DC_AsmOff2 & 8388608) == 0
+        && m_DrawPass == SCENE_PASS_OPAQUE && m_DrawCaster < 0
+        && !m_Soft.active && black_fog && inst->tint.a >= 1.0f;
+    const OUTPUT_MESH_INDEX *const fuse_faces =
+        fuse ? Vector_GetData(bind->mesh->opaque_vertex_indices) : nullptr;
+    int32_t fuse_page = INT32_MIN;
+    int32_t fuse_last = -1;
     M_INSTANCE_LIGHT il;
     bool lit = false;
     uint32_t key = 0;
     const uint32_t *kept = nullptr;
+    // A far object whose pose was kept: all its corners placed by one matrix.
+    const OUTPUT_MESH_VERTEX *pose = nullptr;
+    if (flat && (g_DC_AsmOff2 & 16777216) == 0 && inst->rig_bones <= 32
+        && bind->twin != nullptr) {
+        static float rel[32][12];
+        const uint32_t pkey =
+            M_PoseKey(bind, inst, bones, eye_sq > M_POSE_FAR_SQ, rel);
+        pose = M_PoseGet(bind, pkey, rel);
+    }
+    if (pose != nullptr) {
+        M_PrepareInstanceLight(obj_inst, bind, mv, &il);
+        if (il.tr3) {
+            for (int32_t i = 0; i < il.tr3_count; i++) {
+                for (int32_t k = 0; k < 3; k++) {
+                    il.tr3_ambient[k] += il.tr3_color[i][k] * 0.25f;
+                }
+            }
+            il.tr3_count = 0;
+        }
+        il.has_direction = false;
+        il.l[0] = il.l[1] = il.l[2] = 0.0f;
+        key = M_ObjKey(batcher, bind, obj_inst, &il, c);
+        kept = M_ObjFind(bind, key);
+        float pmv[4][4];
+        memcpy(pmv, mv, sizeof(pmv));
+        mat_load(&pmv);
+        m_VertexOverride = pose;
+        if (kept != nullptr) {
+            M_ObjPlace(batcher, bind, kept, 0, bind->vertex_count, c);
+        } else {
+            M_XformObject(
+                batcher, bind, obj_inst, &il, c, pmv, 0.0f, 0,
+                bind->vertex_count);
+        }
+        m_VertexOverride = nullptr;
+        for (int32_t b = 0; b < inst->rig_bones; b++) {
+            if ((inst->rig_skip >> b & 1u) != 0) {
+                for (int32_t i = starts[b]; i < starts[b + 1]; i++) {
+                    batcher->xverts[i].clip = M_CLIP_LEFT;
+                }
+            }
+        }
+        if (kept == nullptr && key != 0 && inst->rig_skip == 0) {
+            M_ObjKeep(batcher, bind, key);
+        }
+        if (!black_fog) {
+            const int32_t whole[1][2] = { { 0, bind->vertex_count } };
+            M_FogColours(batcher, inst, c, whole, 1);
+        }
+        if (m_Frame.depth.track && c->max_inv_z > 0.0f) {
+            DC_PVR_UseDepth(M_Depth(m_Frame.near_z * c->max_inv_z));
+        }
+        return true;
+    }
     for (int32_t b = 0; b < inst->rig_bones; b++) {
+
         const int32_t start = starts[b];
         const int32_t count = starts[b + 1] - start;
         if (count <= 0) {
@@ -5643,6 +5882,28 @@ static bool M_TransformRig(
             M_XformObject(
                 batcher, bind, obj_inst, &il, c, bmv, 0.0f, start, count);
         }
+        if (fuse) {
+            const int32_t nb = inst->rig_bones + 1;
+            for (int32_t cls = 0; cls < 2; cls++) {
+                const int32_t lo = fuse_idx[cls * nb + b];
+                const int32_t hi = fuse_idx[cls * nb + b + 1];
+                if (hi <= lo) {
+                    continue;
+                }
+                if (cls != fuse_last) {
+                    // Another run: the header carries its blend.
+                    fuse_last = cls;
+                    fuse_page = INT32_MIN;
+                }
+                M_EmitIndices(
+                    batcher, bind, fuse_faces + lo, hi - lo,
+                    cls == 0 ? DC_BLEND_OPAQUE : DC_BLEND_PUNCH, &fuse_page);
+            }
+        }
+    }
+    if (fuse) {
+        batcher->emitted = true;
+        m_RigFused++;
     }
     // Bones left out have no colours to keep.
     if (kept == nullptr && key != 0 && inst->rig_skip == 0) {
@@ -8808,6 +9069,8 @@ static void M_DrawInstance(
     batcher->emitted = false;
     batcher->chunk_emit_us = 0;
     DC_PROBE_STOP(DC_PROBE_D_PRE, probe_pre);
+    m_DrawPass = pass;
+    m_DrawCaster = caster;
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     const uint64_t xform_start = timer_us_gettime64();
     m_ObjPath = 3;
@@ -10906,6 +11169,7 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
         m_BumpCacheBytes -= sizeof(M_BUMP_CORNER) * bind->bump_count;
         Memory_Free(bind->bump_cache);
     }
+    M_PoseForget(bind);
     Vector_Remove(batcher->bindings, &bind);
     HASH_DEL(batcher->map, bind);
     Memory_Free(bind);
