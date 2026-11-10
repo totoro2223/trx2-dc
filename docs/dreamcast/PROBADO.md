@@ -395,3 +395,32 @@ paso, sombras Hard de largo fijo, texturas de TR3 en VQ.
   - Experimental 60 desde el arranque (Venecia, Flycast oculto, 70 s) | OK | 55–60 fps a 320×240, trabajo ~14 ms por frame.
   - Películas en VQ 256×256 (TRXV v2, `fmvconv.c`) | SUSTITUIDO | 15 fps en Flycast (build 404); el reproductor solo lee MPEG-1 (v3) desde `ce18f7d4a`.
   - Pruebas de flujo y guardado en bucle (T58), recorridos T59/T60/T63, piscina T67, censo T66, matrices del batcher T68: cubiertos por las filas de memoria de arriba (P1/P2, builds 784-805).
+
+## 60 fijos: modo Native 60 (09/11/2026, rama `full60fps`, PLAN_60_FIJO.md)
+
+| Qué | Resultado | Datos |
+|---|---|---|
+| Salas por lotes de vértices únicos en la OCRAM (`M_BakeNative`/`M_DrawNative`, `dc_emit_run_map`) | OK en Flycast | 0 distintas frente a la ruta de salas: TR2 96 075, TR3 66 759 esquinas (builds 846-850). TR2 pass 4,1 → 3,7 ms, TR3 6,9 → 5,3 ms. Consola: sin medir |
+| Trocear salas con sprites y con esquinas compartidas (`M_SplitShared`), en todos los modos | OK en Flycast | TR3 Jungle: 33 → 74 salas troceadas. Graphics sigue a 30 fps (build 849) |
+| Hilo de render con cerrojo del mundo y ticks publicados (`dc_world.c`) | OK en Flycast | 60 fps estables en TR2 y TR3; salida del nivel con el hilo activo (build 851). Inventario y guardado: sin probar |
+| Niebla por tabla de la PVR, 12 → 20 casillas por profundidad | Hecho | Imagen sin mirar (pruebas ocultas) |
+| Tope de 2500 polígonos para objetos lejanos | Hecho | No llega a actuar en las escenas probadas (≤ 650 polígonos) |
+| Hilo de render sin dejar CPU a la lógica cuando el frame pasa de 16,6 ms | CORREGIDO | Antártida: 5 ticks en 600 frames (juego congelado a 43 fps) → 512-544 ticks a 36 fps; el render espera un tick si la lógica va atrasada (builds 853-855) |
+| Antártida (TR3 nivel 16), Native 60 en Flycast | 36 fps | `stage` 6 + `pass` 18 ms; cerrojo 0,1 ms de media, 2,4 ms como mucho; Graphics 30 fps con `pass` 22 ms |
+| Native 60: proyección a pantalla una vez por vértice (`dc_nat_screen`) | OK en Flycast | Antártida 36 → 39-40 fps, `pass` 18,1 → 15,8 ms; 0 distintas (builds 870-876) |
+| Native 60: color horneado por lote (`dc_nat_place`) | OK en Flycast | Transformación nativa 4,2 → 3,0 ms en la Antártida; los lotes con agua o sprites siguen por la ruta completa |
+| Trozos de 4096 y salas pequeñas como un trozo | OK en Flycast | Antártida: unos 370 → 140 lotes por frame; con 2048 las salas pequeñas costaban más que por la ruta vieja |
+| Separar caras normales, de agua y de sprites dentro de cada trozo | FALLIDO | Más cambios de página y lotes, sin ganancia (build 862); quitado |
+| Hilo de render despertado por la vblank en vez de `thd_sleep` | OK en Flycast | Frames tarde: 398-504 → 7-9 cada 600 (Jungla, Great Wall) |
+| Niebla por tabla fuera de la caché de cabeceras | CORREGIDO | `M_SameState` y la clave de `M_CachedHeader` incluyen ahora la niebla |
+| Estáticos fusionados en la malla de su sala al cargar | OK en Flycast | Antártida 39-40 → 43-44 fps, `stage` 6,0 → 4,5 ms, instancias 93 → 60; Jungla 13 310 vértices fusionados, a 60 (builds 878-883). Color sin mirar en pantalla |
+| Descarte de lotes por esfera y cono de normales | OK, poca ganancia | Signo comprobado (833 lotes, 0 dibujan); ~7 lotes por frame en la Antártida |
+| Native 60: escena preparada una vez por tick, el primer frame interpolado a medio tick y los siguientes repetidos (`DC_Replay`) | OK en Flycast | Antártida 43-44 → 46-47 fps, `stage` 4,5 → 3,0-3,2 ms; Jungla y Great Wall a 60 (builds 884-886). Imagen sin mirar |
+| Native 60: agua en el camino horneado (tabla por franja, como el PSX) | OK en Flycast | Transformación nativa 3,1 → 1,8 ms en la Antártida; 0 distintas (build 889) |
+| Pase de suma sin volver a emitir los trozos opacos de las salas | CORREGIDO | Las salas con caras de suma duplicaban sus caras opacas: 1690 → 1510 polígonos en la Antártida, en todos los modos (build 891) |
+| Native 60: vértices fuera de los trozos por el camino horneado (`M_NatAlways`) | OK en Flycast | Antártida 53 → 54-55 fps; 14 de 33 salas por frame; 0 distintas (builds 892-894) |
+| Native 60: colores de objeto guardados por clave de luz (`M_ObjCached`, `dc_obj_place`) | OK en Flycast | Antártida 54-55 → 55-58 fps; 69 % de objetos reutilizados; `[obj-check]` sin diferencias de más de un nivel (builds 895-898) |
+| Emisor de lotes nativos sin color de desplazamiento ni copias de la posición | OK en Flycast | Emisión nativa 3,46 → 3,26 ms en la Antártida (build 900) |
+| Temporizadores finos del `pass` apagados salvo `TRX_DC_PASS_TIMERS` | OK en Flycast | Antártida 57-60 fps, `pass` 11,4-11,5 ms (builds 901-903) |
+| UV de 16 bits de la PowerVR en el emisor | DESCARTADO, sin probar | Pierde el medio texel del bilineal en la mitad derecha de cada página |
+| `TRX_DC_SAVE` sin Lua | No guarda | «test: no Lua in this build»; el gancho necesita otra vía |

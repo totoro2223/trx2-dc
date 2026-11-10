@@ -9,6 +9,7 @@
 // TEMP: see platform/dreamcast/dc_probe.h
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_probe.h>
+    #include <platform/dreamcast/dc_world.h>
 #else
     #define DC_PROBE(i, stmt) stmt
     #define DC_PROBE_START(t)
@@ -17,6 +18,12 @@
 
 void Game_Draw(const bool draw_overlay)
 {
+#if defined(__DREAMCAST__)
+    // The frames after a tick draw its staging again (dc_world.h).
+    if (DC_Replay_GameDraw()) {
+        return;
+    }
+#endif
     DC_PROBE_START(probe_pre);
     Interpolation_Interpolate();
     CutSeq_PreDraw();
@@ -34,4 +41,7 @@ void Game_Draw(const bool draw_overlay)
     if (g_Config.visuals.enable_reflections) {
         Output_Textures_UpdateEnvironmentMap();
     }
+#if defined(__DREAMCAST__)
+    DC_Replay_GameDrawDone();
+#endif
 }

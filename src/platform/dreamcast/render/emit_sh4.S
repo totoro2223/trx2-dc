@@ -48,9 +48,20 @@
 #endif
     .endm
 
+! DC_EMIT_MAP (emit_map_sh4.S, the native rooms' batches, batcher.c
+! M_DrawNative): xverts is per corner the byte offset of its vertex's sx in the
+! batch buffer, whose address comes in sargb (stack slot 32); there are no cel
+! copies, and the fog colour lies in the vertex (bit 7 of its clip byte says
+! fogged, the colour in the three bytes above), oargb only saying there is one.
+#if defined(DC_EMIT_MAP)
+#define EMIT_ENTRY _dc_emit_run_map
+#else
+#define EMIT_ENTRY _dc_emit_run
+#endif
+
     .text
     .align 2
-    .global _dc_emit_run
+    .global EMIT_ENTRY
 
 ! The xvert of the corner at \off in the indices, to its sx, into slot \slot.
     .macro LOAD_CORNER off, slot
@@ -68,10 +79,18 @@
     .macro LOAD_CLIP off, slot, first
     mov.w   @(\off,r6),r0
     extu.w  r0,r0
+#if defined(DC_EMIT_MAP)
+    add     r0,r0
+    mov.w   @(r0,r8),r0             ! the offset of its sx in the batch
+    extu.w  r0,r0
+    mov.l   @(32,r15),r1
+    add     r1,r0
+#else
     shll2   r0
     shll2   r0
     shll    r0
     add     r8,r0
+#endif
     mov.l   r0,@(\slot,r15)
     mov     r0,r5
     mov     #16,r0
@@ -121,6 +140,12 @@
     ! the offset colour: the table's, or the fog's black where fogged
     tst     r13,r13
     bf      8f
+#if defined(DC_EMIT_MAP)
+    ! A native batch with no fog colour has no vertex in the fog either (the
+    ! PowerVR's table fogs it, or nothing does): none.
+    bra     9f
+    mov     #0,r14
+#endif
     mov.l   @(\slot,r15),r5
     mov     #16,r0
     mov.b   @(r0,r5),r0
@@ -130,9 +155,25 @@
     shll16  r14
     bra     9f
     shll8   r14
-8:  mov     r1,r0
+8:
+#if defined(DC_EMIT_MAP)
+    mov.l   @(\slot,r15),r5
+    mov     #16,r0
+    mov.l   @(r0,r5),r14            ! clip, then the fog colour above it
+    mov     r14,r0
+    tst     #0x80,r0                ! T: not fogged
+    shlr8   r14
+    movt    r0
+    add     #-1,r0                  ! 0 not fogged, -1 fogged
+    and     r0,r14
+    shll16  r0
+    shll8   r0
+    or      r0,r14                  ! alpha 255 where fogged
+#else
+    mov     r1,r0
     shll2   r0
     mov.l   @(r0,r13),r14
+#endif
 9:
     mov.l   @(\slot,r15),r5
     fmov.s  @r5+,fr2                ! sx
@@ -155,6 +196,16 @@
     nop
 4:
     .endif
+#if defined(DC_EMIT_MAP)
+    ! On the screen already, once per vertex (nat_sh4.S, dc_nat_screen):
+    ! stored as they are.
+#define EMIT_X fr2
+#define EMIT_Y fr3
+#define EMIT_Z fr4
+#else
+#define EMIT_X fr5
+#define EMIT_Y fr6
+#define EMIT_Z fr7
     fmov    fr8,fr5
     fadd    fr2,fr5
     fmul    fr10,fr5                ! x = (centre_x + sx) * scale
@@ -170,14 +221,15 @@
     bf      7f
     fmov    fr12,fr7
 7:  fmul    fr13,fr7
+#endif
     add     #\adv,r11
     mov.l   r14,@-r11
     mov.l   r1,@-r11
     fmov.s  fr1,@-r11
     fmov.s  fr0,@-r11
-    fmov.s  fr7,@-r11
-    fmov.s  fr6,@-r11
-    fmov.s  fr5,@-r11
+    fmov.s  EMIT_Z,@-r11
+    fmov.s  EMIT_Y,@-r11
+    fmov.s  EMIT_X,@-r11
     mov.l   \flag,@-r11
 #if defined(TRX_DC_SQ_VERTICES)
     ! Through a store queue (r11 its address): the real line out of the cache,
@@ -317,7 +369,7 @@
 9:
     .endm
 
-_dc_emit_run:
+EMIT_ENTRY:
     sts.l   pr,@-r15
     mov.l   r8,@-r15
     mov.l   r9,@-r15
@@ -348,7 +400,9 @@ _dc_emit_run:
     mov.l   @r5+,r6
     mov.l   @r5+,r7
     mov.l   @r5+,r8
+#if !defined(DC_EMIT_MAP)
     add     #12,r8                  ! the xverts, at their sx
+#endif
     mov.l   @r5+,r9
     mov.l   @r5+,r10
     mov.l   @r5+,r13

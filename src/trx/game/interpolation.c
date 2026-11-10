@@ -610,3 +610,245 @@ void Interpolation_RememberBraid(void)
 {
     M_RememberBraid();
 }
+
+#if defined(__DREAMCAST__)
+    #include <stdlib.h>
+    #include <string.h>
+
+// What an item shows, as the last tick left it.
+typedef struct {
+    OBJECT_ID object_id; // whose: an item made since keeps its own
+    bool valid;
+    int16_t anim_num;
+    int16_t frame_num;
+    int16_t prev_frame_num;
+    int16_t room_num;
+    int32_t floor;
+    XYZ_32 pos;
+    XYZ_16 rot;
+    int32_t prev_floor;
+    XYZ_32 prev_pos;
+    XYZ_16 prev_rot;
+} M_DC_ITEM_PUB;
+
+typedef struct {
+    uint32_t gen; // the publish it is from
+    OBJECT_ID object_id;
+    int16_t room_num;
+    int16_t frame_num;
+    XYZ_32 pos;
+    XYZ_16 rot;
+    XYZ_32 prev_pos;
+    XYZ_16 prev_rot;
+} M_DC_EFFECT_PUB;
+
+typedef struct {
+    XYZ_32 pos;
+    XYZ_16 rot;
+    XYZ_32 prev_pos;
+    XYZ_16 prev_rot;
+} M_DC_SEGMENT_PUB;
+
+    #define M_DC_MAX_EFFECTS 1024
+    #define M_DC_MAX_SEGMENTS 64
+
+static struct {
+    bool ready;
+    uint32_t gen;
+    CAMERA_INFO camera;
+    bool has_lara;
+    LARA_INFO lara;
+    M_DC_ITEM_PUB *items;
+    int32_t item_count;
+    int32_t item_capacity;
+    M_DC_ITEM_PUB lara_item; // when Lara is not among the items
+    bool lara_apart;
+    M_DC_EFFECT_PUB effects[M_DC_MAX_EFFECTS];
+    // The effects swapped in by the last swap in, to swap back.
+    int16_t swapped[M_DC_MAX_EFFECTS];
+    int32_t swapped_count;
+    M_DC_SEGMENT_PUB segments[M_DC_MAX_SEGMENTS];
+    int32_t segment_count;
+} m_DCPub = {};
+
+    #define M_SWAP(a, b)                                                       \
+        do {                                                                   \
+            __typeof__(a) swap_tmp = (a);                                      \
+            (a) = (b);                                                         \
+            (b) = swap_tmp;                                                    \
+        } while (0)
+
+static void M_DCKeepItem(M_DC_ITEM_PUB *const p, const ITEM *const item)
+{
+    p->object_id = item->object_id;
+    p->valid = true;
+    p->anim_num = item->anim_num;
+    p->frame_num = item->frame_num;
+    p->prev_frame_num = item->prev_frame_num;
+    p->room_num = item->room_num;
+    p->floor = item->floor;
+    p->pos = item->pos;
+    p->rot = item->rot;
+    p->prev_floor = item->interp.prev.floor;
+    p->prev_pos = item->interp.prev.pos;
+    p->prev_rot = item->interp.prev.rot;
+}
+
+static void M_DCSwapItem(M_DC_ITEM_PUB *const p, ITEM *const item)
+{
+    if (!p->valid || p->object_id != item->object_id) {
+        return;
+    }
+    M_SWAP(p->anim_num, item->anim_num);
+    M_SWAP(p->frame_num, item->frame_num);
+    M_SWAP(p->prev_frame_num, item->prev_frame_num);
+    M_SWAP(p->room_num, item->room_num);
+    M_SWAP(p->floor, item->floor);
+    M_SWAP(p->pos, item->pos);
+    M_SWAP(p->rot, item->rot);
+    M_SWAP(p->prev_floor, item->interp.prev.floor);
+    M_SWAP(p->prev_pos, item->interp.prev.pos);
+    M_SWAP(p->prev_rot, item->interp.prev.rot);
+}
+
+static bool M_DCInItems(const ITEM *const item)
+{
+    const int32_t count = Item_GetTotalCount();
+    return count > 0 && item >= Item_Get(0) && item < Item_Get(0) + count;
+}
+
+void Interpolation_DC_Publish(void)
+{
+    m_DCPub.gen++;
+    m_DCPub.camera = g_Camera;
+    LARA_INFO *const lara = Lara_GetLaraInfo();
+    m_DCPub.has_lara = lara != nullptr;
+    if (lara != nullptr) {
+        m_DCPub.lara = *lara;
+    }
+
+    const int32_t count = Item_GetTotalCount();
+    if (count > m_DCPub.item_capacity) {
+        m_DCPub.item_capacity = count + 32;
+        m_DCPub.items = realloc(
+            m_DCPub.items, sizeof(M_DC_ITEM_PUB) * m_DCPub.item_capacity);
+    }
+    m_DCPub.item_count = count;
+    for (int32_t i = 0; i < count; i++) {
+        M_DCKeepItem(&m_DCPub.items[i], Item_Get(i));
+    }
+    const ITEM *const lara_item = Lara_GetItem();
+    m_DCPub.lara_apart = lara_item != nullptr && !M_DCInItems(lara_item);
+    if (m_DCPub.lara_apart) {
+        M_DCKeepItem(&m_DCPub.lara_item, lara_item);
+    }
+
+    for (int16_t num = Effect_GetActiveNum(); num != NO_EFFECT;
+         num = Effect_Get(num)->next_active) {
+        if (num < 0 || num >= M_DC_MAX_EFFECTS) {
+            continue;
+        }
+        const EFFECT *const effect = Effect_Get(num);
+        M_DC_EFFECT_PUB *const p = &m_DCPub.effects[num];
+        p->gen = m_DCPub.gen;
+        p->object_id = effect->object_id;
+        p->room_num = effect->room_num;
+        p->frame_num = effect->frame_num;
+        p->pos = effect->pos;
+        p->rot = effect->rot;
+        p->prev_pos = effect->interp.prev.pos;
+        p->prev_rot = effect->interp.prev.rot;
+    }
+
+    m_DCPub.segment_count = 0;
+    if (Lara_Hair_IsActive()) {
+        for (int32_t i = 0; i < Lara_Hair_GetBraidCount(); i++) {
+            for (int32_t j = 0; j < Lara_Hair_GetSegmentCount(); j++) {
+                if (m_DCPub.segment_count >= M_DC_MAX_SEGMENTS) {
+                    break;
+                }
+                const HAIR_SEGMENT *const s = Lara_Hair_GetSegment(i, j);
+                M_DC_SEGMENT_PUB *const p =
+                    &m_DCPub.segments[m_DCPub.segment_count++];
+                p->pos = s->pos;
+                p->rot = s->rot;
+                p->prev_pos = s->interp.prev.pos;
+                p->prev_rot = s->interp.prev.rot;
+            }
+        }
+    }
+    m_DCPub.ready = true;
+}
+
+// Swaps the published ends in (in) or back out: the same swap both ways, the
+// live values kept meanwhile where the published ones were.
+void Interpolation_DC_Swap(const bool in)
+{
+    if (!m_DCPub.ready) {
+        return;
+    }
+    M_SWAP(m_DCPub.camera, g_Camera);
+    LARA_INFO *const lara = Lara_GetLaraInfo();
+    if (lara != nullptr && m_DCPub.has_lara) {
+        M_SWAP(m_DCPub.lara, *lara);
+    }
+    const int32_t count = MIN(m_DCPub.item_count, Item_GetTotalCount());
+    for (int32_t i = 0; i < count; i++) {
+        M_DCSwapItem(&m_DCPub.items[i], Item_Get(i));
+    }
+    ITEM *const lara_item = Lara_GetItem();
+    if (m_DCPub.lara_apart && lara_item != nullptr && !M_DCInItems(lara_item)) {
+        M_DCSwapItem(&m_DCPub.lara_item, lara_item);
+    }
+
+    if (in) {
+        m_DCPub.swapped_count = 0;
+        for (int16_t num = Effect_GetActiveNum(); num != NO_EFFECT;
+             num = Effect_Get(num)->next_active) {
+            if (num < 0 || num >= M_DC_MAX_EFFECTS
+                || m_DCPub.effects[num].gen != m_DCPub.gen
+                || m_DCPub.effects[num].object_id
+                    != Effect_Get(num)->object_id) {
+                continue;
+            }
+            m_DCPub.swapped[m_DCPub.swapped_count++] = num;
+        }
+    }
+    for (int32_t k = 0; k < m_DCPub.swapped_count; k++) {
+        const int16_t num = m_DCPub.swapped[k];
+        EFFECT *const effect = Effect_Get(num);
+        M_DC_EFFECT_PUB *const p = &m_DCPub.effects[num];
+        M_SWAP(p->room_num, effect->room_num);
+        M_SWAP(p->frame_num, effect->frame_num);
+        M_SWAP(p->pos, effect->pos);
+        M_SWAP(p->rot, effect->rot);
+        M_SWAP(p->prev_pos, effect->interp.prev.pos);
+        M_SWAP(p->prev_rot, effect->interp.prev.rot);
+    }
+
+    if (Lara_Hair_IsActive()) {
+        int32_t n = 0;
+        for (int32_t i = 0; i < Lara_Hair_GetBraidCount(); i++) {
+            for (int32_t j = 0; j < Lara_Hair_GetSegmentCount(); j++) {
+                if (n >= m_DCPub.segment_count) {
+                    break;
+                }
+                HAIR_SEGMENT *const s = Lara_Hair_GetSegment(i, j);
+                M_DC_SEGMENT_PUB *const p = &m_DCPub.segments[n++];
+                M_SWAP(p->pos, s->pos);
+                M_SWAP(p->rot, s->rot);
+                M_SWAP(p->prev_pos, s->interp.prev.pos);
+                M_SWAP(p->prev_rot, s->interp.prev.rot);
+            }
+        }
+    }
+}
+
+// A new level or phase: nothing published belongs to it.
+void Interpolation_DC_Forget(void)
+{
+    m_DCPub.ready = false;
+    m_DCPub.item_count = 0;
+    m_DCPub.swapped_count = 0;
+}
+#endif

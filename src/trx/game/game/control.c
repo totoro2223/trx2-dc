@@ -4,6 +4,7 @@
 #include <trx/game/game_flow/common.h>
 #if defined(__DREAMCAST__)
     #include <platform/dreamcast/dc_strict.h>
+    #include <platform/dreamcast/dc_world.h>
 #endif
 #include <trx/game/camera.h>
 #include <trx/game/clock.h>
@@ -348,6 +349,9 @@ GF_COMMAND Game_Control(const bool demo_mode)
             Sparks_UpdateWind();
         }
     }
+#if defined(__DREAMCAST__)
+    DC_World_Yield();
+#endif
 
     DC_WHERE("post", 0);
     DC_PROBE(DC_PROBE_POST, Game_TickPostControl());
@@ -389,7 +393,13 @@ void Game_TickWorld(void)
     }
 #endif
     DC_PROBE(DC_PROBE_ITEMS, Item_Control());
+#if defined(__DREAMCAST__)
+    DC_World_Yield(); // a frame due, drawn between the items and effects
+#endif
     DC_PROBE(DC_PROBE_FX, Effect_Control(); Sparks_Control());
+#if defined(__DREAMCAST__)
+    DC_World_Yield();
+#endif
 }
 
 void Game_TickPostControl(void)

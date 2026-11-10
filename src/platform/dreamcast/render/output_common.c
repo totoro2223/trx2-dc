@@ -173,6 +173,10 @@ OUTPUT_UI_SHADER *Output_GetUIShader(void)
     return nullptr;
 }
 
+// The frame's parts for the info box (nolua_hud.c, view 2): logic, staging,
+// pass and the PowerVR's render as averages per frame over the last 30, and
+// the busiest frame's work among them.
+uint32_t g_DC_PhaseUs[5] = {};
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
 static void M_StatsBeginScene(void);
 static uint32_t g_DC_ShadowMapUs = 0;
@@ -188,6 +192,7 @@ void Output_BeginScene(void)
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     M_StatsBeginScene();
 #endif
+    DC_Batcher_SetNative(DC_Mode_Get()->native);
     Output_ApplyFOV();
     const RGBA_F background = Output_GetBackgroundColor();
     DC_PVR_SetBackgroundColor(background.r, background.g, background.b);
@@ -648,6 +653,28 @@ static void M_StatsEndScene(void)
         }
     }
     M_BenchFrame(now, value);
+    {
+        static uint32_t acc[4];
+        static uint32_t worst;
+        static int32_t frames;
+        const uint32_t part[4] = { value[M_LOGIC], value[M_DRAW],
+                                   value[M_PASS], value[M_RENDER] };
+        const uint32_t work = value[M_LOGIC] + value[M_DRAW] + value[M_PASS]
+            + value[M_SUBMIT] + value[M_MAP];
+        for (int32_t i = 0; i < 4; i++) {
+            acc[i] += part[i];
+        }
+        worst = work > worst ? work : worst;
+        if (++frames >= 30) {
+            for (int32_t i = 0; i < 4; i++) {
+                g_DC_PhaseUs[i] = acc[i] / frames;
+                acc[i] = 0;
+            }
+            g_DC_PhaseUs[4] = worst;
+            worst = 0;
+            frames = 0;
+        }
+    }
     g_DC_PassUs = 0;
     g_DC_BatcherFrameInstances = 0;
     g_DC_BatcherFrameVertices = 0;

@@ -14,6 +14,12 @@
 #include <trx/version.h>
 
 #include <math.h>
+#if defined(__DREAMCAST__)
+    #include <trx/core/math.h>
+    #include <trx/game/const.h>
+    #include <trx/game/objects/common.h>
+    #include <trx/game/output/const.h>
+#endif
 
 typedef struct {
     MESH_BATCHER *batcher;
@@ -182,6 +188,190 @@ static void M_AddRoomFace(
     MeshBuilder_AddFan(builder, M_GetScenePass(face), face->double_sided, true);
 }
 
+#if defined(__DREAMCAST__)
+// The statics merged into the room that draws them (PLAN_60_FIJO.md): their
+// faces become the room's, lit once as the game lights a static (a constant
+// light, tr3.c's and tr12.c's M_CalculateStaticMeshLight, over the mesh's own
+// shades), so that they go through the room's chunks and the native batches
+// instead of an instance each, every frame, in the staging and the pass. A
+// light passing lights them by the vertex then, as it does the room. Per
+// static draw_num: merged, and so not drawn as an object (rooms/draw.c).
+static bool *m_MergedStatics = nullptr;
+static int32_t m_MergedCapacity = 0;
+static int32_t m_MergedVertices = 0;
+// The vertices the merged statics may add over the level: each instance is a
+// copy of its mesh, which the level's memory has to hold.
+    #define M_MERGE_VERTEX_BUDGET 24000
+
+bool OutputSource_Rooms_IsStaticMerged(const int32_t draw_num)
+{
+    return draw_num >= 0 && draw_num < m_MergedCapacity
+        && m_MergedStatics[draw_num];
+}
+
+static int32_t m_Reject[8];
+static const OBJECT_MESH *M_MergeableStatic(const STATIC_MESH *const sm)
+{
+    if (g_TRVersion > 3 || sm->draw_num < 0 || sm->draw_num >= m_MergedCapacity
+        || m_MergedStatics[sm->draw_num]) {
+        m_Reject[0]++;
+        return nullptr;
+    }
+    // TR3's shatterable statics (none breaks in TRX yet: jeep.c).
+    if (g_TRVersion == 3 && sm->static_num >= 50 && sm->static_num <= 59) {
+        m_Reject[1]++;
+        return nullptr;
+    }
+    // TR1 and TR2 light a static of a flickering or glowing room as it goes.
+    if (g_TRVersion <= 2 && Room_Get(sm->room_num)->light_mode != RLM_NORMAL) {
+        m_Reject[2]++;
+        return nullptr;
+    }
+    const STATIC_OBJECT_3D *const obj = Object_Get3DStatic(sm->static_num);
+    if (!obj->loaded || !obj->visible) {
+        m_Reject[3]++;
+        return nullptr;
+    }
+    const OBJECT_MESH *const mesh = Object_GetMesh(obj->mesh_idx);
+    if (mesh == nullptr || mesh->flat_faces.count > 0
+        || mesh->tex_faces.count == 0 || mesh->enable_solid_color
+        || mesh->enable_reflections) {
+        // (Its depth_adjustment is not kept: the Dreamcast's vertex has none.)
+        m_Reject[4]++;
+        return nullptr;
+    }
+    for (int32_t i = 0; i < mesh->tex_faces.count; i++) {
+        const FACE *const face = &mesh->tex_faces.data[i];
+        if (face->semi_transparent || face->enable_reflections
+            || face->vertex_count < 3 || face->vertex_count > 4) {
+            m_Reject[5]++;
+        return nullptr;
+        }
+    }
+    return mesh;
+}
+
+// Adds the static's faces to the room's mesh, in the room's space; false
+// (nothing added) when a corner would lie past what a room vertex holds.
+static bool M_MergeStatic(
+    MESH_BUILDER *const builder, const ROOM *const room,
+    const STATIC_MESH *const sm, const OBJECT_MESH *const mesh)
+{
+    const int32_t s = Math_Sin(sm->rot.y);
+    const int32_t c = Math_Cos(sm->rot.y);
+    const XYZ_32 d = {
+        .x = sm->pos.x - room->pos.x,
+        .y = sm->pos.y - room->pos.y,
+        .z = sm->pos.z - room->pos.z,
+    };
+    // As Matrix_RotY turns it, then the static's place.
+    for (int32_t i = 0; i < mesh->num_vertices; i++) {
+        const XYZ_16 p = mesh->vertices[i];
+        const int32_t x = ((c * p.x + s * p.z) >> W2V_SHIFT) + d.x;
+        const int32_t y = p.y + d.y;
+        const int32_t z = ((c * p.z - s * p.x) >> W2V_SHIFT) + d.z;
+        if (x < INT16_MIN || x > INT16_MAX || y < INT16_MIN || y > INT16_MAX
+            || z < INT16_MIN || z > INT16_MAX) {
+            return false;
+        }
+    }
+
+    // The static's light, as the game's lighting model makes it at rest.
+    float ambient[3] = { 1.0f, 1.0f, 1.0f };
+    int32_t adder = sm->shade.value_1;
+    if (g_TRVersion == 3) {
+        const int32_t rgb15 = sm->shade.value_1 & 0x7FFF;
+        ambient[0] = ((rgb15 & 0x1F) << 3) / 255.0f;
+        ambient[1] = ((rgb15 & 0x3E0) >> 2) / 255.0f;
+        ambient[2] = ((rgb15 & 0x7C00) >> 7) / 255.0f;
+    }
+    const bool own = mesh->num_lights <= 0;
+
+    for (int32_t f = 0; f < mesh->tex_faces.count; f++) {
+        const FACE *const face = &mesh->tex_faces.data[f];
+        OUTPUT_MESH_VERTEX vertices[4];
+        for (int32_t k = 0; k < face->vertex_count; k++) {
+            const int32_t vi = face->vertices[k];
+            const XYZ_16 p = mesh->vertices[vi];
+            const int32_t shade = own && vi < -mesh->num_lights
+                ? mesh->lighting.lights[vi]
+                : SHADE_NEUTRAL;
+            RGBA_8888 color = { 255, 255, 255, 255 };
+            int32_t room_shade = SHADE_NEUTRAL;
+            if (g_TRVersion == 3) {
+                // batcher.c M_LightVertex's TR3 own and object light: the
+                // ambient, times the vertex's shade for its own.
+                float shade8 = floorf((SHADE_MAX - shade) / 32.0f);
+                shade8 = shade8 <= 0.0f ? 255.0f : shade8;
+                uint8_t *const ch[3] = { &color.r, &color.g, &color.b };
+                for (int32_t i = 0; i < 3; i++) {
+                    float mul = own ? ambient[i] * shade8 / 255.0f : ambient[i];
+                    mul = mul < 0.0f ? 0.0f : mul > 1.0f ? 1.0f : mul;
+                    *ch[i] = (uint8_t)(mul * 255.0f + 0.5f);
+                }
+            } else {
+                room_shade = own ? adder + shade : adder;
+                CLAMP(room_shade, 0, SHADE_MAX);
+            }
+            uint16_t flags = VERT_USE_DYNAMIC_LIGHT;
+            if (Output_Textures_GetObjectTextureScenePass(face->texture_idx)
+                == SCENE_PASS_OPAQUE) {
+                flags |= VERT_NO_ALPHA_DISCARD;
+            }
+            vertices[k] = (OUTPUT_MESH_VERTEX) {
+                .pos = {
+                    .x = ((c * p.x + s * p.z) >> W2V_SHIFT) + d.x,
+                    .y = p.y + d.y,
+                    .z = ((c * p.z - s * p.x) >> W2V_SHIFT) + d.z,
+                },
+                .normal = { .x = 1.0f },
+                .flags = flags,
+                .uvw_idx = Output_Textures_GetObjectUVWIndex(face->texture_idx, k),
+                .shade = room_shade,
+                // The middle of the flicker table: no flicker.
+                .light_table_idx = 16,
+                .color = color,
+            };
+        }
+        MeshBuilder_AddVertices(builder, vertices, face->vertex_count);
+        MeshBuilder_AddFan(builder, M_GetScenePass(face), face->double_sided, true);
+        m_MergedVertices += face->vertex_count;
+    }
+    return true;
+}
+
+static void M_MergeStatics(MESH_BUILDER *const builder, const ROOM *const room)
+{
+    for (int32_t j = 0; j < room->num_static_meshes; j++) {
+        const STATIC_MESH *const sm = &room->static_meshes[j];
+        const OBJECT_MESH *const mesh = M_MergeableStatic(sm);
+        if (mesh == nullptr
+            || m_MergedVertices + mesh->tex_faces.count * 4
+                > M_MERGE_VERTEX_BUDGET) {
+            continue;
+        }
+        if (M_MergeStatic(builder, room, sm, mesh)) {
+            m_MergedStatics[sm->draw_num] = true;
+        }
+    }
+}
+
+static void M_PrepareMergedStatics(void)
+{
+    Memory_FreePointer(&m_MergedStatics);
+    m_MergedVertices = 0;
+    int32_t top = 0;
+    for (int32_t i = 0; i < Room_GetCount(); i++) {
+        const ROOM *const room = Room_Get(i);
+        for (int32_t j = 0; j < room->num_static_meshes; j++) {
+            top = MAX(top, room->static_meshes[j].draw_num + 1);
+        }
+    }
+    m_MergedCapacity = top;
+    m_MergedStatics = Memory_Alloc(sizeof(bool) * MAX(top, 1));
+}
+#endif
+
 static int32_t M_GetWaterEffect(const ROOM *const room)
 {
     if (g_TRVersion >= 3) {
@@ -196,6 +386,9 @@ static void M_PrepareMeshes(M_PRIV *const p)
     p->meshes = Memory_Alloc(sizeof(OUTPUT_MESH *) * p->mesh_count);
 
     MESH_BUILDER *const builder = MeshBuilder_Create();
+#if defined(__DREAMCAST__)
+    M_PrepareMergedStatics();
+#endif
     for (int32_t i = 0; i < Room_GetCount(); i++) {
         const ROOM *const room = Room_Get(i);
         XYZ_F *vertex_normals = nullptr;
@@ -223,6 +416,9 @@ static void M_PrepareMeshes(M_PRIV *const p)
                 builder, sprite, room, stack * -0.005f, VERT_USE_DYNAMIC_LIGHT);
             prev_pos = vert->pos;
         }
+#if defined(__DREAMCAST__)
+        M_MergeStatics(builder, room);
+#endif
 
         OUTPUT_MESH *const mesh = MeshBuilder_Seal(builder);
         if (mesh != nullptr) {
@@ -232,10 +428,19 @@ static void M_PrepareMeshes(M_PRIV *const p)
         p->meshes[i] = mesh;
     }
     MeshBuilder_Destroy(builder);
+#if defined(__DREAMCAST__)
+    LOG_INFO("[statics] %d vertices of statics merged into their rooms",
+             (int)m_MergedVertices);
+    LOG_INFO("[statics] refused: %d %d %d %d %d %d (capacity %d)", (int)m_Reject[0], (int)m_Reject[1], (int)m_Reject[2], (int)m_Reject[3], (int)m_Reject[4], (int)m_Reject[5], (int)m_MergedCapacity);
+#endif
 }
 
 static void M_FreeMeshes(M_PRIV *const p)
 {
+#if defined(__DREAMCAST__)
+    Memory_FreePointer(&m_MergedStatics);
+    m_MergedCapacity = 0;
+#endif
     if (p->meshes != nullptr) {
         for (int32_t i = 0; i < (int32_t)p->mesh_count; i++) {
             MeshBatcher_RemoveMesh(p->batcher, p->meshes[i]);

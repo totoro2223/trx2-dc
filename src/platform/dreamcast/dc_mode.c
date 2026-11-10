@@ -54,6 +54,18 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
         .low_res = true,
         .bilinear = false,
     },
+    // PLAN_60_FIJO.md: the rooms as the PSX draws them, out of the half of
+    // the data cache kept as RAM, the logic on its own thread, the game's own
+    // shadow and no cel shading or relief, at 640x480.
+    [DC_MODE_NATIVE_60] = {
+        .shadow_lights = 1,
+        .game_shadow = true,
+        .self_shadow = false,
+        .fps = DC_FPS_60,
+        .low_res = false,
+        .bilinear = true,
+        .native = true,
+    },
 };
 
 int32_t g_DC_TestMode = -1;

@@ -79,7 +79,7 @@ static const char *M_FilterName(const TEXTURE_FILTER filter)
 static const char *M_ModeName(const DC_MODE mode)
 {
     static const char *const names[] = {
-        "Graphics", "Performance", "Original", "Experimental 60"
+        "Graphics", "Performance", "Original", "Experimental 60", "Native 60"
     };
     return mode >= 0 && mode < DC_MODE_NUMBER_OF ? names[mode] : "";
 }

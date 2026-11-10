@@ -416,7 +416,7 @@ static bool M_OnTick(
         if (DC_Input_TakeDebugMode()) {
             static const char *const names[] = { "Graphics", "Performance",
                                                  "Original",
-                                                 "Experimental 60" };
+                                                 "Experimental 60", "Native 60" };
             CONFIG_CYCLE(g_Config.rendering.dc_mode, 1, DC_MODE_NUMBER_OF);
             DC_Mode_ApplyDefaults();
             DC_Msg("MODE %s", names[g_Config.rendering.dc_mode]);
@@ -475,8 +475,13 @@ static bool M_OnTick(
         extern uint32_t g_DC_BatcherFrameInstances;
         extern uint32_t g_DC_BatcherFrameVertices;
         static const char *const names[] = { "Graphics", "Performance",
-                                             "Original", "Experimental 60" };
-        static char info[4][40];
+                                             "Original", "Experimental 60", "Native 60" };
+        // The frame's parts over the last half second, as an average per
+        // frame (PLAN_60_FIJO.md, phase 0): logic, staging (the Output_*
+        // layer), the batcher's pass, the PowerVR's render, and the busiest
+        // frame's work.
+        extern uint32_t g_DC_PhaseUs[5];
+        static char info[6][40];
         const int32_t fps = Output_GetMeasuredFPS();
         snprintf(
             info[0], sizeof(info[0]), "%s %d FPS",
@@ -493,7 +498,16 @@ static bool M_OnTick(
             info[3], sizeof(info[3]), "VERT %u ROOM %d",
             (unsigned)g_DC_BatcherFrameVertices,
             item != nullptr ? (int)item->room_num : -1);
-        for (int32_t i = 0; i < 4; i++) {
+        snprintf(
+            info[4], sizeof(info[4]), "LOG %d.%d STG %d.%d PAS %d.%d",
+            (int)(g_DC_PhaseUs[0] / 1000), (int)(g_DC_PhaseUs[0] / 100 % 10),
+            (int)(g_DC_PhaseUs[1] / 1000), (int)(g_DC_PhaseUs[1] / 100 % 10),
+            (int)(g_DC_PhaseUs[2] / 1000), (int)(g_DC_PhaseUs[2] / 100 % 10));
+        snprintf(
+            info[5], sizeof(info[5]), "PVR %d.%d MAX %d.%d MS",
+            (int)(g_DC_PhaseUs[3] / 1000), (int)(g_DC_PhaseUs[3] / 100 % 10),
+            (int)(g_DC_PhaseUs[4] / 1000), (int)(g_DC_PhaseUs[4] / 100 % 10));
+        for (int32_t i = 0; i < 6; i++) {
             M_Push(M_TOP_LEFT, -1, 0.0f, info[i], 1.0f);
         }
     }

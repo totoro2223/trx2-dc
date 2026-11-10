@@ -82,10 +82,12 @@ optimización puede acortar la distancia de dibujo.
   color final guardado, niebla de la PVR por tabla, `.DCL`, media caché como
   RAM, vértices de intensidad, descarte por la PVR), con lo que ya está hecho
   y su coste estimado: [optimizacion render.md](optimizacion%20render.md).
-- **60 fps fijos en consola** (09/11/2026, sin empezar): render nativo de DC
-  sobre salas y mallas horneadas como el PSX, y la lógica en su hilo con el
-  estado en doble búfer. Fases 0-7 con criterio de corte en GDEMU:
-  [PLAN_60_FIJO.md](PLAN_60_FIJO.md).
+- **60 fps fijos en consola** (09/11/2026, rama `full60fps`, hecho y probado
+  en Flycast): modo «Native 60 FPS» con salas por lotes en la OCRAM, la lógica
+  junto a un hilo de render, niebla por tabla de la PVR y tope de polígonos.
+  Falta medir en GDEMU (Antártida, Londres, Jungle, demo 1 de TR1) con la
+  vista 2 del HUD, mirar la imagen, y probar el inventario y el guardado con el
+  hilo: [PLAN_60_FIJO.md](PLAN_60_FIJO.md).
 
 Reparto de Londres (graphics, ms por frame, 23/10, antes de quitar Lua): pass
 ~12,7 (estáticos y sprites 3,2, emisión 3,0, objetos 1,6, salas 1,5), stage

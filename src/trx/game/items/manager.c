@@ -34,6 +34,9 @@
 #define uthash_malloc(size) GameBuf_Alloc(size, GBUF_ITEMS)
 #define uthash_free(ptr, size)
 #include <uthash.h>
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_world.h>
+#endif
 
 // How far to one side a mesh must sit before it is worth asking which room it
 // landed in. A quarter of a tile keeps every upright item out of the search.
@@ -797,6 +800,10 @@ void Item_Control(void)
                 obj->control_func(item_num);
             }
         }
+#if defined(__DREAMCAST__)
+        // A frame due is drawn now, between two items (dc_world.h).
+        DC_World_Yield();
+#endif
         item_num = next;
     }
 

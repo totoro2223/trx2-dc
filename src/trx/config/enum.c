@@ -123,6 +123,7 @@ static __attribute__((constructor)) void M_Init(void)
     ENUM_MAP(DC_MODE, DC_MODE_PERFORMANCE, "performance");
     ENUM_MAP(DC_MODE, DC_MODE_ORIGINAL, "original");
     ENUM_MAP(DC_MODE, DC_MODE_EXPERIMENTAL_60, "experimental-60");
+    ENUM_MAP(DC_MODE, DC_MODE_NATIVE_60, "native-60");
 
     ENUM_MAP(DC_FPS, DC_FPS_30, "off");
     ENUM_MAP(DC_FPS, DC_FPS_60, "interpolated");

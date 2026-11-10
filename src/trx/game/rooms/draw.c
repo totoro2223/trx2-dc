@@ -1079,6 +1079,11 @@ static void M_DrawSingleRoom(const ROOM *const room)
         if (M_DrawSet_Has(&m_DrawnStatics, mesh->draw_num)) {
             continue;
         }
+#if defined(__DREAMCAST__)
+        if (OutputSource_Rooms_IsStaticMerged(mesh->draw_num)) {
+            continue; // drawn with the room's own faces
+        }
+#endif
         const STATIC_OBJECT_3D *const obj =
             Object_Get3DStatic(mesh->static_num);
         if (!obj->visible) {

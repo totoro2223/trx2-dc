@@ -25,6 +25,9 @@ typedef struct {
     bool bump_mapping;
     bool room_cel;
     bool bilinear;
+    // The native renderer (PLAN_60_FIJO.md): rooms from the OCRAM batches,
+    // the logic on its own thread, the polygon cap.
+    bool native;
 } DC_MODE_PARAMS;
 
 // The mode a test disc starts in whatever the settings say (MODE.TXT), or -1.
@@ -110,3 +113,9 @@ bool DC_Mode_ReportFrame(double seconds);
 
 // How many lights cast Lara's shadow: the mode's, and a single one in TR3.
 int32_t DC_Mode_GetShadowLights(void);
+
+// The native rooms (PLAN_60_FIJO.md): the chunks drawn batch by batch from
+// a buffer in the half of the data cache kept as RAM. Set by the mode each
+// frame (batcher.c).
+extern bool g_DC_NativeRooms;
+void DC_Batcher_SetNative(bool on);

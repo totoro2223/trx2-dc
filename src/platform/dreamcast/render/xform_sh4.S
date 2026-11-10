@@ -10,7 +10,8 @@
 ! fog (M_Fog, M_FogKeep), the shade (M_ShadeK) and the white colour table.
 !
 ! Registers (r8-r14 and fr12-fr15 are the caller's, and are kept):
-!   r13 c + 48 (the M_XFORM flags)  r8 xverts   r9 vertices   r10 vref
+!   r13 c + 48 (the M_XFORM flags)  r8 xverts   r9 vertices   r10 vref (0:
+!   none, every vertex its own corner)
 !   r11 slot   r12 gen   r7 vertex   r6 end of the range   r14 its xvert
 !   r5 its clip   r3 its colour factor   r0-r4 scratch
 !   fr0-3 the vertex   fr4-7 scratch   fr8 proj_x   fr9 proj_y   fr10 near z
@@ -211,7 +212,11 @@ range_t:
 vert_loop:
     cmp/ge  r6,r7                   ! T = past the end
     bt      range_t
-    mov     r7,r0
+    tst     r10,r10                 ! no vref (a native batch, batcher.c
+    bf      1f                      ! M_DrawNative): each vertex once, its own
+    bra     miss_body
+    mov     r7,r1
+1:  mov     r7,r0
     shll    r0
     mov.w   @(r0,r10),r1
     extu.w  r1,r1                   ! the vertex it reads
@@ -255,6 +260,7 @@ miss:
     mov     r12,r3
     or      r7,r3
     mov.l   r3,@r2                  ! the slot: gen | vertex
+miss_body:
     mov     r1,r2
     shll2   r2
     shll2   r2
@@ -618,8 +624,10 @@ noflick:
 kdone:
 
     mov     #0,r0
+    tst     r10,r10                 ! a native batch: the OCRAM, plain stores
+    bt      1f
     movca.l r0,@r14                 ! the line is all written: no fetch of it
-    mov     r14,r4
+1:  mov     r14,r4
     add     #12,r4
     fmov.s  fr2,@-r4
     fmov.s  fr1,@-r4

@@ -123,6 +123,7 @@ void DC_PVR_NextDepthLayer(void);
 // desktop clears depth after).
 void DC_PVR_SetBackgroundMode(bool enabled);
 void DC_PVR_SetSkyMode(bool enabled);
+bool DC_PVR_GetSkyMode(void);
 // Depth of a perspective vertex in the current layer from its 1/w (in
 // (0, 1], 1 at the near plane). The PowerVR corrects textures for
 // perspective with this same value, so it stays proportional to 1/w.
@@ -144,6 +145,12 @@ float DC_PVR_Depth2D(float v);
 // Whether the next opaque and punch-through polygons darken inside shadow
 // volumes.
 void DC_PVR_SetShadowReceiver(bool receive);
+// The fog by the PowerVR's table (PLAN_60_FIJO.md phase 6): black, from
+// start to end along the depth, for vertices whose z is near_z / depth (the
+// world's layer). SetFogTable turns it on for the polygons that follow, in
+// the world's layer only.
+void DC_PVR_SetupFogTable(float near_z, float start, float end);
+void DC_PVR_SetFogTable(bool on);
 
 // How much of their colour the polygons inside shadow volumes lose, for all
 // of them (the PowerVR has one).

@@ -105,6 +105,7 @@ typedef struct {
     bool filter;
     bool half;
     bool shadow;
+    bool fog; // the table's fog (M_FogTableOn)
 } M_LIST;
 
 static bool m_Initialised = false;
@@ -1793,6 +1794,8 @@ void DC_PVR_NextDepthLayer(void)
     }
     m_Depth.floor = (m_Depth.top > 1.0f ? m_Depth.top : 1.0f) + M_LAYER_GAP;
     m_Depth.used = false;
+    // The table's fog is the world layer's alone (M_CompileHeader).
+    m_StateDirty = true;
 }
 
 void DC_PVR_SetBackgroundMode(const bool enabled)
@@ -1803,6 +1806,11 @@ void DC_PVR_SetBackgroundMode(const bool enabled)
 void DC_PVR_SetSkyMode(const bool enabled)
 {
     m_Depth.sky = enabled;
+}
+
+bool DC_PVR_GetSkyMode(void)
+{
+    return m_Depth.sky;
 }
 
 static bool M_IsBehindAll(void)
@@ -2189,6 +2197,48 @@ void DC_PVR_SetShadowStrength(const float strength)
     pvr_set_shadow_scale(true, 1.0f - strength);
 }
 
+static bool m_FogTable = false;
+
+// The table's fog on the polygons going out now: the world's layer only.
+static bool M_FogTableOn(void)
+{
+    return m_FogTable && m_Depth.floor == 0.0f && !M_IsBehindAll();
+}
+
+void DC_PVR_SetupFogTable(const float near_z, const float start, const float end)
+{
+    static float s_near = 0.0f;
+    static float s_start = 0.0f;
+    static float s_end = 0.0f;
+    if (near_z == s_near && start == s_start && end == s_end) {
+        return;
+    }
+    s_near = near_z;
+    s_start = start;
+    s_end = end;
+    // The chip looks the table up by density * z: 16 entries an octave from
+    // 1 up, the first the farthest. With z = near_z / depth and the density
+    // end / near_z, entry 0 lies at the fog's end, and each further one
+    // nearer by its factor.
+    const float density = end / near_z;
+    float table[129];
+    for (int32_t i = 0; i < 129; i++) {
+        const float f = (float)(1 << (i >> 4)) * (1.0f + (float)(i & 15) / 16.0f);
+        const float depth = end / f;
+        float fog = (depth - start) / (end - start);
+        table[i] = fog < 0.0f ? 0.0f : fog > 1.0f ? 1.0f : fog;
+    }
+    pvr_fog_table_color(1.0f, 0.0f, 0.0f, 0.0f);
+    pvr_fog_far_depth(density);
+    pvr_fog_table_custom(table);
+}
+
+void DC_PVR_SetFogTable(const bool on)
+{
+    m_StateDirty |= m_FogTable != on;
+    m_FogTable = on;
+}
+
 void DC_PVR_SetShadowReceiver(const bool receive)
 {
     m_StateDirty |= m_ShadowReceiver != receive;
@@ -2296,6 +2346,9 @@ static void M_CompileHeader(pvr_poly_hdr_t *const hdr)
     }
     cxt.gen.culling = PVR_CULLING_NONE;
     cxt.gen.specular = true;
+    if (M_FogTableOn()) {
+        cxt.gen.fog_type = PVR_FOG_TABLE;
+    }
     // (Without it the vertex alpha reads as whole.)
     // A console's punch-through polygons need it too: the hardware reads the
     // texture's alpha for the cut only with it on (Flycast cuts either way).
@@ -2366,7 +2419,8 @@ static void M_CachedHeader(pvr_poly_hdr_t *const hdr)
     const uint32_t key = ((uint32_t)m_Page & 0xFFFF)
         | ((uint32_t)m_Blend << 16) | ((uint32_t)(m_Current - m_Lists) << 22)
         | (m_DepthTest ? 1u << 25 : 0) | (m_Bilinear ? 1u << 26 : 0)
-        | (m_HalfPages ? 1u << 27 : 0) | (M_IsShadowed() ? 1u << 28 : 0);
+        | (m_HalfPages ? 1u << 27 : 0) | (M_IsShadowed() ? 1u << 28 : 0)
+        | (M_FogTableOn() ? 1u << 29 : 0);
     const uint32_t slot = (key * 2654435761u) >> (32 - M_HEADER_CACHE_BITS);
     if (m_HeaderCache[slot].gen != m_HeaderGen
         || m_HeaderCache[slot].key != key) {
@@ -2392,7 +2446,8 @@ static bool M_SameState(const M_LIST *const list)
         || (list->has_state && list->blend == m_Blend
             && list->page == m_Page && list->depth_test == m_DepthTest
             && list->filter == m_Bilinear && list->half == m_HalfPages
-            && list->shadow == M_IsShadowed());
+            && list->shadow == M_IsShadowed()
+            && list->fog == M_FogTableOn());
 }
 
 // Puts the header for the state now set at the tail of the list.
@@ -2408,6 +2463,7 @@ static void M_PutHeader(M_LIST *const list)
     list->filter = m_Bilinear;
     list->half = m_HalfPages;
     list->shadow = M_IsShadowed();
+    list->fog = M_FogTableOn();
 }
 
 static void *M_Reserve(const size_t size)

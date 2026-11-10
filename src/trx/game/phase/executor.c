@@ -38,6 +38,12 @@
 #include <trx/game/viewport.h>
 #include <trx/gl/context.h>
 #include <trx/gl/gpu_timer.h>
+#if defined(__DREAMCAST__)
+    #include <platform/dreamcast/dc_world.h>
+
+    #include <arch/timer.h>
+    #include <kos/thread.h>
+#endif
 #include <trx/gl/track.h>
 
 #include <SDL2/SDL_timer.h>
@@ -580,6 +586,93 @@ static void M_Draw(PHASE *const phase)
     }
 }
 
+#if defined(__DREAMCAST__)
+// The native mode's game (PLAN_60_FIJO.md, phase 4): the frames drawn by
+// the render thread (dc_world.c) every 1/60 s, the ticks run here, 30 a
+// second, in the time it leaves. A frame no longer waits for a whole tick.
+static int32_t m_ThreadedDepth = 0;
+
+static bool M_WantsLogicThread(const PHASE *const phase)
+{
+    return DC_Mode_Get()->native && M_HasHalfFrames() && Game_IsPlaying()
+        && phase->draw != nullptr && !m_Exiting
+        && !Shell_ShouldPauseForFocusLoss();
+}
+
+// A frame of the render thread, frac of the way between the last two ticks.
+static void M_ThreadedDraw(void *const arg, const double frac, const bool first)
+{
+    PHASE *const phase = arg;
+    // The world is staged once a tick, at the tick's own state, by the first
+    // frame after it, which draws it halfway back to the tick before; the
+    // frames after draw that staging again as it is (dc_world.h, DC_Replay).
+    (void)frac;
+    M_SetFractionalRate(1.0);
+    DC_Replay_SetMode(first ? DC_REPLAY_RECORD : DC_REPLAY_PLAY);
+    // The rooms move on once a tick, so on the first frame after one.
+    Output_SetControlFrame(first);
+    m_ReuseScriptDraws = !first;
+    M_Draw(phase);
+    m_ReuseScriptDraws = false;
+    DC_Replay_SetMode(DC_REPLAY_OFF);
+    Output_SetControlFrame(false);
+    Interpolation_SetRate(1.0);
+}
+
+// Runs the phase's ticks while the render thread draws. Returns true when
+// the phase ends (gf_cmd and skip set as the main loop sets them), false
+// when the game leaves the native mode or stops playing, for the main loop
+// to go on.
+static bool M_RunThreaded(
+    PHASE *const phase, GF_COMMAND *const gf_cmd, bool *const skip)
+{
+    bool ended = false;
+    DC_World_Lock();
+    m_ThreadedDepth++;
+    DC_World_StartRender(M_ThreadedDraw, phase);
+    uint64_t next = timer_us_gettime64();
+    while (M_WantsLogicThread(phase)) {
+        // The world free for the render thread until the tick is due.
+        uint64_t now = timer_us_gettime64();
+        if (now < next) {
+            DC_World_Unlock();
+            thd_sleep((int)((next - now + 999) / 1000));
+            DC_World_Lock();
+            now = timer_us_gettime64();
+        }
+        // Too far behind (a load, a pause): the clock starts afresh.
+        next = now - next > 4 * 33333 ? now + 33333 : next + 33333;
+
+        const Uint64 work_start = SDL_GetPerformanceCounter();
+        DC_World_TickBegin();
+        const PHASE_CONTROL control = M_Control(phase);
+        if (control.action == PHASE_ACTION_END
+            || control.action == PHASE_ACTION_END_FAST) {
+            if (Shell_IsExiting()) {
+                *gf_cmd = (GF_COMMAND) { .action = GF_EXIT_GAME };
+            } else {
+                *skip = control.action == PHASE_ACTION_END_FAST;
+                *gf_cmd = control.gf_cmd;
+            }
+            if (gf_cmd->action != GF_EXIT_GAME || !PhaseExecutor_BeginExit()) {
+                ended = true;
+                break;
+            }
+        } else if (control.action == PHASE_ACTION_NO_WAIT) {
+            next -= 33333;
+        }
+        DC_World_TickDone();
+        M_ReportWork(work_start);
+    }
+    DC_World_StopRender();
+    m_ThreadedDepth--;
+    DC_World_Unlock();
+    // The main loop's clock starts from here.
+    Clock_SyncTick();
+    return ended;
+}
+#endif
+
 GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
 {
     GF_COMMAND gf_cmd = { .action = GF_NOOP };
@@ -590,6 +683,14 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
         return gf_cmd;
     }
 
+#if defined(__DREAMCAST__)
+    // Run inside a tick of the threaded game (the inventory): it draws
+    // itself, the render thread held off meanwhile.
+    const bool paused_render = m_ThreadedDepth > 0;
+    if (paused_render) {
+        DC_World_Pause(true);
+    }
+#endif
     PHASE *const prev_phase =
         m_PhaseStackSize > 0 ? m_PhaseStack[m_PhaseStackSize - 1] : nullptr;
     if (prev_phase != nullptr && prev_phase->suspend != nullptr) {
@@ -624,6 +725,14 @@ GF_COMMAND PhaseExecutor_Run(PHASE *const phase)
     }
 
     while (true) {
+#if defined(__DREAMCAST__)
+        if (M_WantsLogicThread(phase)) {
+            if (M_RunThreaded(phase, &gf_cmd, &skip_fade_out)) {
+                goto finish;
+            }
+            continue;
+        }
+#endif
 #if defined(M_FRACTIONAL_FRAMES)
         double frac = 1.0;
         const bool fractional = M_HasHalfFrames();
@@ -712,6 +821,11 @@ finish:
         prev_phase->resume(prev_phase);
     }
     m_PhaseStackSize--;
+#if defined(__DREAMCAST__)
+    if (paused_render) {
+        DC_World_Pause(false);
+    }
+#endif
 
     return gf_cmd;
 }

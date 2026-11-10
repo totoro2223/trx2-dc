@@ -203,6 +203,13 @@ Las cifras de Venecia de arriba son de la build 158, con Lua.
 
 ## 6. Rendimiento
 
+Modo «Native 60 FPS» (rama `full60fps`, [PLAN_60_FIJO.md](PLAN_60_FIJO.md)):
+salas por lotes en la OCRAM (`M_DrawNative`), hilo de render con cerrojo
+del mundo (`dc_world.c`, `M_RunThreaded` en `executor.c`), niebla por tabla
+de la PVR y tope de polígonos. Disco de prueba: `TRX_DC_MODE=native-60`. Los
+primeros 120 frames comparan cada lote con la ruta de salas (`[native-check]`
+en el log), y cada 10 s el log da los lotes (`[native]`).
+
 Cifras actuales y todo lo descartado, en [PROBADO.md](PROBADO.md). Flycast no
 modela cachés ni bloqueos del pipeline: las optimizaciones de `pref`, ramas o
 caché solo se notarán en consola real.

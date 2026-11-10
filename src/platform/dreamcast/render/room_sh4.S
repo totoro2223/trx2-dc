@@ -133,8 +133,22 @@ fc_loop:
 fc_zero_t:
     mov     #0,r6
 fc_store:
-    mov.l   r6,@r5
-    add     #32,r4
+    tst     r10,r10                     ! no oargb: a native batch's, into
+    bf      2f                          ! the vertex (emit_sh4.S DC_EMIT_MAP)
+    mov     #28,r0
+    mov.b   @(r0,r4),r0
+    and     #0x7F,r0                    ! its clip
+    tst     r6,r6
+    bt      3f
+    or      #0x80,r0                    ! fogged
+    shll8   r6                          ! the colour above the clip byte
+    extu.b  r0,r0
+    or      r6,r0
+3:  mov.l   r0,@(28,r4)
+    bra     4f
+    nop
+2:  mov.l   r6,@r5
+4:  add     #32,r4
     add     #4,r5
     add     #-1,r2
     bra     fc_loop

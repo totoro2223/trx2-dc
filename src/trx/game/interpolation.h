@@ -28,3 +28,13 @@ void Interpolation_RememberBraid(void);
 // Instantly discard interpolation data
 void Interpolation_CommitLara(void);
 void Interpolation_CommitBraid(void);
+
+#if defined(__DREAMCAST__)
+// The logic on its own thread (platform/dreamcast/dc_world.c): at the end of
+// each tick the ends of the interpolation (the camera, Lara, the items, the
+// effects, the braid) are kept, and a frame drawn while the next tick runs
+// swaps them in and back out, so that it shows the last two whole ticks.
+void Interpolation_DC_Publish(void);
+void Interpolation_DC_Swap(bool in);
+void Interpolation_DC_Forget(void);
+#endif

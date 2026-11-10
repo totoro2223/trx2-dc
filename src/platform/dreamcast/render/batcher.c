@@ -21,6 +21,7 @@
 #include "uniform_layouts.h"
 
 #include <platform/dreamcast/dc_mode.h>
+#include <platform/dreamcast/dc_world.h>
 #include <platform/dreamcast/dc_probe.h> // TEMP
 #include <platform/dreamcast/gl_facade.h>
 #include <trx/config.h>
@@ -44,6 +45,7 @@
 #include <trx/version.h>
 
 #include <arch/timer.h>
+#include <dc/cache.h>
 #include <dc/fmath.h>
 #include <dc/pvr.h>
 #include <dc/matrix.h>
@@ -73,7 +75,7 @@ extern uint32_t g_DC_AsmOff2;
 // that the parts of a big room off the screen, past the fog or behind the
 // camera are neither transformed nor drawn. Cells of this size, doubled until
 // a room has no more chunks than this; rooms with fewer vertices stay whole.
-#define M_CHUNK_CELL 2048
+#define M_CHUNK_CELL 4096
 // (128 made the cell double in the big rooms: 4096 or 8192 units a chunk.)
 #define M_MAX_CHUNKS 256
 #define M_CHUNK_MIN_VERTICES 256
@@ -93,7 +95,51 @@ typedef struct {
     // ones), as ranges of opaque_vertex_indices.
     int32_t start[2];
     int32_t count[2];
+    // Its native batches (M_BakeNative): a run of the binding's.
+    int32_t nat_first;
+    int32_t nat_count;
 } M_CHUNK;
+
+// The native rooms (PLAN_60_FIJO.md, phases 1 and 2), as the PSX draws them
+// (REA_TR3_PSX.md, point 5): a chunk's faces in batches of at most
+// M_NAT_MAX distinct vertices, each vertex transformed, lit and fogged once
+// into a buffer in the half of the data cache kept as RAM (the PSX's
+// scratchpad), and the faces emitted straight from there.
+#define M_NAT_MAX 256
+// Which way a face's normal (its corners' e1 x e2) points from its front: the
+// cone test turns on it (checked in test builds: [native] cone checked/drew).
+#define M_NAT_CONE_SIGN 1.0f
+// Phase 5's cap: polygons in the frame past which far objects are left out,
+// and how far (4 blocks, squared).
+#define M_NATIVE_POLY_CAP 2500
+#define M_NATIVE_FAR_SQ (4096.0f * 4096.0f)
+typedef struct {
+    // Its faces, a range of opaque_vertex_indices in one run.
+    int32_t start;
+    int32_t count;
+    int32_t run;
+    // Its vertices, a range of the mesh's.
+    int32_t vstart;
+    int32_t vcount;
+    // Has sprites (their corners stand off by the normal): never baked.
+    bool bill;
+    // Has vertices TR3's water moves or makes glow (with their light): lit
+    // afresh whenever the room has water.
+    bool water;
+    // The light its baked colours (nat_argb) were made in (M_NatKey), 0 for
+    // none yet.
+    uint32_t key;
+    // Its vertices' places in the water's table are made (nat_widx).
+    bool wready;
+    // Its bounding sphere, and the cone its faces' normals lie in (axis and
+    // the sine of its half angle; above 1 for none): a batch off the screen,
+    // or with every face turned from the eye, is not transformed at all (as
+    // a modern renderer culls its meshlets).
+    float center[3];
+    float radius;
+    float axis[3];
+    float cutoff;
+} M_NAT_BATCH;
 
 // A range of opaque_vertex_indices that goes out for the instance just
 // transformed, in its run, with the nearest its faces come along z.
@@ -193,6 +239,24 @@ typedef struct M_BINDING {
     struct M_BUMP_CORNER *bump_cache;
     int32_t bump_count;
     uint32_t bump_sig;
+    // The native batches (M_BakeNative), and per corner the byte offset of
+    // its vertex's sx in the batch buffer (null: not native).
+    M_NAT_BATCH *nat;
+    int32_t nat_count;
+    uint16_t *nat_map;
+    // Per native vertex its colour as last baked (M_NAT_BATCH.key).
+    uint32_t *nat_argb;
+    // Per native vertex its place in the water's table (lane * 4 + effects,
+    // as xform_sh4.S finds it), or 0xFF for a vertex the water leaves alone;
+    // made with a batch's first bake (M_NAT_BATCH.wready).
+    uint8_t *nat_widx;
+    // The vertices of the corners outside the batches (M_NatAlways), as a
+    // batch of their own: no faces, only its vertices and colours.
+    M_NAT_BATCH nat_always;
+    // An object's colours per corner as last lit, and the key of that light
+    // (M_ObjKey; malloc, kept for the level).
+    uint32_t *obj_argb;
+    uint32_t obj_key;
     UT_hash_handle hh;
 } M_BINDING;
 
@@ -606,6 +670,11 @@ typedef struct MESH_BATCHER {
     int16_t vrange_chunk[M_MAX_CHUNKS + 1];
     bool emitted;
     uint32_t chunk_emit_us;
+    // The native rooms' batch going out (M_DrawNative): per corner where its
+    // vertex lies in the batch buffer, and whether its fog colour sits in the
+    // vertex (null when no native batch is going out).
+    const uint16_t *nat_map;
+    bool nat_fog;
 } __attribute__((aligned(8))) MESH_BATCHER;
 
 // What a pass needs that holds for every instance in it.
@@ -627,6 +696,9 @@ typedef struct {
     float fog_end;
     float fog_scale;
     float fog_color[3];
+    // The native mode's fog by the PowerVR's table (DC_PVR_SetupFogTable):
+    // none per vertex then.
+    bool fog_table;
     float min_shade;
     float time_in_game;
     float sunset_duration;
@@ -707,6 +779,13 @@ static bool m_Casting = false;
 static bool m_StagingLara = false;
 #define M_LARA_NOT_CASTER (-2)
 static int32_t m_CasterCount = 0;
+// The frame drawn halfway back to the tick before (DC_Batcher_SetLerping):
+// the rooms' windows were cut at the tick's camera, so they are not used.
+static bool m_Lerping = false;
+// The pass being drawn is a blended one: a room there draws its added faces
+// alone, whose vertices lie outside its chunks (M_BuildChunks), so its
+// chunks are neither transformed nor emitted again.
+static bool m_BlendPass = false;
 static M_CASTER m_Casters[M_MAX_CASTERS];
 static int16_t m_CasterGroup = 0;
 static int32_t m_ObjectCasters = 0;
@@ -2153,11 +2232,60 @@ _Static_assert(offsetof(M_XFORM, proj_x) == 52, "xform_sh4.S reads these");
 _Static_assert(offsetof(M_XFORM, max_inv_z) == 76, "xform_sh4.S reads these");
 extern void dc_xform_room(M_XROOM *run);
 
-static void M_XformRoom(
+// With a native batch (nat), its vertices into out (M_NAT_BATCH) by the
+// assembly alone: false, with nothing done, when the instance needs the C.
+// The water's values for this frame, by lane and effect, as M_WaterAdd
+// finds them one vertex at a time; the assembly takes the lane from the
+// vertex's place. Made again only when the time or the scheme has changed
+// (M_XformRoom comes once a chunk).
+static int32_t m_WaterTab[16 * 4] = { INT32_MIN };
+
+static void M_WaterTable(const M_INSTANCE_LIGHT *const il)
+{
+    static float s_tab_time = -1.0f;
+    static int32_t s_tab_scheme = -1;
+    if (s_tab_time == il->water_time && s_tab_scheme == il->water_scheme
+        && m_WaterTab[0] != INT32_MIN) {
+        return;
+    }
+    s_tab_time = il->water_time;
+    s_tab_scheme = il->water_scheme;
+    for (int32_t lane = 0; lane < 16; lane++) {
+        float turns = il->water_time + m_WaterLane[il->water_scheme][lane];
+        turns -= floorf(turns);
+        const float sine =
+            m_WaterSine[(int32_t)(turns * M_WATER_SINE) & (M_WATER_SINE - 1)];
+        for (int32_t fx = 0; fx < 4; fx++) {
+            float add = 0.0f;
+            if ((fx & 1) != 0) {
+                add += -sine * il->water_amp[0] * 0.5f;
+            }
+            if ((fx & 2) != 0) {
+                add += sine * il->water_amp[1] * 8.0f + il->water_amp[2] * 8.0f;
+            }
+            m_WaterTab[lane * 4 + fx] = (int32_t)floorf(add);
+        }
+    }
+}
+
+// Whether a room's water can be done as the assembly does it: the room not
+// turned, at a whole place, its colours its own.
+static bool M_WaterLean(const M_BINDING *const bind, const M_INSTANCE_LIGHT *const il)
+{
+    const float(*const w)[4] = il->world;
+    return il->tr3 && m_Frame.lighting && il->water_scheme >= 0 && !bind->white
+        && !m_Frame.ortho && w[0][0] == 1.0f && w[1][1] == 1.0f
+        && w[2][2] == 1.0f && w[0][1] == 0.0f && w[0][2] == 0.0f
+        && w[1][0] == 0.0f && w[1][2] == 0.0f && w[2][0] == 0.0f
+        && w[2][1] == 0.0f && w[0][3] == floorf(w[0][3])
+        && w[1][3] == floorf(w[1][3]) && w[2][3] == floorf(w[2][3]);
+}
+
+static bool M_XformRoom(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
     M_XFORM *const c, const int32_t (*const vranges)[2], const int32_t nvr,
-    const float scale)
+    const float scale, const M_NAT_BATCH *const nat, M_XVERT *const out)
 {
     const OUTPUT_MESH_VERTEX *const vertices =
         Vector_GetData(bind->mesh->vertices);
@@ -2197,7 +2325,7 @@ static void M_XformRoom(
     const uint16_t *vref = bind->vertex_count <= 0xFFFF ? bind->vref : nullptr;
     uint32_t *slot = nullptr;
     uint32_t gen = 0;
-    if (vref != nullptr) {
+    if (vref != nullptr && nat == nullptr) {
         const int32_t kept = bind->mesh->vertices->count;
         if (kept > batcher->share_capacity) {
             batcher->share_capacity = kept + 256;
@@ -2232,7 +2360,6 @@ static void M_XformRoom(
     // The water's values for this frame, by lane and effect, as M_WaterAdd
     // finds them one vertex at a time; the assembly takes the lane from the
     // vertex's place. Only for a room that is not turned (every room).
-    static int32_t m_WaterTab[16 * 4] = { INT32_MIN };
     bool water_asm = false;
     if (water && tr3 && !white && !c->ortho) {
         water_asm = w[0][0] == 1.0f && w[1][1] == 1.0f && w[2][2] == 1.0f
@@ -2241,32 +2368,8 @@ static void M_XformRoom(
             && w[0][3] == floorf(w[0][3]) && w[1][3] == floorf(w[1][3])
             && w[2][3] == floorf(w[2][3]);
     }
-    // M_XformRoom comes once a chunk: the table is made again only when the
-    // time or the scheme has changed.
-    static float s_tab_time = -1.0f;
-    static int32_t s_tab_scheme = -1;
-    if (water_asm
-        && (s_tab_time != il->water_time || s_tab_scheme != il->water_scheme
-            || m_WaterTab[0] == INT32_MIN)) {
-        s_tab_time = il->water_time;
-        s_tab_scheme = il->water_scheme;
-        for (int32_t lane = 0; lane < 16; lane++) {
-            float turns = il->water_time + m_WaterLane[il->water_scheme][lane];
-            turns -= floorf(turns);
-            const float sine = m_WaterSine[(int32_t)(turns * M_WATER_SINE)
-                                           & (M_WATER_SINE - 1)];
-            for (int32_t fx = 0; fx < 4; fx++) {
-                float add = 0.0f;
-                if ((fx & 1) != 0) {
-                    add += -sine * il->water_amp[0] * 0.5f;
-                }
-                if ((fx & 2) != 0) {
-                    add += sine * il->water_amp[1] * 8.0f
-                        + il->water_amp[2] * 8.0f;
-                }
-                m_WaterTab[lane * 4 + fx] = (int32_t)floorf(add);
-            }
-        }
+    if (water_asm) {
+        M_WaterTable(il);
     }
     // Per vertex the assembly also leaves the fog off one that has none or no
     // light (TR3: its colour does not depend on those flags otherwise).
@@ -2302,11 +2405,25 @@ static void M_XformRoom(
         .rgb = il->rgb,
         .num_rgb = tr3 && rgb_dyn ? il->num_rgb : 0,
     };
+    if (nat != nullptr) {
+        // The batch's vertices, each once, with no corners to share them out.
+        if (!fast) {
+            return false;
+        }
+        const int32_t one[1][2] = { { 0, nat->vcount } };
+        run.vertices = vertices + nat->vstart;
+        run.xverts = out;
+        run.vref = nullptr;
+        run.ranges = one;
+        run.nranges = 1;
+        dc_xform_room(&run);
+        return true;
+    }
 #if !defined(DC_EMIT_VERIFY)
     if (fast) {
         dc_xform_room(&run);
         g_DC_ProbeUs[DC_PROBE_R_HIT] += run.hits; // TEMP
-        return;
+        return true;
     }
 #endif
     for (int32_t r = 0; r < nranges; r++) {
@@ -2467,6 +2584,7 @@ static void M_XformRoom(
         M_VerifyXform(saved, xverts, ranges, nranges);
     }
 #endif
+    return true;
 }
 
 // What xform_obj_sh4.S takes: the plain object (see dc_xform_object).
@@ -4418,6 +4536,697 @@ static void M_EmitChunk(
     }
 }
 
+// The native batches' buffer: the half of the data cache kept as RAM while
+// the native rooms are on (DC_Batcher_SetNative), else plain RAM.
+bool g_DC_NativeRooms = false;
+static bool m_NatOcram = false;
+static uint32_t m_NatBatches = 0;
+static uint32_t m_NatScattered = 0;
+static uint32_t m_NatRefused = 0;
+// TEMP: the pass's finer timers (the [pass] logs) cost a clock read each, a
+// thousand a frame: off unless built with TRX_DC_PASS_TIMERS.
+#if defined(TRX_DC_PASS_TIMERS)
+    #define M_PT_NOW() timer_us_gettime64()
+#else
+    #define M_PT_NOW() ((uint64_t)0)
+#endif
+static uint32_t m_NatBaked = 0;
+// TEMP: rooms whose loose corners went the native way (M_NatAlways).
+static uint32_t m_NatAlwaysN = 0;
+// TEMP: objects' colours kept, lit, not keepable (M_ObjCached); and while
+// the batches are checked, the kept ones checked and those found apart.
+static uint32_t m_ObjCache[3];
+static uint32_t m_ObjCheckN = 0;
+static uint32_t m_ObjCheckBad = 0;
+// TEMP: the pass by what it draws: rooms, other instances, particles quads
+// and streaks, in the opaque pass and in the blended ones.
+static uint64_t m_PassPartUs[4];
+// TEMP: rooms: setup to the chunks, the chunks' cull, full-path batches
+// (sprites, water), the chunks not native; full batches by sprite / water.
+static uint64_t m_RoomPartUs[6];
+static uint32_t m_RoomDraws[2];
+// TEMP: a room's setup: to its cull, and its light.
+static uint64_t m_RoomSetupUs[2];
+// TEMP: objects by the way they were transformed (plain, own, generic, left
+// out): how many, their vertices, the transform call's time; the setup to
+// the transform proper, and the time after it.
+static int32_t m_ObjPath = 3;
+static uint32_t m_ObjN[4];
+static uint32_t m_ObjVerts[4];
+static uint64_t m_ObjUs[4];
+static uint64_t m_ObjSetupUs;
+static uint64_t m_ObjPostUs;
+static uint64_t m_ObjSetupStart;
+static uint32_t m_FullWhy[2];
+// Batches left out whole: by their sphere, by their cone; and while checked,
+// those the cone would leave out and those of them that drew a face.
+static uint32_t m_NatCulled[2] = {};
+static uint32_t m_NatConeN = 0;
+static uint32_t m_NatConeBad = 0;
+// Batches by what decided them: no key, sprites, key changed, baked.
+static uint32_t m_NatWhy[4] = {};
+// Room instances without a key: dynamic lights, water, other.
+static uint32_t m_NatNoKey[3] = {};
+// Chunked rooms drawn: native, not baked, baked but not native now.
+static uint32_t m_NatRooms[3] = {};
+// Native time per 600 frames: transform (with the fog), emission.
+static uint32_t m_NatUs[2] = {};
+#if defined(TRX_DC_WATCHDOG)
+static int32_t m_NatCheckFrames = 120;
+static uint32_t m_NatCheckN = 0;
+static uint32_t m_NatCheckBad = 0;
+#endif
+__ocram static M_XVERT m_NatOcramBuf[M_NAT_MAX];
+static M_XVERT m_NatRamBuf[M_NAT_MAX] __attribute__((aligned(32)));
+_Static_assert(sizeof(M_XVERT) * M_NAT_MAX == 8192, "the OCRAM holds a batch");
+
+static inline M_XVERT *M_NatBuffer(void)
+{
+    return m_NatOcram ? m_NatOcramBuf : m_NatRamBuf;
+}
+
+void DC_Batcher_SetNative(bool on)
+{
+#if defined(DC_EMIT_VERIFY)
+    on = false; // the verify builds check the corners' own path
+#endif
+    g_DC_NativeRooms = on;
+    if (m_NatOcram != on) {
+        // Writes the cache back and halves it (KOS cache.s).
+        dcache_toggle_ocram(on);
+        m_NatOcram = on;
+        LOG_INFO("[native] rooms %s, OCRAM %s", on ? "on" : "off",
+                 on ? "on" : "off");
+    }
+#if defined(TRX_DC_WATCHDOG)
+    if (on && m_NatCheckFrames > 0 && --m_NatCheckFrames == 0) {
+        LOG_INFO(
+            "[native-check] %u corners checked, %u mismatched",
+            (unsigned)m_NatCheckN, (unsigned)m_NatCheckBad);
+    }
+#endif
+    // Every ten seconds, how many batches went out the native way.
+    static int32_t frames = 0;
+    if (on && ++frames % 600 == 0) {
+        LOG_INFO("[native] %u batches (%u baked), %u faces left to the C, "
+                 "%u chunks refused in 600 frames",
+                 (unsigned)m_NatBatches, (unsigned)m_NatBaked,
+                 (unsigned)m_NatScattered, (unsigned)m_NatRefused);
+        m_NatBaked = 0;
+        LOG_INFO("[native] culled whole: %u by sphere, %u by cone; cone "
+                 "checked %u, drew %u",
+                 (unsigned)m_NatCulled[0], (unsigned)m_NatCulled[1],
+                 (unsigned)m_NatConeN, (unsigned)m_NatConeBad);
+        m_NatCulled[0] = m_NatCulled[1] = 0;
+        LOG_INFO("[native] no key %u, sprites or water %u, relit %u, baked %u",
+                 (unsigned)m_NatWhy[0], (unsigned)m_NatWhy[1],
+                 (unsigned)m_NatWhy[2], (unsigned)m_NatWhy[3]);
+        m_NatWhy[0] = m_NatWhy[1] = m_NatWhy[2] = m_NatWhy[3] = 0;
+        LOG_INFO("[native] no key: dynamic lights %u, water %u, other %u",
+                 (unsigned)m_NatNoKey[0], (unsigned)m_NatNoKey[1],
+                 (unsigned)m_NatNoKey[2]);
+        m_NatNoKey[0] = m_NatNoKey[1] = m_NatNoKey[2] = 0;
+        LOG_INFO("[native] chunked rooms: %u native, %u not baked, %u other",
+                 (unsigned)m_NatRooms[0], (unsigned)m_NatRooms[1],
+                 (unsigned)m_NatRooms[2]);
+        LOG_INFO("[native] per frame: transform %u us, emission %u us",
+                 (unsigned)(m_NatUs[0] / 600), (unsigned)(m_NatUs[1] / 600));
+        LOG_INFO("[pass] per frame: rooms %u us, objects %u us, staged "
+                 "opaque %u us, staged blended %u us",
+                 (unsigned)(m_PassPartUs[0] / 600),
+                 (unsigned)(m_PassPartUs[1] / 600),
+                 (unsigned)(m_PassPartUs[2] / 600),
+                 (unsigned)(m_PassPartUs[3] / 600));
+        memset(m_PassPartUs, 0, sizeof(m_PassPartUs));
+        LOG_INFO("[pass] rooms per frame: cull %u us, full batches %u us "
+                 "(%u sprite, %u water in 600 frames), not native %u us",
+                 (unsigned)(m_RoomPartUs[1] / 600),
+                 (unsigned)(m_RoomPartUs[2] / 600), (unsigned)m_FullWhy[0],
+                 (unsigned)m_FullWhy[1], (unsigned)(m_RoomPartUs[3] / 600));
+        LOG_INFO("[pass] rooms per frame: transform call %u us, after it "
+                 "%u us opaque, %u us blended; %u + %u draws in 600 frames",
+                 (unsigned)(m_RoomPartUs[0] / 600),
+                 (unsigned)(m_RoomPartUs[4] / 600),
+                 (unsigned)(m_RoomPartUs[5] / 600), (unsigned)m_RoomDraws[0],
+                 (unsigned)m_RoomDraws[1]);
+        m_RoomDraws[0] = m_RoomDraws[1] = 0;
+        LOG_INFO("[pass] rooms per frame: setup to the cull %u us, light %u us",
+                 (unsigned)(m_RoomSetupUs[0] / 600),
+                 (unsigned)(m_RoomSetupUs[1] / 600));
+        m_RoomSetupUs[0] = m_RoomSetupUs[1] = 0;
+        LOG_INFO("[pass] loose corners native %u times in 600 frames",
+                 (unsigned)m_NatAlwaysN);
+        m_NatAlwaysN = 0;
+        LOG_INFO("[pass] objects per frame: plain %u (%u verts) %u us, own %u "
+                 "(%u verts) %u us, generic %u (%u verts) %u us, left out %u "
+                 "%u us; setup %u us, after %u us",
+                 (unsigned)(m_ObjN[0] / 600), (unsigned)(m_ObjVerts[0] / 600),
+                 (unsigned)(m_ObjUs[0] / 600), (unsigned)(m_ObjN[1] / 600),
+                 (unsigned)(m_ObjVerts[1] / 600), (unsigned)(m_ObjUs[1] / 600),
+                 (unsigned)(m_ObjN[2] / 600), (unsigned)(m_ObjVerts[2] / 600),
+                 (unsigned)(m_ObjUs[2] / 600), (unsigned)(m_ObjN[3] / 600),
+                 (unsigned)(m_ObjUs[3] / 600), (unsigned)(m_ObjSetupUs / 600),
+                 (unsigned)(m_ObjPostUs / 600));
+        memset(m_ObjN, 0, sizeof(m_ObjN));
+        memset(m_ObjVerts, 0, sizeof(m_ObjVerts));
+        memset(m_ObjUs, 0, sizeof(m_ObjUs));
+        m_ObjSetupUs = m_ObjPostUs = 0;
+        LOG_INFO("[pass] objects' colours: %u kept, %u lit, %u not keepable",
+                 (unsigned)m_ObjCache[0], (unsigned)m_ObjCache[1],
+                 (unsigned)m_ObjCache[2]);
+        memset(m_ObjCache, 0, sizeof(m_ObjCache));
+#if defined(TRX_DC_WATCHDOG)
+        LOG_INFO("[obj-check] %u corners checked, %u mismatched",
+                 (unsigned)m_ObjCheckN, (unsigned)m_ObjCheckBad);
+#endif
+        memset(m_RoomPartUs, 0, sizeof(m_RoomPartUs));
+        m_FullWhy[0] = m_FullWhy[1] = 0;
+        m_NatUs[0] = m_NatUs[1] = 0;
+        m_NatRooms[0] = m_NatRooms[1] = m_NatRooms[2] = 0;
+        m_NatBatches = 0;
+        m_NatRefused = 0;
+        m_NatScattered = 0;
+    }
+}
+
+// A batch's fog colour, into each vertex's clip word (see emit_sh4.S's
+// DC_EMIT_MAP): bit 7 set where fogged, the colour in the three bytes above.
+static void M_NatFog(
+    const MESH_INSTANCE *const inst, const M_XFORM *const c,
+    M_XVERT *const buf, const int32_t n)
+{
+    const int32_t one[1][2] = { { 0, n } };
+    M_FOGRUN run = {
+        .xverts = buf,
+        .oargb = nullptr,
+        .ranges = one,
+        .n = 1,
+        .fog_start_sq = c->fog_start_sq,
+        .fog_start = c->fog_start,
+        .fog_scale = c->fog_scale,
+        .r = m_Frame.fog_color[0] * inst->tint.r,
+        .g = m_Frame.fog_color[1] * inst->tint.g,
+        .b = m_Frame.fog_color[2] * inst->tint.b,
+        .k255 = 255.0f,
+    };
+    dc_fog_colours(&run);
+}
+
+// For the C code's faces (those crossing the near plane): their corners out
+// of the batch buffer into xverts and oargb, as the room path leaves them.
+static void M_NatScatter(
+    MESH_BATCHER *const batcher, const OUTPUT_MESH_INDEX *const idx,
+    const int32_t n)
+{
+    const uint8_t *const base =
+        (const uint8_t *)M_NatBuffer() - offsetof(M_XVERT, sx);
+    for (int32_t j = 0; j < n; j++) {
+        m_NatScattered += j == 0 ? 1 : 0;
+        const int32_t c = idx[j];
+        const M_XVERT *const src =
+            (const M_XVERT *)(base + batcher->nat_map[c]);
+        M_XVERT *const dst = &batcher->xverts[c];
+        uint32_t w;
+        memcpy(&w, &src->clip, sizeof(w));
+        *dst = *src;
+        dst->clip = (uint8_t)(w & 0x7F);
+        dst->pad[0] = dst->pad[1] = dst->pad[2] = 0;
+        // The buffer holds screen positions (dc_nat_screen); the C wants the
+        // projection, made again from the eye space position.
+        if ((dst->clip & M_CLIP_NEAR) == 0) {
+            const float inv_z = M_InvSqrt(dst->z * dst->z);
+            dst->sx = m_Frame.proj_x * dst->x * inv_z;
+            dst->sy = m_Frame.proj_y * dst->y * inv_z;
+            dst->inv_z = inv_z;
+        }
+        if (batcher->nat_fog) {
+            batcher->oargb[c] = (w & 0x80) != 0 ? 0xFF000000u | (w >> 8) : 0;
+        }
+    }
+    batcher->oargb_used = batcher->nat_fog;
+}
+
+static void M_NatToScreen(const M_XVERT *v, float out[3]);
+
+#if defined(TRX_DC_WATCHDOG)
+// The first frames of the native mode check each batch against the rooms'
+// own path: the chunk transformed into xverts as ever, and each corner's
+// vertex in the buffer compared with its own (test builds; the log tells).
+
+static void M_NatCheck(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    M_XFORM *const c, const M_CHUNK *const chunk, const float scale,
+    const M_NAT_BATCH *const nb, const M_XVERT *const buf)
+{
+    const int32_t range[1][2] = { { chunk->vert_start, chunk->vert_count } };
+    const float keep_inv_z = c->max_inv_z;
+    M_XformRoom(batcher, bind, inst, il, c, range, 1, scale, nullptr, nullptr);
+    c->max_inv_z = keep_inv_z;
+    const OUTPUT_MESH_INDEX *const opaque =
+        Vector_GetData(bind->mesh->opaque_vertex_indices);
+    const uint8_t *const base = (const uint8_t *)buf - offsetof(M_XVERT, sx);
+    for (int32_t i = nb->start; i < nb->start + nb->count; i++) {
+        const int32_t corner = opaque[i];
+        const M_XVERT *const a = (const M_XVERT *)(base + bind->nat_map[corner]);
+        const M_XVERT *const b = &batcher->xverts[corner];
+        const bool near = (b->clip & M_CLIP_NEAR) != 0;
+        float screen[3];
+        M_NatToScreen(b, screen);
+        const bool ok = (a->clip & 0x7F) == b->clip && a->argb == b->argb
+            && a->x == b->x && a->y == b->y && a->z == b->z
+            && (near || (a->sx == screen[0] && a->sy == screen[1]
+                         && a->inv_z == screen[2]));
+        m_NatCheckN++;
+        if (!ok && ++m_NatCheckBad <= 8) {
+            LOG_WARNING(
+                "[native-check] MISMATCH corner %d: native clip %02x argb %08x "
+                "sx %f | rooms clip %02x argb %08x sx %f",
+                (int)corner, a->clip, (unsigned)a->argb, a->sx, b->clip,
+                (unsigned)b->argb, b->sx);
+        }
+    }
+}
+#endif
+
+// What nat_sh4.S takes (dc_nat_place).
+typedef struct {
+    const OUTPUT_MESH_VERTEX *vertices;
+    const uint32_t *argb;
+    M_XVERT *out;
+    int32_t count;
+    M_XFORM *c;
+} M_NATPLACE;
+_Static_assert(offsetof(M_NATPLACE, c) == 16, "nat_sh4.S layout");
+_Static_assert(offsetof(M_XFORM, sides) == 49, "nat_sh4.S layout");
+_Static_assert(offsetof(M_XFORM, near) == 50, "nat_sh4.S layout");
+_Static_assert(offsetof(M_XFORM, near_z) == 60, "nat_sh4.S layout");
+extern void dc_nat_place(M_NATPLACE *run);
+
+// What dc_nat_screen takes: a batch's vertices to the screen once each.
+typedef struct {
+    M_XVERT *xverts;
+    int32_t count;
+    float center_x;
+    float center_y;
+    float screen_scale;
+    float near_z;
+    float depth_lo;
+    float depth_scale;
+} M_NATSCREEN;
+_Static_assert(offsetof(M_NATSCREEN, depth_scale) == 28, "nat_sh4.S layout");
+extern void dc_nat_screen(M_NATSCREEN *run);
+
+// A placed vertex's screen position as dc_nat_screen makes it, in C.
+static void M_NatToScreen(const M_XVERT *const v, float out[3])
+{
+    out[0] = (m_Frame.center_x + v->sx) * m_Frame.screen_scale;
+    out[1] = (m_Frame.center_y + v->sy) * m_Frame.screen_scale;
+    float z = m_Frame.near_z * v->inv_z;
+    if (!(z < 1.0f) && z > 1.0f) {
+        z = 1.0f;
+    }
+    if (m_Frame.depth.lo > z) {
+        z = m_Frame.depth.lo;
+    }
+    out[2] = z * m_Frame.depth.scale;
+}
+
+// The light a room instance's colours come out of, as one number (never 0),
+// or 0 when they depend on more than it (a dynamic light, the water's
+// movement, the caustics, fog per vertex), and the batches are lit afresh.
+static uint32_t M_NatKey(
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    const M_XFORM *const c)
+{
+    // The water moves the colours of its own vertices alone: a batch with
+    // none of them keeps its baked ones (M_DrawNative).
+    m_NatNoKey[0] += il->num_lights > 0 || (il->tr3 && il->num_rgb > 0);
+    m_NatNoKey[2] += c->fog || il->caustics || !m_Frame.lighting;
+    if (!m_Frame.lighting || c->fog || c->ortho || il->num_lights > 0
+        || (il->tr3 && il->num_rgb > 0) || il->caustics) {
+        return 0;
+    }
+    const uint32_t parts[] = {
+        il->tr3 ? (uint32_t)(256.0f * il->tr3_double) : 1u,
+        M_TintK(inst->tint.a), M_TintK(inst->tint.r), M_TintK(inst->tint.g),
+        M_TintK(inst->tint.b), (uint32_t)M_ShadeLow(),
+        (uint32_t)il->flicker,
+    };
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        h = (h ^ parts[i]) * 16777619u;
+    }
+    return h | 1u;
+}
+
+// Per vertex of a batch its place in the water's table, as xform_sh4.S
+// finds it: the lane of its place in the world, and its effects (moves 1,
+// glows 2); 0xFF where the water leaves it alone (no light, or neither).
+static void M_NatWaterPlaces(
+    M_BINDING *const bind, const M_INSTANCE_LIGHT *const il,
+    M_NAT_BATCH *const nb)
+{
+    const OUTPUT_MESH_VERTEX *const vs = Vector_GetData(bind->mesh->vertices);
+    const int32_t ox = (int32_t)il->world[0][3];
+    const int32_t oy = (int32_t)il->world[1][3];
+    const int32_t oz = (int32_t)il->world[2][3];
+    for (int32_t v = nb->vstart; v < nb->vstart + nb->vcount; v++) {
+        const uint16_t flags = vs[v].flags;
+        const int32_t fx = (flags >> 10) & 3;
+        if ((flags & VERT_NO_LIGHTING) != 0 || fx == 0) {
+            bind->nat_widx[v] = 0xFF;
+            continue;
+        }
+        const int32_t lane = ((((int32_t)vs[v].pos.x + ox) >> 6)
+                              + (((int32_t)vs[v].pos.y + oy) >> 6)
+                              + (((int32_t)vs[v].pos.z + oz) >> 7))
+                >> 2
+            & 15;
+        bind->nat_widx[v] = (uint8_t)(lane * 4 + fx);
+    }
+    nb->wready = true;
+}
+
+// A baked batch's water vertices coloured for this frame, as the room's
+// assembly colours them: their own colour plus their lane's value, each
+// byte held to 0-255, then the curve and the tint.
+static void M_NatWater(
+    const M_BINDING *const bind, const MESH_INSTANCE *const inst,
+    const M_INSTANCE_LIGHT *const il, const M_NAT_BATCH *const nb,
+    M_XVERT *const buf)
+{
+    const OUTPUT_MESH_VERTEX *const vs = Vector_GetData(bind->mesh->vertices);
+    const uint8_t *const widx = &bind->nat_widx[nb->vstart];
+    const uint32_t k = (uint32_t)(256.0f * il->tr3_double);
+    const uint32_t ta = M_TintK(inst->tint.a);
+    const uint32_t kr = k * M_TintK(inst->tint.r) >> 8;
+    const uint32_t kg = k * M_TintK(inst->tint.g) >> 8;
+    const uint32_t kb = k * M_TintK(inst->tint.b) >> 8;
+    for (int32_t v = 0; v < nb->vcount; v++) {
+        if (widx[v] == 0xFF) {
+            continue;
+        }
+        const int32_t add = m_WaterTab[widx[v]];
+        RGBA_8888 col = vs[nb->vstart + v].color;
+        col.r = (uint8_t)M_Clamp((float)(col.r + add), 0.0f, 255.0f);
+        col.g = (uint8_t)M_Clamp((float)(col.g + add), 0.0f, 255.0f);
+        col.b = (uint8_t)M_Clamp((float)(col.b + add), 0.0f, 255.0f);
+        buf[v].argb = M_Colour(col, ta, kr, kg, kb);
+    }
+}
+
+// A chunk drawn the native way, batch by batch: transformed, fogged and
+// emitted while it sits in the buffer. False when the instance needs the C
+// (nothing done then).
+static bool M_DrawNative(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    M_XFORM *const c, const M_CHUNK *const chunk, const float scale,
+    const bool faded, const bool black_fog)
+{
+    if (chunk->nat_count == 0) {
+        return false;
+    }
+    const OUTPUT_MESH_INDEX *const opaque =
+        Vector_GetData(bind->mesh->opaque_vertex_indices);
+    M_XVERT *const buf = M_NatBuffer();
+    const bool fog = !black_fog && c->fog;
+    // The light the room's colours depend on, when nothing in it moves from
+    // vertex to vertex by the frame (no dynamic light, water, caustics or
+    // fog per vertex): the batches baked in it copy their colours.
+    const uint32_t key = M_NatKey(inst, il, c);
+    M_BINDING *const mbind = (M_BINDING *)bind;
+    // The water as the PSX does it: a batch's baked colours, and its water
+    // vertices' colours plus this frame's value of their lane (M_NatWater).
+    const bool water_lean = key != 0 && M_WaterLean(bind, il);
+    if (water_lean) {
+        M_WaterTable(il);
+    }
+    const OUTPUT_MESH_VERTEX *const nverts =
+        (const OUTPUT_MESH_VERTEX *)Vector_GetData(bind->mesh->vertices);
+    // The eye in the room's space (the model-view's rotation and scale
+    // undone), for the batches' cones.
+    const float(*const mv)[4] = (const float(*)[4])batcher->mv;
+    float cam[3];
+    {
+        const float inv_sq = 1.0f / (scale * scale);
+        for (int32_t k = 0; k < 3; k++) {
+            cam[k] = -(mv[k][0] * mv[3][0] + mv[k][1] * mv[3][1]
+                       + mv[k][2] * mv[3][2])
+                * inv_sq;
+        }
+    }
+    int32_t page = INT32_MIN;
+    int32_t run = -1;
+    for (int32_t b = 0; b < chunk->nat_count; b++) {
+        const M_NAT_BATCH *const nb = &bind->nat[chunk->nat_first + b];
+        // Off the screen (or the window the room is seen through), or every
+        // face turned away: not even transformed.
+        {
+            const float *const p = nb->center;
+            float eye[3];
+            for (int32_t r = 0; r < 3; r++) {
+                eye[r] = mv[0][r] * p[0] + mv[1][r] * p[1] + mv[2][r] * p[2]
+                    + mv[3][r];
+            }
+            if (!M_SphereShows(eye, nb->radius * scale, c)) {
+                m_NatCulled[0]++;
+                continue;
+            }
+        }
+        bool cone_away = false;
+        if (nb->cutoff <= 1.0f) {
+            const float v[3] = { nb->center[0] - cam[0], nb->center[1] - cam[1],
+                                 nb->center[2] - cam[2] };
+            const float dist = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            const float along =
+                v[0] * nb->axis[0] + v[1] * nb->axis[1] + v[2] * nb->axis[2];
+            cone_away =
+                along * M_NAT_CONE_SIGN >= nb->cutoff * dist + nb->radius;
+        }
+#if defined(TRX_DC_WATCHDOG)
+        // While the batches are checked, one the cone would leave out is drawn
+        // still, and must come out empty.
+        const bool cone_check = cone_away && m_NatCheckFrames > 0;
+        const int32_t polys_before = DC_PVR_GetSubmittedCount();
+#else
+        const bool cone_check = false;
+#endif
+        if (cone_away && !cone_check) {
+            m_NatCulled[1]++;
+            continue;
+        }
+        bool xformed = true;
+        const uint64_t t0 = timer_us_gettime64();
+        M_NAT_BATCH *const mb = &mbind->nat[chunk->nat_first + b];
+        const bool watery = nb->water && il->water_scheme >= 0;
+        const bool bakes = key != 0 && !nb->bill && (!watery || water_lean);
+        const bool ready = nb->key == key && (!watery || nb->wready);
+        m_NatWhy[!bakes ? (key == 0 ? 0 : 1) : !ready ? 2 : 3]++;
+        if (bakes && ready) {
+            M_NATPLACE place = {
+                .vertices = nverts + nb->vstart,
+                .argb = &bind->nat_argb[nb->vstart],
+                .out = buf,
+                .count = nb->vcount,
+                .c = c,
+            };
+            dc_nat_place(&place);
+            if (watery) {
+                M_NatWater(bind, inst, il, nb, buf);
+            }
+            m_NatBaked++;
+        } else {
+            m_FullWhy[nb->bill ? 0 : 1]++;
+            DC_PROBE(
+                DC_PROBE_XT_ROOM,
+                xformed = M_XformRoom(
+                    batcher, bind, inst, il, c, nullptr, 0, scale, nb, buf));
+            m_RoomPartUs[2] += M_PT_NOW() ? M_PT_NOW() - t0 : 0;
+            if (xformed && bakes) {
+                // Baked now for the frames to come.
+                for (int32_t v = 0; v < nb->vcount; v++) {
+                    bind->nat_argb[nb->vstart + v] = buf[v].argb;
+                }
+                mb->key = key;
+                if (watery && !mb->wready) {
+                    M_NatWaterPlaces(mbind, il, mb);
+                }
+            }
+        }
+        const uint64_t t1 = timer_us_gettime64();
+        m_NatUs[0] += (uint32_t)(t1 - t0);
+        if (!xformed) {
+            m_NatRefused++;
+            return false; // the first batch: the instance needs the C
+        }
+        g_DC_ProbeUs[DC_PROBE_R_ALL] += nb->vcount; // TEMP
+        m_NatBatches++;
+        if (fog) {
+            M_NatFog(inst, c, buf, nb->vcount);
+        }
+        M_NATSCREEN screen = {
+            .xverts = buf,
+            .count = nb->vcount,
+            .center_x = m_Frame.center_x,
+            .center_y = m_Frame.center_y,
+            .screen_scale = m_Frame.screen_scale,
+            .near_z = m_Frame.near_z,
+            .depth_lo = m_Frame.depth.lo,
+            .depth_scale = m_Frame.depth.scale,
+        };
+        dc_nat_screen(&screen);
+#if defined(TRX_DC_WATCHDOG)
+        if (m_NatCheckFrames > 0) {
+            M_NatCheck(batcher, bind, inst, il, c, chunk, scale, nb, buf);
+        }
+#endif
+        if (nb->run != run) {
+            run = nb->run;
+            page = INT32_MIN;
+        }
+        batcher->nat_map = bind->nat_map;
+        batcher->nat_fog = fog;
+        batcher->oargb_used = fog;
+        DC_PROBE(
+            DC_PROBE_EMIT,
+            M_EmitIndices(
+                batcher, bind, opaque + nb->start, nb->count,
+                faded          ? DC_BLEND_ALPHA
+                    : run == 0 ? DC_BLEND_OPAQUE
+                               : DC_BLEND_PUNCH,
+                &page));
+        m_NatUs[1] += (uint32_t)(timer_us_gettime64() - t1);
+        batcher->nat_map = nullptr;
+#if defined(TRX_DC_WATCHDOG)
+        if (cone_check) {
+            m_NatConeN++;
+            m_NatConeBad += DC_PVR_GetSubmittedCount() > polys_before ? 1 : 0;
+        }
+#endif
+    }
+    return true;
+}
+
+// The corners outside a room's chunks (its transparent and added faces: the
+// water's surface, the ice) the native way too: their vertices, each its own
+// copy past the batches' (M_BakeNative), placed once each with the colours
+// baked as a batch's (and the water's added), then handed to the corners.
+// False when they need the room's own transform (nothing done then).
+static M_XVERT *m_AlwaysBuf = nullptr;
+static int32_t m_AlwaysCap = 0;
+#if defined(TRX_DC_WATCHDOG)
+static M_XVERT *m_AlwaysCheck = nullptr;
+static int32_t m_AlwaysCheckCap = 0;
+#endif
+
+static bool M_NatAlways(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    M_XFORM *const c, const int32_t range[2], const float scale)
+{
+    M_NAT_BATCH *const nb = &((M_BINDING *)bind)->nat_always;
+    if (nb->vcount == 0 || nb->bill || range[1] == 0) {
+        return false;
+    }
+    const uint32_t key = M_NatKey(inst, il, c);
+    if (key == 0) {
+        return false;
+    }
+    const bool watery = nb->water && il->water_scheme >= 0;
+    if (watery && !M_WaterLean(bind, il)) {
+        return false;
+    }
+    if (nb->vcount > m_AlwaysCap) {
+        M_XVERT *const bigger =
+            realloc(m_AlwaysBuf, sizeof(M_XVERT) * (size_t)nb->vcount);
+        if (bigger == nullptr) {
+            return false;
+        }
+        m_AlwaysBuf = bigger;
+        m_AlwaysCap = nb->vcount;
+    }
+    M_XVERT *const buf = m_AlwaysBuf;
+    if (watery) {
+        M_WaterTable(il);
+    }
+    if (nb->key == key && (!watery || nb->wready)) {
+        M_NATPLACE place = {
+            .vertices = (const OUTPUT_MESH_VERTEX *)Vector_GetData(
+                            bind->mesh->vertices)
+                + nb->vstart,
+            .argb = &bind->nat_argb[nb->vstart],
+            .out = buf,
+            .count = nb->vcount,
+            .c = c,
+        };
+        dc_nat_place(&place);
+        if (watery) {
+            M_NatWater(bind, inst, il, nb, buf);
+        }
+    } else {
+        if (!M_XformRoom(
+                batcher, bind, inst, il, c, nullptr, 0, scale, nb, buf)) {
+            return false;
+        }
+        for (int32_t v = 0; v < nb->vcount; v++) {
+            bind->nat_argb[nb->vstart + v] = buf[v].argb;
+        }
+        nb->key = key;
+        if (watery && !nb->wready) {
+            M_NatWaterPlaces((M_BINDING *)bind, il, nb);
+        }
+    }
+    M_XVERT *const xv = batcher->xverts;
+    const uint16_t *const vref = bind->vref;
+    const int32_t end = range[0] + range[1];
+    for (int32_t i = range[0]; i < end; i++) {
+        const uint32_t at = (uint32_t)(vref[i] - nb->vstart);
+        if (at >= (uint32_t)nb->vcount) {
+            return false; // a corner whose vertex is a batch's: the room's way
+        }
+        xv[i] = buf[at];
+    }
+#if defined(TRX_DC_WATCHDOG)
+    // While the batches are checked, these are too, against the room's way.
+    if (m_NatCheckFrames > 0) {
+        if (range[1] > m_AlwaysCheckCap) {
+            free(m_AlwaysCheck);
+            m_AlwaysCheck = malloc(sizeof(M_XVERT) * (size_t)range[1]);
+            m_AlwaysCheckCap = m_AlwaysCheck != nullptr ? range[1] : 0;
+        }
+        if (m_AlwaysCheck != nullptr) {
+            memcpy(m_AlwaysCheck, &xv[range[0]], sizeof(M_XVERT) * range[1]);
+            const int32_t one[1][2] = { { range[0], range[1] } };
+            const float keep_inv_z = c->max_inv_z;
+            M_XformRoom(batcher, bind, inst, il, c, one, 1, scale, nullptr, nullptr);
+            c->max_inv_z = keep_inv_z;
+            for (int32_t i = 0; i < range[1]; i++) {
+                const M_XVERT *const a = &m_AlwaysCheck[i];
+                const M_XVERT *const b = &xv[range[0] + i];
+                const bool near = (b->clip & M_CLIP_NEAR) != 0;
+                const bool ok = a->clip == b->clip && a->argb == b->argb
+                    && a->x == b->x && a->y == b->y && a->z == b->z
+                    && (near
+                        || (a->sx == b->sx && a->sy == b->sy
+                            && a->inv_z == b->inv_z));
+                m_NatCheckN++;
+                if (!ok && ++m_NatCheckBad <= 8) {
+                    LOG_WARNING(
+                        "[native-check] MISMATCH loose corner %d: native clip "
+                        "%02x argb %08x sx %f | rooms clip %02x argb %08x sx %f",
+                        (int)(range[0] + i), a->clip, (unsigned)a->argb, a->sx,
+                        b->clip, (unsigned)b->argb, b->sx);
+                }
+            }
+        }
+    }
+#endif
+    m_NatAlwaysN++;
+    return true;
+}
+
 // The test an instance's bounding sphere gets before its vertices are
 // transformed (cull_sh4.S): wholly past the end of the fog, wholly before its
 // start, wholly past the near plane, wholly past a side or wholly within them
@@ -4530,10 +5339,155 @@ static int32_t M_InstCull(M_CULL *const p)
     return flags;
 }
 
+// An object's colours kept from the last frame it was lit the same way
+// (PLAN_60_FIJO.md, objects): its light in its own space, its tint and the
+// least shade say what each corner's colour comes to, so the same key keeps
+// the same colours, and only the corners are placed (dc_obj_place). With the
+// world staged once a tick, the frames after the first see each object
+// exactly as it was lit there (its light found with the tick's own matrix
+// even on the blended frame: DC_Batcher_LerpSegment keeps that in
+// cwmatrix), and a still object (a pickup, a door) keeps its colours from
+// tick to tick. 0: not to be kept (fog per vertex, cel, reflections, a mesh
+// that deforms or shares its vertices, caustics).
+typedef struct {
+    const OUTPUT_MESH_VERTEX *vertices;
+    const uint32_t *argb;
+    M_XVERT *out;
+    int32_t count;
+    M_XFORM *c;
+    const uint16_t *twin;
+} M_OBJPLACE;
+_Static_assert(offsetof(M_OBJPLACE, twin) == 20, "nat_sh4.S layout");
+extern void dc_obj_place(M_OBJPLACE *run);
+
+#if defined(TRX_DC_WATCHDOG)
+// Each channel within one level (the light found through another view).
+static bool M_ObjArgbNear(const uint32_t a, const uint32_t b)
+{
+    for (int32_t s = 0; s < 32; s += 8) {
+        const int32_t d = (int32_t)((a >> s) & 0xFF) - (int32_t)((b >> s) & 0xFF);
+        if (d > 1 || d < -1) {
+            return false;
+        }
+    }
+    return true;
+}
+static M_XVERT *m_ObjCheckBuf = nullptr;
+static int32_t m_ObjCheckCap = 0;
+#endif
+
+static uint32_t M_ObjHashF(uint32_t h, const float f)
+{
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof(bits));
+    // The low bits dropped: the blended frame finds the light through
+    // another view, which leaves the last bits apart.
+    return (h ^ (bits >> 8)) * 16777619u;
+}
+
+static uint32_t M_ObjKey(
+    const MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
+    const M_XFORM *const c)
+{
+    if (!g_DC_NativeRooms || c->fog || c->ortho || batcher->cel
+        || batcher->env || bind->deforms || bind->vref != nullptr
+        || (bind->flags_or & VERT_NO_FOG) != 0 || il->caustics
+        || !m_Frame.lighting || bind->vertex_count > 4096) {
+        return 0;
+    }
+    const uint32_t ints[] = {
+        il->has_direction, il->tr3, (uint32_t)il->tr3_count,
+        M_TintK(inst->tint.a), M_TintK(inst->tint.r), M_TintK(inst->tint.g),
+        M_TintK(inst->tint.b), (uint32_t)M_ShadeLow(), bind->white,
+    };
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < sizeof(ints) / sizeof(ints[0]); i++) {
+        h = (h ^ ints[i]) * 16777619u;
+    }
+    h = M_ObjHashF(h, il->adder);
+    for (int32_t k = 0; k < 3; k++) {
+        h = M_ObjHashF(h, il->l[k]);
+    }
+    if (il->tr3) {
+        h = M_ObjHashF(h, il->tr3_double);
+        for (int32_t k = 0; k < 3; k++) {
+            h = M_ObjHashF(h, il->tr3_ambient[k]);
+        }
+        for (int32_t i = 0; i < il->tr3_count; i++) {
+            for (int32_t k = 0; k < 3; k++) {
+                h = M_ObjHashF(h, il->tr3_dir[i][k]);
+                h = M_ObjHashF(h, il->tr3_color[i][k]);
+            }
+        }
+    }
+    return h | 1u;
+}
+
+// The object's corners with the colours kept for key; false when there are
+// none (then M_XformObject lights it, and M_ObjKeep keeps them).
+static bool M_ObjCached(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const uint32_t key, M_XFORM *const c)
+{
+    if (key == 0) {
+        m_ObjCache[2]++;
+        return false;
+    }
+    if (bind->obj_key != key || bind->obj_argb == nullptr) {
+        m_ObjCache[1]++;
+        return false;
+    }
+    const OUTPUT_MESH_VERTEX *const vs = Vector_GetData(bind->mesh->vertices);
+    if (bind->twin != nullptr) {
+        M_OBJPLACE run = {
+            .vertices = vs,
+            .argb = bind->obj_argb,
+            .out = batcher->xverts,
+            .count = bind->vertex_count,
+            .c = c,
+            .twin = bind->twin,
+        };
+        dc_obj_place(&run);
+    } else {
+        M_NATPLACE run = {
+            .vertices = vs,
+            .argb = bind->obj_argb,
+            .out = batcher->xverts,
+            .count = bind->vertex_count,
+            .c = c,
+        };
+        dc_nat_place(&run);
+    }
+    m_ObjCache[0]++;
+    return true;
+}
+
+static void M_ObjKeep(
+    const MESH_BATCHER *const batcher, M_BINDING *const bind,
+    const uint32_t key)
+{
+    if (key == 0) {
+        return;
+    }
+    if (bind->obj_argb == nullptr) {
+        bind->obj_argb = malloc(sizeof(uint32_t) * (size_t)bind->vertex_count);
+        if (bind->obj_argb == nullptr) {
+            return;
+        }
+    }
+    for (int32_t i = 0; i < bind->vertex_count; i++) {
+        bind->obj_argb[i] = batcher->xverts[i].argb;
+    }
+    bind->obj_key = key;
+}
+
 static bool M_TransformInstance(
     MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
     M_BINDING *const bind)
 {
+    const uint64_t setup_t0 = M_PT_NOW(); // TEMP
+
     if (bind->vertex_count > batcher->xverts_capacity) {
         M_GrowVertexBuffers(batcher, bind->vertex_count);
     }
@@ -4560,7 +5514,7 @@ static bool M_TransformInstance(
     c.right = m_Frame.half_w;
     c.top = -m_Frame.half_h;
     c.bottom = m_Frame.half_h;
-    if (bind->needs_room_lights && inst->scissor.width > 0) {
+    if (bind->needs_room_lights && inst->scissor.width > 0 && !m_Lerping) {
         const VIEWPORT_RECT *const s = &inst->scissor;
         c.left = MAX(
             c.left, s->x * m_Frame.wide_x - m_Frame.center_x - M_CLIP_MARGIN);
@@ -4605,7 +5559,15 @@ static bool M_TransformInstance(
         if ((cull & (M_CULL_FOG_END | M_CULL_SIDE)) != 0) {
             return false;
         }
-        if ((cull & M_CULL_FOG_OFF) != 0) {
+        // PLAN_60_FIJO.md phase 5, the PSX's cap (TOMB3 stops adding near
+        // 2000 polygons): past M_NATIVE_POLY_CAP in the frame, the native
+        // mode leaves out what is neither a room nor Lara and lies far.
+        if (g_DC_NativeRooms && !bind->needs_room_lights
+            && !m_Frame.lara_instance && cu.eye_sq > M_NATIVE_FAR_SQ
+            && DC_PVR_GetSubmittedCount() > M_NATIVE_POLY_CAP) {
+            return false;
+        }
+        if ((cull & M_CULL_FOG_OFF) != 0 || m_Frame.fog_table) {
             c.fog = false;
         }
         c.near = (cull & M_CULL_NEAR) != 0;
@@ -4613,9 +5575,20 @@ static bool M_TransformInstance(
     }
 
     g_DC_BatcherFrameInstances++;
+    const uint64_t setup_t1 = M_PT_NOW(); // TEMP
     M_WholeRanges(batcher, bind->mesh);
     M_INSTANCE_LIGHT il;
-    M_PrepareInstanceLight(inst, bind, mv, &il);
+    // The blended frame lights an object as the tick placed it (its exact
+    // matrix kept in cwmatrix): the frames after it light it the same, and
+    // keep its colours (M_ObjKey).
+    float light_mv[4][4];
+    const float(*lmv)[4] = mv;
+    if (m_Lerping && !bind->needs_room_lights) {
+        float light_scale;
+        M_ModelView(&inst->cwmatrix, light_mv, &light_scale);
+        lmv = light_mv;
+    }
+    M_PrepareInstanceLight(inst, bind, lmv, &il);
 
     // Cel shaded: for each vertex how far it turns from the light, as a
     // cosine. The light runs across the lit side as before, so that it
@@ -4658,6 +5631,11 @@ static bool M_TransformInstance(
     batcher->oargb_used = false;
 
     memcpy(batcher->mv, mv, sizeof(batcher->mv));
+    if (bind->needs_room_lights) { // TEMP
+        const uint64_t setup_t2 = M_PT_NOW();
+        m_RoomSetupUs[0] += setup_t1 - setup_t0;
+        m_RoomSetupUs[1] += setup_t2 - setup_t1;
+    }
     mat_load(&batcher->mv);
 
     int32_t transformed = bind->vertex_count;
@@ -4673,9 +5651,11 @@ static bool M_TransformInstance(
         if (batcher->cel) {
             M_PrepareFaceLights(batcher, &il, mv);
         }
+        const uint64_t cull_start = M_PT_NOW();
         const int32_t nvr = bind->chunk_count > 0
             ? M_CullChunks(batcher, bind, inst->room, mv, scale, &c, &inst->wmatrix)
             : -1;
+        m_RoomPartUs[1] += M_PT_NOW() - cull_start;
         batcher->vrange_count = nvr;
         if (nvr >= 0) {
             chunked = bind->chunk_count > 0;
@@ -4686,13 +5666,34 @@ static bool M_TransformInstance(
             transformed = 0;
             const bool faded = inst->tint.a < 1.0f;
             batcher->cel_emit = batcher->cel && !faded;
+            const bool native = g_DC_NativeRooms && bind->nat != nullptr
+                && !bind->deforms && !batcher->cel && !batcher->cel_dark;
+            m_NatRooms[native ? 0 : bind->nat == nullptr ? 1 : 2]++;
             for (int32_t r = 0; r < nvr; r++) {
+                const int32_t k = batcher->vrange_chunk[r];
+                if (m_BlendPass && k >= 0) {
+                    continue;
+                }
+                if (native && k >= 0
+                    && M_DrawNative(
+                        batcher, bind, inst, &il, &c, &bind->chunks[k], scale,
+                        faded, black_fog)) {
+                    transformed += batcher->vranges[r][1];
+                    continue;
+                }
                 transformed += batcher->vranges[r][1];
-                DC_PROBE(
-                    DC_PROBE_XT_ROOM,
-                    M_XformRoom(
-                        batcher, bind, inst, &il, &c, &batcher->vranges[r], 1,
-                        scale));
+                const uint64_t slow_start = M_PT_NOW();
+                if (!native || k >= 0
+                    || !M_NatAlways(
+                        batcher, bind, inst, &il, &c, batcher->vranges[r],
+                        scale)) {
+                    DC_PROBE(
+                        DC_PROBE_XT_ROOM,
+                        M_XformRoom(
+                            batcher, bind, inst, &il, &c,
+                            &batcher->vranges[r], 1, scale, nullptr, nullptr));
+                }
+                m_RoomPartUs[3] += M_PT_NOW() - slow_start;
                 if (!black_fog) {
                     M_FogColours(batcher, inst, &c, &batcher->vranges[r], 1);
                 }
@@ -4701,7 +5702,6 @@ static bool M_TransformInstance(
                         batcher, batcher->vranges[r][0],
                         batcher->vranges[r][1]);
                 }
-                const int32_t k = batcher->vrange_chunk[r];
                 if (k < 0) {
                     continue;
                 }
@@ -4715,7 +5715,8 @@ static bool M_TransformInstance(
             DC_PROBE(
                 DC_PROBE_XT_ROOM,
                 M_XformRoom(
-                    batcher, bind, inst, &il, &c, batcher->vranges, nvr, scale));
+                    batcher, bind, inst, &il, &c, batcher->vranges, nvr, scale,
+                    nullptr, nullptr));
             if (!black_fog) {
                 const int32_t whole[1][2] = { { 0, bind->vertex_count } };
                 M_FogColours(
@@ -4730,15 +5731,79 @@ static bool M_TransformInstance(
     } else if (
         bind->plain_object && m_Frame.lighting && !m_Frame.ortho) {
         g_DC_ProbeUs[DC_PROBE_XF_PLAIN] += bind->vertex_count; // TEMP
-        DC_PROBE(
-            DC_PROBE_XT_PLAIN,
-            M_XformObject(batcher, bind, inst, &il, &c, mv, cel_scale));
+        m_ObjPath = 0;
+        m_ObjSetupUs += M_PT_NOW() ? M_PT_NOW() - m_ObjSetupStart : 0;
+        // The native mode fogs an object as a whole, by its distance, as the
+        // PSX does (REA_TR3_PSX.md, point 7): its colour times what the fog
+        // leaves, and no fog per vertex.
+        MESH_INSTANCE fogged;
+        const MESH_INSTANCE *obj_inst = inst;
+        if (g_DC_NativeRooms && c.fog && black_fog && eye_sq > 0.0f) {
+            const float keep = 1.0f
+                - M_Clamp((sqrtf(eye_sq) - c.fog_start) * c.fog_scale, 0.0f,
+                          1.0f);
+            fogged = *inst;
+            fogged.tint.r *= keep;
+            fogged.tint.g *= keep;
+            fogged.tint.b *= keep;
+            obj_inst = &fogged;
+            c.fog = false;
+        }
+        const uint32_t okey = M_ObjKey(batcher, bind, obj_inst, &il, &c);
+        if (M_ObjCached(batcher, bind, okey, &c)) {
+#if defined(TRX_DC_WATCHDOG)
+            // While the batches are checked, the kept colours are too.
+            if (m_NatCheckFrames > 0) {
+                const int32_t n = bind->vertex_count;
+                if (n > m_ObjCheckCap) {
+                    free(m_ObjCheckBuf);
+                    m_ObjCheckBuf = malloc(sizeof(M_XVERT) * (size_t)n);
+                    m_ObjCheckCap = m_ObjCheckBuf != nullptr ? n : 0;
+                }
+                if (m_ObjCheckBuf != nullptr) {
+                    memcpy(m_ObjCheckBuf, batcher->xverts, sizeof(M_XVERT) * n);
+                    const float keep_inv_z = c.max_inv_z;
+                    M_XformObject(batcher, bind, obj_inst, &il, &c, mv, cel_scale);
+                    c.max_inv_z = keep_inv_z;
+                    for (int32_t i = 0; i < n; i++) {
+                        const M_XVERT *const a = &m_ObjCheckBuf[i];
+                        const M_XVERT *const b = &batcher->xverts[i];
+                        const bool near = (b->clip & M_CLIP_NEAR) != 0;
+                        const bool ok = a->clip == b->clip
+                            && M_ObjArgbNear(a->argb, b->argb) && a->x == b->x
+                            && a->y == b->y && a->z == b->z
+                            && (near
+                                || (a->sx == b->sx && a->sy == b->sy
+                                    && a->inv_z == b->inv_z));
+                        m_ObjCheckN++;
+                        if (!ok && ++m_ObjCheckBad <= 8) {
+                            LOG_WARNING(
+                                "[obj-check] MISMATCH corner %d: kept clip %02x "
+                                "argb %08x sx %f | lit clip %02x argb %08x sx %f",
+                                (int)i, a->clip, (unsigned)a->argb, a->sx,
+                                b->clip, (unsigned)b->argb, b->sx);
+                        }
+                    }
+                }
+            }
+#endif
+        } else {
+            DC_PROBE(
+                DC_PROBE_XT_PLAIN,
+                M_XformObject(batcher, bind, obj_inst, &il, &c, mv, cel_scale));
+            M_ObjKeep(batcher, bind, okey);
+        }
         if (!black_fog) {
             const int32_t whole[1][2] = { { 0, bind->vertex_count } };
             M_FogColours(batcher, inst, &c, whole, 1);
         }
     } else {
         g_DC_ProbeUs[DC_PROBE_XF_GENERIC] += bind->vertex_count; // TEMP
+        m_ObjPath = !bind->needs_room_lights && !bind->needs_object_light
+                && !batcher->env
+            ? 1
+            : 2;
+        m_ObjSetupUs += M_PT_NOW() ? M_PT_NOW() - m_ObjSetupStart : 0;
         g_DC_ProbeUs[bind->needs_own_light ? DC_PROBE_XG_OWN
                      : batcher->env        ? DC_PROBE_XG_ENV
                      : !black_fog          ? DC_PROBE_XG_FOG
@@ -5358,6 +6423,8 @@ _Static_assert(sizeof(pvr_vertex_t) == 32, "emit_sh4.S copies 32-byte vertices")
 _Static_assert(sizeof(OUTPUT_MESH_INDEX) == 2, "emit_sh4.S reads 16-bit indices");
 
 extern void dc_emit_run(M_EMIT_RUN *run);
+// The same with xverts a native batch's map (DC_EMIT_MAP in emit_sh4.S).
+extern void dc_emit_run_map(M_EMIT_RUN *run);
 
 #if defined(DC_EMIT_VERIFY)
 // Checking the assembly against the C code: the run goes into a scratch buffer
@@ -5485,6 +6552,21 @@ static int32_t M_EmitRunFast(
         .face_light_count = batcher->face_light_count,
         .eargb = batcher->eargb,
     };
+    if (batcher->nat_map != nullptr) {
+        // Each corner's vertex at the batch buffer (in sargb) plus its map
+        // entry, the fog colour in the vertex (oargb only says there is one).
+        run.xverts = (const M_XVERT *)batcher->nat_map;
+        run.sargb = (const uint32_t *)M_NatBuffer();
+        run.oargb = batcher->nat_fog ? (const uint32_t *)batcher->nat_map : nullptr;
+        run.cel_out = nullptr;
+        run.cel_dark = 0;
+        run.face_light_count = 0;
+#if !defined(DC_EMIT_VERIFY)
+        dc_emit_run_map(&run);
+        DC_PVR_EndRun((size_t)run.written, run.polys, header);
+        return run.used;
+#endif
+    }
     // Lara's cel shading keeps a copy of each lit face (M_KeepCel): room for
     // them all, and the run of her page they belong to, made first.
     const bool cel = batcher->cel_emit;
@@ -5608,6 +6690,9 @@ static void M_EmitIndices(
             }
         }
         g_DC_ProbeUs[DC_PROBE_A_CFACES]++; // TEMP
+        if (batcher->nat_map != nullptr) {
+            M_NatScatter(batcher, &indices[i], MIN(6, count - i));
+        }
         if (i + 5 < count && (env || bind->page[indices[i + 3]] == tri_page)
             && M_TryEmitQuad(batcher, bind, &indices[i], &indices[i + 3])) {
             i += 6;
@@ -7479,7 +8564,18 @@ static void M_DrawInstance(
     DC_PROBE_STOP(DC_PROBE_D_PRE, probe_pre);
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
     const uint64_t xform_start = timer_us_gettime64();
+    m_ObjPath = 3;
+    m_ObjSetupStart = xform_start;
     const bool transformed = M_TransformInstance(batcher, inst, bind);
+    if (!bind->needs_room_lights) {
+        m_ObjN[m_ObjPath]++;
+        m_ObjVerts[m_ObjPath] += bind->vertex_count;
+        m_ObjUs[m_ObjPath] += M_PT_NOW() ? M_PT_NOW() - xform_start : 0;
+    }
+    if (bind->needs_room_lights) {
+        m_RoomPartUs[0] += M_PT_NOW() ? M_PT_NOW() - xform_start : 0;
+        m_RoomDraws[blended ? 1 : 0]++;
+    }
     // The chunks drawn on the way count as emission, not transformation.
     g_DC_BatcherXformUs += (uint32_t)(timer_us_gettime64() - xform_start)
         - batcher->chunk_emit_us;
@@ -7488,10 +8584,17 @@ static void M_DrawInstance(
         return;
     }
 #else
-    if (!M_TransformInstance(batcher, inst, bind)) {
+    const uint64_t tf_start = timer_us_gettime64();
+    const bool tf_ok = M_TransformInstance(batcher, inst, bind);
+    if (bind->needs_room_lights) {
+        m_RoomPartUs[0] += M_PT_NOW() - tf_start;
+        m_RoomDraws[blended ? 1 : 0]++;
+    }
+    if (!tf_ok) {
         return;
     }
 #endif
+    const uint64_t post_start = M_PT_NOW();
     DC_PROBE_START(probe_post);
     const bool is_caster = caster >= 0;
 #if defined(TRX_DC_WATCHDOG) || defined(TRX_DC_PROBES)
@@ -7514,6 +8617,9 @@ static void M_DrawInstance(
             batcher, bind, Vector_GetData(mesh->blend_add_vertex_indices),
             mesh->blend_add_vertex_indices->count,
             pass == SCENE_PASS_BLEND_ADD ? DC_BLEND_ADD : DC_BLEND_SUB, &page);
+        if (bind->needs_room_lights) {
+            m_RoomPartUs[5] += M_PT_NOW() - post_start;
+        }
         return;
     }
 
@@ -7568,6 +8674,11 @@ static void M_DrawInstance(
         batcher, bind, bind->transp, bind->transp_count, DC_BLEND_ALPHA, &page);
     DC_PROBE_STOP(DC_PROBE_P_TRANSP, probe_transp); // TEMP
     DC_PROBE_STOP(DC_PROBE_D_TAIL, probe_tail);
+    if (bind->needs_room_lights) {
+        m_RoomPartUs[4] += M_PT_NOW() - post_start;
+    } else {
+        m_ObjPostUs += M_PT_NOW() - post_start;
+    }
 }
 
 static void M_PrepareFrame(void)
@@ -7636,6 +8747,14 @@ static void M_PrepareFrame(void)
     m_Frame.fog_color[0] = general->fog_color[0];
     m_Frame.fog_color[1] = general->fog_color[1];
     m_Frame.fog_color[2] = general->fog_color[2];
+    // PLAN_60_FIJO.md phase 6: the native mode's black fog by the PowerVR's
+    // table, by depth as the PSX's, over the same 12 to 20 blocks.
+    m_Frame.fog_table = g_DC_NativeRooms && m_Frame.fog && !m_Frame.ortho
+        && m_Frame.fog_color[0] == 0.0f && m_Frame.fog_color[1] == 0.0f
+        && m_Frame.fog_color[2] == 0.0f;
+    if (m_Frame.fog_table) {
+        DC_PVR_SetupFogTable(m_Frame.near_z, fog_start, fog_end);
+    }
     m_Frame.lights = DC_GL_GetUniformBlock(DC_GL_BINDING_LIGHTS, nullptr);
     m_Frame.lights_mode = -1;
     DC_PVR_GetDepth3D(&m_Frame.depth);
@@ -8297,6 +9416,7 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
         return;
     }
     M_PrepareFrame();
+    m_BlendPass = pass != SCENE_PASS_OPAQUE;
     if (pass == SCENE_PASS_OPAQUE) {
         DC_PROBE(DC_PROBE_P_PSOFT, M_PrepareSoft()); // TEMP
     } else {
@@ -8318,11 +9438,20 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
     DC_PVR_SetFilter(inset);
     VECTOR *const staged = batcher->staged[pass];
     const int16_t *const casters = Vector_GetData(batcher->casters[pass]);
+    DC_PVR_SetFogTable(m_Frame.fog_table);
     for (int32_t i = 0; i < staged->count; i++) {
+        MESH_INSTANCE *const inst = Vector_Get(staged, i);
+        const M_BINDING *const pbind = M_GetBinding(batcher, inst->mesh);
+        const uint64_t part_start = M_PT_NOW();
         DC_PROBE(
             DC_PROBE_P_DRAWI,
-            M_DrawInstance(batcher, Vector_Get(staged, i), pass, casters[i]));
+            M_DrawInstance(batcher, inst, pass, casters[i]));
+        m_PassPartUs[pbind != nullptr && pbind->needs_room_lights ? 0 : 1] +=
+            M_PT_NOW() - part_start;
     }
+    const uint64_t staged_start = M_PT_NOW();
+    // The particles and the other sources keep their own fog.
+    DC_PVR_SetFogTable(false);
     DC_PVR_SetShadowReceiver(false);
     if (pass == SCENE_PASS_BLEND_ADD) {
         M_DrawParticles(0);
@@ -8335,6 +9464,8 @@ static void M_RenderPass(const SCENE_SOURCE *const source, const SCENE_PASS pass
         M_DrawParticles(1);
         M_DrawQuads(1);
     }
+    m_PassPartUs[pass == SCENE_PASS_OPAQUE ? 2 : 3] +=
+        M_PT_NOW() - staged_start;
 }
 
 static bool M_IsDirty(const SCENE_SOURCE *const source, const SCENE_PASS pass)
@@ -8539,6 +9670,56 @@ static void M_RemapIndices(
 // another after them: a chunk that shows is transformed as a run, with no
 // list of its vertices. A room it cannot cut in two or more, or whose faces
 // share a vertex across chunks, stays whole, sorted by page alone.
+// M_BuildChunks's copies of the corners two groups of faces share (see
+// there): per original corner the first group to name it, and its copy for
+// the group naming it now.
+typedef struct {
+    OUTPUT_MESH *mesh;
+    int32_t nv0;
+    int32_t *first;
+    int32_t *dup_of;
+    int32_t *dup_who;
+    // Per copy, its original.
+    int32_t *src;
+    int32_t added;
+    int32_t src_capacity;
+    bool fits;
+} M_SPLIT;
+
+static void M_SplitShared(
+    M_SPLIT *const s, OUTPUT_MESH_INDEX *const idx, const int32_t n,
+    const int32_t group)
+{
+    for (int32_t i = 0; i < n && s->fits; i++) {
+        const int32_t v = idx[i];
+        if (v >= s->nv0) {
+            continue; // a copy
+        }
+        if (s->first[v] < 0 || s->first[v] == group) {
+            s->first[v] = group;
+            continue;
+        }
+        if (s->dup_who[v] != group) {
+            if (s->nv0 + s->added >= 0xFFFF) {
+                s->fits = false;
+                return;
+            }
+            if (s->added == s->src_capacity) {
+                s->src_capacity = s->src_capacity * 2 + 256;
+                s->src = Memory_Realloc(
+                    s->src, sizeof(int32_t) * s->src_capacity);
+            }
+            const OUTPUT_MESH_VERTEX copy =
+                *(const OUTPUT_MESH_VERTEX *)Vector_Get(s->mesh->vertices, v);
+            Vector_Add(s->mesh->vertices, &copy);
+            s->src[s->added] = v;
+            s->dup_who[v] = group;
+            s->dup_of[v] = s->nv0 + s->added++;
+        }
+        idx[i] = (OUTPUT_MESH_INDEX)s->dup_of[v];
+    }
+}
+
 static void M_BuildChunks(M_BINDING *const bind)
 {
     OUTPUT_MESH *const mesh = bind->mesh;
@@ -8561,8 +9742,13 @@ static void M_BuildChunks(M_BINDING *const bind)
         cell *= 2;
     }
     const int32_t cells = dim[0] * dim[1] * dim[2];
-    if (bind->vertex_count < M_CHUNK_MIN_VERTICES || cells < 2
-        || !bind->needs_room_lights || bind->billboard || total < 6) {
+    // A room with sprites is cut too (TR3's plants): its chunks' bounds take
+    // in how far the corners stand off (below). Not with sprites of a fixed
+    // size on screen, whose reach is not known here.
+    // A small room is one chunk (for the native rooms, PLAN_60_FIJO.md).
+    if (!bind->needs_room_lights || bind->needs_object_light
+        || bind->needs_own_light
+        || (bind->flags_or & VERT_ABS_SPRITE) != 0 || total < 6) {
         M_SortByPage(bind, opaque, clean);
         M_SortByPage(bind, opaque + clean, total - clean);
         return;
@@ -8628,8 +9814,68 @@ static void M_BuildChunks(M_BINDING *const bind)
     }
     Memory_Free(sorted);
     Memory_Free(prims);
-    if (chunk_count < 2) {
+    if (chunk_count < 1) {
         return;
+    }
+
+    // A corner named by the faces of two chunks (or of a chunk and the faces
+    // outside the runs, as TR3's rooms have many) is kept twice, so that each
+    // chunk owns its corners: the later group's faces name a copy.
+    {
+        M_SPLIT split = {
+            .nv0 = bind->vertex_count,
+            .first = Memory_Alloc(sizeof(int32_t) * bind->vertex_count),
+            .dup_of = Memory_Alloc(sizeof(int32_t) * bind->vertex_count),
+            .dup_who = Memory_Alloc(sizeof(int32_t) * bind->vertex_count),
+            .mesh = mesh,
+            .fits = true,
+        };
+        for (int32_t i = 0; i < split.nv0; i++) {
+            split.first[i] = -1;
+            split.dup_who[i] = -1;
+        }
+        for (int32_t g = 0; g < chunk_count; g++) {
+            for (int32_t part = 0; part < 2; part++) {
+                M_SplitShared(
+                    &split, opaque + run_cells[part][g][0],
+                    run_cells[part][g][1], g);
+            }
+        }
+        M_SplitShared(
+            &split, Vector_GetData(mesh->blend_add_vertex_indices),
+            mesh->blend_add_vertex_indices->count, chunk_count);
+        for (int32_t f = 0; f < mesh->transparent_faces->count; f++) {
+            OUTPUT_MESH_FACE *const face = Vector_Get(mesh->transparent_faces, f);
+            M_SplitShared(
+                &split, (OUTPUT_MESH_INDEX *)face->vertex_indices,
+                face->vertex_count, chunk_count);
+        }
+        if (split.added > 0) {
+            // The copies' texture coordinates and pages, as their originals'.
+            const int32_t nv1 = split.nv0 + split.added;
+            uint16_t *const uv = Memory_Alloc(sizeof(uint16_t) * 2 * (nv1 + 1));
+            int8_t *const page = Memory_Alloc(nv1 + 1);
+            memcpy(uv, bind->uv, sizeof(uint16_t) * 2 * split.nv0);
+            memcpy(page, bind->page, split.nv0);
+            for (int32_t d = 0; d < split.added; d++) {
+                const int32_t v = split.src[d];
+                uv[(split.nv0 + d) * 2] = bind->uv[v * 2];
+                uv[(split.nv0 + d) * 2 + 1] = bind->uv[v * 2 + 1];
+                page[split.nv0 + d] = bind->page[v];
+            }
+            Memory_Free(bind->uv);
+            Memory_Free(bind->page);
+            bind->uv = uv;
+            bind->page = page;
+            bind->vertex_count = nv1;
+        }
+        Memory_Free(split.src);
+        Memory_Free(split.dup_who);
+        Memory_Free(split.dup_of);
+        Memory_Free(split.first);
+        if (!split.fits) {
+            return;
+        }
     }
 
     // Each vertex's place in the new order: the chunks' faces in turn, then
@@ -8754,9 +10000,17 @@ static void M_BuildChunks(M_BINDING *const bind)
         for (int32_t i = chunk->vert_start;
              i < chunk->vert_start + chunk->vert_count; i++) {
             const float p[3] = { vs[i].pos.x, vs[i].pos.y, vs[i].pos.z };
+            // A sprite's corner lies off its place by its normal's x and y,
+            // across the screen: any way, as far as their length.
+            float reach = 0.0f;
+            if ((vs[i].flags & VERT_BILLBOARD) != 0) {
+                const float nx = vs[i].normal.x;
+                const float ny = vs[i].normal.y;
+                reach = sqrtf(nx * nx + ny * ny);
+            }
             for (int32_t k = 0; k < 3; k++) {
-                lo[k] = MIN(lo[k], p[k]);
-                hi[k] = MAX(hi[k], p[k]);
+                lo[k] = MIN(lo[k], p[k] - reach);
+                hi[k] = MAX(hi[k], p[k] + reach);
             }
         }
         float radius_sq = 0.0f;
@@ -9036,6 +10290,251 @@ static void M_ScanVertices(
 #endif
 }
 
+// A batch's sphere and normal cone (M_NAT_BATCH), from its vertices and its
+// faces' corners (vref takes a corner to its vertex).
+static void M_NatBounds(
+    M_NAT_BATCH *const b, const OUTPUT_MESH_VERTEX *const nv,
+    const OUTPUT_MESH_INDEX *const opaque, const uint16_t *const vref)
+{
+    float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
+    float hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    for (int32_t v = b->vstart; v < b->vstart + b->vcount; v++) {
+        const float p[3] = { nv[v].pos.x, nv[v].pos.y, nv[v].pos.z };
+        // A sprite's corners stand off by its normal: the sphere takes them in.
+        float reach = 0.0f;
+        if ((nv[v].flags & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0) {
+            reach = sqrtf(nv[v].normal.x * nv[v].normal.x
+                          + nv[v].normal.y * nv[v].normal.y);
+        }
+        for (int32_t k = 0; k < 3; k++) {
+            lo[k] = MIN(lo[k], p[k] - reach);
+            hi[k] = MAX(hi[k], p[k] + reach);
+        }
+    }
+    float r_sq = 0.0f;
+    for (int32_t k = 0; k < 3; k++) {
+        b->center[k] = (lo[k] + hi[k]) * 0.5f;
+        const float h = (hi[k] - lo[k]) * 0.5f;
+        r_sq += h * h;
+    }
+    b->radius = sqrtf(r_sq);
+
+    // The cone: the normals' mean, and how far the furthest strays from it.
+    b->cutoff = 2.0f;
+    if (b->bill) {
+        return;
+    }
+    float n_sum[3] = { 0.0f, 0.0f, 0.0f };
+    float min_dot = 1.0f;
+    for (int32_t pass = 0; pass < 2; pass++) {
+        for (int32_t i = b->start; i + 2 < b->start + b->count; i += 3) {
+            const OUTPUT_MESH_VERTEX *const p0 = &nv[vref[opaque[i]]];
+            const OUTPUT_MESH_VERTEX *const p1 = &nv[vref[opaque[i + 1]]];
+            const OUTPUT_MESH_VERTEX *const p2 = &nv[vref[opaque[i + 2]]];
+            const float e1[3] = { p1->pos.x - p0->pos.x, p1->pos.y - p0->pos.y,
+                                  p1->pos.z - p0->pos.z };
+            const float e2[3] = { p2->pos.x - p0->pos.x, p2->pos.y - p0->pos.y,
+                                  p2->pos.z - p0->pos.z };
+            float n[3] = { e1[1] * e2[2] - e1[2] * e2[1],
+                           e1[2] * e2[0] - e1[0] * e2[2],
+                           e1[0] * e2[1] - e1[1] * e2[0] };
+            const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (len <= 0.0f) {
+                continue; // degenerate: says nothing of the way it faces
+            }
+            if (pass == 0) {
+                for (int32_t k = 0; k < 3; k++) {
+                    n_sum[k] += n[k] / len;
+                }
+            } else {
+                const float d = (n[0] * b->axis[0] + n[1] * b->axis[1]
+                                 + n[2] * b->axis[2])
+                    / len;
+                min_dot = MIN(min_dot, d);
+            }
+        }
+        if (pass == 0) {
+            const float len = sqrtf(n_sum[0] * n_sum[0] + n_sum[1] * n_sum[1]
+                                    + n_sum[2] * n_sum[2]);
+            if (len <= 0.0f) {
+                return;
+            }
+            for (int32_t k = 0; k < 3; k++) {
+                b->axis[k] = n_sum[k] / len;
+            }
+        }
+    }
+    if (min_dot > 0.1f) {
+        b->cutoff = sqrtf(1.0f - min_dot * min_dot);
+    }
+}
+
+// Bakes a chunked room for the native rooms (see M_NAT_BATCH): each chunk's
+// faces, run by run, into batches of at most M_NAT_MAX distinct vertices;
+// the vertices laid out batch after batch (one shared by two batches is
+// kept twice), the corners' vref pointed at them, and per corner the offset
+// of its vertex in the batch buffer. Left as it was when a corner would sit
+// in two batches.
+static void M_BakeNative(M_BINDING *const bind)
+{
+    const int32_t nc = bind->vertex_count;
+    if (bind->chunk_count == 0 || bind->vref == nullptr || nc > 0xFFFF) {
+        return;
+    }
+    OUTPUT_MESH *const mesh = bind->mesh;
+    const OUTPUT_MESH_VERTEX *const vs = Vector_GetData(mesh->vertices);
+    const int32_t nkept = mesh->vertices->count;
+    const OUTPUT_MESH_INDEX *const opaque =
+        Vector_GetData(mesh->opaque_vertex_indices);
+    const int32_t total = mesh->opaque_vertex_indices->count;
+
+    int32_t *const stamp = Memory_Alloc(sizeof(int32_t) * nkept);
+    uint16_t *const local = Memory_Alloc(sizeof(uint16_t) * nkept);
+    int32_t *const glob = Memory_Alloc(sizeof(int32_t) * nkept);
+    int32_t *const owner = Memory_Alloc(sizeof(int32_t) * nc);
+    uint16_t *const map = Memory_Alloc(sizeof(uint16_t) * nc);
+    uint16_t *const nref = Memory_Alloc(sizeof(uint16_t) * nc);
+    for (int32_t i = 0; i < nkept; i++) {
+        stamp[i] = -1;
+        glob[i] = -1;
+    }
+    for (int32_t i = 0; i < nc; i++) {
+        owner[i] = -1;
+    }
+    int32_t nat_cap = nkept + nkept / 4 + 64;
+    OUTPUT_MESH_VERTEX *nat = Memory_Alloc(sizeof(*nat) * nat_cap);
+    int32_t nn = 0;
+    int32_t batch_cap = total / 3 + 2 * bind->chunk_count + 1;
+    M_NAT_BATCH *const batches = Memory_Alloc(sizeof(M_NAT_BATCH) * batch_cap);
+    int32_t nb = 0;
+    bool ok = true;
+
+    for (int32_t k = 0; k < bind->chunk_count && ok; k++) {
+        M_CHUNK *const chunk = &bind->chunks[k];
+        chunk->nat_first = nb;
+        for (int32_t run = 0; run < 2 && ok; run++) {
+            const int32_t end = chunk->start[run] + chunk->count[run];
+            int32_t i = chunk->start[run];
+            if (i + 2 >= end) {
+                continue;
+            }
+            M_NAT_BATCH *b = &batches[nb];
+            *b = (M_NAT_BATCH) { .start = i, .run = run, .vstart = nn };
+            while (i + 2 < end && ok) {
+                const int32_t len =
+                    i + 5 < end && M_IsQuad(&opaque[i]) ? 6 : 3;
+                // The vertices this face would add.
+                int32_t fresh = 0;
+                for (int32_t j = 0; j < len; j++) {
+                    const int32_t u = bind->vref[opaque[i + j]];
+                    bool seen = stamp[u] == nb;
+                    for (int32_t q = 0; q < j && !seen; q++) {
+                        seen = bind->vref[opaque[i + q]] == u;
+                    }
+                    fresh += seen ? 0 : 1;
+                }
+                if (b->vcount + fresh > M_NAT_MAX) {
+                    b->count = i - b->start;
+                    nb++;
+                    b = &batches[nb];
+                    *b = (M_NAT_BATCH) { .start = i, .run = run, .vstart = nn };
+                }
+                for (int32_t j = 0; j < len; j++) {
+                    const int32_t c = opaque[i + j];
+                    const int32_t u = bind->vref[c];
+                    if (stamp[u] != nb) {
+                        stamp[u] = nb;
+                        local[u] = (uint16_t)b->vcount++;
+                        if (nn == nat_cap) {
+                            nat_cap += nat_cap / 2;
+                            nat = Memory_Realloc(nat, sizeof(*nat) * nat_cap);
+                        }
+                        nat[nn++] = vs[u];
+                    }
+                    if (owner[c] >= 0 && owner[c] != nb) {
+                        ok = false;
+                        break;
+                    }
+                    owner[c] = nb;
+                    map[c] = (uint16_t)(local[u] * sizeof(M_XVERT)
+                                        + offsetof(M_XVERT, sx));
+                    nref[c] = (uint16_t)(b->vstart + local[u]);
+                }
+                i += len;
+            }
+            b->count = i - b->start;
+            nb++;
+        }
+        chunk->nat_count = nb - chunk->nat_first;
+    }
+    // The corners outside the batches (the added and transparent faces, and
+    // any no face names) read the vertices once more, as before.
+    const int32_t always_v = nn;
+    for (int32_t c = 0; c < nc && ok; c++) {
+        if (owner[c] >= 0) {
+            continue;
+        }
+        const int32_t u = bind->vref[c];
+        if (glob[u] < 0) {
+            if (nn == nat_cap) {
+                nat_cap += nat_cap / 2;
+                nat = Memory_Realloc(nat, sizeof(*nat) * nat_cap);
+            }
+            glob[u] = nn;
+            nat[nn++] = vs[u];
+        }
+        nref[c] = (uint16_t)glob[u];
+    }
+    ok &= nn <= 0xFFFF;
+    LOG_DEBUG(
+        "[native] room of %d corners, %d chunks: %d batches, %d vertices%s",
+        (int)nc, (int)bind->chunk_count, (int)nb, (int)nn,
+        ok ? "" : ", not baked");
+    if (ok) {
+        Vector_Clear(mesh->vertices);
+        memcpy(
+            Vector_Expand(mesh->vertices, nn), nat,
+            sizeof(OUTPUT_MESH_VERTEX) * nn);
+        Vector_ShrinkToFit(mesh->vertices);
+        memcpy(bind->vref, nref, sizeof(uint16_t) * nc);
+        bind->nat = Memory_Realloc(batches, sizeof(M_NAT_BATCH) * MAX(nb, 1));
+        bind->nat_count = nb;
+        bind->nat_map = map;
+        bind->nat_argb = Memory_Alloc(sizeof(uint32_t) * MAX(nn, 1));
+        bind->nat_widx = Memory_Alloc(MAX(nn, 1));
+        const OUTPUT_MESH_VERTEX *const nv = Vector_GetData(mesh->vertices);
+        for (int32_t b = 0; b < nb; b++) {
+            M_NAT_BATCH *const nbat = &bind->nat[b];
+            for (int32_t v = nbat->vstart; v < nbat->vstart + nbat->vcount; v++) {
+                nbat->bill |= (nv[v].flags & (VERT_BILLBOARD | VERT_ABS_SPRITE))
+                    != 0;
+                nbat->water |= (nv[v].flags & (VERT_MOVE | VERT_GLOW)) != 0
+                    && (nv[v].flags & VERT_NO_LIGHTING) == 0;
+            }
+            M_NatBounds(nbat, nv, opaque, bind->vref);
+        }
+        M_NAT_BATCH *const al = &bind->nat_always;
+        *al = (M_NAT_BATCH) { .vstart = always_v, .vcount = nn - always_v };
+        for (int32_t v = al->vstart; v < al->vstart + al->vcount; v++) {
+            al->bill |= (nv[v].flags & (VERT_BILLBOARD | VERT_ABS_SPRITE)) != 0;
+            al->water |= (nv[v].flags & (VERT_MOVE | VERT_GLOW)) != 0
+                && (nv[v].flags & VERT_NO_LIGHTING) == 0;
+        }
+    } else {
+        Memory_Free(batches);
+        Memory_Free(map);
+        for (int32_t k = 0; k < bind->chunk_count; k++) {
+            bind->chunks[k].nat_count = 0;
+        }
+    }
+    Memory_Free(nat);
+    Memory_Free(nref);
+    Memory_Free(owner);
+    Memory_Free(glob);
+    Memory_Free(local);
+    Memory_Free(stamp);
+}
+
 void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
 {
     ASSERT(mesh->sealed == 1);
@@ -9077,6 +10576,7 @@ void MeshBatcher_AddMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh)
     M_FindReflections(bind);
     M_ShareVertices(bind);
     M_FindTwins(bind);
+    M_BakeNative(bind);
     // The transparent faces end to end, their indices final by now.
     bind->transp_count = 0;
     for (int32_t i = 0; i < mesh->transparent_faces->count; i++) {
@@ -9125,6 +10625,11 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     Memory_Free(bind->twin);
     Memory_Free(bind->env);
     Memory_Free(bind->chunks);
+    Memory_Free(bind->nat);
+    Memory_Free(bind->nat_map);
+    Memory_Free(bind->nat_argb);
+    Memory_Free(bind->nat_widx);
+    free(bind->obj_argb);
     if (bind->see_cells != nullptr) {
         for (int32_t i = 0; bind->see_cell_count > i; i++) {
             Memory_Free(bind->see_cells[i]);
@@ -10820,4 +12325,372 @@ void DC_Shadow_DrawVolumes(void)
 const SCENE_SOURCE *MeshBatcher_AsSource(const MESH_BATCHER *const batcher)
 {
     return &batcher->source;
+}
+
+// ---------------------------------------------------------------------------
+// The frame between two ticks (dc_world.h, DC_Replay; compositor.c drives
+// it). A flush of Game_Draw's staging is a segment: its instances, particles,
+// quads, streaks and shadow casters are kept as staged, to be drawn again by
+// the next frames without staging; and on the first frame, before its passes,
+// each instance's world matrix is blended halfway with the one it had at the
+// tick before (found by its mesh, segment, pass and place among that mesh's
+// instances).
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    MESH_INSTANCE *inst[SCENE_PASS_COUNT];
+    int16_t *cast[SCENE_PASS_COUNT];
+    int32_t inst_n[SCENE_PASS_COUNT];
+    int32_t inst_cap[SCENE_PASS_COUNT];
+    int32_t cast_cap[SCENE_PASS_COUNT];
+    DC_PARTICLE *part;
+    int32_t part_n;
+    int32_t part_cap;
+    int32_t part_blend[3];
+    DC_QUAD *quad;
+    int32_t quad_n;
+    int32_t quad_cap;
+    int32_t quad_blend[3];
+    DC_STREAK *streak;
+    int32_t streak_n;
+    int32_t streak_cap;
+    M_CASTER *casters;
+    int32_t caster_n;
+    int32_t caster_cap;
+    int32_t lara_casters;
+} M_SEG;
+static M_SEG m_Segs[DC_REPLAY_SEGMENTS];
+
+// Kept with malloc, not on the level heap: they outlive a level.
+static void *M_SegCopy(
+    void *dst, int32_t *const cap, const void *const src, const int32_t n,
+    const size_t size)
+{
+    if (n > *cap) {
+        const int32_t grown = n + n / 2 + 8;
+        void *const bigger = realloc(dst, size * (size_t)grown);
+        if (bigger == nullptr) {
+            return nullptr;
+        }
+        dst = bigger;
+        *cap = grown;
+    }
+    if (n > 0) {
+        memcpy(dst, src, size * (size_t)n);
+    }
+    return dst;
+}
+
+bool DC_Batcher_IsSource(const SCENE_SOURCE *const source)
+{
+    return source->render_pass == M_RenderPass;
+}
+
+bool DC_Batcher_SaveSegment(const SCENE_SOURCE *const source, const int32_t seg)
+{
+    const MESH_BATCHER *const batcher = source->priv;
+    M_SEG *const s = &m_Segs[seg];
+    bool ok = true;
+    for (int32_t pass = 0; pass < SCENE_PASS_COUNT; pass++) {
+        const int32_t n = batcher->staged[pass]->count;
+        s->inst[pass] = M_SegCopy(
+            s->inst[pass], &s->inst_cap[pass],
+            Vector_GetData(batcher->staged[pass]), n, sizeof(MESH_INSTANCE));
+        s->cast[pass] = M_SegCopy(
+            s->cast[pass], &s->cast_cap[pass],
+            Vector_GetData(batcher->casters[pass]), n, sizeof(int16_t));
+        s->inst_n[pass] = n;
+        ok &= n == 0 || (s->inst[pass] != nullptr && s->cast[pass] != nullptr);
+    }
+    s->part = M_SegCopy(
+        s->part, &s->part_cap, m_Particles, m_ParticleCount,
+        sizeof(DC_PARTICLE));
+    s->part_n = m_ParticleCount;
+    s->quad =
+        M_SegCopy(s->quad, &s->quad_cap, m_Quads, m_QuadCount, sizeof(DC_QUAD));
+    s->quad_n = m_QuadCount;
+    s->streak = M_SegCopy(
+        s->streak, &s->streak_cap, m_Streaks, m_StreakCount, sizeof(DC_STREAK));
+    s->streak_n = m_StreakCount;
+    s->casters = M_SegCopy(
+        s->casters, &s->caster_cap, m_Casters, m_CasterCount, sizeof(M_CASTER));
+    s->caster_n = m_CasterCount;
+    s->lara_casters = m_LaraCasterCount;
+    memcpy(s->part_blend, m_ParticleBlendCount, sizeof(s->part_blend));
+    memcpy(s->quad_blend, m_QuadBlendCount, sizeof(s->quad_blend));
+    ok &= (s->part_n == 0 || s->part != nullptr)
+        && (s->quad_n == 0 || s->quad != nullptr)
+        && (s->streak_n == 0 || s->streak != nullptr)
+        && (s->caster_n == 0 || s->casters != nullptr);
+    return ok;
+}
+
+void DC_Batcher_LoadSegment(const SCENE_SOURCE *const source, const int32_t seg)
+{
+    MESH_BATCHER *const batcher = source->priv;
+    const M_SEG *const s = &m_Segs[seg];
+    for (int32_t pass = 0; pass < SCENE_PASS_COUNT; pass++) {
+        const int32_t n = s->inst_n[pass];
+        Vector_Clear(batcher->staged[pass]);
+        Vector_Clear(batcher->casters[pass]);
+        if (n > 0) {
+            memcpy(
+                Vector_Expand(batcher->staged[pass], n), s->inst[pass],
+                sizeof(MESH_INSTANCE) * (size_t)n);
+            memcpy(
+                Vector_Expand(batcher->casters[pass], n), s->cast[pass],
+                sizeof(int16_t) * (size_t)n);
+        }
+    }
+    if (s->part_n > 0) {
+        memcpy(m_Particles, s->part, sizeof(DC_PARTICLE) * (size_t)s->part_n);
+    }
+    m_ParticleCount = s->part_n;
+    if (s->quad_n > 0) {
+        memcpy(m_Quads, s->quad, sizeof(DC_QUAD) * (size_t)s->quad_n);
+    }
+    m_QuadCount = s->quad_n;
+    if (s->streak_n > 0) {
+        memcpy(m_Streaks, s->streak, sizeof(DC_STREAK) * (size_t)s->streak_n);
+    }
+    m_StreakCount = s->streak_n;
+    if (s->caster_n > 0) {
+        memcpy(m_Casters, s->casters, sizeof(M_CASTER) * (size_t)s->caster_n);
+    }
+    m_CasterCount = s->caster_n;
+    m_LaraCasterCount = s->lara_casters;
+    memcpy(m_ParticleBlendCount, s->part_blend, sizeof(s->part_blend));
+    memcpy(m_QuadBlendCount, s->quad_blend, sizeof(s->quad_blend));
+}
+
+// The world matrices of the tick before, and of this one as staged (two
+// tables, swapped at each tick), by mesh and key (segment, pass, place).
+#define M_PREV_SIZE 512
+typedef struct {
+    const void *mesh;
+    uint32_t key;
+    float m[12];
+} M_PREV;
+static M_PREV m_Prev[2][M_PREV_SIZE];
+static int32_t m_PrevWrite = 0;
+static bool m_PrevValid = false;
+// How many instances of a mesh came so far this frame, by segment and pass.
+typedef struct {
+    const void *mesh;
+    uint16_t tag;
+    uint16_t n;
+} M_OCC;
+static M_OCC m_Occ[M_PREV_SIZE];
+static uint32_t m_LerpStats[3]; // blended, new, too far apart
+
+static uint32_t M_PrevHash(const void *const mesh, const uint32_t key)
+{
+    const uint32_t h =
+        (uint32_t)(uintptr_t)mesh * 2654435761u ^ key * 0x9E3779B1u;
+    return h ^ (h >> 15);
+}
+
+static uint32_t M_Occurrence(const void *const mesh, const uint16_t tag)
+{
+    uint32_t i = M_PrevHash(mesh, tag);
+    for (int32_t probe = 0; probe < M_PREV_SIZE; probe++, i++) {
+        M_OCC *const e = &m_Occ[i & (M_PREV_SIZE - 1)];
+        if (e->mesh == nullptr) {
+            *e = (M_OCC) { .mesh = mesh, .tag = tag };
+        }
+        if (e->mesh == mesh && e->tag == tag) {
+            return e->n++;
+        }
+    }
+    return UINT32_MAX;
+}
+
+static M_PREV *M_PrevSlot(
+    M_PREV *const table, const void *const mesh, const uint32_t key,
+    const bool add)
+{
+    uint32_t i = M_PrevHash(mesh, key);
+    for (int32_t probe = 0; probe < M_PREV_SIZE / 2; probe++, i++) {
+        M_PREV *const e = &table[i & (M_PREV_SIZE - 1)];
+        if (e->mesh == mesh && e->key == key) {
+            return e;
+        }
+        if (e->mesh == nullptr) {
+            if (!add) {
+                return nullptr;
+            }
+            e->mesh = mesh;
+            e->key = key;
+            return e;
+        }
+    }
+    return nullptr;
+}
+
+static void M_MatrixToFloat(const MATRIX *const m, float out[12])
+{
+    const int64_t *const v = &m->_00;
+    for (int32_t i = 0; i < 12; i++) {
+        out[i] = (float)v[i];
+    }
+}
+
+static void M_FloatToMatrix(const float in[12], MATRIX *const m)
+{
+    int64_t *const v = &m->_00;
+    for (int32_t i = 0; i < 12; i++) {
+        v[i] = (int64_t)lrintf(in[i]);
+    }
+}
+
+// Halfway from a (the tick before) to b, into b: the rows of the turn
+// blended and brought back to b's length, the place halfway. False, and b
+// left alone, when the two lie too far apart to blend (a jump, a cut).
+static bool M_LerpRows(const float a[12], float b[12], const bool view)
+{
+    const float unit = (float)(1 << W2V_SHIFT);
+    for (int32_t r = 0; r < 3; r++) {
+        const float *const ra = &a[r * 4];
+        const float *const rb = &b[r * 4];
+        const float dot = ra[0] * rb[0] + ra[1] * rb[1] + ra[2] * rb[2];
+        const float la = ra[0] * ra[0] + ra[1] * ra[1] + ra[2] * ra[2];
+        const float lb = rb[0] * rb[0] + rb[1] * rb[1] + rb[2] * rb[2];
+        if (la <= 0.0f || lb <= 0.0f || dot < 0.7f * sqrtf(la * lb)) {
+            return false;
+        }
+    }
+    // A view's place is the camera's, -R^T t; an instance's, its own.
+    float pa[3];
+    float pb[3];
+    for (int32_t k = 0; k < 3; k++) {
+        if (view) {
+            pa[k] = -(a[0 * 4 + k] * a[3] + a[1 * 4 + k] * a[7]
+                      + a[2 * 4 + k] * a[11])
+                / (unit * unit);
+            pb[k] = -(b[0 * 4 + k] * b[3] + b[1 * 4 + k] * b[7]
+                      + b[2 * 4 + k] * b[11])
+                / (unit * unit);
+        } else {
+            pa[k] = a[k * 4 + 3] / unit;
+            pb[k] = b[k * 4 + 3] / unit;
+        }
+    }
+    const float dx = pa[0] - pb[0];
+    const float dy = pa[1] - pb[1];
+    const float dz = pa[2] - pb[2];
+    if (dx * dx + dy * dy + dz * dz > 2048.0f * 2048.0f) {
+        return false;
+    }
+    for (int32_t r = 0; r < 3; r++) {
+        float *const rb = &b[r * 4];
+        const float *const ra = &a[r * 4];
+        const float lb = sqrtf(rb[0] * rb[0] + rb[1] * rb[1] + rb[2] * rb[2]);
+        float mid[3];
+        for (int32_t k = 0; k < 3; k++) {
+            mid[k] = (ra[k] + rb[k]) * 0.5f;
+        }
+        const float lm =
+            sqrtf(mid[0] * mid[0] + mid[1] * mid[1] + mid[2] * mid[2]);
+        for (int32_t k = 0; k < 3; k++) {
+            rb[k] = mid[k] * lb / lm;
+        }
+    }
+    float pm[3];
+    for (int32_t k = 0; k < 3; k++) {
+        pm[k] = (pa[k] + pb[k]) * 0.5f;
+    }
+    for (int32_t r = 0; r < 3; r++) {
+        float *const rb = &b[r * 4];
+        rb[3] = view ? -(rb[0] * pm[0] + rb[1] * pm[1] + rb[2] * pm[2])
+                     : pm[r] * unit;
+    }
+    return true;
+}
+
+bool DC_Batcher_LerpView(
+    const MATRIX *const before, const MATRIX *const now, MATRIX *const out)
+{
+    float a[12];
+    float b[12];
+    M_MatrixToFloat(before, a);
+    M_MatrixToFloat(now, b);
+    if (!M_LerpRows(a, b, true)) {
+        return false;
+    }
+    M_FloatToMatrix(b, out);
+    return true;
+}
+
+void DC_Batcher_LerpSegment(
+    const SCENE_SOURCE *const source, const int32_t seg, const bool apply)
+{
+    MESH_BATCHER *const batcher = source->priv;
+    M_PREV *const read = m_Prev[m_PrevWrite ^ 1];
+    M_PREV *const write = m_Prev[m_PrevWrite];
+    for (int32_t pass = 0; pass < SCENE_PASS_COUNT; pass++) {
+        VECTOR *const staged = batcher->staged[pass];
+        const int16_t *const casters = Vector_GetData(batcher->casters[pass]);
+        const uint16_t tag = (uint16_t)(seg << 4 | pass);
+        for (int32_t i = 0; i < staged->count; i++) {
+            MESH_INSTANCE *const inst = Vector_Get(staged, i);
+            // The tick's own matrix, for the light (M_TransformInstance):
+            // the Dreamcast's pass has no other use for cwmatrix.
+            inst->cwmatrix = inst->wmatrix;
+            const uint32_t occ = M_Occurrence(inst->mesh, tag);
+            if (occ == UINT32_MAX) {
+                continue;
+            }
+            const uint32_t key = occ << 8 | tag;
+            float m[12];
+            M_MatrixToFloat(&inst->wmatrix, m);
+            M_PREV *const slot = M_PrevSlot(write, inst->mesh, key, true);
+            if (slot != nullptr) {
+                memcpy(slot->m, m, sizeof(m));
+            }
+            const M_PREV *const prev = apply && m_PrevValid
+                ? M_PrevSlot(read, inst->mesh, key, false)
+                : nullptr;
+            if (prev == nullptr) {
+                m_LerpStats[1]++;
+                continue;
+            }
+            if (!M_LerpRows(prev->m, m, false)) {
+                m_LerpStats[2]++;
+                continue;
+            }
+            m_LerpStats[0]++;
+            M_FloatToMatrix(m, &inst->wmatrix);
+            if (casters[i] >= 0 && casters[i] < m_CasterCount) {
+                M_WorldMatrix(&inst->wmatrix, m_Casters[casters[i]].world);
+            }
+        }
+    }
+}
+
+void DC_Batcher_BeginLerp(void)
+{
+    memset(m_Occ, 0, sizeof(m_Occ));
+    memset(m_Prev[m_PrevWrite], 0, sizeof(m_Prev[m_PrevWrite]));
+}
+
+void DC_Batcher_CommitLerp(void)
+{
+    m_PrevWrite ^= 1;
+    m_PrevValid = true;
+}
+
+void DC_Batcher_ForgetLerp(void)
+{
+    m_PrevValid = false;
+}
+
+void DC_Batcher_SetLerping(const bool lerping)
+{
+    m_Lerping = lerping;
+}
+
+void DC_Batcher_TakeLerpStats(uint32_t out[3])
+{
+    memcpy(out, m_LerpStats, sizeof(m_LerpStats));
+    memset(m_LerpStats, 0, sizeof(m_LerpStats));
 }
