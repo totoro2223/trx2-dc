@@ -434,3 +434,18 @@ paso, sombras Hard de largo fijo, texturas de TR3 en VQ.
 | Objetos, tercera tanda C: reutilizar las esferas de colisión del dibujo; sombras de enemigos | NO HECHO, sin ganancia esperable | `Collide_GetSpheres` solo corre tras `Lara_TestBoundsCollide` (enemigo tocando a Lara) o al disparar; la sombra de enemigos es el blob por defecto |
 | Objetos, tercera tanda A: **rig**, el objeto animado entero como una sola instancia (todas sus mallas en una, un tramo de vértices por hueso, una matriz por hueso; `OutputSource_Objects_BeginRig`, `M_TransformRig`). Gemelas por hueso, profundidad por tramo, huesos interpolados en la repetición, mallas pequeñas de enemigos lejanos fuera por tramo. Solo ítems del mundo (no inventario ni interfaz), sin `mesh_swap`, con todas sus mallas, sin volumen de sombra; `TRX_DC_ASMOFF2` bit 2097152 lo apaga | OK en Flycast | Mismo binario, rigs encendidos / apagados. TR1 Native 60: 55,3 / 54,1 fps, `pass` 7,1 / 7,7 ms, `stage` 5,1 / 5,5 ms, instancias 23 / 58 (builds 1373-1374). TR1 Original: 30 / 30 fps, `stage`+`pass` 13,5 / 14,1 ms (1378-1379). TR3 Native 60: 51,3 / 51,1 fps, `pass` 8,7 / 8,8 (1376-1377; su demo tiene ~1 enemigo por frame). Polígonos +3 % (TR1 892 frente a 863): caras que cruzan el borde que antes se iban con la malla entera. Imagen y consola SIN VER |
 | Objetos, cuarta tanda: pose cacheada (luz plana), LOD de rigs (8 y 14 casillas) y emisión por hueso | Flycast builds 920-927 (TR2 y TR3, benchmark 0, Native 60): sin fallos, `[obj-check]` 0 distintas, sin diferencia de fps (57,7 / 57,7 en TR2, 56,3 / 56,6 en TR3). El LOD no se ejerce en esos demos; imagen y consola SIN PROBAR | Bits de `TRX_DC_ASMOFF2` 16777216 (pose), 4194304 (LOD), 8388608 (emisión por hueso). |
+
+### Cámara que vibraba en Native 60 (10/11/2026, DC build 970)
+
+- Síntoma: la cámara vibraba sin parar en Native 60 (TR2). Medido con un punto
+  fijo del mundo proyectado en cada frame mostrado: en los frames mezclados
+  (medio tick atrás) aparecía ~26 unidades al lado de donde estaba en los
+  frames del tick, alternando cada frame.
+- Causa: `M_LerpRows` (batcher.c) sacaba la posición de la cámara con la
+  traspuesta de la matriz de vista (-R^T t). La matriz no es del todo
+  ortonormal (filas con un pelo de error de largo y ángulo), así que la
+  posición salía ~25 unidades corrida y la vista mezclada saltaba a un lado.
+- Arreglo: la posición sale de la inversa exacta (`M_ViewPlace`). Tras el
+  arreglo la X del punto fijo queda constante en frames mezclados y de tick;
+  los otros dos ejes avanzan sin saltos. Probado en Flycast con el demo de TR2
+  (benchmark 0). Sin medir en consola.

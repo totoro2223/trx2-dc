@@ -13177,6 +13177,37 @@ static void M_FloatToMatrix(const float in[12], MATRIX *const m)
     }
 }
 
+// The camera's place (in world units) of a view m: the p with R p + t = 0.
+static bool M_ViewPlace(const float m[12], float out[3])
+{
+    const float unit = (float)(1 << W2V_SHIFT);
+    // The turn scaled down to about 1, for the floats.
+    const float r00 = m[0] / unit, r01 = m[1] / unit, r02 = m[2] / unit;
+    const float r10 = m[4] / unit, r11 = m[5] / unit, r12 = m[6] / unit;
+    const float r20 = m[8] / unit, r21 = m[9] / unit, r22 = m[10] / unit;
+    const float c0 = r11 * r22 - r12 * r21;
+    const float c1 = r12 * r20 - r10 * r22;
+    const float c2 = r10 * r21 - r11 * r20;
+    const float det = r00 * c0 + r01 * c1 + r02 * c2;
+    if (fabsf(det) < 0.25f) {
+        return false;
+    }
+    const float tx = m[3] / unit;
+    const float ty = m[7] / unit;
+    const float tz = m[11] / unit;
+    const float inv = -1.0f / det;
+    out[0] = inv
+        * (c0 * tx + (r02 * r21 - r01 * r22) * ty
+           + (r01 * r12 - r02 * r11) * tz);
+    out[1] = inv
+        * (c1 * tx + (r00 * r22 - r02 * r20) * ty
+           + (r02 * r10 - r00 * r12) * tz);
+    out[2] = inv
+        * (c2 * tx + (r01 * r20 - r00 * r21) * ty
+           + (r00 * r11 - r01 * r10) * tz);
+    return true;
+}
+
 // Halfway from a (the tick before) to b, into b: the rows of the turn
 // blended and brought back to b's length, the place halfway. False, and b
 // left alone, when the two lie too far apart to blend (a jump, a cut).
@@ -13196,15 +13227,16 @@ static bool M_LerpRows(const float a[12], float b[12], const bool view)
     // A view's place is the camera's, -R^T t; an instance's, its own.
     float pa[3];
     float pb[3];
-    for (int32_t k = 0; k < 3; k++) {
-        if (view) {
-            pa[k] = -(a[0 * 4 + k] * a[3] + a[1 * 4 + k] * a[7]
-                      + a[2 * 4 + k] * a[11])
-                / (unit * unit);
-            pb[k] = -(b[0 * 4 + k] * b[3] + b[1 * 4 + k] * b[7]
-                      + b[2 * 4 + k] * b[11])
-                / (unit * unit);
-        } else {
+    if (view) {
+        // The view's turn is not exactly orthonormal (its rows are a hair off
+        // in length and angle), so its transpose is no inverse: the place came
+        // out some units off the camera's, and the blended view jumped aside
+        // from the tick's own every other frame. Solved with the inverse.
+        if (!M_ViewPlace(a, pa) || !M_ViewPlace(b, pb)) {
+            return false;
+        }
+    } else {
+        for (int32_t k = 0; k < 3; k++) {
             pa[k] = a[k * 4 + 3] / unit;
             pb[k] = b[k * 4 + 3] / unit;
         }
