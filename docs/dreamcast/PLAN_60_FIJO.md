@@ -225,7 +225,7 @@ La Jungla y TR2 Great Wall siguen a 60. Verificación: 0 distintas (Antártida 1
 | 4 | Luz sin dirección más allá de 3072 unidades (el 0x100 del PSX) | Hecho (`M_LIGHT_LOD_SQ`, solo Native 60, no Lara ni salas): TR1-2 solo el adder; TR3 el ambiente más un cuarto de cada luz. `TRX_DC_ASMOFF2` bit 8192 lo apaga. |
 | 5 | Clave de la caché de colores tolerante | Hecho: `M_ObjHashF` descarta 17 bits (6 de mantisa, ~1°). Bit 16384 de `ASMOFF2` lo apaga. |
 | 6 | Tiras por página | Ya existía: `M_TryEmitQuad` y `emit_sh4.S` emiten los pares de triángulos como un cuadrilátero (4 vértices por 2). Una tira por malla ganaría poco. Sin cambios. |
-| 7 | Esqueleto fusionado | No hecho: pide un formato de malla nuevo (índice de hueso por vértice), otro camino de luz y de caché, y reescribir el emisor. Es un proyecto aparte. |
+| 7 | Esqueleto fusionado | Hecho el 10/11 como "rig" (tercera tanda, abajo): sin índice de hueso por vértice, con un tramo seguido de vértices por hueso. |
 | 8 | Reparto de las búsquedas de ruta | Hecho (`Box_BeginTick`, `M_TICK_EXPANSIONS` 30 por tick entre todas las criaturas, antes 5 por criatura; no en IA original). |
 
 - Compila y corre sin fallos. Antártida (60 s, vista inicial): 55-60 fps con todo y 55-59 con 4 y 5 apagados; transformación 1414 / 1407 µs, emisión 3283 / 3272 µs; `[obj-check]` 0 distintas. Jungla: 60 fps en ambos.
@@ -248,6 +248,19 @@ La Jungla y TR2 Great Wall siguen a 60. Verificación: 0 distintas (Antártida 1
 - La luz sin dirección (4 de la primera tanda), el presupuesto de búsquedas de ruta y la pose de lejos valen ahora en todos los modos. La búsqueda de rutas ya no distingue la IA original, así que una demo grabada puede acabar distinta.
 - Flycast, Antártida, vista inicial, 60 s: Native 60 56-60 fps, original 30-31 fps, sin fallos, `[obj-check]` sin diferencias. Mismos polígonos que antes (1520), porque en esa vista no hay objetos pequeños ni lejanos que se descarten.
 - Sin ganancia medida y sin probar en consola. No se midió la demo con enemigos: se paró a petición.
+
+**Tercera tanda de objetos (10/11/2026, DC builds 1356-1379), en todos los modos**: una caída de 5 a 10 fps por enemigo (1,5-3 ms) no la explica transformar ~300 vértices (~0,15 ms): era el coste fijo por malla. Con los temporizadores finos, TR1 Native 60 gastaba en objetos 4,8 ms de `pass` (salas 2,5) para 3123 vértices en 63 mallas: ~13 µs de preparación, ~36 de transformación y ~30 de emisión por malla.
+
+| Qué | Estado |
+|---|---|
+| B. Luz plana desde 1 casilla, 4 huecos de colores por malla | Hecho: TR1 `tplain` 1,12 → 0,64 ms |
+| C. Esferas de colisión del dibujo, sombras de enemigos | No hecho: sin ganancia esperable (la colisión solo corre al tocar a Lara; la sombra es un blob) |
+| A. Rig: el objeto animado como una sola instancia | Hecho: TR1 54,1 → 55,3 fps, `pass` 7,7 → 7,1, `stage` 5,5 → 5,1, instancias 58 → 23; TR3 51,1 → 51,3 |
+
+- El rig (`objects.c`): al primer dibujo de un tipo de objeto se juntan sus mallas con el mismo constructor (`M_AddMeshFaces`), apuntando dónde empieza cada hueso (`OUTPUT_MESH.bone_start`) y con la profundidad de cada malla en su tramo. En el recorrido de huesos (`draw.c`) solo se guarda la matriz de mundo de cada hueso en un depósito del frame (`DC_MeshBatcher_RigBones`, 256 matrices, guardado con los segmentos de la repetición e interpolado como las instancias).
+- En el batcher (`M_TransformRig`): una preparación y una prueba de niebla por objeto (el juego ya lo recortó con `M_GetClip`), y por hueso su model-view, su luz (una sola vez si es plana) y la transformación en ensamblador sobre su tramo (`M_XformObject` con inicio y cuenta). Las gemelas (`M_FindTwins`) no cruzan huesos y se cuentan desde el inicio del tramo. La emisión es una para todo el objeto.
+- Queda fuera: Lara, objetos con `mesh_swap` o mallas ocultas, con política de malla, que proyectan volumen, del inventario o la interfaz, o sin luz; esos van malla a malla como antes.
+- Lo que falta: mirar la imagen (enemigos, puertas, trampas animadas) y medir en consola, donde el coste fijo por malla debería pesar más que en Flycast.
 
 Sin probar:
 - La consola.

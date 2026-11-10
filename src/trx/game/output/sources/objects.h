@@ -69,4 +69,12 @@ void OutputSource_Objects_PrepareCreatures(void);
 // Lets go of the meshes drawn longest ago (never the last frame's) until the
 // kept ones hold at most max_vertices. Returns how many went.
 int32_t OutputSource_Objects_EvictToBudget(int32_t max_vertices);
+// An animated object drawn as one instance (a rig): all its meshes in one
+// mesh, a range of vertices per bone, one setup, light and emission. Begin
+// with the object's matrix on the stack (nullptr: draw it mesh by mesh), give
+// each joint's matrix in turn as the walk reaches it, then end.
+MESH_INSTANCE *OutputSource_Objects_BeginRig(const OBJECT *obj);
+void OutputSource_Objects_RigBone(
+    MESH_INSTANCE *rig, int32_t joint, bool interpolated, bool skip);
+void OutputSource_Objects_EndRig(MESH_INSTANCE *rig);
 #endif

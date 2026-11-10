@@ -43,6 +43,14 @@ void MeshBuilder_AddFan(
     MESH_BUILDER *builder, SCENE_PASS pass, bool double_sided,
     bool depth_write);
 
+// How many vertices the mesh under construction holds so far.
+int32_t MeshBuilder_GetVertexCount(const MESH_BUILDER *builder);
+
+// The same, to the vertices from first on only (a rig's bone; see
+// OutputSource_Objects_BeginRig).
+void MeshBuilder_AdjustDepthFrom(
+    MESH_BUILDER *builder, int32_t first, float depth);
+
 // Applies invisible z offset to all vertices that helps with the z-fighting.
 void MeshBuilder_AdjustDepth(MESH_BUILDER *builder, float depth);
 

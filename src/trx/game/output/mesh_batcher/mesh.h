@@ -95,6 +95,13 @@ typedef struct {
     int32_t opaque_nodiscard_count;
     VECTOR *opaque_discard_indices; // OUTPUT_MESH_INDEX
     VECTOR *blend_add_vertex_indices; // OUTPUT_MESH_INDEX
+#if defined(__DREAMCAST__)
+    // A rig (an animated object's meshes end to end, one per bone; see
+    // OutputSource_Objects_BeginRig): where each bone's vertices start, and
+    // one past the last. 0 bones for any other mesh.
+    int32_t bone_count;
+    uint16_t *bone_start;
+#endif
 } OUTPUT_MESH;
 
 OUTPUT_MESH *Output_Mesh_Create(void);

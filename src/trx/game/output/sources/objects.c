@@ -257,9 +257,8 @@ static void M_AddObjectFace(
 }
 
 // Build one mesh and store the result.
-static void M_BuildMesh(
-    MESH_BUILDER *const builder, const int32_t mesh_idx,
-    OUTPUT_MESH **const out)
+// Adds a mesh's faces to the builder; false for a mesh with a bad face.
+static bool M_AddMeshFaces(MESH_BUILDER *const builder, const int32_t mesh_idx)
 {
     const OBJECT_MESH *const obj_mesh = Object_GetMesh(mesh_idx);
 
@@ -298,8 +297,7 @@ static void M_BuildMesh(
                     obj_mesh->num_vertices, obj_mesh->num_lights,
                     (const void *)faces, obj_mesh->tex_faces.count,
                     obj_mesh->flat_faces.count);
-                *out = nullptr;
-                return;
+                return false;
             }
         }
     }
@@ -322,8 +320,18 @@ static void M_BuildMesh(
             builder, obj_mesh, &obj_mesh->flat_faces.data[j],
             flags | VERT_FLAT_SHADED, &policies);
     }
+    return true;
+}
 
-    MeshBuilder_AdjustDepth(builder, obj_mesh->depth_adjustment);
+static void M_BuildMesh(
+    MESH_BUILDER *const builder, const int32_t mesh_idx,
+    OUTPUT_MESH **const out)
+{
+    if (!M_AddMeshFaces(builder, mesh_idx)) {
+        *out = nullptr;
+        return;
+    }
+    MeshBuilder_AdjustDepth(builder, Object_GetMesh(mesh_idx)->depth_adjustment);
     *out = MeshBuilder_Seal(builder);
 }
 
@@ -463,8 +471,15 @@ int32_t OutputSource_Objects_EvictToBudget(const int32_t max_vertices)
 }
 #endif
 
+#if defined(__DREAMCAST__)
+static void M_FreeRigs(void);
+#endif
+
 static void M_FreeMeshes(M_PRIV *const p)
 {
+#if defined(__DREAMCAST__)
+    M_FreeRigs();
+#endif
     if (p->meshes != nullptr) {
         for (int32_t i = 0; i < (int32_t)p->mesh_count; i++) {
             MeshBatcher_RemoveMesh(p->batcher, p->meshes[i].mesh_batch);
@@ -631,28 +646,15 @@ void OutputSource_Objects_PrepareCreatures(void)
 }
 #endif
 
-static void M_Stage(const OBJECT_MESH *const mesh)
+#if defined(__DREAMCAST__)
+// Fills an object instance staged where the batcher keeps it (some 400 bytes,
+// not built on the stack and copied in); mesh_idx -1 for a rig.
+static void M_FillInstance(
+    MESH_INSTANCE *const out, OUTPUT_MESH *const mesh_batch,
+    const int32_t mesh_idx, const bool caustics)
 {
-    M_PRIV *const p = &m_Priv;
-    const int32_t mesh_idx = Object_GetMeshIndex(mesh);
-    M_MESH *const batch = &p->meshes[mesh_idx];
-#if defined(__DREAMCAST__)
-    M_EnsureBuilt(mesh);
-#endif
-    if (batch->mesh_batch == nullptr) {
-        return;
-    }
-
-#if defined(__DREAMCAST__)
-    // The instance is some 400 bytes: built where the batcher keeps it, not
-    // on the stack and copied in.
-    MESH_INSTANCE *const out = DC_MeshBatcher_BeginObject(p->batcher);
     out->light_info = Output_GetLightInfo();
     OUTPUT_LIGHT_INFO *const light_info_p = &out->light_info;
-#else
-    OUTPUT_LIGHT_INFO light_info = Output_GetLightInfo();
-    OUTPUT_LIGHT_INFO *const light_info_p = &light_info;
-#endif
     // One pass over the registrations, in order, instead of a rescan of all of
     // them for each one found.
     if (m_MeshPolicies != nullptr) {
@@ -679,8 +681,7 @@ static void M_Stage(const OBJECT_MESH *const mesh)
             span_from.b / 255.0f,
         };
     }
-#if defined(__DREAMCAST__)
-    out->mesh = batch->mesh_batch;
+    out->mesh = mesh_batch;
     out->cwmatrix = *g_MatrixPtr;
     out->wmatrix = *g_WMatrixPtr;
     out->room = Output_GetCurrentRoom();
@@ -693,14 +694,62 @@ static void M_Stage(const OBJECT_MESH *const mesh)
     out->ambient_span_from = ambient_span_from;
     out->wibble = Output_Water_IsObjectWibbleEnabled();
     out->wibble_fill = false;
-    out->water_effect =
-        (mesh->enable_caustics && Output_Water_IsSubmerged()) ? 1 : 0;
+    out->water_effect = (caustics && Output_Water_IsSubmerged()) ? 1 : 0;
     out->sort_layer = 0;
     out->enable_scissor = scissor != nullptr;
     out->depth_adjust = 0.0f;
     out->scissor = scissor != nullptr ? *scissor : (VIEWPORT_RECT) {};
+    out->rig_bones = 0;
+    out->rig_first = -1;
+    out->rig_skip = 0;
+}
+#endif
+
+static void M_Stage(const OBJECT_MESH *const mesh)
+{
+    M_PRIV *const p = &m_Priv;
+    const int32_t mesh_idx = Object_GetMeshIndex(mesh);
+    M_MESH *const batch = &p->meshes[mesh_idx];
+#if defined(__DREAMCAST__)
+    M_EnsureBuilt(mesh);
+#endif
+    if (batch->mesh_batch == nullptr) {
+        return;
+    }
+
+#if defined(__DREAMCAST__)
+    MESH_INSTANCE *const out = DC_MeshBatcher_BeginObject(p->batcher);
+    M_FillInstance(out, batch->mesh_batch, mesh_idx, mesh->enable_caustics);
     DC_MeshBatcher_FinishObject(p->batcher, out);
 #else
+    OUTPUT_LIGHT_INFO light_info = Output_GetLightInfo();
+    OUTPUT_LIGHT_INFO *const light_info_p = &light_info;
+    // One pass over the registrations, in order, instead of a rescan of all of
+    // them for each one found.
+    if (m_MeshPolicies != nullptr) {
+        for (int32_t i = 0; i < m_MeshPolicies->count; i++) {
+            const M_POLICY_ENTRY *const entry = Vector_Get(m_MeshPolicies, i);
+            if (entry->mesh_idx == mesh_idx
+                && entry->policy->adjust_light_info != nullptr) {
+                entry->policy->adjust_light_info(light_info_p);
+            }
+        }
+    }
+    Output_Lights_FillInstanceLight(light_info_p, g_WMatrixPtr);
+
+    const VIEWPORT_RECT *const scissor = Output_GetObjectScissor();
+    OUTPUT_WATER_LINE water_line = {};
+    const bool has_water_line = Output_GetWaterLine(&water_line);
+    RGB_888 span_from = {};
+    const bool has_ambient_span = Output_Water_GetLaraAmbientSpan(&span_from);
+    RGB_F ambient_span_from = {};
+    if (has_ambient_span) {
+        ambient_span_from = (RGB_F) {
+            span_from.r / 255.0f,
+            span_from.g / 255.0f,
+            span_from.b / 255.0f,
+        };
+    }
     const MESH_INSTANCE inst = {
         .mesh = batch->mesh_batch,
         .cwmatrix = *g_MatrixPtr,
@@ -725,6 +774,186 @@ static void M_Stage(const OBJECT_MESH *const mesh)
     MeshBatcher_Stage(p->batcher, &inst, SCENE_PASS_BLEND_ADD);
 #endif
 }
+
+#if defined(__DREAMCAST__)
+// The objects drawn as rigs, found by their first mesh; a null mesh is one
+// that cannot be (tried once a level). 32 bones at most: the mesh mask's bits.
+    #define M_MAX_RIGS 64
+    #define M_RIG_MAX_BONES 32
+    #define M_RIG_MAX_VERTICES 60000
+typedef struct {
+    int32_t mesh_idx;
+    int32_t mesh_count;
+    OUTPUT_MESH *mesh;
+} M_RIG;
+static M_RIG m_Rigs[M_MAX_RIGS];
+static int32_t m_RigCount = 0;
+// The open rig's bones (one at a time: the walk stages nothing else).
+static MATRIX *m_RigBonesAt = nullptr;
+extern uint32_t g_DC_AsmOff2;
+
+static bool M_HasPolicy(const int32_t first, const int32_t count)
+{
+    if (m_MeshPolicies == nullptr) {
+        return false;
+    }
+    for (int32_t i = 0; i < m_MeshPolicies->count; i++) {
+        const M_POLICY_ENTRY *const entry = Vector_Get(m_MeshPolicies, i);
+        if (entry->mesh_idx >= first && entry->mesh_idx < first + count) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static OUTPUT_MESH *M_BuildRig(const OBJECT *const obj)
+{
+    M_PRIV *const p = &m_Priv;
+    const int32_t n = obj->mesh_count;
+    DC_LevelHeap_Enter();
+    MESH_BUILDER *const builder = MeshBuilder_Create();
+    uint16_t *const starts = Memory_Alloc(sizeof(uint16_t) * (n + 1));
+    bool ok = true;
+    for (int32_t i = 0; ok && i < n; i++) {
+        starts[i] = (uint16_t)MeshBuilder_GetVertexCount(builder);
+        ok = M_AddMeshFaces(builder, obj->mesh_idx + i)
+            && MeshBuilder_GetVertexCount(builder) <= M_RIG_MAX_VERTICES;
+        MeshBuilder_AdjustDepthFrom(
+            builder, starts[i],
+            Object_GetMesh(obj->mesh_idx + i)->depth_adjustment);
+    }
+    OUTPUT_MESH *rig = ok ? MeshBuilder_Seal(builder) : nullptr;
+    MeshBuilder_Destroy(builder);
+    if (rig == nullptr) {
+        Memory_Free(starts);
+    } else {
+        starts[n] = (uint16_t)rig->vertices->count;
+        rig->bone_count = n;
+        rig->bone_start = starts;
+        MeshBatcher_AddMesh(p->batcher, rig);
+        if (!DC_MeshBatcher_CanRig(p->batcher, rig)) {
+            MeshBatcher_RemoveMesh(p->batcher, rig);
+            Output_Mesh_Destroy(rig);
+            rig = nullptr;
+        }
+    }
+    DC_LevelHeap_Leave();
+    return rig;
+}
+
+static void M_FreeRig(M_RIG *const rig)
+{
+    M_PRIV *const p = &m_Priv;
+    if (rig->mesh != nullptr) {
+        MeshBatcher_RemoveMesh(p->batcher, rig->mesh);
+        Output_Mesh_Destroy(rig->mesh);
+        rig->mesh = nullptr;
+    }
+}
+
+static void M_FreeRigs(void)
+{
+    for (int32_t i = 0; i < m_RigCount; i++) {
+        M_FreeRig(&m_Rigs[i]);
+    }
+    m_RigCount = 0;
+}
+
+// A mesh changed (swapped, its flags or shape): the rigs holding it are
+// built again when next drawn.
+static void M_DropRigsOf(const int32_t mesh_idx)
+{
+    for (int32_t i = m_RigCount - 1; i >= 0; i--) {
+        M_RIG *const rig = &m_Rigs[i];
+        if (mesh_idx >= rig->mesh_idx
+            && mesh_idx < rig->mesh_idx + rig->mesh_count) {
+            M_FreeRig(rig);
+            m_Rigs[i] = m_Rigs[--m_RigCount];
+        }
+    }
+}
+
+static OUTPUT_MESH *M_GetRig(const OBJECT *const obj)
+{
+    for (int32_t i = 0; i < m_RigCount; i++) {
+        if (m_Rigs[i].mesh_idx == obj->mesh_idx
+            && m_Rigs[i].mesh_count == obj->mesh_count) {
+            return m_Rigs[i].mesh;
+        }
+    }
+    if (m_RigCount >= M_MAX_RIGS) {
+        return nullptr;
+    }
+    M_RIG *const rig = &m_Rigs[m_RigCount++];
+    rig->mesh_idx = obj->mesh_idx;
+    rig->mesh_count = obj->mesh_count;
+    rig->mesh = M_BuildRig(obj);
+    return rig->mesh;
+}
+
+MESH_INSTANCE *OutputSource_Objects_BeginRig(const OBJECT *const obj)
+{
+    M_PRIV *const p = &m_Priv;
+    // TRX_DC_ASMOFF2 bit 2097152 draws every object mesh by mesh.
+    if ((g_DC_AsmOff2 & 2097152) != 0 || p->meshes == nullptr
+        || obj->mesh_count < 2 || obj->mesh_count > M_RIG_MAX_BONES
+        || M_HasPolicy(obj->mesh_idx, obj->mesh_count)) {
+        return nullptr;
+    }
+    OUTPUT_MESH *const mesh = M_GetRig(obj);
+    if (mesh == nullptr) {
+        return nullptr;
+    }
+    int16_t first;
+    MATRIX *const bones =
+        DC_MeshBatcher_RigBones(p->batcher, obj->mesh_count, &first);
+    if (bones == nullptr) {
+        return nullptr;
+    }
+    // A joint the walk never reaches stays where the object is.
+    for (int32_t i = 0; i < obj->mesh_count; i++) {
+        bones[i] = *g_WMatrixPtr;
+    }
+    bool caustics = false;
+    for (int32_t i = 0; i < obj->mesh_count; i++) {
+        caustics |= Object_GetMesh(obj->mesh_idx + i)->enable_caustics;
+    }
+    MESH_INSTANCE *const out = DC_MeshBatcher_BeginObject(p->batcher);
+    M_FillInstance(out, mesh, -1, caustics);
+    out->rig_bones = (int16_t)obj->mesh_count;
+    out->rig_first = first;
+    m_RigBonesAt = bones;
+    return out;
+}
+
+void OutputSource_Objects_RigBone(
+    MESH_INSTANCE *const rig, const int32_t joint, const bool interpolated,
+    const bool skip)
+{
+    if (joint < 0 || joint >= rig->rig_bones || m_RigBonesAt == nullptr) {
+        return;
+    }
+    if (skip) {
+        rig->rig_skip |= 1u << joint;
+        return;
+    }
+    if (interpolated) {
+        Matrix_Push();
+        Matrix_Interpolate();
+        m_RigBonesAt[joint] = *g_WMatrixPtr;
+        Matrix_Pop();
+    } else {
+        m_RigBonesAt[joint] = *g_WMatrixPtr;
+    }
+}
+
+void OutputSource_Objects_EndRig(MESH_INSTANCE *const rig)
+{
+    M_PRIV *const p = &m_Priv;
+    m_RigBonesAt = nullptr;
+    DC_MeshBatcher_FinishObject(p->batcher, rig);
+}
+#endif
 
 void OutputSource_Objects_Init(MESH_BATCHER *const batcher)
 {
@@ -801,6 +1030,10 @@ void OutputSource_Objects_ObserveObjectMeshSwap(
         return;
     }
 
+#if defined(__DREAMCAST__)
+    M_DropRigsOf(mesh_idx_1);
+    M_DropRigsOf(mesh_idx_2);
+#endif
     SWAP(p->meshes[mesh_idx_1], p->meshes[mesh_idx_2]);
     if (m_MeshPolicies != nullptr) {
         for (int32_t i = 0; i < m_MeshPolicies->count; i++) {
@@ -822,6 +1055,9 @@ void OutputSource_Objects_ObserveObjectMeshUpdate(const int32_t mesh_idx)
     if (p->meshes == nullptr) {
         return;
     }
+#if defined(__DREAMCAST__)
+    M_DropRigsOf(mesh_idx);
+#endif
     M_MESH *const batch = &p->meshes[mesh_idx];
     if (batch->mesh_batch == nullptr) {
         return;
@@ -838,6 +1074,9 @@ void OutputSource_Objects_ObserveObjectMeshGeometry(
     if (p->meshes == nullptr) {
         return;
     }
+#if defined(__DREAMCAST__)
+    M_DropRigsOf(mesh_idx);
+#endif
     M_MESH *const batch = &p->meshes[mesh_idx];
     if (batch->mesh_batch == nullptr) {
         return;

@@ -1,4 +1,4 @@
-// Dreamcast mesh batcher: the MESH_BATCHER of trx/game/output/mesh_batcher
+﻿// Dreamcast mesh batcher: the MESH_BATCHER of trx/game/output/mesh_batcher
 // drawn through the PowerVR.
 //
 // The sources build their meshes and stage instances exactly as on the
@@ -113,7 +113,12 @@ typedef struct {
 // and how far (4 blocks, squared).
 #define M_NATIVE_POLY_CAP 2500
 #define M_NATIVE_FAR_SQ (4096.0f * 4096.0f)
-#define M_LIGHT_LOD_SQ (3072.0f * 3072.0f)
+#define M_LIGHT_LOD_SQ (1024.0f * 1024.0f)
+#define M_OBJ_SLOTS 4
+// A rig's bone matrices in a frame (MATRIX is 96 bytes), and how far past the
+// fog's end its root may lie and still show a limb.
+#define M_RIG_POOL 256
+#define M_RIG_REACH 1024.0f
 // Bounds' diagonal under 300 units (squared): a small mesh.
 #define M_SMALL_MESH_SQ (300.0f * 300.0f)
 // A far object whose bounds come to under this many pixels is left out.
@@ -261,9 +266,11 @@ typedef struct M_BINDING {
     // batch of their own: no faces, only its vertices and colours.
     M_NAT_BATCH nat_always;
     // An object's colours per corner as last lit, and the key of that light
-    // (M_ObjKey; malloc, kept for the level).
-    uint32_t *obj_argb;
-    uint32_t obj_key;
+    // (M_ObjKey; malloc, kept for the level). Several slots: enemies of one
+    // kind share the meshes, and one slot was lit over by each in turn.
+    uint32_t *obj_argb[M_OBJ_SLOTS];
+    uint32_t obj_key[M_OBJ_SLOTS];
+    uint8_t obj_next;
     UT_hash_handle hh;
 } M_BINDING;
 
@@ -2632,12 +2639,14 @@ extern void dc_xform_object(M_XOBJ *run);
 static void M_XformObject(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const MESH_INSTANCE *const inst, const M_INSTANCE_LIGHT *const il,
-    M_XFORM *const c, const float mv[4][4], const float cel_scale)
+    M_XFORM *const c, const float mv[4][4], const float cel_scale,
+    const int32_t start, const int32_t count)
 {
+    // A rig's bone is a range of the mesh (start, count), its twins counted
+    // from the range's start; anything else is the whole mesh.
     const OUTPUT_MESH_VERTEX *const vertices =
-        Vector_GetData(bind->mesh->vertices);
-    M_XVERT *const xverts = batcher->xverts;
-    const int32_t count = bind->vertex_count;
+        (const OUTPUT_MESH_VERTEX *)Vector_GetData(bind->mesh->vertices) + start;
+    M_XVERT *const xverts = batcher->xverts + start;
     const int32_t min_shade = M_ShadeLow();
     const bool env = batcher->env;
     const bool fog_on = c->fog;
@@ -2650,14 +2659,14 @@ static void M_XformObject(
     const bool tr3 = il->tr3;
     const bool cel = batcher->cel;
     const uint32_t dark = (uint32_t)(m_CelShade * 256.0f);
-    uint32_t *const sargb = batcher->sargb;
+    uint32_t *const sargb = batcher->sargb + start;
     const uint32_t ta = M_TintK(inst->tint.a);
     const uint32_t tr = M_TintK(inst->tint.r);
     const uint32_t tg = M_TintK(inst->tint.g);
     const uint32_t tb = M_TintK(inst->tint.b);
     const bool white =
         bind->white && ta == 256 && tr == 256 && tg == 256 && tb == 256;
-    const uint16_t *const twin = bind->twin;
+    const uint16_t *const twin = bind->twin != nullptr ? bind->twin + start : nullptr;
     const bool fast = !env && !vary && !c->ortho
         && (bind->vref == nullptr || count <= 0xFFFF);
     M_XOBJ run = {
@@ -4564,6 +4573,8 @@ static uint32_t m_NatAlwaysN = 0;
 // TEMP: objects' colours kept, lit, not keepable (M_ObjCached); and while
 // the batches are checked, the kept ones checked and those found apart.
 static uint32_t m_ObjCache[3];
+// TEMP: rigs drawn (M_TransformRig).
+static uint32_t m_RigDraws = 0;
 static uint32_t m_ObjCheckN = 0;
 static uint32_t m_ObjCheckBad = 0;
 // TEMP: the pass by what it draws: rooms, other instances, particles quads
@@ -4703,6 +4714,8 @@ void DC_Batcher_SetNative(bool on)
                  (unsigned)m_ObjCache[0], (unsigned)m_ObjCache[1],
                  (unsigned)m_ObjCache[2]);
         memset(m_ObjCache, 0, sizeof(m_ObjCache));
+        LOG_INFO("[pass] rigs drawn: %u in 600 frames", (unsigned)m_RigDraws);
+        m_RigDraws = 0;
 #if defined(TRX_DC_WATCHDOG)
         LOG_INFO("[obj-check] %u corners checked, %u mismatched",
                  (unsigned)m_ObjCheckN, (unsigned)m_ObjCheckBad);
@@ -5434,42 +5447,66 @@ static uint32_t M_ObjKey(
     return h | 1u;
 }
 
+// The colours kept for key, or nullptr (then M_XformObject lights the object,
+// and M_ObjKeep keeps them).
+static const uint32_t *M_ObjFind(const M_BINDING *const bind, const uint32_t key)
+{
+    if (key == 0) {
+        m_ObjCache[2]++;
+        return nullptr;
+    }
+    for (int32_t slot = 0; slot < M_OBJ_SLOTS; slot++) {
+        if (bind->obj_key[slot] == key && bind->obj_argb[slot] != nullptr) {
+            m_ObjCache[0]++;
+            return bind->obj_argb[slot];
+        }
+    }
+    m_ObjCache[1]++;
+    return nullptr;
+}
+
+// Places the corners start to start + count (a rig's bone, its twins counted
+// from start) with those kept colours, by the matrix in XMTRX.
+static void M_ObjPlace(
+    MESH_BATCHER *const batcher, const M_BINDING *const bind,
+    const uint32_t *const argb, const int32_t start, const int32_t count,
+    M_XFORM *const c)
+{
+    const OUTPUT_MESH_VERTEX *const vs =
+        (const OUTPUT_MESH_VERTEX *)Vector_GetData(bind->mesh->vertices) + start;
+    if (bind->twin != nullptr) {
+        M_OBJPLACE run = {
+            .vertices = vs,
+            .argb = argb + start,
+            .out = batcher->xverts + start,
+            .count = count,
+            .c = c,
+            .twin = bind->twin + start,
+        };
+        dc_obj_place(&run);
+    } else {
+        M_NATPLACE run = {
+            .vertices = vs,
+            .argb = argb + start,
+            .out = batcher->xverts + start,
+            .count = count,
+            .c = c,
+        };
+        dc_nat_place(&run);
+    }
+}
+
 // The object's corners with the colours kept for key; false when there are
 // none (then M_XformObject lights it, and M_ObjKeep keeps them).
 static bool M_ObjCached(
     MESH_BATCHER *const batcher, const M_BINDING *const bind,
     const uint32_t key, M_XFORM *const c)
 {
-    if (key == 0) {
-        m_ObjCache[2]++;
+    const uint32_t *const argb = M_ObjFind(bind, key);
+    if (argb == nullptr) {
         return false;
     }
-    if (bind->obj_key != key || bind->obj_argb == nullptr) {
-        m_ObjCache[1]++;
-        return false;
-    }
-    const OUTPUT_MESH_VERTEX *const vs = Vector_GetData(bind->mesh->vertices);
-    if (bind->twin != nullptr) {
-        M_OBJPLACE run = {
-            .vertices = vs,
-            .argb = bind->obj_argb,
-            .out = batcher->xverts,
-            .count = bind->vertex_count,
-            .c = c,
-            .twin = bind->twin,
-        };
-        dc_obj_place(&run);
-    } else {
-        M_NATPLACE run = {
-            .vertices = vs,
-            .argb = bind->obj_argb,
-            .out = batcher->xverts,
-            .count = bind->vertex_count,
-            .c = c,
-        };
-        dc_nat_place(&run);
-    }
-    m_ObjCache[0]++;
+    M_ObjPlace(batcher, bind, argb, 0, bind->vertex_count, c);
     return true;
 }
 
@@ -5480,16 +5517,166 @@ static void M_ObjKeep(
     if (key == 0) {
         return;
     }
-    if (bind->obj_argb == nullptr) {
-        bind->obj_argb = malloc(sizeof(uint32_t) * (size_t)bind->vertex_count);
-        if (bind->obj_argb == nullptr) {
+    const int32_t slot = bind->obj_next;
+    bind->obj_next = (uint8_t)((slot + 1) % M_OBJ_SLOTS);
+    if (bind->obj_argb[slot] == nullptr) {
+        bind->obj_argb[slot] =
+            malloc(sizeof(uint32_t) * (size_t)bind->vertex_count);
+        if (bind->obj_argb[slot] == nullptr) {
             return;
         }
     }
     for (int32_t i = 0; i < bind->vertex_count; i++) {
-        bind->obj_argb[i] = batcher->xverts[i].argb;
+        bind->obj_argb[slot][i] = batcher->xverts[i].argb;
     }
-    bind->obj_key = key;
+    bind->obj_key[slot] = key;
+}
+
+// A rig (an animated object as one mesh, a range of vertices per bone; see
+// OutputSource_Objects_BeginRig): one setup, light and emission for the whole
+// object instead of one per bone. The game culled the object as a whole
+// (M_GetClip), so its corners are each tested against the near plane and the
+// sides. Lit as the plain path lights an object, bone by bone.
+static MATRIX m_RigBones[M_RIG_POOL];
+static int32_t m_RigBoneCount = 0;
+
+static bool M_TransformRig(
+    MESH_BATCHER *const batcher, const MESH_INSTANCE *const inst,
+    M_BINDING *const bind, M_XFORM *const c, const float mv[4][4])
+{
+    if (!m_Frame.lighting || m_Frame.ortho || !bind->plain_object
+        || inst->rig_first < 0
+        || inst->rig_first + inst->rig_bones > m_RigBoneCount
+        || inst->rig_bones != bind->mesh->bone_count) {
+        return false;
+    }
+    // The object's own point, in the eye's space: its distance.
+    const float eye_sq =
+        mv[3][0] * mv[3][0] + mv[3][1] * mv[3][1] + mv[3][2] * mv[3][2];
+    if (m_Frame.fog) {
+        const float past = m_Frame.fog_end + M_RIG_REACH;
+        if (eye_sq > past * past) {
+            return false;
+        }
+    }
+    batcher->z_near = -FLT_MAX;
+    batcher->vrange_count = -1;
+    c->near = true;
+    c->sides = true;
+    if (m_Frame.fog_table) {
+        c->fog = false;
+    }
+    g_DC_BatcherFrameInstances++;
+    m_RigDraws++;
+    M_WholeRanges(batcher, bind->mesh);
+    batcher->cel = false;
+    batcher->cel_dark = false;
+    batcher->face_light_count = 0;
+    batcher->env = false;
+    batcher->oargb_used = false;
+    memcpy(batcher->mv, mv, sizeof(batcher->mv));
+
+    const bool black_fog = m_Frame.fog_color[0] * inst->tint.r == 0.0f
+        && m_Frame.fog_color[1] * inst->tint.g == 0.0f
+        && m_Frame.fog_color[2] * inst->tint.b == 0.0f;
+    // Fogged as a whole, by its distance, as the plain path does.
+    MESH_INSTANCE fogged;
+    const MESH_INSTANCE *obj_inst = inst;
+    if (g_DC_NativeRooms && c->fog && black_fog && eye_sq > 0.0f) {
+        const float keep = 1.0f
+            - M_Clamp((sqrtf(eye_sq) - c->fog_start) * c->fog_scale, 0.0f,
+                      1.0f);
+        fogged = *inst;
+        fogged.tint.r *= keep;
+        fogged.tint.g *= keep;
+        fogged.tint.b *= keep;
+        obj_inst = &fogged;
+        c->fog = false;
+    }
+    // Far off, the flat light (as M_TransformInstance): the same for every
+    // bone, so lit once, and its colours kept for the whole rig.
+    const bool flat = eye_sq > M_LIGHT_LOD_SQ && (g_DC_AsmOff2 & 8192) == 0;
+    const MATRIX *const bones = &m_RigBones[inst->rig_first];
+    const uint16_t *const starts = bind->mesh->bone_start;
+    M_INSTANCE_LIGHT il;
+    bool lit = false;
+    uint32_t key = 0;
+    const uint32_t *kept = nullptr;
+    for (int32_t b = 0; b < inst->rig_bones; b++) {
+        const int32_t start = starts[b];
+        const int32_t count = starts[b + 1] - start;
+        if (count <= 0) {
+            continue;
+        }
+        if ((inst->rig_skip >> b & 1u) != 0) {
+            // Left out: every corner off the left side, so its faces go.
+            for (int32_t i = start; i < start + count; i++) {
+                batcher->xverts[i].clip = M_CLIP_LEFT;
+            }
+            continue;
+        }
+        float bmv[4][4];
+        float bscale;
+        M_ModelView(&bones[b], bmv, &bscale);
+        if (!flat || !lit) {
+            M_PrepareInstanceLight(obj_inst, bind, bmv, &il);
+            if (flat) {
+                if (il.tr3) {
+                    for (int32_t i = 0; i < il.tr3_count; i++) {
+                        for (int32_t k = 0; k < 3; k++) {
+                            il.tr3_ambient[k] += il.tr3_color[i][k] * 0.25f;
+                        }
+                    }
+                    il.tr3_count = 0;
+                }
+                il.has_direction = false;
+                il.l[0] = il.l[1] = il.l[2] = 0.0f;
+                key = M_ObjKey(batcher, bind, obj_inst, &il, c);
+                kept = M_ObjFind(bind, key);
+            }
+            lit = true;
+        }
+        mat_load(&bmv);
+        if (kept != nullptr) {
+            M_ObjPlace(batcher, bind, kept, start, count, c);
+        } else {
+            M_XformObject(
+                batcher, bind, obj_inst, &il, c, bmv, 0.0f, start, count);
+        }
+    }
+    // Bones left out have no colours to keep.
+    if (kept == nullptr && key != 0 && inst->rig_skip == 0) {
+        M_ObjKeep(batcher, bind, key);
+    }
+    if (!black_fog) {
+        const int32_t whole[1][2] = { { 0, bind->vertex_count } };
+        M_FogColours(batcher, inst, c, whole, 1);
+    }
+    if (m_Frame.depth.track && c->max_inv_z > 0.0f) {
+        DC_PVR_UseDepth(M_Depth(m_Frame.near_z * c->max_inv_z));
+    }
+    return true;
+}
+
+bool DC_MeshBatcher_CanRig(
+    const MESH_BATCHER *const batcher, const OUTPUT_MESH *const mesh)
+{
+    const M_BINDING *const bind = M_GetBinding(batcher, mesh);
+    return bind != nullptr && bind->plain_object && !bind->deforms
+        && bind->env_count == 0 && bind->vref == nullptr
+        && (bind->flags_or & VERT_NO_FOG) == 0 && bind->vertex_count <= 0xFFFF
+        && !bind->needs_room_lights && !bind->needs_own_light;
+}
+
+MATRIX *DC_MeshBatcher_RigBones(
+    MESH_BATCHER *const batcher, const int32_t count, int16_t *const first)
+{
+    if (count <= 0 || m_RigBoneCount + count > M_RIG_POOL) {
+        return nullptr;
+    }
+    *first = (int16_t)m_RigBoneCount;
+    m_RigBoneCount += count;
+    return &m_RigBones[*first];
 }
 
 static bool M_TransformInstance(
@@ -5542,6 +5729,9 @@ static bool M_TransformInstance(
             { -px, c.left }, { px, -c.right }, { -py, c.top }, { py, -c.bottom },
         };
         memcpy(c.planes, planes, sizeof(planes));
+    }
+    if (inst->rig_bones > 0) {
+        return M_TransformRig(batcher, inst, bind, &c, mv);
     }
 
     float eye_sq = 0.0f;
@@ -5815,7 +6005,9 @@ static bool M_TransformInstance(
                 if (m_ObjCheckBuf != nullptr) {
                     memcpy(m_ObjCheckBuf, batcher->xverts, sizeof(M_XVERT) * n);
                     const float keep_inv_z = c.max_inv_z;
-                    M_XformObject(batcher, bind, obj_inst, &il, &c, mv, cel_scale);
+                    M_XformObject(
+                        batcher, bind, obj_inst, &il, &c, mv, cel_scale, 0,
+                        bind->vertex_count);
                     c.max_inv_z = keep_inv_z;
                     for (int32_t i = 0; i < n; i++) {
                         const M_XVERT *const a = &m_ObjCheckBuf[i];
@@ -5842,7 +6034,9 @@ static bool M_TransformInstance(
         } else {
             DC_PROBE(
                 DC_PROBE_XT_PLAIN,
-                M_XformObject(batcher, bind, obj_inst, &il, &c, mv, cel_scale));
+                M_XformObject(
+                    batcher, bind, obj_inst, &il, &c, mv, cel_scale, 0,
+                    bind->vertex_count));
             M_ObjKeep(batcher, bind, okey);
         }
         if (!black_fog) {
@@ -8839,6 +9033,7 @@ static void M_RenderBegin(const SCENE_SOURCE *const source)
         Vector_Clear(batcher->staged[pass]);
         Vector_Clear(batcher->casters[pass]);
     }
+    m_RigBoneCount = 0;
 }
 
 static void M_Transform34(
@@ -10221,17 +10416,30 @@ static void M_FindTwins(M_BINDING *const bind)
     memset(table, 0xFF, sizeof(int32_t) * size);
     uint16_t *const twin = Memory_Alloc(sizeof(uint16_t) * n);
     int32_t twins = 0;
+    // A rig moves each bone by a matrix of its own: a twin only within its
+    // bone, and counted from the bone's first vertex (M_TransformRig runs
+    // each bone with its pointers moved to it).
+    const int32_t bones = bind->mesh->bone_count;
+    const uint16_t *const starts = bind->mesh->bone_start;
+    int32_t bone = 0;
+    int32_t base = 0;
+    int32_t next = bones > 0 ? starts[1] : n;
     for (int32_t i = 0; i < n; i++) {
+        while (bones > 0 && i >= next && bone < bones - 1) {
+            bone++;
+            base = starts[bone];
+            next = starts[bone + 1];
+        }
         uint32_t h = M_HashVertex(&vs[i]) & (size - 1);
         while (table[h] >= 0 && !M_SameVertex(&vs[table[h]], &vs[i])) {
             h = (h + 1) & (size - 1);
         }
-        if (table[h] < 0) {
+        if (table[h] < base) {
             table[h] = i;
         } else {
             twins++;
         }
-        twin[i] = (uint16_t)table[h];
+        twin[i] = (uint16_t)(table[h] - base);
     }
     Memory_Free(table);
     if (twins == 0) {
@@ -10682,7 +10890,9 @@ void MeshBatcher_RemoveMesh(MESH_BATCHER *const batcher, OUTPUT_MESH *const mesh
     Memory_Free(bind->nat_map);
     Memory_Free(bind->nat_argb);
     Memory_Free(bind->nat_widx);
-    free(bind->obj_argb);
+    for (int32_t i = 0; i < M_OBJ_SLOTS; i++) {
+        free(bind->obj_argb[i]);
+    }
     if (bind->see_cells != nullptr) {
         for (int32_t i = 0; bind->see_cell_count > i; i++) {
             Memory_Free(bind->see_cells[i]);
@@ -12411,6 +12621,9 @@ typedef struct {
     int32_t caster_n;
     int32_t caster_cap;
     int32_t lara_casters;
+    MATRIX *bones;
+    int32_t bone_n;
+    int32_t bone_cap;
 } M_SEG;
 static M_SEG m_Segs[DC_REPLAY_SEGMENTS];
 
@@ -12469,6 +12682,10 @@ bool DC_Batcher_SaveSegment(const SCENE_SOURCE *const source, const int32_t seg)
         s->casters, &s->caster_cap, m_Casters, m_CasterCount, sizeof(M_CASTER));
     s->caster_n = m_CasterCount;
     s->lara_casters = m_LaraCasterCount;
+    s->bones = M_SegCopy(
+        s->bones, &s->bone_cap, m_RigBones, m_RigBoneCount, sizeof(MATRIX));
+    s->bone_n = m_RigBoneCount;
+    ok &= s->bone_n == 0 || s->bones != nullptr;
     memcpy(s->part_blend, m_ParticleBlendCount, sizeof(s->part_blend));
     memcpy(s->quad_blend, m_QuadBlendCount, sizeof(s->quad_blend));
     ok &= (s->part_n == 0 || s->part != nullptr)
@@ -12512,6 +12729,10 @@ void DC_Batcher_LoadSegment(const SCENE_SOURCE *const source, const int32_t seg)
     }
     m_CasterCount = s->caster_n;
     m_LaraCasterCount = s->lara_casters;
+    if (s->bone_n > 0) {
+        memcpy(m_RigBones, s->bones, sizeof(MATRIX) * (size_t)s->bone_n);
+    }
+    m_RigBoneCount = s->bone_n;
     memcpy(m_ParticleBlendCount, s->part_blend, sizeof(s->part_blend));
     memcpy(m_QuadBlendCount, s->quad_blend, sizeof(s->quad_blend));
 }
@@ -12694,6 +12915,29 @@ void DC_Batcher_LerpSegment(
                 continue;
             }
             const uint32_t key = occ << 8 | tag;
+            // A rig's bones, each as an instance's matrix (in the opaque
+            // pass only: an added-faces copy shares them).
+            if (pass == SCENE_PASS_OPAQUE && inst->rig_bones > 0
+                && inst->rig_first >= 0
+                && inst->rig_first + inst->rig_bones <= m_RigBoneCount) {
+                for (int32_t b = 0; b < inst->rig_bones; b++) {
+                    MATRIX *const bm = &m_RigBones[inst->rig_first + b];
+                    const uint32_t bkey = key + ((uint32_t)(b + 1) << 20);
+                    float bf[12];
+                    M_MatrixToFloat(bm, bf);
+                    M_PREV *const bslot =
+                        M_PrevSlot(write, inst->mesh, bkey, true);
+                    if (bslot != nullptr) {
+                        memcpy(bslot->m, bf, sizeof(bf));
+                    }
+                    const M_PREV *const bprev = apply && m_PrevValid
+                        ? M_PrevSlot(read, inst->mesh, bkey, false)
+                        : nullptr;
+                    if (bprev != nullptr && M_LerpRows(bprev->m, bf, false)) {
+                        M_FloatToMatrix(bf, bm);
+                    }
+                }
+            }
             float m[12];
             M_MatrixToFloat(&inst->wmatrix, m);
             M_PREV *const slot = M_PrevSlot(write, inst->mesh, key, true);

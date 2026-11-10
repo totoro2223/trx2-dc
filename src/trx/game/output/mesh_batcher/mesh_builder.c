@@ -274,6 +274,23 @@ void MeshBuilder_AddRoomSprite(
     MeshBuilder_AddFan(builder, SCENE_PASS_TRANSPARENT, false, true);
 }
 
+int32_t MeshBuilder_GetVertexCount(const MESH_BUILDER *const builder)
+{
+    return builder->mesh != nullptr ? builder->mesh->vertices->count : 0;
+}
+
+void MeshBuilder_AdjustDepthFrom(
+    MESH_BUILDER *const builder, const int32_t first, const float depth)
+{
+    if (builder->mesh == nullptr || builder->mesh->vertices == nullptr) {
+        return;
+    }
+    OUTPUT_MESH_VERTEX *const vbuf = Vector_GetData(builder->mesh->vertices);
+    for (int32_t i = first; i < builder->mesh->vertices->count; i++) {
+        vbuf[i].pos.w = depth;
+    }
+}
+
 void MeshBuilder_AdjustDepth(MESH_BUILDER *const builder, const float depth)
 {
     if (builder->mesh == nullptr || builder->mesh->vertices == nullptr) {

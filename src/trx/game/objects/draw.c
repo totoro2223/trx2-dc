@@ -21,6 +21,7 @@
     #include <platform/dreamcast/dc_mode.h>
     #include <platform/dreamcast/dc_probe.h>
     #include <platform/dreamcast/render/shadow.h>
+    #include <trx/game/output/sources/objects.h>
 #else
     #define DC_PROBE(i, stmt) stmt
     #define DC_PROBE_START(t) ((void)0)
@@ -124,6 +125,12 @@ static CLIP M_GetClip(const OBJECT *const obj, const BOUNDS_16 *const bounds)
     #define M_FAR_ENEMY_MESH_RADIUS 300
 #endif
 
+#if defined(__DREAMCAST__)
+// Only an item of the world is drawn as a rig, not the inventory's or the
+// interface's objects (another projection, lit their own way).
+static bool m_RigItem = false;
+#endif
+
 static bool M_DrawInterpolatedObject(
     const OBJECT *const obj, const uint32_t mesh_mask,
     const int16_t *extra_rotation, const ANIM_FRAME *const frame1,
@@ -177,6 +184,16 @@ static bool M_DrawInterpolatedObject(
     // misaligned stack array (DC build 1284); fixed in 1286. TRX_DC_ASMOFF
     // bit 2048 turns it off.
     g_MatrixWorldOnly = (g_DC_AsmOff & 2048) == 0;
+    // The whole object as one instance (OutputSource_Objects_BeginRig), when
+    // it shows all its own meshes and casts no volume.
+    const uint32_t all_meshes = obj->mesh_count >= 32
+        ? 0xFFFFFFFFu
+        : (1u << obj->mesh_count) - 1u;
+    MESH_INSTANCE *const rig = m_RigItem && g_Config.rendering.enable_lighting
+            && mesh_swap == nullptr
+            && (mesh_mask & all_meshes) == all_meshes && !DC_Shadow_IsCasting()
+        ? OutputSource_Objects_BeginRig(obj)
+        : nullptr;
 #endif
     ANIM_WALK walk;
     Anim_Walk_Begin(
@@ -197,13 +214,20 @@ static bool M_DrawInterpolatedObject(
         }
         const int32_t mesh_idx = walk.joint;
 #if defined(__DREAMCAST__)
+        bool small_far = false;
         if (far_enemy && mesh_swap == nullptr && mesh_idx != 0) {
             const OBJECT_MESH *const mesh =
                 Object_GetMesh(obj->mesh_idx + mesh_idx);
-            if (mesh->num_vertices <= M_FAR_ENEMY_MESH_VERTICES
-                && mesh->radius < M_FAR_ENEMY_MESH_RADIUS) {
-                continue;
-            }
+            small_far = mesh->num_vertices <= M_FAR_ENEMY_MESH_VERTICES
+                && mesh->radius < M_FAR_ENEMY_MESH_RADIUS;
+        }
+        if (rig != nullptr) {
+            OutputSource_Objects_RigBone(
+                rig, mesh_idx, walk.interpolated, small_far);
+            continue;
+        }
+        if (small_far) {
+            continue;
         }
 #endif
         DC_PROBE_START(probe_mesh);
@@ -217,6 +241,9 @@ static bool M_DrawInterpolatedObject(
     }
     Anim_Walk_End(&walk);
 #if defined(__DREAMCAST__)
+    if (rig != nullptr) {
+        OutputSource_Objects_EndRig(rig);
+    }
     g_MatrixWorldOnly = view_was_off;
 #endif
 
@@ -336,9 +363,15 @@ bool Object_DrawAnimatingItemWithSwap(
 
     const int16_t *extra_rotation = item->extra_rotations;
 
+#if defined(__DREAMCAST__)
+    m_RigItem = true;
+#endif
     bool result = Object_DrawInterpolatedObjectWithSwap(
         obj, mesh_mask, extra_rotation, frames[0], frames[1], frac, rate,
         swap_obj);
+#if defined(__DREAMCAST__)
+    m_RigItem = false;
+#endif
     if (g_Config.debug.enable_debug_bounding_boxes) {
         const BOUNDS_32 debug_bounds = BOUNDS_32_From16(bounds);
         Output_DrawCuboid(&debug_bounds);

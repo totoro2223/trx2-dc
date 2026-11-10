@@ -48,6 +48,15 @@ typedef struct MESH_INSTANCE {
     bool enable_scissor;
     float depth_adjust;
     VIEWPORT_RECT scissor;
+#if defined(__DREAMCAST__)
+    // A rig (the mesh's bone_count): its bones' world matrices are this many
+    // in the frame's pool from rig_first (DC_MeshBatcher_RigBones), and
+    // wmatrix is the object's own. 0 for any other instance.
+    int16_t rig_bones;
+    int16_t rig_first;
+    // The bones left out (a far enemy's hands and feet), one bit each.
+    uint32_t rig_skip;
+#endif
 } MESH_INSTANCE;
 
 typedef struct MESH_BATCHER MESH_BATCHER;
@@ -123,6 +132,12 @@ typedef struct {
     float pull;
 } DC_QUAD;
 void DC_MeshBatcher_StageQuad(MESH_BATCHER *batcher, const DC_QUAD *quad);
+// Whether a rig of this mesh can be drawn (the plain object path), and room
+// for a rig's bone matrices in the frame's pool (nullptr when full; *first is
+// the first one's index).
+bool DC_MeshBatcher_CanRig(const MESH_BATCHER *batcher, const OUTPUT_MESH *mesh);
+MATRIX *DC_MeshBatcher_RigBones(
+    MESH_BATCHER *batcher, int32_t count, int16_t *first);
 // Whether a wall of the room, with nothing you can see through on it, lies
 // between the eye and the point (both in the world).
 bool DC_MeshBatcher_RayBlocked(

@@ -19,6 +19,10 @@ OUTPUT_MESH *Output_Mesh_Create(void)
     mesh->opaque_discard_indices = Vector_Create(sizeof(OUTPUT_MESH_INDEX));
     mesh->blend_add_vertex_indices = Vector_Create(sizeof(OUTPUT_MESH_INDEX));
     mesh->sealed = false;
+#if defined(__DREAMCAST__)
+    mesh->bone_count = 0;
+    mesh->bone_start = nullptr;
+#endif
     return mesh;
 }
 
@@ -41,5 +45,8 @@ void Output_Mesh_Destroy(OUTPUT_MESH *const mesh)
         Vector_Free(mesh->blend_add_vertex_indices);
     }
     Memory_ArenaFree(&mesh->allocator);
+#if defined(__DREAMCAST__)
+    Memory_Free(mesh->bone_start);
+#endif
     Memory_Free(mesh);
 }
