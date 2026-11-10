@@ -792,6 +792,23 @@ void Interpolation_DC_Swap(const bool in)
     if (lara != nullptr && m_DCPub.has_lara) {
         M_SWAP(m_DCPub.lara, *lara);
     }
+    if (!in) {
+        // What the frame worked out and the logic reads, as it would after a
+        // frame drawn on its own thread: the camera's interpolated place (the
+        // look camera and the clamps start from it) and Lara's mesh matrices
+        // (the flare's sparks and the guns' smoke come out of her hands).
+        // Without it the logic saw them as the last frame before the thread.
+        g_Camera.fov = m_DCPub.camera.fov;
+        g_Camera.interp.result = m_DCPub.camera.interp.result;
+        g_Camera.interp.room_num = m_DCPub.camera.interp.room_num;
+        if (lara != nullptr && m_DCPub.has_lara) {
+            memcpy(
+                lara->mesh_pos_matrices, m_DCPub.lara.mesh_pos_matrices,
+                sizeof(lara->mesh_pos_matrices));
+            lara->mesh_pos_matrices_valid =
+                m_DCPub.lara.mesh_pos_matrices_valid;
+        }
+    }
     const int32_t count = MIN(m_DCPub.item_count, Item_GetTotalCount());
     for (int32_t i = 0; i < count; i++) {
         M_DCSwapItem(&m_DCPub.items[i], Item_Get(i));

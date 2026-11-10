@@ -19,6 +19,7 @@
 #include <trx/game/objects/families.h>
 #include <trx/game/output/const.h>
 #include <trx/game/pathing.h>
+#include <trx/game/pathing/box.h>
 #include <trx/game/rooms.h>
 #include <trx/game/rules.h>
 #include <trx/game/sparks.h>
@@ -758,6 +759,11 @@ bool Item_IsFading(const ITEM *const item)
     return item->fade > 0;
 }
 
+#if defined(__DREAMCAST__)
+extern uint32_t g_DC_AsmOff2;
+static uint32_t m_ControlTick = 0;
+#endif
+
 void Item_Control(void)
 {
 #if defined(__DREAMCAST__)
@@ -780,6 +786,10 @@ void Item_Control(void)
 #else
     M_SyncAllHitPoints();
 #endif
+#if defined(__DREAMCAST__)
+    Box_BeginTick();
+    m_ControlTick++;
+#endif
 
     int16_t item_num = Item_GetNextSimulated();
     while (item_num != NO_ITEM) {
@@ -789,6 +799,19 @@ void Item_Control(void)
         if (!item->is_destroyed && obj->control_func != nullptr) {
 #if defined(__DREAMCAST__)
             DC_WHERE("item obj", (int)item->object_id);
+            // A creature past 16 blocks from Lara with nothing to track is
+            // worked every other tick (half as fast, out of sight and mind).
+            if (obj->intelligent && item->ai_bits == 0
+                && (g_DC_AsmOff2 & 65536) == 0
+                && ((item_num + m_ControlTick) & 1) != 0) {
+                const ITEM *const lara = Lara_GetItem();
+                if (lara != nullptr
+                    && ABS(item->pos.x - lara->pos.x) > 16 * WALL_L
+                    || ABS(item->pos.z - lara->pos.z) > 16 * WALL_L) {
+                    item_num = next;
+                    continue;
+                }
+            }
             if (obj->intelligent) {
                 DC_PROBE_START(probe_en);
                 obj->control_func(item_num);

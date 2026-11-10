@@ -155,11 +155,12 @@ static bool M_DrawInterpolatedObject(
 #if defined(__DREAMCAST__)
     // Far enemies, already lost in the fog, leave out their smallest meshes
     // (hands, feet): each one costs a staging, a transform and its polygons.
-    const bool far_enemy = obj->intelligent
-        && ((int32_t)g_MatrixPtr->_23 >> W2V_SHIFT) > M_FAR_ENEMY_DEPTH;
-    // Original simulation: a far enemy shows its nearest keyframe only, with
-    // no blend between two poses.
-    const int32_t pose_frac = (far_enemy && LOT_IsOriginalSim())
+    const bool far_item =
+        ((int32_t)g_MatrixPtr->_23 >> W2V_SHIFT) > M_FAR_ENEMY_DEPTH;
+    const bool far_enemy = obj->intelligent && far_item;
+    // In every mode: a far item (enemy, trap, door) shows its nearest
+    // keyframe only, with no blend between two poses.
+    const int32_t pose_frac = far_item
         ? (frac > rate / 2 && frame2 != nullptr ? rate : 0)
         : frac;
     const ANIM_FRAME *const pose_a = (pose_frac == rate) ? frame2 : frame1;

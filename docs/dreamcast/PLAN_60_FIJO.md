@@ -194,6 +194,61 @@ La Jungla y TR2 Great Wall siguen a 60. Verificación: 0 distintas (Antártida 1
   - **UV en coma flotante precalculadas por esquina:** cuestan unos 4 bytes más por esquina de memoria.
   - Más allá de eso, bajar la emisión es emitir menos caras.
 
+**Londres medido (09/11/2026, DC builds 904-907)**, en Flycast, Native 60, vista inicial de cada nivel (Lara quieta), 60 s:
+
+| Nivel | fps | `pass` | `stage` | Polígonos | Vértices | Nativo: transf. / emisión |
+|---|---|---|---|---|---|---|
+| Thames Wharf (ROOFS) | 46-48 | 11,2 ms | 5,1 ms | 1700 | 12 570 | 0,90 / 3,64 ms |
+| Aldwych (SEWER) | 60 | 2,9 ms | 1,5 ms | 410 | 2350 | 0,04 / 0,48 ms |
+| Lud's Gate (TOWER) | 58-61 | 5,0 ms | 3,9 ms | 600 | 4540 | 1,02 / 1,10 ms |
+| City (OFFICE) | 60-61 | 3,8 ms | 1,4 ms | 545 | 4510 | 0,18 / 0,82 ms |
+
+- **Thames Wharf es el peor caso medido**, por debajo de la Antártida: más polígonos (1700 frente a 1510) y más vértices, y `stage` alto (5,1 ms).
+- Verificación sin diferencias: `[native-check]` 1 448 970 esquinas en Thames Wharf; `[obj-check]` 0 distintas en los cuatro. Repetición: 296 de 300 frames vueltos a dibujar, sin cortes.
+- Solo la vista inicial: con la cámara en movimiento o en otras zonas de cada nivel puede ser peor.
+
+**Fallos vistos en la prueba del usuario, corregidos (09/11/2026, DC builds 908-911)**:
+
+- **TR1 y TR2, estáticos negros que sí se iluminan al disparar:** los estáticos fusionados en su sala (`M_MergeStatic`, `rooms.c`) tomaban como luz la sombra del estático tal cual. El juego le resta la neutra (`Output_Lights_SetScalarStaticLight`: `adder - SHADE_NEUTRAL`), así que salían 4096 más oscuros, casi negros con la sombra propia de la malla. Afecta a todos los modos. Sin probar en pantalla.
+- **TR3 en Native 60, partículas de la bengala y humo de las pistolas donde se encendió la bengala, y la cámara del modo mirar que salta a ese punto:** `Interpolation_DC_Swap` intercambia `g_Camera` y `LARA_INFO` enteros. Lo que el dibujo calcula y la lógica lee acababa en la copia publicada: `g_Camera.interp.result` y las matrices de las manos de Lara (`mesh_pos_matrices`, de las que salen las chispas y el humo con `Lara_GetMeshPos`). La lógica las veía como en el último frame sin hilo. Ahora, al devolver el estado, se quedan en la copia viva.
+  - Medido con una sonda temporal en Flycast oculto (Lara anda, gira y mira; `TRX_DC_GIVE=99` enciende la bengala). Antes, el `interp.result` de la cámara se quedaba clavado en la posición inicial; las chispas nuevas nacían allí; al mirar, la cámara iba hacia allí. Después, todo sigue a Lara.
+  - **El temblor de la cámara no se reproduce en Flycast:** la cámara del render sale suave antes y después (segunda diferencia de su posición frame a frame: mediana unas 10 unidades). Puede que fuera el mismo estado viejo, pero está sin confirmar.
+- Regresión: Antártida con bengala y Lara andando, 50 fps; Great Wall, 60 fps. `[obj-check]` sin diferencias.
+
+**Enemigos y objetos: las 8 recomendaciones (10/11/2026, DC builds 912-915, Flycast, Native 60)**:
+
+| # | Qué | Estado |
+|---|---|---|
+| 1 | Ítem como unidad | Ya existía: `Object_DrawAnimatingItemWithSwap` hace una prueba de caja por ítem (`M_GetClip`), la pila solo de mundo y los enemigos lejanos sin mallas pequeñas. La luz es global (TR3) y `Output_GetLightInfo` solo copia una estructura. Sin cambios. |
+| 2 | Luz de TR3 con acumuladores en registros | Hecho (`xform_obj_sh4.S`): `fmac` en `fr12-fr14` en vez de leer y escribir la pila por canal y luz. Un `ftrv` no sirve: XMTRX lleva la proyección. |
+| 3 | Matrices de hueso en float | Ya existía: `M_ModelView` está en ensamblador (`dc_model_view`). Sin cambios. |
+| 4 | Luz sin dirección más allá de 3072 unidades (el 0x100 del PSX) | Hecho (`M_LIGHT_LOD_SQ`, solo Native 60, no Lara ni salas): TR1-2 solo el adder; TR3 el ambiente más un cuarto de cada luz. `TRX_DC_ASMOFF2` bit 8192 lo apaga. |
+| 5 | Clave de la caché de colores tolerante | Hecho: `M_ObjHashF` descarta 17 bits (6 de mantisa, ~1°). Bit 16384 de `ASMOFF2` lo apaga. |
+| 6 | Tiras por página | Ya existía: `M_TryEmitQuad` y `emit_sh4.S` emiten los pares de triángulos como un cuadrilátero (4 vértices por 2). Una tira por malla ganaría poco. Sin cambios. |
+| 7 | Esqueleto fusionado | No hecho: pide un formato de malla nuevo (índice de hueso por vértice), otro camino de luz y de caché, y reescribir el emisor. Es un proyecto aparte. |
+| 8 | Reparto de las búsquedas de ruta | Hecho (`Box_BeginTick`, `M_TICK_EXPANSIONS` 30 por tick entre todas las criaturas, antes 5 por criatura; no en IA original). |
+
+- Compila y corre sin fallos. Antártida (60 s, vista inicial): 55-60 fps con todo y 55-59 con 4 y 5 apagados; transformación 1414 / 1407 µs, emisión 3283 / 3272 µs; `[obj-check]` 0 distintas. Jungla: 60 fps en ambos.
+- **No se ve ganancia en Flycast porque la vista inicial no tiene enemigos lejanos.** Falta probar con enemigos en pantalla y en consola.
+- Pendiente: mirar en consola que los enemigos lejanos no se vean planos en exceso, y que las criaturas que llegan juntas no se queden quietas un tick de más.
+
+**Segunda tanda de objetos (10/11/2026, DC builds 916-919), en todos los modos**:
+
+| # | Qué | Estado |
+|---|---|---|
+| 1 | Objetos lejanos a 30 Hz | No hecho. El replay vuelve a transformar y emitir cada frame con la vista nueva; reusar pantalla de un frame anterior hace saltar los objetos con la cámara en movimiento. |
+| 2 | Caché de vértices proyectados por ítem | No hecho. Con colores en caché el coste restante es un `ftrv` por vértice; no compensa guardar 32 B por vértice y por instancia. |
+| 3 | Presupuesto de objetos | Hecho: pasadas 48 instancias de objeto en un frame, o `M_NATIVE_POLY_CAP`, se dejan los lejanos; y se omite el objeto cuya caja mide menos de 2 píxeles. `TRX_DC_ASMOFF2` bit 32768 lo apaga. |
+| 4 | Pose del keyframe más cercano de lejos | Hecho, para todo ítem animado a más de 14 casillas. |
+| 5 | Huesos pequeños fuera de lejos | Ya estaba (enemigos a más de 14 casillas, mallas de 8 vértices o menos). Sin cambios. |
+| 6 | Luz plana en mallas pequeñas | Hecho: caja de menos de 300 unidades de diagonal, a cualquier distancia (bit 8192 lo apaga). |
+| 7 | Ordenar mallas por página | No hecho: los cambios de página ocurren dentro de cada malla, ordenar entre mallas no los quita. |
+| 8 | Control cada 2 ticks de criaturas lejanas | Hecho: más de 16 casillas de Lara en X o Z y sin `ai_bits`, la mitad de velocidad (bit 65536 lo apaga). |
+
+- La luz sin dirección (4 de la primera tanda), el presupuesto de búsquedas de ruta y la pose de lejos valen ahora en todos los modos. La búsqueda de rutas ya no distingue la IA original, así que una demo grabada puede acabar distinta.
+- Flycast, Antártida, vista inicial, 60 s: Native 60 56-60 fps, original 30-31 fps, sin fallos, `[obj-check]` sin diferencias. Mismos polígonos que antes (1520), porque en esa vista no hay objetos pequeños ni lejanos que se descarten.
+- Sin ganancia medida y sin probar en consola. No se midió la demo con enemigos: se paró a petición.
+
 Sin probar:
 - La consola.
 - La imagen (en modo oculto no hay capturas).

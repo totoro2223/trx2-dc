@@ -113,6 +113,13 @@ typedef struct {
 // and how far (4 blocks, squared).
 #define M_NATIVE_POLY_CAP 2500
 #define M_NATIVE_FAR_SQ (4096.0f * 4096.0f)
+#define M_LIGHT_LOD_SQ (3072.0f * 3072.0f)
+// Bounds' diagonal under 300 units (squared): a small mesh.
+#define M_SMALL_MESH_SQ (300.0f * 300.0f)
+// A far object whose bounds come to under this many pixels is left out.
+#define M_TINY_PX 2.0f
+// Past this many object instances in a frame, far ones are left out too.
+#define M_OBJ_INSTANCE_CAP 48
 typedef struct {
     // Its faces, a range of opaque_vertex_indices in one run.
     int32_t start;
@@ -899,6 +906,7 @@ int32_t g_DC_BatcherMeshCount = 0;
 int32_t g_DC_BatcherVertexCount = 0;
 // This frame's: instances and vertices transformed (the debug console's).
 uint32_t g_DC_BatcherFrameInstances = 0;
+static int32_t m_ObjInstancesThisFrame = 0;
 uint32_t g_DC_BatcherFrameVertices = 0;
 uint32_t g_DC_BatcherXformUs = 0;
 
@@ -5382,7 +5390,9 @@ static uint32_t M_ObjHashF(uint32_t h, const float f)
     memcpy(&bits, &f, sizeof(bits));
     // The low bits dropped: the blended frame finds the light through
     // another view, which leaves the last bits apart.
-    return (h ^ (bits >> 8)) * 16777619u;
+    // (>> 17: 6 bits of mantissa, about 1 degree in a direction; a bone that
+    // turns less than that between ticks keeps its colours.)
+    return (h ^ (bits >> ((g_DC_AsmOff2 & 16384) != 0 ? 8 : 17))) * 16777619u;
 }
 
 static uint32_t M_ObjKey(
@@ -5562,10 +5572,23 @@ static bool M_TransformInstance(
         // PLAN_60_FIJO.md phase 5, the PSX's cap (TOMB3 stops adding near
         // 2000 polygons): past M_NATIVE_POLY_CAP in the frame, the native
         // mode leaves out what is neither a room nor Lara and lies far.
-        if (g_DC_NativeRooms && !bind->needs_room_lights
-            && !m_Frame.lara_instance && cu.eye_sq > M_NATIVE_FAR_SQ
-            && DC_PVR_GetSubmittedCount() > M_NATIVE_POLY_CAP) {
-            return false;
+        if (!bind->needs_room_lights && !m_Frame.lara_instance
+            && (g_DC_AsmOff2 & 32768) == 0) {
+            if (cu.eye_sq > M_NATIVE_FAR_SQ
+                && (DC_PVR_GetSubmittedCount() > M_NATIVE_POLY_CAP
+                    || m_ObjInstancesThisFrame > M_OBJ_INSTANCE_CAP)) {
+                return false;
+            }
+            // Smaller than a couple of pixels on the screen: not worth it.
+            const float dx = bind->bounds[1][0] - bind->bounds[0][0];
+            const float dy = bind->bounds[1][1] - bind->bounds[0][1];
+            const float dz = bind->bounds[1][2] - bind->bounds[0][2];
+            const float diag_sq = dx * dx + dy * dy + dz * dz;
+            if (diag_sq * scale * scale * m_Frame.proj_y * m_Frame.proj_y
+                < M_TINY_PX * M_TINY_PX * cu.eye_sq) {
+                return false;
+            }
+            m_ObjInstancesThisFrame++;
         }
         if ((cull & M_CULL_FOG_OFF) != 0 || m_Frame.fog_table) {
             c.fog = false;
@@ -5589,6 +5612,35 @@ static bool M_TransformInstance(
         lmv = light_mv;
     }
     M_PrepareInstanceLight(inst, bind, lmv, &il);
+
+    // The PSX lights a mesh per face only within 0xc00 (TOMB3 0x8c2d8, flag
+    // 0x100): farther it takes one flat light. Here: past that, an object
+    // lit by direction gets no direction (TR1-2: the adder alone; TR3: the
+    // ambient plus a quarter of each light, the mean of max(0, n.l) over
+    // all normals). Its vertices are then only placed, and its key holds
+    // still from tick to tick (M_ObjKey).
+    // A small mesh (a pickup, a bullet, a small static) takes the flat light at
+    // any distance: its faces turn little against it anyway.
+    const float ext_x = bind->bounds[1][0] - bind->bounds[0][0];
+    const float ext_y = bind->bounds[1][1] - bind->bounds[0][1];
+    const float ext_z = bind->bounds[1][2] - bind->bounds[0][2];
+    const bool small_mesh =
+        ext_x * ext_x + ext_y * ext_y + ext_z * ext_z < M_SMALL_MESH_SQ;
+    if (!bind->needs_room_lights && !m_Frame.lara_instance && !m_Frame.ortho
+        && bind->needs_object_light
+        && (eye_sq > M_LIGHT_LOD_SQ || small_mesh)
+        && (g_DC_AsmOff2 & 8192) == 0) {
+        if (il.tr3) {
+            for (int32_t i = 0; i < il.tr3_count; i++) {
+                for (int32_t k = 0; k < 3; k++) {
+                    il.tr3_ambient[k] += il.tr3_color[i][k] * 0.25f;
+                }
+            }
+            il.tr3_count = 0;
+        }
+        il.has_direction = false;
+        il.l[0] = il.l[1] = il.l[2] = 0.0f;
+    }
 
     // Cel shaded: for each vertex how far it turns from the light, as a
     // cosine. The light runs across the lit side as before, so that it
@@ -8683,6 +8735,7 @@ static void M_DrawInstance(
 
 static void M_PrepareFrame(void)
 {
+    m_ObjInstancesThisFrame = 0;
     if (m_WhiteARGB[M_WHITE_K_MAX] == 0) {
         M_InitWhite();
     }

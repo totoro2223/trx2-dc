@@ -7,6 +7,7 @@
 #include <trx/game/lara.h>
 #include <trx/game/objects.h>
 #include <trx/game/pathing.h>
+#include <trx/game/pathing/lot.h>
 #include <trx/game/random.h>
 #include <trx/game/rooms.h>
 #include <trx/version.h>
@@ -633,10 +634,32 @@ static TARGET_TYPE M_TargetWalkC(
 extern int dc_box_target(int32_t *p);
 #endif
 
+#if defined(__DREAMCAST__)
+// The route searches of all the creatures in a tick share this many
+// expansions (the games give each one 5 of its own, however many are awake):
+// when many enemies come into play at once the searches are spread over the
+// next ticks instead of all landing in one. A creature left without any keeps
+// walking its last route for that tick. In every mode.
+    #define M_TICK_EXPANSIONS 30
+static int32_t m_TickExpansions = M_TICK_EXPANSIONS;
+
+void Box_BeginTick(void)
+{
+    m_TickExpansions = M_TICK_EXPANSIONS;
+}
+#endif
+
 TARGET_TYPE Box_CalculateTarget(
     XYZ_32 *const target, const ITEM *const item, LOT_INFO *const lot)
 {
-    M_UpdateLOT(lot, BOX_MAX_EXPANSION, item->ai_bits != 0);
+    int32_t expansion = BOX_MAX_EXPANSION;
+#if defined(__DREAMCAST__)
+    {
+        expansion = MIN(expansion, m_TickExpansions);
+        m_TickExpansions -= expansion;
+    }
+#endif
+    M_UpdateLOT(lot, expansion, item->ai_bits != 0);
 
     *target = item->pos;
 

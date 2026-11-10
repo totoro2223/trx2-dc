@@ -17,6 +17,7 @@
 #include "vmu.h"
 
 #include <trx/game/console/common.h>
+#include <trx/game/shell/config.h>
 #include <trx/version.h>
 
 #include <arch/timer.h>
@@ -133,6 +134,10 @@ void DC_Loading_Begin(const uint64_t total_bytes, const char *const picture)
             g_Config.rendering.aspect_mode,
             g_DC_WidePending ? ASPECT_MODE_16_9 : ASPECT_MODE_4_3);
     }
+    // Nothing passes a change of the shape on (no Config_Update runs here, nor
+    // after the memory card's settings): the game's view kept its 640 wide
+    // layout, which 16:9 squeezed into the left 480 pixels of the screen.
+    Shell_RefreshRendererViewport();
     // Read before the disc reads are watched: reading it would draw again.
     DC_Crumb(DC_CRUMB_LOADING, "loading");
     DC_Asm_Save(true);

@@ -86,26 +86,14 @@
     bt      1f
     bra     2f
     nop
-1:  mov     r4,r1
+    mov     r4,r1
     add     #(76 + 12 * \n),r1
     fmov.s  @r1+,fr0
-    fmul    fr7,fr0
-    mov     #20,r0
-    fmov.s  @(r0,r15),fr1
-    fadd    fr0,fr1
-    fmov.s  fr1,@(r0,r15)
+    fmac    fr0,fr7,fr12            ! accumulators in fr12-fr14 (tr3col)
     fmov.s  @r1+,fr0
-    fmul    fr7,fr0
-    mov     #24,r0
-    fmov.s  @(r0,r15),fr1
-    fadd    fr0,fr1
-    fmov.s  fr1,@(r0,r15)
+    fmac    fr0,fr7,fr13
     fmov.s  @r1+,fr0
-    fmul    fr7,fr0
-    mov     #28,r0
-    fmov.s  @(r0,r15),fr1
-    fadd    fr0,fr1
-    fmov.s  fr1,@(r0,r15)
+    fmac    fr0,fr7,fr14
 2:
     .endm
 
@@ -146,7 +134,7 @@ _dc_xform_object:
     fmov.s  fr9,@-r15
     fmov.s  fr10,@-r15
     fmov.s  fr11,@-r15
-    add     #-36,r15
+    add     #-48,r15
     mov.l   r4,@(0,r15)
     mov     r4,r1
     add     #76,r1
@@ -584,14 +572,17 @@ tr3col:
     fmul    fr1,fr0                 ! kk = k * tr3_double
     mov     #32,r0
     fmov.s  fr0,@(r0,r15)
+    mov     #36,r0
+    fmov.s  fr12,@(r0,r15)          ! fr12-fr14 (fog) kept while they add up
+    mov     #40,r0
+    fmov.s  fr13,@(r0,r15)
+    mov     #44,r0
+    fmov.s  fr14,@(r0,r15)
     mov     r4,r1
     add     #24,r1
-    mov.l   @r1+,r0
-    mov.l   r0,@(20,r15)
-    mov.l   @r1+,r0
-    mov.l   r0,@(24,r15)
-    mov.l   @r1+,r0
-    mov.l   r0,@(28,r15)            ! the ambient colour
+    fmov.s  @r1+,fr12
+    fmov.s  @r1+,fr13
+    fmov.s  @r1+,fr14               ! the ambient colour
     mov     r4,r1
     add     #36,r1
     mov.l   @r1,r2                  ! how many lights
@@ -599,6 +590,18 @@ tr3col:
     LIGHT   1
     LIGHT   2
 lights_done:
+    mov     #20,r0
+    fmov.s  fr12,@(r0,r15)
+    mov     #24,r0
+    fmov.s  fr13,@(r0,r15)
+    mov     #28,r0
+    fmov.s  fr14,@(r0,r15)
+    mov     #36,r0
+    fmov.s  @(r0,r15),fr12
+    mov     #40,r0
+    fmov.s  @(r0,r15),fr13
+    mov     #44,r0
+    fmov.s  @(r0,r15),fr14
     mov     #32,r0
     fmov.s  @(r0,r15),fr4           ! kk
     mov     r15,r4
@@ -621,7 +624,7 @@ obj_finish:
     mov     r13,r5
     add     #28,r5
     fmov.s  fr11,@r5                ! the nearest 1/z
-    add     #36,r15
+    add     #48,r15
     fmov.s  @r15+,fr11
     fmov.s  @r15+,fr10
     fmov.s  @r15+,fr9

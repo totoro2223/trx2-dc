@@ -278,7 +278,10 @@ static bool M_MergeStatic(
 
     // The static's light, as the game's lighting model makes it at rest.
     float ambient[3] = { 1.0f, 1.0f, 1.0f };
-    int32_t adder = sm->shade.value_1;
+    // As Output_Lights_SetScalarStaticLight makes it: the static's shade
+    // less the neutral one (without it, statics came out black).
+    int32_t adder = sm->shade.value_1 - SHADE_NEUTRAL;
+    CLAMPG(adder, SHADE_MAX);
     if (g_TRVersion == 3) {
         const int32_t rgb15 = sm->shade.value_1 & 0x7FFF;
         ambient[0] = ((rgb15 & 0x1F) << 3) / 255.0f;

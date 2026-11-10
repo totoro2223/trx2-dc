@@ -12,6 +12,9 @@ int16_t *Box_GetFlyZone(bool flip_status);
 int16_t *Box_GetGroundZone(bool flip_status, int32_t zone_idx);
 int16_t *Box_GetLotZone(const LOT_INFO *lot);
 bool Box_SearchLOT(LOT_INFO *lot, int32_t expansion);
+#if defined(__DREAMCAST__)
+void Box_BeginTick(void);
+#endif
 void Box_TargetBox(LOT_INFO *lot, int16_t box_num);
 bool Box_StalkBox(const ITEM *item, const ITEM *enemy, int16_t box_num);
 bool Box_EscapeBox(const ITEM *item, const ITEM *enemy, int16_t box_num);
