@@ -1,11 +1,11 @@
 <div align="center">
-<h1>TRDCTRI – Tomb Raider I-III for Sega Dreamcast</h1>
+<h1>trdreamcasttrilogy – Tomb Raider I-III for Sega Dreamcast</h1>
 
 </div>
 
 <hr/>
 
-**TRDCTRI** is a **Sega Dreamcast** port of
+**trdreamcasttrilogy** is a **Sega Dreamcast** port of
 [TRX](https://github.com/LostArtefacts/TRX), the open-source reimplementation
 of **Tomb Raider 1, 2 and 3** by LostArtefacts. It runs on
 [KallistiOS](https://github.com/KallistiOS/KallistiOS) and boots from a disc
