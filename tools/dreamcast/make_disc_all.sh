@@ -21,7 +21,7 @@ set -eo pipefail
 
 BUILD_DIR="$(cd "${1:?build dir}" && pwd)"
 OUT="${2:-$BUILD_DIR/TRX-all.cdi}"
-REMASTER="${TRX_DC_REMASTER:-/h/GOG/Tomb Raider I-III Remastered}"
+REMASTER="${TRX_DC_REMASTER:-/h/GOG/Tomb Raider I-III Remastered Starring Lara Croft}"
 ROOT="$(pwd)"
 STAGE="$BUILD_DIR/disc-all"
 TMP="$BUILD_DIR/disc-tmp"
@@ -64,7 +64,7 @@ echo "$GAMES" > "$STAGE/GAMES.TXT"
 # pad): TRX_DC_ALL_START=-1 (in the games of TRX_DC_ALL_START_GAMES, all by
 # default).
 if [ -n "${TRX_DC_ALL_START:-}" ]; then
-  for n in ${TRX_DC_ALL_START_GAMES:-1 2 3}; do
+  for n in ${TRX_DC_ALL_START_GAMES:-$GAMES}; do
     echo "$TRX_DC_ALL_START" > "$STAGE/g$n/START.TXT"
   done
 fi
@@ -83,9 +83,10 @@ if [ -n "${TRX_DC_ALL_SWITCH3:-}" ]; then
 fi
 
 # A test disc that picks an entry of the level list by itself
-# (TRX_DC_ALL_PICK="3 1": the page and the entry; in TR1's folder only).
+# (TRX_DC_ALL_PICK="3 1": the page and the entry; in the first game's folder).
 if [ -n "${TRX_DC_ALL_PICK:-}" ]; then
-  echo "$TRX_DC_ALL_PICK" > "$STAGE/g1/SELPICK.TXT"
+  first="${GAMES%% *}"
+  echo "$TRX_DC_ALL_PICK" > "$STAGE/g$first/SELPICK.TXT"
 fi
 
 echo "== image"

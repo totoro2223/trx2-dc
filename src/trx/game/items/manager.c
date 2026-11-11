@@ -807,8 +807,8 @@ void Item_Control(void)
                 && ((item_num + m_ControlTick) & 1) != 0) {
                 const ITEM *const lara = Lara_GetItem();
                 if (lara != nullptr
-                    && ABS(item->pos.x - lara->pos.x) > 16 * WALL_L
-                    || ABS(item->pos.z - lara->pos.z) > 16 * WALL_L) {
+                    && (ABS(item->pos.x - lara->pos.x) > 16 * WALL_L
+                        || ABS(item->pos.z - lara->pos.z) > 16 * WALL_L)) {
                     item_num = next;
                     continue;
                 }

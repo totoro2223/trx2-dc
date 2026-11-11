@@ -998,24 +998,37 @@ static void M_FreeRig(M_RIG *const rig)
     }
 }
 
+// Rigs dropped mid-level: this frame's instances and the kept segments of
+// the blended frames may still point at them, so they go with the level.
+static OUTPUT_MESH *m_RetiredRigs[M_MAX_RIGS];
+static int32_t m_RetiredCount = 0;
+
 static void M_FreeRigs(void)
 {
+    M_PRIV *const p = &m_Priv;
     for (int32_t i = 0; i < m_RigCount; i++) {
         M_FreeRig(&m_Rigs[i]);
     }
     m_RigCount = 0;
+    for (int32_t i = 0; i < m_RetiredCount; i++) {
+        MeshBatcher_RemoveMesh(p->batcher, m_RetiredRigs[i]);
+        Output_Mesh_Destroy(m_RetiredRigs[i]);
+    }
+    m_RetiredCount = 0;
 }
 
-// A mesh changed (swapped, its flags or shape): the rigs holding it are
-// built again when next drawn.
+// A mesh changed (swapped, its flags or shape): the rigs holding it are not
+// used again this level (the object goes mesh by mesh). Freed only with the
+// level: freeing it here left instances pointing at freed memory.
 static void M_DropRigsOf(const int32_t mesh_idx)
 {
-    for (int32_t i = m_RigCount - 1; i >= 0; i--) {
+    for (int32_t i = 0; i < m_RigCount; i++) {
         M_RIG *const rig = &m_Rigs[i];
-        if (mesh_idx >= rig->mesh_idx
+        if (rig->mesh != nullptr && mesh_idx >= rig->mesh_idx
             && mesh_idx < rig->mesh_idx + rig->mesh_count) {
-            M_FreeRig(rig);
-            m_Rigs[i] = m_Rigs[--m_RigCount];
+            // Each entry retires once at most, so the list cannot fill.
+            m_RetiredRigs[m_RetiredCount++] = rig->mesh;
+            rig->mesh = nullptr;
         }
     }
 }

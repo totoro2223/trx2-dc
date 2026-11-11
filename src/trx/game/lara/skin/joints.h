@@ -3,6 +3,9 @@
 #include <trx/game/lara/skin/types.h>
 
 void Lara_Joints_Initialise(const LARA_SKIN_OUTFIT *outfit);
+// Forgets the joints, as a level goes: a next level that cannot dress her
+// would otherwise draw the old one's joint meshes by their stale indices.
+void Lara_Joints_Reset(void);
 void Lara_Joints_SwapSingle(LARA_MESH mesh_idx, const LARA_SKIN_OUTFIT *outfit);
 void Lara_Joints_StashMatrix(LARA_MESH mesh_idx, bool interpolated);
 void Lara_Joints_Draw(LARA_MESH mesh_idx, CLIP clip, bool interpolated);

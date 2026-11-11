@@ -138,6 +138,9 @@ typedef struct {
         float master_volume;
         float sound_volume;
         float music_volume;
+#if defined(__DREAMCAST__)
+        bool dc_suite_music;
+#endif
         float inventory_music_volume;
         float underwater_music_volume;
         float ambient_volume;

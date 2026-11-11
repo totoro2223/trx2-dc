@@ -3,6 +3,7 @@
 #include <trx/av/audio.h>
 #include <trx/av/audio_decoder.h>
 #include <trx/config.h>
+#include <trx/core/filesystem.h>
 #include <trx/core/log.h>
 #include <trx/core/memory.h>
 #include <trx/core/subsystem.h>
@@ -23,6 +24,7 @@
 #include <trx/game/shell/common.h>
 #include <trx/version.h>
 
+#include <stdio.h>
 #include <string.h>
 
 #define M_CROSSFADE_TIME 2.0
@@ -69,8 +71,18 @@ static M_MUSIC_STREAM m_FadingStream = {
 static MUSIC_BACKEND *M_FindBackend(void)
 {
     VECTOR *all_backends = Vector_Create(sizeof(MUSIC_BACKEND *));
-    const char *const music_dir =
+    const char *music_dir =
         GamePath_PeekResolve(GAME_DYNAMIC_PATH_MUSIC_DIR, nullptr);
+#if defined(__DREAMCAST__)
+    // The Tomb Raider Suite soundtrack, when chosen and on the disc.
+    static char suite_dir[256];
+    if (g_Config.audio.dc_suite_music && music_dir != nullptr) {
+        snprintf(suite_dir, sizeof(suite_dir), "%s_suite", music_dir);
+        if (FS_DirExists(suite_dir)) {
+            music_dir = suite_dir;
+        }
+    }
+#endif
     const char *const music_catalog_path = GamePath_PeekResolve(
         GAME_DYNAMIC_PATH_CATALOG, "catalog_music_files.csv");
     if (music_dir != nullptr || music_catalog_path != nullptr) {
@@ -520,6 +532,26 @@ static int32_t M_Play(
     }
     return played ? 0 : -1;
 }
+
+#if defined(__DREAMCAST__)
+void Music_ReloadSoundtrack(void)
+{
+    // The tracks playing (the ambient one, if any, and a regular one over it)
+    // are taken over by the same ones of the other soundtrack.
+    const MUSIC_SLOT playing = m_TrackCurrent;
+    const MUSIC_SLOT looped = m_TrackLooped;
+    // Init only forgets the streams; this closes them.
+    Music_Stop();
+    SHOULD(Music_Init());
+    Music_SetVolume(g_Config.audio.music_volume);
+    if (looped >= 0) {
+        Music_PlayBySlot(looped, MPM_LOOP);
+    }
+    if (playing >= 0) {
+        Music_PlayBySlot(playing, MPM_ONCE);
+    }
+}
+#endif
 
 RESULT Music_Init(void)
 {

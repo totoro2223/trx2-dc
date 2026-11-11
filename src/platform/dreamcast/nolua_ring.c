@@ -230,6 +230,7 @@ static int32_t M_Contents(const M_RING ring, M_CONTENT *const list)
     if (ring == M_RING_OPTION) {
         M_Add(list, &count, ring, O_PASSPORT_CLOSED, 1);
         M_Add(list, &count, ring, O_GRAPHICS_OPTION, 1);
+        M_Add(list, &count, ring, O_SOUND_OPTION, 1);
     } else {
         INVENTORY_ENTRY entries[INV_MAX_ENTRIES];
         const int32_t n = Inv_GetDrawnEntries(entries, INV_MAX_ENTRIES);

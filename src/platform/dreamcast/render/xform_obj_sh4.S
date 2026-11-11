@@ -86,7 +86,10 @@
     bt      1f
     bra     2f
     nop
-    mov     r4,r1
+    ! The label the bt above goes to: without it (DC builds 1356-1408) the
+    ! lit side jumped to the next 1: in the file and TR3 objects came out in
+    ! stray colours.
+1:  mov     r4,r1
     add     #(76 + 12 * \n),r1
     fmov.s  @r1+,fr0
     fmac    fr0,fr7,fr12            ! accumulators in fr12-fr14 (tr3col)

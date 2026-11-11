@@ -636,6 +636,10 @@ bool DC_PVR_BeginShadowMapFrame(void)
         return false;
     }
     M_ResetFrame();
+    // The map's texels as they are: the screen's scale (16:9's squeeze, the
+    // low resolution) was left over from the frame before.
+    m_ScreenScale = 1.0f;
+    m_ScreenScaleX = 1.0f;
     return true;
 }
 
@@ -2546,13 +2550,15 @@ void DC_PVR_ShadowVolume(const DC_PVR_TRIANGLE *const tris, const int32_t count)
         pvr_modifier_vol_t *const vol = M_Tail(list);
         const DC_PVR_TRIANGLE *const t = &tris[i];
         vol->flags = PVR_CMD_VERTEX_EOL;
-        vol->ax = t->v[0][0] * m_ScreenScaleX;
+        // x comes already squeezed for 16:9 (the batcher's center_x and
+        // proj_x): only the screen's own scale, or 16:9 squeezed it twice.
+        vol->ax = t->v[0][0] * m_ScreenScale;
         vol->ay = t->v[0][1] * m_ScreenScale;
         vol->az = t->v[0][2];
-        vol->bx = t->v[1][0] * m_ScreenScaleX;
+        vol->bx = t->v[1][0] * m_ScreenScale;
         vol->by = t->v[1][1] * m_ScreenScale;
         vol->bz = t->v[1][2];
-        vol->cx = t->v[2][0] * m_ScreenScaleX;
+        vol->cx = t->v[2][0] * m_ScreenScale;
         vol->cy = t->v[2][1] * m_ScreenScale;
         vol->cz = t->v[2][2];
         vol->d1 = vol->d2 = vol->d3 = vol->d4 = vol->d5 = vol->d6 = 0;

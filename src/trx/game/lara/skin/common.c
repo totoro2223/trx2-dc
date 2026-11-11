@@ -722,6 +722,7 @@ static bool M_CanDress(void)
 void Lara_Skin_Reset(void)
 {
     Lara_Skin_ResetGold();
+    Lara_Joints_Reset();
 }
 
 void Lara_Skin_Initialise(void)
@@ -734,6 +735,9 @@ void Lara_Skin_Initialise(void)
     m_HolsterType_R = LGT_UNARMED;
     m_UseCombatFace = false;
     m_SpeechFace = M_NO_MESH;
+    // Nor its joints: drawn here by their old indices, they asked for meshes
+    // past the end (TR1's cut3 after a level, DC build 1403).
+    Lara_Joints_Reset();
 
     m_HolstersVisible = true;
     for (int32_t i = 0; i < LM_NUMBER_OF; i++) {

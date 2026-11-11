@@ -10,7 +10,11 @@
 // where it was on the screen and in a file on the memory card (TRXLOG) before
 // the restart (platform/dreamcast/dc_strict.c).
 void DC_Crumb_Fatal(const char *file, int line, const char *message);
-    #define M_DC_FATAL(message) DC_Crumb_Fatal(__FILE__, __LINE__, message)
+// Who called the function that failed (its return address), for addr2line.
+extern void *g_DC_FatalCaller;
+    #define M_DC_FATAL(message)                                                \
+        (g_DC_FatalCaller = __builtin_return_address(0),                       \
+         DC_Crumb_Fatal(__FILE__, __LINE__, message))
 // TEMP: a step of the end of a level, on the screen for a moment and kept in
 // RAM: a console that restarts leaves the last one read as where it did.
 void DC_TrailF(const char *fmt, ...);

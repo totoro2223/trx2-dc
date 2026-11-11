@@ -15,6 +15,7 @@
 #include <trx/game/game_flow/common.h>
 #include <trx/game/game_strings/entries.h>
 #include <trx/game/input.h>
+#include <trx/game/music.h>
 #include <trx/game/lua/events/ui.h>
 #include <trx/game/objects/ids.h>
 
@@ -39,11 +40,14 @@ typedef enum {
     M_ROW_LOAD_CACHE,
     M_ROW_ORIGINAL_AI,
     M_ROW_LINEAR_POSE,
+    M_ROW_SOUNDTRACK,
     M_ROW_NUMBER_OF,
 } M_ROW;
 
 static struct {
     bool open;
+    // The Sound page (the soundtrack row alone) instead of the Graphics one.
+    bool sound;
     DC_REQ req;
     int32_t rows[M_ROW_NUMBER_OF];
     int32_t count;
@@ -148,6 +152,8 @@ static const char *M_Name(const M_ROW row)
         return M_GS("settings/rendering.dc_room_cel/title", "Room cel shading");
     case M_ROW_SCREEN:
         return M_GS("settings/rendering.aspect_mode/title", "Screen");
+    case M_ROW_SOUNDTRACK:
+        return "Soundtrack";
     case M_ROW_FPS_COUNTER:
         return M_GS("settings/ui.enable_fps_counter/title", "FPS counter");
     case M_ROW_TEXTURE_FILTER:
@@ -189,6 +195,8 @@ static const char *M_Value(const M_ROW row)
         return M_OnOff(g_Config.rendering.dc_room_cel);
     case M_ROW_SCREEN:
         return M_ScreenName();
+    case M_ROW_SOUNDTRACK:
+        return g_Config.audio.dc_suite_music ? "TR Suite" : "Original";
     case M_ROW_FPS_COUNTER:
         return M_OnOff(g_Config.ui.enable_fps_counter);
     case M_ROW_TEXTURE_FILTER:
@@ -212,10 +220,15 @@ static void M_Fill(void)
     const int32_t selected = m_Page.req.selected;
     DC_Req_Init(
         &m_Page.req,
-        M_GS("general/settings/graphic_settings/title", "Graphics"), 290.0f,
+        m_Page.sound ? "Sound"
+                     : M_GS("general/settings/graphic_settings/title", "Graphics"),
+        290.0f,
         0.5f);
     m_Page.count = 0;
     for (int32_t i = 0; i < M_ROW_NUMBER_OF; i++) {
+        if ((i == M_ROW_SOUNDTRACK) != m_Page.sound) {
+            continue;
+        }
         if (i == M_ROW_RESTART && !M_CanRestart()) {
             continue;
         }
@@ -235,6 +248,10 @@ static void M_Step(const M_ROW row, const int32_t rate)
     switch (row) {
     case M_ROW_MODE:
         CONFIG_CYCLE(g_Config.rendering.dc_mode, rate, DC_MODE_NUMBER_OF);
+        // Experimental 60 is no longer offered (11/11/2026).
+        if (g_Config.rendering.dc_mode == DC_MODE_EXPERIMENTAL_60) {
+            CONFIG_CYCLE(g_Config.rendering.dc_mode, rate, DC_MODE_NUMBER_OF);
+        }
         // The mode picks the other options; the player may change them after.
         DC_Mode_ApplyDefaults();
         break;
@@ -272,6 +289,11 @@ static void M_Step(const M_ROW row, const int32_t rate)
         break;
     case M_ROW_ROOM_CEL:
         CONFIG_TOGGLE(g_Config.rendering.dc_room_cel);
+        break;
+    case M_ROW_SOUNDTRACK:
+        CONFIG_TOGGLE(g_Config.audio.dc_suite_music);
+        // Nothing reports the change on this menu: the music takes it now.
+        Music_ReloadSoundtrack();
         break;
     case M_ROW_SCREEN:
         // 16:9 is anamorphic: the television is set to stretch 4:3 to 16:9.
@@ -356,9 +378,11 @@ static bool M_OnPaint(
 bool DC_NoLua_OpenSettingsEntry(
     const UI_TAKEOVER screen, const UI_TAKEOVER_ARGS *const args)
 {
-    if (args->object_id != O_GRAPHICS_OPTION) {
+    if (args->object_id != O_GRAPHICS_OPTION
+        && args->object_id != O_SOUND_OPTION) {
         return false;
     }
+    m_Page.sound = args->object_id == O_SOUND_OPTION;
     static bool listening = false;
     if (!listening) {
         listening = true;

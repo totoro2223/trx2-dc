@@ -138,6 +138,11 @@ MUSIC_SLOT Music_GetCurrentLoopedTrack(void);
 // Sets the game volume.
 void Music_SetVolume(float volume);
 
+#if defined(__DREAMCAST__)
+// Plays the track now playing again from the soundtrack the settings chose.
+void Music_ReloadSoundtrack(void);
+#endif
+
 // Muffles the ambience alone or all music, as if heard through water. Overlay
 // tracks stay clear.
 void Music_SetMuffle(UNDERWATER_MUFFLE_MODE mode);

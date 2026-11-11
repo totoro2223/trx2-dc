@@ -336,7 +336,13 @@ static int M_RunGame(int argc, char *argv[])
     g_DC_AsmOff = 0;
     // dc_turn, dc_sphere_touch and dc_bounds_collide stay in C: on a real console
     // the box collision in assembly killed Lara's first frame (build 1327).
-    g_DC_AsmOff2 = 1024 | 2048 | 4096;
+    // The rigs (2097152) and what rides on them, the bone fuse (8388608) and
+    // the pose cache (16777216), stay off: with them a real console restarts
+    // in TR1's first level (bisected on DC builds 1397-1401; the rest of
+    // 10/11's object changes passed).
+    // 32768: no far or tiny object left out, nor a far enemy's small meshes
+    // (the enemies' draw distance, as the game has it).
+    g_DC_AsmOff2 = 1024 | 2048 | 4096 | 32768 | 2097152 | 8388608 | 16777216;
     FILE *const asm_off = M_Open("ASMOFF.TXT");
     if (asm_off != nullptr) {
         unsigned mask = 0;
@@ -485,6 +491,12 @@ static int M_RunGame(int argc, char *argv[])
     }
     // Test discs name their level (make_disc.sh's fourth argument).
     int level = -1;
+    // The credits before anything else, the normal flow or the level list
+    // (once a boot; a test disc that starts a demo or a cutscene skips them).
+    if (g_DC_DemoQueueCount == 0 && g_DC_StartDemo < 0
+        && g_DC_StartCutscene < 0) {
+        DC_Splash_Show(engine);
+    }
     // Only the disc's first start: a later one (the level list of this game,
     // asked for from its menu) has a choice of its own.
     FILE *const start = g_DC_Run <= 1 ? M_Open("START.TXT") : nullptr;
@@ -507,7 +519,6 @@ static int M_RunGame(int argc, char *argv[])
         && g_DC_StartCutscene < 0) {
         // The expansion's level that the list of the game before picked.
         const int picked = DC_Games_TakeStartLevel();
-        DC_Splash_Show(engine);
         level = picked >= -1 ? picked : DC_LevelSelect_Run(engine, mod_id);
         if (level == DC_LEVEL_SELECT_RESTART) {
             // Another game or the expansion: the main loop starts it (the

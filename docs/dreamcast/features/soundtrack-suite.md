@@ -1,6 +1,6 @@
 # Feature aparcada: selector de banda sonora (Original / Tomb Raider Suite)
 
-Cancelada el 09/11/2026 por petición del usuario; el audio quedó **exactamente como antes**.
+Reactivada el 10/11/2026 (rama `full60fps`), sin probar aún. Cancelada el 09/11/2026 por petición del usuario; el audio quedó **exactamente como antes**.
 El trabajo está guardado en [soundtrack-suite.patch](soundtrack-suite.patch)
 (`patch -p1 --ignore-whitespace < docs/dreamcast/features/soundtrack-suite.patch` desde la raíz).
 

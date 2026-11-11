@@ -101,6 +101,12 @@ void Lara_Mesh_Initialise(const GF_LEVEL *const level)
 void Lara_Mesh_SwapSingle(const LARA_MESH mesh, const OBJECT_ID obj_id)
 {
     const OBJECT *const obj = Object_Get(obj_id);
+    // An object this level lacks, or one with fewer meshes than Lara (TR1's
+    // cut3), keeps her mesh as it is instead of reading past the meshes.
+    if (!obj->loaded || obj->mesh_idx < 0 || mesh >= obj->mesh_count
+        || obj->mesh_idx + mesh >= Object_GetMeshCount()) {
+        return;
+    }
     Lara_Mesh_Set(mesh, Object_GetMesh(obj->mesh_idx + mesh));
 }
 

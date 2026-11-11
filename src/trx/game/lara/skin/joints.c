@@ -258,6 +258,11 @@ static void M_PinSeam(
     }
 }
 
+void Lara_Joints_Reset(void)
+{
+    M_Reset();
+}
+
 void Lara_Joints_Initialise(const LARA_SKIN_OUTFIT *const outfit)
 {
     M_Reset();

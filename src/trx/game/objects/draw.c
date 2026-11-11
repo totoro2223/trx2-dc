@@ -169,7 +169,8 @@ static bool M_DrawInterpolatedObject(
     const bool far_enemy = obj->intelligent && far_item;
     // In every mode: a far item (enemy, trap, door) shows its nearest
     // keyframe only, with no blend between two poses.
-    const int32_t pose_frac = far_item
+    // TRX_DC_ASMOFF2 bit 65536 keeps the blend.
+    const int32_t pose_frac = far_item && (g_DC_AsmOff2 & 65536) == 0
         ? (frac > rate / 2 && frame2 != nullptr ? rate : 0)
         : frac;
     const ANIM_FRAME *const pose_a = (pose_frac == rate) ? frame2 : frame1;
@@ -221,7 +222,9 @@ static bool M_DrawInterpolatedObject(
         const int32_t mesh_idx = walk.joint;
 #if defined(__DREAMCAST__)
         bool small_far = false;
-        if (far_enemy && mesh_swap == nullptr && mesh_idx != 0) {
+        // TRX_DC_ASMOFF2 bit 32768 (on by default) keeps them all.
+        if (far_enemy && mesh_swap == nullptr && mesh_idx != 0
+            && (g_DC_AsmOff2 & 32768) == 0) {
             const OBJECT_MESH *const mesh =
                 Object_GetMesh(obj->mesh_idx + mesh_idx);
             small_far = mesh->num_vertices <= M_FAR_ENEMY_MESH_VERTICES

@@ -3687,6 +3687,15 @@ static void M_GrowVertexBuffers(MESH_BATCHER *const batcher, const int32_t count
     batcher->env_uv = calloc(n, sizeof(*batcher->env_uv));
     Memory_Free(batcher->eargb);
     batcher->eargb = calloc(n, sizeof(*batcher->eargb));
+    if (batcher->xverts == nullptr || batcher->soft == nullptr
+        || batcher->soft_off == nullptr || batcher->oargb == nullptr
+        || batcher->sargb == nullptr || batcher->env_uv == nullptr
+        || batcher->eargb == nullptr) {
+        // Out of memory: nothing is drawn through them (M_TransformInstance
+        // tries again next time) instead of writing through a null pointer.
+        LOG_WARNING("no memory for %d transformed vertices", (int)n);
+        MeshBatcher_ReleaseScratch(batcher);
+    }
 }
 
 // Per vertex of the frame being drawn, and up to a few megabytes in the
@@ -5992,6 +6001,9 @@ static bool M_TransformInstance(
 
     if (bind->vertex_count > batcher->xverts_capacity) {
         M_GrowVertexBuffers(batcher, bind->vertex_count);
+        if (batcher->xverts == nullptr) {
+            return false;
+        }
     }
 
     float mv[4][4];

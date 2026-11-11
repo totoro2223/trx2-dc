@@ -1082,7 +1082,19 @@ void Lara_Hair_Draw(void)
 
 bool Lara_Hair_IsActive(void)
 {
-    return Object_Get(O_LARA)->loaded && Lara_Skin_IsBraidSupported();
+    if (!Object_Get(O_LARA)->loaded || !Lara_Skin_IsBraidSupported()) {
+        return false;
+    }
+    // Every braid's segments must be meshes of this level: a cutscene's hair
+    // object can hold fewer than the braid asks for.
+    const LARA_SKIN_BRAID *const braid = Lara_Skin_GetBraid();
+    for (int32_t i = 0; i < braid->count; i++) {
+        const int32_t base = Lara_Skin_GetBraidMeshIdx(i);
+        if (base < 0 || base + M_HAIR_SEGMENTS > Object_GetMeshCount()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 int32_t Lara_Hair_GetBraidCount(void)

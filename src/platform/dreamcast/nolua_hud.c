@@ -418,6 +418,9 @@ static bool M_OnTick(
                                                  "Original",
                                                  "Experimental 60", "Native 60" };
             CONFIG_CYCLE(g_Config.rendering.dc_mode, 1, DC_MODE_NUMBER_OF);
+            if (g_Config.rendering.dc_mode == DC_MODE_EXPERIMENTAL_60) {
+                CONFIG_CYCLE(g_Config.rendering.dc_mode, 1, DC_MODE_NUMBER_OF);
+            }
             DC_Mode_ApplyDefaults();
             DC_Msg("MODE %s", names[g_Config.rendering.dc_mode]);
         }

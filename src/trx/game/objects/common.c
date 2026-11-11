@@ -297,6 +297,14 @@ void Object_StoreMesh(OBJECT_MESH *const mesh)
 
 OBJECT_MESH *Object_GetMesh(const int32_t index)
 {
+#if defined(__DREAMCAST__)
+    // Who asked (the caller's address on the report), not this function.
+    if (index < 0 || index >= m_MeshPointers->count) {
+        g_DC_FatalCaller = __builtin_return_address(0);
+        DC_Crumb_Fatal(__FILE__, __LINE__, "mesh index out of range");
+        __builtin_trap();
+    }
+#endif
     return *(OBJECT_MESH **)Vector_Get(m_MeshPointers, index);
 }
 

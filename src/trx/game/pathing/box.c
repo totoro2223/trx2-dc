@@ -654,7 +654,8 @@ TARGET_TYPE Box_CalculateTarget(
 {
     int32_t expansion = BOX_MAX_EXPANSION;
 #if defined(__DREAMCAST__)
-    {
+    // TRX_DC_ASMOFF2 bit 65536 gives each search its own.
+    if ((g_DC_AsmOff2 & 65536) == 0) {
         expansion = MIN(expansion, m_TickExpansions);
         m_TickExpansions -= expansion;
     }

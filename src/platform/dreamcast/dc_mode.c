@@ -63,7 +63,7 @@ static const DC_MODE_PARAMS m_Modes[DC_MODE_NUMBER_OF] = {
         .self_shadow = false,
         .fps = DC_FPS_60,
         .low_res = false,
-        .bilinear = true,
+        .bilinear = false,
         .native = true,
     },
 };

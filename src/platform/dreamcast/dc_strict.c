@@ -271,6 +271,8 @@ static void *M_Watch(void *const param)
 
 // An assertion failed (trx/debug.h): the file and line, what failed and the
 // last stages, on the screen and in TRXLOG, for 20 s before the restart.
+void *g_DC_FatalCaller = nullptr;
+
 void DC_Crumb_Fatal(const char *const file, const int line, const char *const message)
 {
     static bool m_Done = false;
@@ -287,8 +289,9 @@ void DC_Crumb_Fatal(const char *const file, const int line, const char *const me
     }
     char report[M_REPORT_BYTES];
     size_t at = (size_t)snprintf(
-        report, sizeof(report), "TRX STOPPED, frame %u\n%s:%d\n%.120s\n",
-        (unsigned)m_Frames, name, line, message);
+        report, sizeof(report), "TRX STOPPED, frame %u\n%s:%d caller %08lx\n%.120s\n",
+        (unsigned)m_Frames, name, line,
+        (unsigned long)(uintptr_t)g_DC_FatalCaller, message);
     // The memory when it stopped: the level's region (used / size, the largest
     // free span) and the heap's (in use, free): a failed allocation is told
     // apart from a bad pointer by it.

@@ -258,7 +258,8 @@ fi
 
 echo "== $GAME data"
 mkdir -p "$STAGE/games/$GAME/levels"
-for f in "$GAME_DATA"/* "$GAME_DATA"/../cuts/*; do
+# (The remaster keeps MAIN.SFX in SFX/, beside DATA.)
+for f in "$GAME_DATA"/* "$GAME_DATA"/../cuts/* "$GAME_DATA"/../SFX/*; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
   lower="$(echo "$name" | tr '[:upper:]' '[:lower:]')"
@@ -551,6 +552,39 @@ if [ "$GAME" = tr1 ] && [ "$SOURCE" = classic ] && [ "${TRX_DC_MUSIC:-1}" != 0 ]
   done
 fi
 echo "$(ls "$STAGE/games/$GAME/music" | wc -l) tracks"
+
+# The Tomb Raider Suite mod's soundtrack, as a second set of tracks the Sound
+# page of the ring chooses (music_suite beside music). TRX_DC_SUITE=0 leaves
+# it out; the mod's TRACKS folder is found beside the repository, or is the one
+# TRX_DC_SUITE_DIR names. A track the mod lacks is the original's.
+SUITE_DIR="${TRX_DC_SUITE_DIR:-}"
+if [ -z "$SUITE_DIR" ]; then
+  for d in "$ROOT/.."/"The Tomb Raider Suite Mod (TR${GAME#tr}) "*/*/*/TRACKS; do
+    [ -d "$d" ] && SUITE_DIR="$d"
+  done
+fi
+if [ "${TRX_DC_SUITE:-1}" != 0 ] && [ "${TRX_DC_MUSIC:-1}" != 0 ] && [ -d "$SUITE_DIR" ] && command -v ffmpeg > /dev/null; then
+  echo "== soundtrack (Tomb Raider Suite)"
+  SUITE_CACHE="$BUILD_DIR/music-suite-$GAME"
+  mkdir -p "$SUITE_CACHE" "$STAGE/games/$GAME/music_suite"
+  for f in "$SUITE_DIR"/*.ogg "$SUITE_DIR"/"${TRX_DC_LANG:-EN}"/*.ogg; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    [[ "${name%.*}" =~ ^[0-9]+$ ]] || continue
+    out="$SUITE_CACHE/$((10#${name%.*})).wav"
+    if [ ! -f "$out" ]; then
+      ffmpeg -hide_banner -loglevel error -y -i "$f" -ac 2 -ar 44100 \
+        -c:a adpcm_yamaha "$out"
+    fi
+    [ -f "$out" ] && cp "$out" "$STAGE/games/$GAME/music_suite/"
+  done
+  for f in "$STAGE/games/$GAME/music"/*; do
+    [ -f "$f" ] || continue
+    [ -f "$STAGE/games/$GAME/music_suite/$(basename "$f")" ] \
+      || cp "$f" "$STAGE/games/$GAME/music_suite/"
+  done
+  echo "$(ls "$STAGE/games/$GAME/music_suite" | wc -l) tracks"
+fi
 
 echo "== films"
 # The game's films in the Dreamcast's own format (tools/dreamcast/fmvconv.c):
